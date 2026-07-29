@@ -1,8 +1,54 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # BeeCount Cloud —— AI 助手/新人阅读指南
 
 本文件给 AI 编码助手(Claude Code / Copilot 等)和第一次进本仓的人类开发者
 一个快速定位,告诉你**改什么在哪里改**、**绕不过去的契约**、**哪类修改
 最容易出 bug**。
+
+## 常用命令
+
+### Backend (FastAPI, Python 3.11+)
+
+```bash
+make setup-backend        # 建 .venv + pip install -r requirements.txt + 拷贝 .env
+make migrate              # alembic upgrade head
+make dev-api              # uvicorn server:app --reload --host 0.0.0.0 --port 8080
+make test                 # pytest -q（等价 python -m pytest tests/）
+make lint                 # ruff check src tests alembic
+make typecheck            # mypy src
+```
+
+单个测试文件 / 单个用例:
+
+```bash
+. .venv/bin/activate && pytest tests/test_budget_crud.py -q
+. .venv/bin/activate && pytest tests/test_budget_crud.py::test_some_case -q
+```
+
+其他常用脚本(均需先 `. .venv/bin/activate`,`PYTHONPATH=.`):
+
+```bash
+make seed-demo                       # 灌演示数据
+make grant-admin EMAIL=user@x.com    # 把某用户提升为 admin
+make wipe-local                      # 清空本地 sqlite + data/ 运行时文件（保留 docs-index）
+python scripts/rebuild_all_projections.py   # 从 sync_changes 事件流重建 read_*_projection
+```
+
+本地默认数据库是仓根的 SQLite 文件 `beecount.db`,可以直接用 `sqlite3` CLI
+查看;`make dev-db` 会拉起 docker-compose 里的 Postgres,用于验证多进程/
+真实生产存储路径的行为。
+
+### Frontend (`frontend/`,pnpm workspace: `apps/web` + `packages/{api-client,ui,web-features}`)
+
+```bash
+make dev-web                         # pnpm install + pnpm -C apps/web dev
+cd frontend && pnpm -C apps/web build       # tsc -b && vite build
+cd frontend && pnpm -C apps/web test        # vitest run
+cd frontend && pnpm -C apps/web test:unit   # vitest run src（只跑单元测试目录）
+```
 
 ## 改代码之前必读
 
@@ -28,7 +74,41 @@
 误用 + budget import path 错误),根因都是"有隐式契约但没在契约点强制"。
 动之前花 5 分钟读完 `SYNC_ARCHITECTURE.md` 省几小时 debug。
 
-## 代码约定(server 端)
+## 架构总览(server 端)
+
+FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make
+dev-api` 实际跑的是 `uvicorn server:app`)。核心模块:
+
+- `src/routers/` —— HTTP API,按 `<group>/` 包组织(见下方"路由组织")。
+  子目录:`sync/`(推拉同步)、`write/`(按实体 CRUD)、`read/`(账本/工作区/
+  汇总只读端点)、`ai/`(AI 记账解析、docs 问答)、`import_data/`(CSV 导入)。
+- `src/sync_applier.py` —— 同步落盘的核心分发器,`_MERGE_SPECS` /
+  `_UPSERT_DISPATCH` / `_DELETE_DISPATCH` 三张表决定每种 entity 怎么合并、
+  怎么 upsert、怎么删除。
+- `src/projection.py` —— `read_*_projection` 表的 upsert / delete /
+  rename cascade 实现,是读路径的唯一权威源。
+- `src/snapshot_builder.py` / `snapshot_cache.py` / `snapshot_mutator.py`
+  —— `/sync/full` 按需从 projection 懒构建整本账本快照(不再主动写
+  `ledger_snapshot`)。
+- `src/websocket_manager.py` + `routers/ws.py` —— 多端实时推送。
+- `src/mcp/` —— MCP server(`server.py` + `tools/read_tools.py` /
+  `tools/write_tools.py`),给 Claude Desktop / Cursor 等 LLM 客户端暴露
+  记账操作。
+- `src/services/` —— 领域服务:`ai/`(LLM provider 适配 + 文档 RAG 问答)、
+  `backup/`(rclone 多远端加密备份、调度、恢复)、`exchange_rate/`、
+  `import_data/`、`data_cleanup/`。
+- `src/models.py` / `src/schemas.py` —— SQLAlchemy ORM 模型 / Pydantic
+  schema。
+- `src/database.py` —— SQLite(默认,WAL + busy_timeout,生产必需)和
+  Postgres 双引擎支持,连接串取决于 `DATABASE_URL`。
+- `src/config.py` —— `pydantic-settings`,`.env` 后 `.env.local` 覆盖
+  （本地临时改配置不污染 `.env`,且 `.env.local` 已 gitignore)。
+
+**`main.py` 顶部有一个必须保留的导入顺序**:`ensure_jwt_secret()` 必须
+在任何 `from .routers ...` 之前执行,因为部分 router 模块顶层有
+`settings = get_settings()`(`@lru_cache`),先导入 router 会让 settings
+缓存住占位 JWT_SECRET,后续 env 变更不生效,生产环境校验直接 raise。改
+`main.py` 顶部 import 顺序前務必读一遍那段注释。
 
 ### 路由组织
 
@@ -91,16 +171,19 @@
 Mobile 端(Flutter)和 Web 端(React)各自有仓,各自有 CLAUDE.md:
 
 - Mobile: `../BeeCount/CLAUDE.md`
-- Web: 前端源码在 `frontend/apps/web/`,README 见 `frontend/README.md`
-  (如有)
+- Web: 前端源码在 `frontend/apps/web/`(Vite + React + TypeScript +
+  Tailwind + shadcn 风格组件),pnpm workspace 下还有两个共享包:
+  `frontend/packages/api-client`(与 server 交互的类型化客户端)、
+  `frontend/packages/ui`(通用组件)、`frontend/packages/web-features`
+  (跨页面业务逻辑)。改跨页面共享的东西先看这两个包里有没有现成的。
 
 跟服务端同步相关的 mobile 契约(`ChangeTracker.recordUserGlobalChange` /
 `recordLedgerChange`)在 mobile 仓 CLAUDE.md 里。Server 端的契约在上面
 链的 `docs/SYNC_ARCHITECTURE.md` 里。
 
-## 工具
+## 部署 / 运维
 
-- `python -m pytest tests/` 跑全部服务端测试
-- 本地 dev server:`uvicorn src.main:app --reload`
-- 本地 DB 默认 SQLite:`beecount.db`(仓根),可用 `sqlite3` CLI 直接查
-- 生产部署见 `docs/DEPLOYMENT.md`
+- 生产部署见 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)
+- 迁移相关见 [docs/MIGRATION.md](./docs/MIGRATION.md)
+- 回滚 SOP 见 [docs/ROLLBACK_SOP.md](./docs/ROLLBACK_SOP.md)
+- 可观测性(日志 / 指标)见 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md)
