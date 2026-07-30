@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -77,6 +78,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 设备首次同步 / 重装后这两个关联全丢。
         ReadTxProjection.refund_of_sync_id,
         ReadTxProjection.installment_plan_sync_id,
+        # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记,同样必须进
+        # full snapshot,否则下一次 _commit_write 的 diff 会把这两个字段撤销。
+        ReadTxProjection.recurring_rule_sync_id,
+        ReadTxProjection.recurring_occurrence_overridden,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -90,7 +95,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
          currency_code, native_amount,
-         refund_of_id, installment_plan_id) = row
+         refund_of_id, installment_plan_id,
+         recurring_rule_id, recurring_occurrence_overridden) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -146,6 +152,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["refundOfId"] = refund_of_id
         if installment_plan_id:
             item["installmentPlanId"] = installment_plan_id
+        if recurring_rule_id:
+            item["recurringRuleId"] = recurring_rule_id
+        if recurring_occurrence_overridden:
+            item["recurringOccurrenceOverridden"] = True
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
@@ -305,9 +315,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadRecurringRuleProjection.next_run_at,
         ReadRecurringRuleProjection.end_at,
         ReadRecurringRuleProjection.enabled,
+        ReadRecurringRuleProjection.generated_until_at,
+        ReadRecurringRuleProjection.advanced_rule_json,
     ).where(ReadRecurringRuleProjection.ledger_id == ledger_id)
     for (sid, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
-         frequency, interval, next_run_at, end_at, enabled) in db.execute(rec_stmt).all():
+         frequency, interval, next_run_at, end_at, enabled,
+         generated_until_at, advanced_rule_json) in db.execute(rec_stmt).all():
         r: dict[str, Any] = {
             "syncId": sid,
             "txType": tx_type,
@@ -329,9 +342,54 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             r["toAccountId"] = to_sid
         if end_at is not None:
             r["endAt"] = _to_iso_utc(end_at)
+        if generated_until_at is not None:
+            r["generatedUntilAt"] = _to_iso_utc(generated_until_at)
+        if advanced_rule_json:
+            try:
+                parsed_rule = json.loads(advanced_rule_json)
+                if isinstance(parsed_rule, dict):
+                    r["advancedRuleJson"] = parsed_rule
+            except json.JSONDecodeError:
+                pass
         recurring_rules.append(r)
 
-    # Installment plans(§2.3)
+    # Installment periods(§2.12.1 Phase 1.5)—— 先读,installment plan 的
+    # paidPeriods/nextPeriodAt 要从这里 derive(不再信任 projection 里那两个
+    # 不再被排程写入的历史相容字段)。
+    periods_by_plan: dict[str, list[dict[str, Any]]] = {}
+    installment_periods: list[dict[str, Any]] = []
+    period_stmt = select(
+        ReadInstallmentPeriodProjection.sync_id,
+        ReadInstallmentPeriodProjection.plan_sync_id,
+        ReadInstallmentPeriodProjection.period_no,
+        ReadInstallmentPeriodProjection.due_at,
+        ReadInstallmentPeriodProjection.principal_amount,
+        ReadInstallmentPeriodProjection.interest_amount,
+        ReadInstallmentPeriodProjection.total_amount,
+        ReadInstallmentPeriodProjection.status,
+        ReadInstallmentPeriodProjection.tx_sync_id,
+    ).where(ReadInstallmentPeriodProjection.ledger_id == ledger_id).order_by(
+        ReadInstallmentPeriodProjection.plan_sync_id,
+        ReadInstallmentPeriodProjection.period_no,
+    )
+    for (sid, plan_sid, period_no, due_at, principal_amount, interest_amount,
+         total_amount, status, tx_sid) in db.execute(period_stmt).all():
+        entry: dict[str, Any] = {
+            "syncId": sid,
+            "planId": plan_sid,
+            "periodNo": period_no,
+            "dueAt": _to_iso_utc(due_at),
+            "principalAmount": principal_amount,
+            "interestAmount": interest_amount,
+            "totalAmount": total_amount,
+            "status": status,
+        }
+        if tx_sid:
+            entry["txId"] = tx_sid
+        installment_periods.append(entry)
+        periods_by_plan.setdefault(plan_sid, []).append(entry)
+
+    # Installment plans(§2.3 / §2.12.1)
     installment_plans: list[dict[str, Any]] = []
     ins_stmt = select(
         ReadInstallmentPlanProjection.sync_id,
@@ -339,15 +397,32 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadInstallmentPlanProjection.periods,
         ReadInstallmentPlanProjection.period_amount,
         ReadInstallmentPlanProjection.first_period_at,
-        ReadInstallmentPlanProjection.next_period_at,
-        ReadInstallmentPlanProjection.paid_periods,
         ReadInstallmentPlanProjection.account_sync_id,
         ReadInstallmentPlanProjection.category_sync_id,
         ReadInstallmentPlanProjection.note,
         ReadInstallmentPlanProjection.status,
+        ReadInstallmentPlanProjection.repayment_method,
+        ReadInstallmentPlanProjection.interest_period,
+        ReadInstallmentPlanProjection.interest_rate,
+        ReadInstallmentPlanProjection.round_amounts,
+        ReadInstallmentPlanProjection.remainder_position,
+        ReadInstallmentPlanProjection.grace_period_months,
     ).where(ReadInstallmentPlanProjection.ledger_id == ledger_id)
-    for (sid, total_amount, periods, period_amount, first_period_at, next_period_at,
-         paid_periods, acc_sid, cat_sid, note, status) in db.execute(ins_stmt).all():
+    now = datetime.now(timezone.utc)
+    for (sid, total_amount, periods, period_amount, first_period_at,
+         acc_sid, cat_sid, note, status, repayment_method, interest_period,
+         interest_rate, round_amounts, remainder_position,
+         grace_period_months) in db.execute(ins_stmt).all():
+        plan_periods = periods_by_plan.get(sid) or []
+        # paidPeriods/nextPeriodAt 不再由排程写入,这里从 period 明细即时算出
+        # (见 ReadInstallmentPlanProjection docstring)。没有 period 明细
+        # (理论上不会出现,兜底)时退回旧字段语义:0 期已付,下一期=首期。
+        due_dates = sorted(
+            datetime.fromisoformat(p["dueAt"]) for p in plan_periods if p.get("dueAt")
+        )
+        paid_periods = sum(1 for d in due_dates if d <= now)
+        future_dates = [d for d in due_dates if d > now]
+        next_period_at = future_dates[0] if future_dates else (due_dates[-1] if due_dates else first_period_at)
         p: dict[str, Any] = {
             "syncId": sid,
             "totalAmount": total_amount,
@@ -357,6 +432,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             "nextPeriodAt": _to_iso_utc(next_period_at),
             "paidPeriods": paid_periods,
             "status": status,
+            "repaymentMethod": repayment_method,
+            "interestPeriod": interest_period,
+            "interestRate": interest_rate,
+            "roundAmounts": bool(round_amounts),
+            "remainderPosition": remainder_position,
+            "gracePeriodMonths": grace_period_months,
         }
         if acc_sid:
             p["accountId"] = acc_sid
@@ -381,6 +462,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "budgets": budgets,
         "recurringRules": recurring_rules,
         "installmentPlans": installment_plans,
+        "installmentPeriods": installment_periods,
     }
 
 

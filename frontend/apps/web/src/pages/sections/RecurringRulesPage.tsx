@@ -2,13 +2,22 @@ import { useCallback, useEffect, useState } from 'react'
 
 import {
   createRecurringRule,
+  deleteRecurringOccurrence,
   deleteRecurringRule,
   fetchReadAccounts,
   fetchReadRecurringRules,
+  fetchReadTransactions,
   fetchWorkspaceCategories,
+  terminateRecurringRuleFuture,
+  updateRecurringOccurrence,
   updateRecurringRule,
+  updateRecurringRuleFrom,
   type ReadAccount,
   type ReadRecurringRule,
+  type ReadTransaction,
+  type RecurringAdvancedRule,
+  type RecurringOccurrenceUpdatePayload,
+  type RecurringUpdateFromPayload,
   type WorkspaceCategory,
 } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beecount/ui'
@@ -47,6 +56,8 @@ export function RecurringRulesPage() {
   )
   const [accounts, setAccounts] = usePageCache<ReadAccount[]>(`recurringRules:${bucket}:accounts`, [])
   const [form, setForm] = useState<RecurringRuleForm>(recurringRuleDefaults())
+  // §2.12.2:每个规则已生成的 occurrence 列表,懒加载(展开卡片才 fetch)。
+  const [occurrencesByRuleId, setOccurrencesByRuleId] = useState<Record<string, ReadTransaction[]>>({})
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -72,6 +83,7 @@ export function RecurringRulesPage() {
       setRules(r)
       setCategories(c)
       setAccounts(a)
+      setOccurrencesByRuleId({})
     } catch (err) {
       notifyError(err)
     }
@@ -141,6 +153,16 @@ export function RecurringRulesPage() {
         )
         notifySuccess(t('recurringRules.notice.updated'))
       } else {
+        // Phase 1.5(§2.12.2)进阶规则,只在新建时生效。
+        let advancedRuleJson: RecurringAdvancedRule | null = null
+        if (form.advanced_mode === 'weekly_days' && form.weekly_days.length > 0) {
+          advancedRuleJson = { type: 'weekly_days', days: form.weekly_days }
+        } else if (form.advanced_mode === 'monthly_day') {
+          const day = Math.round(Number(form.monthly_day))
+          if (Number.isFinite(day) && day >= 1 && day <= 31) {
+            advancedRuleJson = { type: 'monthly_day', day }
+          }
+        }
         await retryOnConflict(activeLedgerId, (base) =>
           createRecurringRule(token, activeLedgerId, base, {
             tx_type: form.tx_type,
@@ -155,6 +177,7 @@ export function RecurringRulesPage() {
             next_run_at: nextRunAtIso,
             end_at: endAtIso,
             enabled: form.enabled,
+            advanced_rule_json: advancedRuleJson,
           }),
         )
         notifySuccess(t('recurringRules.notice.created'))
@@ -196,6 +219,89 @@ export function RecurringRulesPage() {
     }
   }
 
+  // §2.12.2:懒加载某规则已生成的 occurrence —— 用现有 fetchReadTransactions
+  // 拉一批该账本的交易,按 recurring_rule_id 客户端过滤。跟旧版退款候选清单
+  // 同一种已知限制(只看拉到的这批,不是全量搜索)。
+  const onLoadOccurrences = useCallback(
+    (rule: ReadRecurringRule) => {
+      if (!activeLedgerId) return
+      void fetchReadTransactions(token, activeLedgerId, { limit: 500 })
+        .then((rows) =>
+          setOccurrencesByRuleId((prev) => ({
+            ...prev,
+            [rule.id]: rows.filter((row) => row.recurring_rule_id === rule.id),
+          })),
+        )
+        .catch(() => setOccurrencesByRuleId((prev) => ({ ...prev, [rule.id]: [] })))
+    },
+    [token, activeLedgerId],
+  )
+
+  const onUpdateOccurrence = async (
+    rule: ReadRecurringRule,
+    txId: string,
+    payload: RecurringOccurrenceUpdatePayload,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        updateRecurringOccurrence(token, activeLedgerId, rule.id, txId, base, payload),
+      )
+      notifySuccess(t('notice.success'))
+      onLoadOccurrences(rule)
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onDeleteOccurrence = async (rule: ReadRecurringRule, txId: string): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        deleteRecurringOccurrence(token, activeLedgerId, rule.id, txId, base),
+      )
+      notifySuccess(t('notice.success'))
+      onLoadOccurrences(rule)
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onUpdateFrom = async (
+    rule: ReadRecurringRule,
+    txId: string,
+    payload: RecurringUpdateFromPayload,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        updateRecurringRuleFrom(token, activeLedgerId, rule.id, txId, base, payload),
+      )
+      notifySuccess(t('notice.success'))
+      onLoadOccurrences(rule)
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onTerminateFuture = async (rule: ReadRecurringRule): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        terminateRecurringRuleFuture(token, activeLedgerId, rule.id, base),
+      )
+      notifySuccess(t('notice.success'))
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
   return (
     <Card className="bc-panel">
       <CardHeader>
@@ -216,6 +322,12 @@ export function RecurringRulesPage() {
             onSubmit={onSubmit}
             onDelete={onDelete}
             onToggleEnabled={onToggleEnabled}
+            occurrencesByRuleId={occurrencesByRuleId}
+            onLoadOccurrences={onLoadOccurrences}
+            onUpdateOccurrence={onUpdateOccurrence}
+            onDeleteOccurrence={onDeleteOccurrence}
+            onUpdateFrom={onUpdateFrom}
+            onTerminateFuture={onTerminateFuture}
             canManage={canManage}
           />
         )}

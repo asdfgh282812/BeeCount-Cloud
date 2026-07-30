@@ -11,7 +11,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, Hash, ImageOff, Tag, User, Wallet, X } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -23,6 +23,8 @@ interface Props {
   tags?: WorkspaceTag[]
   onClose: () => void
   onEdit: (tx: WorkspaceTransaction) => void
+  /** §2.12.3:仅 expense 显示 —— 点击后关闭详情、开建交易表单并预填退款信息。 */
+  onRefund?: (tx: WorkspaceTransaction) => void
 }
 
 /**
@@ -42,6 +44,7 @@ export function TransactionDetailDialog({
   tags,
   onClose,
   onEdit,
+  onRefund,
 }: Props) {
   const t = useT()
 
@@ -167,6 +170,29 @@ export function TransactionDetailDialog({
               {attachments.length > 0 ? (
                 <AttachmentRow attachments={attachments} />
               ) : null}
+              {/* 退款反查(§2.12.3):这笔支出收到过的退款汇总 + 清单。 */}
+              {tx.tx_type === 'expense' && tx.refunds && tx.refunds.length > 0 ? (
+                <DetailRow
+                  icon={<RotateCcw className="h-4 w-4" />}
+                  label={t('transactions.field.refundedTotal')}
+                  value={
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="font-medium">
+                        {tx.refunds
+                          .reduce((sum, r) => sum + r.amount, 0)
+                          .toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
+                        {tx.refunds.map((r) => (
+                          <span key={r.id}>
+                            {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  }
+                />
+              ) : null}
               {tx.created_by_email ? (
                 <DetailRow
                   icon={<User className="h-4 w-4" />}
@@ -202,6 +228,19 @@ export function TransactionDetailDialog({
         ) : null}
 
         <DialogFooter className="flex flex-row items-center justify-end gap-2 border-t border-border/60 bg-muted/20 px-6 py-3">
+          {/* §2.12.3:退款发起点搬到这里 —— 只在原支出交易明细显示,取代
+              旧版「新建交易表单里挑退款对象」的下拉。 */}
+          {tx && tx.tx_type === 'expense' && onRefund ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!canManage}
+              onClick={() => onRefund(tx)}
+            >
+              <RotateCcw className="mr-1 h-3.5 w-3.5" />
+              {t('transactions.button.refund')}
+            </Button>
+          ) : null}
           <Button variant="outline" size="sm" onClick={onClose}>
             {t('dialog.cancel')}
           </Button>

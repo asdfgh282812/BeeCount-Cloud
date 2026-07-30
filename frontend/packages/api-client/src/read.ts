@@ -7,6 +7,7 @@ import type {
   ReadAccount,
   ReadBudget,
   ReadCategory,
+  ReadInstallmentPeriod,
   ReadInstallmentPlan,
   ReadLedger,
   ReadLedgerDetail,
@@ -143,6 +144,18 @@ export async function fetchReadInstallmentPlans(
 ): Promise<ReadInstallmentPlan[]> {
   return authedGet<ReadInstallmentPlan[]>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/installment-plans`,
+    token,
+  )
+}
+
+/** §2.12.1 Phase 1.5 —— 分期计划的每期明细,按 period_no 升序。 */
+export async function fetchInstallmentPeriods(
+  token: string,
+  ledgerId: string,
+  planId: string,
+): Promise<ReadInstallmentPeriod[]> {
+  return authedGet<ReadInstallmentPeriod[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/periods`,
     token,
   )
 }

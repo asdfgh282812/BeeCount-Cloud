@@ -191,6 +191,14 @@ export type ReadTransaction = {
   native_amount?: number | null
   /** 退款(§2.6):这笔交易是对哪笔支出的退款。null = 普通交易。 */
   refund_of_id?: string | null
+  /** 分期付款(§2.3):所属分期计划的 id。null = 非分期生成的交易。 */
+  installment_plan_id?: string | null
+  /** 週期性收支(§2.12.2 Phase 1.5):所属规则的 id。null = 非规则生成的交易。 */
+  recurring_rule_id?: string | null
+  /** 该笔 occurrence 是否被单独编辑过(之后规则批次更新/视窗续产生会跳过它)。 */
+  recurring_occurrence_overridden?: boolean
+  /** 退款反查(§2.12.3):这笔支出收到过哪些退款,空数组 = 没有退款。 */
+  refunds?: ReadTxRefundSummary[]
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -206,6 +214,13 @@ export type ReadTransaction = {
   last_edited_by_display_name?: string | null
   last_edited_by_avatar_url?: string | null
   last_edited_by_avatar_version?: number | null
+}
+
+/** §2.12.3:交易明细页"已退款金额 + 退款交易清单"用的单笔退款摘要。 */
+export type ReadTxRefundSummary = {
+  id: string
+  amount: number
+  happened_at: string
 }
 
 export type ReadAccount = {
@@ -570,6 +585,11 @@ export type TxPayload = {
   exclude_from_budget?: boolean | null
   /** 退款(§2.6):这笔交易是对 refund_of_id 那笔支出的退款。null = 普通交易/不改。 */
   refund_of_id?: string | null
+  /**
+   * Phase 1.5(§2.12.2):建交易当下顺便把它设成週期性收支的起点。只在
+   * create 有效(update 会被忽略)。
+   */
+  recurring?: RecurringInlineCreatePayload | null
 }
 
 export type BudgetCreatePayload = {
@@ -769,9 +789,20 @@ export type NotificationListResponse = {
   items: NotificationItem[]
 }
 
-// ────────── 週期性收支 (Recurring Rules，MOZE_FEATURE_GAP_SD.md §2.2）──────────
+// ────────── 週期性收支 (Recurring Rules，MOZE_FEATURE_GAP_SD.md §2.2 /
+// Phase 1.5 修正版 §2.12.2）──────────
 
 export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
+
+/**
+ * 简单 frequency+interval 表达不了的进阶规则(§2.12.2)。`weekly_days.days`
+ * 用 **Python `datetime.weekday()` 惯例(Monday=0…Sunday=6)**,跟 JS
+ * `Date.getDay()`(Sunday=0)不同 —— 组装这个字段时务必换算,不要直接塞
+ * JS 原生 weekday。
+ */
+export type RecurringAdvancedRule =
+  | { type: 'weekly_days'; days: number[] }
+  | { type: 'monthly_day'; day: number }
 
 export type ReadRecurringRule = {
   id: string
@@ -788,6 +819,9 @@ export type ReadRecurringRule = {
   next_run_at: string
   end_at?: string | null
   enabled: boolean
+  /** 视窗续产生进度(Phase 1.5)。 */
+  generated_until_at?: string | null
+  advanced_rule_json?: RecurringAdvancedRule | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -806,6 +840,7 @@ export type RecurringRuleCreatePayload = {
   next_run_at: string
   end_at?: string | null
   enabled?: boolean
+  advanced_rule_json?: RecurringAdvancedRule | null
 }
 
 export type RecurringRuleUpdatePayload = {
@@ -821,11 +856,46 @@ export type RecurringRuleUpdatePayload = {
   next_run_at?: string
   end_at?: string | null
   enabled?: boolean
+  advanced_rule_json?: RecurringAdvancedRule | null
 }
 
-// ────────── 分期付款 (Installment Plans，MOZE_FEATURE_GAP_SD.md §2.3）──────────
+/** §2.12.2:挂在 `TxPayload.recurring` 上,建交易当下顺便设週期起点。 */
+export type RecurringInlineCreatePayload = {
+  frequency: RecurringFrequency
+  interval: number
+  end_at?: string | null
+  advanced_rule_json?: RecurringAdvancedRule | null
+}
 
-export type InstallmentPlanStatus = 'active' | 'settled'
+/** §2.12.2:单独编辑某一期已生成的 occurrence 交易(会被标记 overridden)。 */
+export type RecurringOccurrenceUpdatePayload = {
+  amount?: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  happened_at?: string
+}
+
+/** §2.12.2:修改連同未來 —— 更新规则本身字段 + 该期以后所有未 overridden
+ * 的已生成交易(不动 happened_at)。 */
+export type RecurringUpdateFromPayload = {
+  tx_type?: 'expense' | 'income' | 'transfer'
+  amount?: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  frequency?: RecurringFrequency
+  interval?: number
+  advanced_rule_json?: RecurringAdvancedRule | null
+}
+
+// ────────── 分期付款 (Installment Plans，MOZE_FEATURE_GAP_SD.md §2.3 /
+// Phase 1.5 修正版 §2.12.1）──────────
+
+export type InstallmentPlanStatus = 'active' | 'settled' | 'terminated'
+export type InstallmentRepaymentMethod = 'equal_installment' | 'equal_principal' | 'fixed_interest'
+export type InstallmentInterestPeriod = 'monthly' | 'daily'
+export type InstallmentRemainderPosition = 'first' | 'last'
 
 export type ReadInstallmentPlan = {
   id: string
@@ -839,6 +909,12 @@ export type ReadInstallmentPlan = {
   category_id?: string | null
   note?: string | null
   status: InstallmentPlanStatus
+  repayment_method: InstallmentRepaymentMethod
+  interest_period: InstallmentInterestPeriod
+  interest_rate: number
+  round_amounts: boolean
+  remainder_position: InstallmentRemainderPosition
+  grace_period_months: number
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -851,10 +927,56 @@ export type InstallmentPlanCreatePayload = {
   account_id?: string | null
   category_id?: string | null
   note?: string | null
+  repayment_method?: InstallmentRepaymentMethod
+  interest_period?: InstallmentInterestPeriod
+  interest_rate?: number
+  round_amounts?: boolean
+  remainder_position?: InstallmentRemainderPosition
+  grace_period_months?: number
 }
 
-/** 只支持提前结清(status='settled')/改备注，期数/金额不可改（对齐 budgets 的设计约束：改这些走删除重建）。 */
+/** 只支持提前结清(status='settled')/改备注，攤還参数/期数/金额不可改
+ * （要调利率/提前还本走下面的差异化端点，不是这个 PATCH）。 */
 export type InstallmentPlanUpdatePayload = {
   note?: string | null
   status?: InstallmentPlanStatus
+}
+
+/** §2.12.1:分期单期明细(每期本金/利息/合计)。 */
+export type ReadInstallmentPeriod = {
+  id: string
+  plan_id: string
+  period_no: number
+  due_at: string
+  principal_amount: number
+  interest_amount: number
+  total_amount: number
+  status: 'pending' | 'generated' | 'overridden' | 'refunded'
+  tx_id?: string | null
+}
+
+/** §2.12.1:编辑单期(金额/日期/备注)，`overridden=true`。 */
+export type InstallmentPeriodUpdatePayload = {
+  amount?: number
+  due_at?: string
+  note?: string | null
+}
+
+/** §2.12.1:调利率(可选换攤還方式)，连同未来重算未 overridden 的期数。 */
+export type InstallmentRebalancePayload = {
+  interest_rate: number
+  repayment_method?: InstallmentRepaymentMethod
+}
+
+/** §2.12.1:部分还本，重算未 overridden 的未来期数。 */
+export type InstallmentEarlyRepayPayload = {
+  payment_amount: number
+  account_id?: string | null
+  happened_at?: string
+}
+
+/** §2.12.1:提前结清，生成一笔结清交易并删除未到期的未来期。 */
+export type InstallmentPayoffPayload = {
+  account_id?: string | null
+  happened_at?: string
 }

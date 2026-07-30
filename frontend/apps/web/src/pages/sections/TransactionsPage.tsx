@@ -70,6 +70,7 @@ import {
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTransaction,
+  createInstallmentPlan,
   fetchProfileMe,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
@@ -83,6 +84,8 @@ import {
 import {
   resolveCurrencyFields,
   loadRatesToBase,
+  buildInstallmentPlanPayload,
+  buildRecurringInlinePayload,
   CategoryPickerDialog,
   ConfirmDialog,
   TagPickerDialog,
@@ -1401,6 +1404,14 @@ export function TransactionsPage() {
         return false
       }
     }
+    // Phase 1.5(§2.12.1):分期付款期数校验,跟 InstallmentPlansPage 同规则。
+    if (!txForm.editingId && txForm.installment_enabled) {
+      const periodsNum = Number(txForm.installment_periods)
+      if (!Number.isInteger(periodsNum) || periodsNum < 1 || periodsNum > 600) {
+        setErrorNotice(t('installmentPlans.error.periodsInvalid'))
+        return false
+      }
+    }
     // 非转账交易允许不选账户（mobile 端 accountId 本来就是 nullable），之前 web
     // 强制校验导致 mobile 导入的无账户交易在 web 上无法编辑。
 
@@ -1453,6 +1464,18 @@ export function TransactionsPage() {
         }
       }
 
+      const resolvedAccountId = isTransfer ? null : accountByName.get(accountName.toLowerCase()) || null
+      const resolvedCategoryId = isTransfer
+        ? null
+        : categoryByKey.get(`${categoryKind}:${categoryName.toLowerCase()}`) || null
+
+      // Phase 1.5(§2.12.1):分期付款走独立的 createInstallmentPlan,不是
+      // TxPayload 的一个字段 —— 欄位差異太大(期数/攤還方式等),沿用既有
+      // 「分期计划管理页」用的同一个 API。
+      const installmentPayload = !txForm.editingId
+        ? buildInstallmentPlanPayload(txForm, { account_id: resolvedAccountId, category_id: resolvedCategoryId })
+        : null
+
       const payload = {
         tx_type: txForm.tx_type,
         amount: Number(txForm.amount || 0),
@@ -1460,9 +1483,9 @@ export function TransactionsPage() {
         note: txForm.note || null,
         category_name: isTransfer ? null : categoryName || null,
         category_kind: isTransfer ? null : categoryKind || null,
-        category_id: isTransfer ? null : categoryByKey.get(`${categoryKind}:${categoryName.toLowerCase()}`) || null,
+        category_id: resolvedCategoryId,
         account_name: isTransfer ? null : accountName || null,
-        account_id: isTransfer ? null : accountByName.get(accountName.toLowerCase()) || null,
+        account_id: resolvedAccountId,
         from_account_name: isTransfer ? fromAccountName || null : null,
         from_account_id: isTransfer ? accountByName.get(fromAccountName.toLowerCase()) || null : null,
         to_account_name: isTransfer ? toAccountName || null : null,
@@ -1476,6 +1499,9 @@ export function TransactionsPage() {
         // 退款(§2.6):只有 income 类型才有意义;切换类型/清空选择时发 null
         // 显式清掉关联(server:值为 null/'' 时 pop 掉 refundOfId)。
         refund_of_id: txForm.tx_type === 'income' ? txForm.refund_of_id.trim() || null : null,
+        // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
+        // 时生效(server 也只认 create 路径的这个字段)。
+        recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
         ...currencyFields
       }
       // eslint-disable-next-line no-console
@@ -1487,9 +1513,11 @@ export function TransactionsPage() {
         payload_account_id: payload.account_id
       })
       const res = await retryOnConflict(ledgerId, (base) =>
-        txForm.editingId
-          ? updateTransaction(token, ledgerId, txForm.editingId, base, payload)
-          : createTransaction(token, ledgerId, base, payload)
+        installmentPayload
+          ? createInstallmentPlan(token, ledgerId, base, installmentPayload)
+          : txForm.editingId
+            ? updateTransaction(token, ledgerId, txForm.editingId, base, payload)
+            : createTransaction(token, ledgerId, base, payload)
       )
       // eslint-disable-next-line no-console
       console.info('[tx-save] response', {
@@ -1975,6 +2003,7 @@ export function TransactionsPage() {
                   setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
                   setTxDialogOpen(true)
                   setTxForm({
+                    ...txDefaults(),
                     editingId: tx.id,
                     editingOwnerUserId: tx.created_by_user_id || '',
                     tx_type: tx.tx_type,

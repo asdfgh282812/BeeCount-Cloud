@@ -49,6 +49,8 @@ from ...models import (
     SyncChange,
     SyncPushIdempotency,
     User,
+    UserAccountProjection,
+    UserCategoryProjection,
 )
 from ...schemas import (
     WriteAccountCreateRequest,
@@ -59,12 +61,18 @@ from ...schemas import (
     WriteCategoryUpdateRequest,
     WriteCommitMeta,
     WriteEntityDeleteRequest,
+    WriteInstallmentEarlyRepayRequest,
+    WriteInstallmentPayoffRequest,
+    WriteInstallmentPeriodUpdateRequest,
     WriteInstallmentPlanCreateRequest,
     WriteInstallmentPlanUpdateRequest,
+    WriteInstallmentRebalanceRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteRecurringOccurrenceUpdateRequest,
     WriteRecurringRuleCreateRequest,
     WriteRecurringRuleUpdateRequest,
+    WriteRecurringUpdateFromRequest,
     WriteTagCreateRequest,
     WriteTagUpdateRequest,
     WriteTransactionCreateRequest,
@@ -77,6 +85,7 @@ from ...snapshot_mutator import (
     create_account,
     create_budget,
     create_category,
+    create_installment_period,
     create_installment_plan,
     create_recurring_rule,
     create_tag,
@@ -84,6 +93,7 @@ from ...snapshot_mutator import (
     delete_account,
     delete_budget,
     delete_category,
+    delete_installment_period,
     delete_installment_plan,
     delete_recurring_rule,
     delete_tag,
@@ -92,6 +102,7 @@ from ...snapshot_mutator import (
     update_account,
     update_budget,
     update_category,
+    update_installment_period,
     update_installment_plan,
     update_recurring_rule,
     update_tag,
@@ -160,12 +171,14 @@ _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "budget": projection.upsert_budget,
     "recurring_rule": projection.upsert_recurring_rule,
     "installment_plan": projection.upsert_installment_plan,
+    "installment_period": projection.upsert_installment_period,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "transaction": projection.delete_tx,
     "budget": projection.delete_budget,
     "recurring_rule": projection.delete_recurring_rule,
     "installment_plan": projection.delete_installment_plan,
+    "installment_period": projection.delete_installment_period,
 }
 
 # tx 里的 denormalized 字段 —— 当 account/category/tag rename 时,
@@ -438,6 +451,9 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("installmentPlans") or [], next_snapshot.get("installmentPlans") or [],
                       "installment_plan", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("installmentPeriods") or [], next_snapshot.get("installmentPeriods") or [],
+                      "installment_period", emitted_ids)
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", len(emitted_ids), ledger.external_id)
     return emitted_ids
 
@@ -926,6 +942,13 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 未显式改 refund_of_id 的 update 请求会把关联静默丢掉。
     if row.refund_of_sync_id is not None:
         item["refundOfId"] = row.refund_of_sync_id
+    # 週期性收支(§2.12.2 Phase 1.5):同样道理,fast path 编辑一个 occurrence
+    # 的其它字段(金额/备注)时,不带上这两个会让反查字段/overridden 标记
+    # 被静默清空。
+    if row.recurring_rule_sync_id is not None:
+        item["recurringRuleId"] = row.recurring_rule_sync_id
+    if row.recurring_occurrence_overridden:
+        item["recurringOccurrenceOverridden"] = True
     return item
 
 
@@ -970,7 +993,7 @@ async def _commit_write(
         prev_snapshot = {**snapshot}
         for _k in (
             "items", "accounts", "categories", "tags", "budgets",
-            "recurringRules", "installmentPlans",
+            "recurringRules", "installmentPlans", "installmentPeriods",
         ):
             arr = snapshot.get(_k)
             if isinstance(arr, list):
@@ -1246,6 +1269,42 @@ def _payload_with_actor(
     return merged
 
 
+def _resolve_category_display(
+    db: Session, *, user_id: str, category_id: str | None,
+) -> tuple[str | None, str | None]:
+    """§2.12.1/§2.12.2:分期/週期性收支的写入口只拿得到 category_id(请求
+    schema 没有 category_name 字段,不像一般建交易那样前端会一起送 name),
+    但 create_transaction 的 denormalize 只在 payload 带 category_name 时才写
+    read_tx_projection.category_name —— 缺了它,生成的每期交易在列表/详情页
+    分类栏会显示空白。这里查一次 UserCategoryProjection 补上 (name, kind)。
+    """
+    if not category_id:
+        return None, None
+    row = db.execute(
+        select(UserCategoryProjection.name, UserCategoryProjection.kind).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == category_id,
+        )
+    ).first()
+    if row is None:
+        return None, None
+    return row[0], row[1]
+
+
+def _resolve_account_display(
+    db: Session, *, user_id: str, account_id: str | None,
+) -> str | None:
+    """同 `_resolve_category_display`,但给 account_id → account_name。"""
+    if not account_id:
+        return None
+    return db.scalar(
+        select(UserAccountProjection.name).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+
+
 def _assert_can_modify_entity(
     *,
     db: Session,  # noqa: ARG001 — retained for signature compat
@@ -1309,12 +1368,18 @@ __all__ = [
     'WriteCategoryUpdateRequest',
     'WriteCommitMeta',
     'WriteEntityDeleteRequest',
+    'WriteInstallmentEarlyRepayRequest',
+    'WriteInstallmentPayoffRequest',
+    'WriteInstallmentPeriodUpdateRequest',
     'WriteInstallmentPlanCreateRequest',
     'WriteInstallmentPlanUpdateRequest',
+    'WriteInstallmentRebalanceRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteRecurringOccurrenceUpdateRequest',
     'WriteRecurringRuleCreateRequest',
     'WriteRecurringRuleUpdateRequest',
+    'WriteRecurringUpdateFromRequest',
     'WriteTagCreateRequest',
     'WriteTagUpdateRequest',
     'WriteTransactionCreateRequest',
@@ -1327,6 +1392,7 @@ __all__ = [
     'create_account',
     'create_budget',
     'create_category',
+    'create_installment_period',
     'create_installment_plan',
     'create_recurring_rule',
     'create_tag',
@@ -1334,6 +1400,7 @@ __all__ = [
     'delete_account',
     'delete_budget',
     'delete_category',
+    'delete_installment_period',
     'delete_installment_plan',
     'delete_recurring_rule',
     'delete_tag',
@@ -1342,6 +1409,7 @@ __all__ = [
     'update_account',
     'update_budget',
     'update_category',
+    'update_installment_period',
     'update_installment_plan',
     'update_recurring_rule',
     'update_tag',
@@ -1376,5 +1444,7 @@ __all__ = [
     '_normalize_currency',
     '_normalize_ledger_name',
     '_payload_with_actor',
+    '_resolve_category_display',
+    '_resolve_account_display',
     '_assert_can_modify_entity',
 ]

@@ -341,15 +341,18 @@ async def _stop_mcp_log_retention() -> None:  # noqa: B008
 
 
 # ============================================================================
-# Recurring rule / installment plan 到期物化(MOZE_FEATURE_GAP_SD.md §2.2/§2.3
-# Phase 1)—— 纯 asyncio loop,不依赖 APScheduler,跟 mcp log retention 同款
-# 写法。每 15 分钟扫一次全库到期项;首次冷启动等 15 分钟才跑第一次,不影响
-# 测试(test 进程秒级退出,任务永远不触发)。想立即触发一次(手动 / 外部
-# cron)走 POST /api/v1/internal/tasks/materialize-recurring。
+# Recurring rule 視窗續產生(MOZE_FEATURE_GAP_SD.md §2.2 / Phase 1.5 修正版
+# §2.12.2)—— 纯 asyncio loop,不依赖 APScheduler,跟 mcp log retention 同款
+# 写法。Phase 1.5 之后规则建立当下就已经批次生成过一个视窗,这个 loop 只
+# 负责给"没设 end_at 的长期规则"低频续产生下一段视窗,所以从 15 分钟改成
+# 每天一次;首次冷启动等 24 小时才跑第一次,不影响测试(test 进程秒级退出,
+# 任务永远不触发)。想立即触发一次(手动 / 外部 cron)走 POST
+# /api/v1/internal/tasks/materialize-recurring。分期付款不再需要任何排程
+# (建计画/rebalance/payoff 等写入口当下就算完全部期数)。
 # ============================================================================
 
 
-_RECURRING_MATERIALIZE_INTERVAL_SECONDS = 15 * 60
+_RECURRING_MATERIALIZE_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 @app.on_event("startup")
@@ -372,10 +375,9 @@ def _run_materialize_once() -> None:
 
     with SessionLocal() as db:
         result = recurring_materializer.materialize_all_due(db)
-        if result["recurring_transactions"] or result["installment_transactions"]:
+        if result["recurring_transactions"]:
             logging.getLogger(__name__).info(
-                "recurring materializer: recurring=%d installment=%d",
-                result["recurring_transactions"], result["installment_transactions"],
+                "recurring materializer: recurring=%d", result["recurring_transactions"],
             )
 
 

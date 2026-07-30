@@ -288,6 +288,33 @@ def list_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 退款反查(§2.12.3):批次查这一页交易里,谁被退过款(refund_of_sync_id
+    # 指向当页 sync_id 集合),group by 原交易 id 组成 refunds 列表。只看当页
+    # 已知限制:refund_of 指向不在当页的旧交易时,不会显示出来(交易列表本身
+    # 就是分页的,这是既有限制的延伸,不是本次改动引入的新问题)。
+    page_sync_ids = [row.sync_id for row in rows]
+    refunds_by_target: dict[str, list[ReadTxRefundSummaryOut]] = {}
+    if page_sync_ids:
+        refund_rows = db.execute(
+            select(
+                ReadTxProjection.refund_of_sync_id,
+                ReadTxProjection.sync_id,
+                ReadTxProjection.amount,
+                ReadTxProjection.happened_at,
+            ).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.refund_of_sync_id.in_(page_sync_ids),
+            )
+        ).all()
+        for target_id, refund_sync_id, refund_amount, refund_happened_at in refund_rows:
+            refunds_by_target.setdefault(target_id, []).append(
+                ReadTxRefundSummaryOut(
+                    id=refund_sync_id,
+                    amount=refund_amount,
+                    happened_at=_to_utc(refund_happened_at),
+                )
+            )
+
     results: list[ReadTransactionOut] = []
     for row in rows:
         tag_ids: list[str] = []
@@ -333,6 +360,9 @@ def list_transactions(
                 native_amount=row.native_amount,
                 refund_of_id=row.refund_of_sync_id,
                 installment_plan_id=row.installment_plan_sync_id,
+                recurring_rule_id=row.recurring_rule_sync_id,
+                recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
+                refunds=refunds_by_target.get(row.sync_id, []),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -660,12 +690,24 @@ def list_recurring_rules(
             next_run_at=row.next_run_at,
             end_at=row.end_at,
             enabled=bool(row.enabled),
+            generated_until_at=row.generated_until_at,
+            advanced_rule_json=_parse_advanced_rule_json(row.advanced_rule_json),
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,
         )
         for row in rows
     ]
+
+
+def _parse_advanced_rule_json(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 @router.get(
@@ -691,22 +733,90 @@ def list_installment_plans(
             ReadInstallmentPlanProjection.ledger_id == ledger.id,
         ).order_by(ReadInstallmentPlanProjection.first_period_at.desc())
     ).all()
+    now = datetime.now(timezone.utc)
+    # paid_periods/next_period_at 不再信任 projection 里那两个不被排程更新的
+    # 历史相容字段(见 ReadInstallmentPlanProjection docstring),改成从
+    # read_installment_period_projection 即时算出,跟 snapshot_builder.build
+    # 的口径保持一致。
+    period_rows = db.execute(
+        select(
+            ReadInstallmentPeriodProjection.plan_sync_id,
+            ReadInstallmentPeriodProjection.due_at,
+        ).where(ReadInstallmentPeriodProjection.ledger_id == ledger.id)
+    ).all()
+    due_dates_by_plan: dict[str, list[datetime]] = {}
+    for plan_sid, due_at in period_rows:
+        due_dates_by_plan.setdefault(plan_sid, []).append(_to_utc(due_at))
+
+    out: list[ReadInstallmentPlanOut] = []
+    for row in rows:
+        due_dates = sorted(due_dates_by_plan.get(row.sync_id) or [])
+        paid_periods = sum(1 for d in due_dates if d <= now)
+        future_dates = [d for d in due_dates if d > now]
+        next_period_at = (
+            future_dates[0] if future_dates
+            else (due_dates[-1] if due_dates else _to_utc(row.first_period_at))
+        )
+        out.append(
+            ReadInstallmentPlanOut(
+                id=row.sync_id,
+                total_amount=float(row.total_amount or 0),
+                periods=int(row.periods or 1),
+                period_amount=float(row.period_amount or 0),
+                first_period_at=row.first_period_at,
+                next_period_at=next_period_at,
+                paid_periods=paid_periods,
+                account_id=row.account_sync_id,
+                category_id=row.category_sync_id,
+                note=row.note,
+                status=cast("Any", row.status or "active"),
+                repayment_method=cast("Any", row.repayment_method or "equal_principal"),
+                interest_period=cast("Any", row.interest_period or "monthly"),
+                interest_rate=float(row.interest_rate or 0.0),
+                round_amounts=bool(row.round_amounts),
+                remainder_position=cast("Any", row.remainder_position or "last"),
+                grace_period_months=int(row.grace_period_months or 0),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return out
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/installment-plans/{plan_id}/periods",
+    response_model=list[ReadInstallmentPeriodOut],
+)
+def list_installment_periods(
+    ledger_external_id: str,
+    plan_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadInstallmentPeriodOut]:
+    """分期计划的每期明细(§2.12.1 Phase 1.5)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    rows = db.scalars(
+        select(ReadInstallmentPeriodProjection).where(
+            ReadInstallmentPeriodProjection.ledger_id == ledger.id,
+            ReadInstallmentPeriodProjection.plan_sync_id == plan_id,
+        ).order_by(ReadInstallmentPeriodProjection.period_no.asc())
+    ).all()
     return [
-        ReadInstallmentPlanOut(
+        ReadInstallmentPeriodOut(
             id=row.sync_id,
-            total_amount=float(row.total_amount or 0),
-            periods=int(row.periods or 1),
-            period_amount=float(row.period_amount or 0),
-            first_period_at=row.first_period_at,
-            next_period_at=row.next_period_at,
-            paid_periods=int(row.paid_periods or 0),
-            account_id=row.account_sync_id,
-            category_id=row.category_sync_id,
-            note=row.note,
-            status=cast("Any", row.status or "active"),
-            last_change_id=source_change_id,
-            ledger_id=ledger.external_id,
-            ledger_name=ledger_name,
+            plan_id=row.plan_sync_id,
+            period_no=row.period_no,
+            due_at=row.due_at,
+            principal_amount=float(row.principal_amount or 0.0),
+            interest_amount=float(row.interest_amount or 0.0),
+            total_amount=float(row.total_amount or 0.0),
+            status=cast("Any", row.status or "generated"),
+            tx_id=row.tx_sync_id,
         )
         for row in rows
     ]

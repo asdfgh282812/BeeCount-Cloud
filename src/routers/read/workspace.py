@@ -133,6 +133,31 @@ def list_workspace_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 退款反查(§2.12.3):同 ledgers.py::list_transactions 的批次聚合,scope
+    # 到本次可见的多个账本内。
+    page_sync_ids = [r.sync_id for r in rows]
+    refunds_by_target: dict[str, list[ReadTxRefundSummaryOut]] = {}
+    if page_sync_ids:
+        refund_rows = db.execute(
+            select(
+                ReadTxProjection.refund_of_sync_id,
+                ReadTxProjection.sync_id,
+                ReadTxProjection.amount,
+                ReadTxProjection.happened_at,
+            ).where(
+                ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+                ReadTxProjection.refund_of_sync_id.in_(page_sync_ids),
+            )
+        ).all()
+        for target_id, refund_sync_id, refund_amount, refund_happened_at in refund_rows:
+            refunds_by_target.setdefault(target_id, []).append(
+                ReadTxRefundSummaryOut(
+                    id=refund_sync_id,
+                    amount=refund_amount,
+                    happened_at=_to_utc(refund_happened_at),
+                )
+            )
+
     # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
     # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
     # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
@@ -210,6 +235,9 @@ def list_workspace_transactions(
                 native_amount=row.native_amount,
                 refund_of_id=row.refund_of_sync_id,
                 installment_plan_id=row.installment_plan_sync_id,
+                recurring_rule_id=row.recurring_rule_sync_id,
+                recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
+                refunds=refunds_by_target.get(row.sync_id, []),
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,

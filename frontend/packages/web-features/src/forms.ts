@@ -1,4 +1,13 @@
-import type { AttachmentRef } from '@beecount/api-client'
+import type {
+  AttachmentRef,
+  InstallmentInterestPeriod,
+  InstallmentPlanCreatePayload,
+  InstallmentPlanStatus,
+  InstallmentRemainderPosition,
+  InstallmentRepaymentMethod,
+  RecurringAdvancedRule,
+  RecurringInlineCreatePayload,
+} from '@beecount/api-client'
 
 export type TxForm = {
   editingId: string | null
@@ -26,6 +35,29 @@ export type TxForm = {
   exclude_from_budget: boolean
   /** 退款(§2.6):这笔交易是对哪笔支出的退款,存目标交易 syncId。''=普通交易。 */
   refund_of_id: string
+  /** Phase 1.5(§2.12.2):建交易当下顺便設為週期性收支起点。只在新建
+   *  (editingId=null)时可开启,跟 installment_enabled 互斥。 */
+  recurring_enabled: boolean
+  recurring_frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'
+  recurring_interval: string
+  /** 空字符串 = 不设结束日期(长期规则,只生成默认视窗)。 */
+  recurring_end_at: string
+  /** 简单 frequency+interval 表达不了时用进阶规则。'none' = 不用。 */
+  recurring_advanced_mode: 'none' | 'weekly_days' | 'monthly_day'
+  /** Python `datetime.weekday()` 惯例:Monday=0…Sunday=6。 */
+  recurring_weekly_days: number[]
+  recurring_monthly_day: string
+  /** Phase 1.5(§2.12.1):建交易当下顺便設為分期付款起点。只在新建 expense
+   *  时可开启,跟 recurring_enabled 互斥(挂在同一个 amount/happened_at 上,
+   *  两者语意冲突,一次只能选一个)。 */
+  installment_enabled: boolean
+  installment_periods: string
+  installment_repayment_method: 'equal_installment' | 'equal_principal' | 'fixed_interest'
+  installment_interest_period: 'monthly' | 'daily'
+  installment_interest_rate: string
+  installment_round_amounts: boolean
+  installment_remainder_position: 'first' | 'last'
+  installment_grace_period_months: string
 }
 
 export type AccountForm = {
@@ -115,10 +147,16 @@ export type RecurringRuleForm = {
   /** 空字符串 = 不设结束日期。 */
   end_at: string
   enabled: boolean
+  /** Phase 1.5(§2.12.2)进阶规则,只在新建时生效(编辑既有规则不改规则本身
+   *  的生成逻辑,只能改基础字段/enabled)。 */
+  advanced_mode: 'none' | 'weekly_days' | 'monthly_day'
+  weekly_days: number[]
+  monthly_day: string
 }
 
 export type InstallmentPlanForm = {
-  /** 编辑模式 = plan syncId,新建 = null。新建后期数/总额不可改(server 约束)。 */
+  /** 编辑模式 = plan syncId,新建 = null。新建后期数/总额/攤還参数不可改
+   *  (server 约束,要调这些走差异化端点 rebalance-from 等)。 */
   editingId: string | null
   total_amount: string
   periods: string
@@ -128,7 +166,14 @@ export type InstallmentPlanForm = {
   category_id: string
   category_name: string
   note: string
-  status: 'active' | 'settled'
+  status: InstallmentPlanStatus
+  /** Phase 1.5(§2.12.1)攤還参数,只在新建时生效。 */
+  repayment_method: InstallmentRepaymentMethod
+  interest_period: InstallmentInterestPeriod
+  interest_rate: string
+  round_amounts: boolean
+  remainder_position: InstallmentRemainderPosition
+  grace_period_months: string
 }
 
 export const txDefaults = (): TxForm => ({
@@ -149,7 +194,22 @@ export const txDefaults = (): TxForm => ({
   original_currency: '',
   exclude_from_stats: false,
   exclude_from_budget: false,
-  refund_of_id: ''
+  refund_of_id: '',
+  recurring_enabled: false,
+  recurring_frequency: 'monthly',
+  recurring_interval: '1',
+  recurring_end_at: '',
+  recurring_advanced_mode: 'none',
+  recurring_weekly_days: [],
+  recurring_monthly_day: '1',
+  installment_enabled: false,
+  installment_periods: '',
+  installment_repayment_method: 'equal_principal',
+  installment_interest_period: 'monthly',
+  installment_interest_rate: '',
+  installment_round_amounts: true,
+  installment_remainder_position: 'last',
+  installment_grace_period_months: '0',
 })
 
 export const accountDefaults = (): AccountForm => ({
@@ -227,6 +287,9 @@ export const recurringRuleDefaults = (): RecurringRuleForm => ({
   next_run_at: tomorrowLocalDatetime(),
   end_at: '',
   enabled: true,
+  advanced_mode: 'none',
+  weekly_days: [],
+  monthly_day: '1',
 })
 
 export const installmentPlanDefaults = (): InstallmentPlanForm => ({
@@ -244,4 +307,66 @@ export const installmentPlanDefaults = (): InstallmentPlanForm => ({
   category_name: '',
   note: '',
   status: 'active',
+  repayment_method: 'equal_principal',
+  interest_period: 'monthly',
+  interest_rate: '0',
+  round_amounts: true,
+  remainder_position: 'last',
+  grace_period_months: '0',
 })
+
+/**
+ * Phase 1.5(§2.12.2):把 `TxForm` 里的週期性收支开关字段組成
+ * `RecurringInlineCreatePayload`,挂在 `createTransaction` 的
+ * `TxPayload.recurring` 上。`form.recurring_enabled=false` → 返回 null
+ * (不带这个字段,走普通建交易流程)。
+ */
+export function buildRecurringInlinePayload(form: TxForm): RecurringInlineCreatePayload | null {
+  if (!form.recurring_enabled) return null
+  let advanced_rule_json: RecurringAdvancedRule | null = null
+  if (form.recurring_advanced_mode === 'weekly_days' && form.recurring_weekly_days.length > 0) {
+    advanced_rule_json = { type: 'weekly_days', days: form.recurring_weekly_days }
+  } else if (form.recurring_advanced_mode === 'monthly_day') {
+    const day = Math.round(Number(form.recurring_monthly_day))
+    if (Number.isFinite(day) && day >= 1 && day <= 31) {
+      advanced_rule_json = { type: 'monthly_day', day }
+    }
+  }
+  const interval = Math.max(1, Math.min(365, Math.round(Number(form.recurring_interval)) || 1))
+  return {
+    frequency: form.recurring_frequency,
+    interval,
+    end_at: form.recurring_end_at.trim() ? new Date(form.recurring_end_at).toISOString() : null,
+    advanced_rule_json,
+  }
+}
+
+/**
+ * Phase 1.5(§2.12.1):把 `TxForm` 里的分期付款开关字段組成
+ * `InstallmentPlanCreatePayload`,走独立的 `createInstallmentPlan` 调用
+ * (分期跟一般交易欄位差異太大,不能塞进 `TxPayload`)。`account_id`/
+ * `category_id` 由调用方解析 name→id 传入(跟一般建交易的解析逻辑共用)。
+ * `form.installment_enabled=false` → 返回 null。
+ */
+export function buildInstallmentPlanPayload(
+  form: TxForm,
+  resolved: { account_id: string | null; category_id: string | null },
+): InstallmentPlanCreatePayload | null {
+  if (!form.installment_enabled) return null
+  const periods = Math.max(1, Math.min(600, Math.round(Number(form.installment_periods)) || 0))
+  const graceMonths = Math.max(0, Math.round(Number(form.installment_grace_period_months)) || 0)
+  return {
+    total_amount: Number(form.amount || 0),
+    periods,
+    first_period_at: form.happened_at,
+    account_id: resolved.account_id,
+    category_id: resolved.category_id,
+    note: form.note || null,
+    repayment_method: form.installment_repayment_method,
+    interest_period: form.installment_interest_period,
+    interest_rate: Number(form.installment_interest_rate || 0),
+    round_amounts: form.installment_round_amounts,
+    remainder_position: form.installment_remainder_position,
+    grace_period_months: graceMonths,
+  }
+}

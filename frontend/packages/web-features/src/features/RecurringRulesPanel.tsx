@@ -18,7 +18,14 @@ import {
   useT,
 } from '@beecount/ui'
 
-import type { ReadAccount, ReadRecurringRule, WorkspaceCategory } from '@beecount/api-client'
+import type {
+  ReadAccount,
+  ReadRecurringRule,
+  ReadTransaction,
+  RecurringOccurrenceUpdatePayload,
+  RecurringUpdateFromPayload,
+  WorkspaceCategory,
+} from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
 import { CategoryIcon } from '../components/CategoryIcon'
@@ -38,16 +45,35 @@ type RecurringRulesPanelProps = {
   onSubmit: () => Promise<boolean> | boolean
   onDelete: (rule: ReadRecurringRule) => Promise<void> | void
   onToggleEnabled: (rule: ReadRecurringRule, enabled: boolean) => Promise<void> | void
+  /** §2.12.2:该规则已生成的 occurrence 列表,懒加载(展开才 fetch),
+   *  key=rule.id。只看当前已加载交易范围,受限于 fetchReadTransactions 的
+   *  limit(跟旧版退款候选清单同一种已知限制)。 */
+  occurrencesByRuleId: Readonly<Record<string, ReadTransaction[] | undefined>>
+  onLoadOccurrences: (rule: ReadRecurringRule) => void
+  onUpdateOccurrence: (
+    rule: ReadRecurringRule,
+    txId: string,
+    payload: RecurringOccurrenceUpdatePayload,
+  ) => Promise<void> | void
+  onDeleteOccurrence: (rule: ReadRecurringRule, txId: string) => Promise<void> | void
+  onUpdateFrom: (
+    rule: ReadRecurringRule,
+    txId: string,
+    payload: RecurringUpdateFromPayload,
+  ) => Promise<void> | void
+  onTerminateFuture: (rule: ReadRecurringRule) => Promise<void> | void
   /** 账本 owner 才能写(server _OWNER_ONLY_ROLES),非 owner 时按钮禁用。 */
   canManage: boolean
 }
 
 /**
- * 週期性收支规则管理面板(MOZE_FEATURE_GAP_SD.md §2.2)。
+ * 週期性收支规则管理面板(MOZE_FEATURE_GAP_SD.md §2.2 / Phase 1.5 修正版
+ * §2.12.2)。
  *
- * 到期后由 server `recurring_materializer` 定时任务(15 分钟一次)自动生成
- * 交易并推进 next_run_at —— 这个面板只负责规则本身的增删改查 + 启停开关,
- * 不提供"立即生成"操作。
+ * 建规则时 server 依视窗策略当下就批次生成 occurrence 交易(有 end_at 全部
+ * 生成;没有则生成默认视窗,之后由排程续产生),不再是"到期才逐笔生成"。
+ * 这里展开"已生成 occurrence"可以看到具体交易并做差异化编辑:单独编辑/
+ * 删除某一期、连同未来调整、终止未来週期。
  */
 export function RecurringRulesPanel({
   rules,
@@ -60,6 +86,12 @@ export function RecurringRulesPanel({
   onSubmit,
   onDelete,
   onToggleEnabled,
+  occurrencesByRuleId,
+  onLoadOccurrences,
+  onUpdateOccurrence,
+  onDeleteOccurrence,
+  onUpdateFrom,
+  onTerminateFuture,
   canManage,
 }: RecurringRulesPanelProps) {
   const t = useT()
@@ -68,6 +100,7 @@ export function RecurringRulesPanel({
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReadRecurringRule | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
 
   const isTransfer = form.tx_type === 'transfer'
   const categoryKind = form.tx_type === 'income' ? 'income' : 'expense'
@@ -101,6 +134,9 @@ export function RecurringRulesPanel({
       next_run_at: isoToLocalInput(rule.next_run_at),
       end_at: rule.end_at ? isoToLocalInput(rule.end_at) : '',
       enabled: rule.enabled,
+      advanced_mode: 'none',
+      weekly_days: [],
+      monthly_day: '1',
     })
     setDialogOpen(true)
   }
@@ -124,6 +160,15 @@ export function RecurringRulesPanel({
     } finally {
       setDeleting(false)
     }
+  }
+
+  const toggleExpand = (rule: ReadRecurringRule) => {
+    if (expandedRuleId === rule.id) {
+      setExpandedRuleId(null)
+      return
+    }
+    setExpandedRuleId(rule.id)
+    if (!occurrencesByRuleId[rule.id]) onLoadOccurrences(rule)
   }
 
   const categoryPickerRows = useMemo(
@@ -179,9 +224,16 @@ export function RecurringRulesPanel({
                 currency={currency}
                 iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                 canManage={canManage}
+                expanded={expandedRuleId === rule.id}
+                occurrences={occurrencesByRuleId[rule.id]}
+                onToggleExpand={() => toggleExpand(rule)}
                 onEdit={() => handleOpenEdit(rule)}
                 onDelete={() => setPendingDelete(rule)}
                 onToggleEnabled={(next) => void onToggleEnabled(rule, next)}
+                onUpdateOccurrence={(txId, payload) => onUpdateOccurrence(rule, txId, payload)}
+                onDeleteOccurrence={(txId) => onDeleteOccurrence(rule, txId)}
+                onUpdateFrom={(txId, payload) => onUpdateFrom(rule, txId, payload)}
+                onTerminateFuture={() => onTerminateFuture(rule)}
               />
             )
           })}
@@ -378,6 +430,74 @@ export function RecurringRulesPanel({
               />
             </div>
 
+            {/* Phase 1.5(§2.12.2)进阶规则,只在新建时有意义(既有规则的
+                occurrence 已经生成完,编辑规则本身不会回头重新套用)。 */}
+            {!form.editingId ? (
+              <>
+                <div className="space-y-1">
+                  <Label>{t('recurringRules.field.advancedMode')}</Label>
+                  <Select
+                    value={form.advanced_mode}
+                    onValueChange={(value) =>
+                      onFormChange({ ...form, advanced_mode: value as RecurringRuleForm['advanced_mode'] })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">{t('recurringRules.advancedMode.none')}</SelectItem>
+                      <SelectItem value="weekly_days">{t('recurringRules.advancedMode.weeklyDays')}</SelectItem>
+                      <SelectItem value="monthly_day">{t('recurringRules.advancedMode.monthlyDay')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.advanced_mode === 'weekly_days' ? (
+                  <div className="space-y-1">
+                    <Label>{t('recurringRules.field.weeklyDays')}</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const).map((key, index) => {
+                        const selected = form.weekly_days.includes(index)
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() =>
+                              onFormChange({
+                                ...form,
+                                weekly_days: selected
+                                  ? form.weekly_days.filter((d) => d !== index)
+                                  : [...form.weekly_days, index].sort(),
+                              })
+                            }
+                            className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm transition-colors ${
+                              selected
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40'
+                            }`}
+                          >
+                            {t(`recurringRules.weekday.${key}`)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+                {form.advanced_mode === 'monthly_day' ? (
+                  <div className="space-y-1">
+                    <Label>{t('recurringRules.field.monthlyDay')}</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={form.monthly_day}
+                      onChange={(e) => onFormChange({ ...form, monthly_day: e.target.value })}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
             <div className="space-y-1">
               <Label>{t('transactions.table.note')}</Label>
               <Input
@@ -451,24 +571,51 @@ function RecurringRuleCard({
   currency,
   iconPreviewUrlByFileId,
   canManage,
+  expanded,
+  occurrences,
+  onToggleExpand,
   onEdit,
   onDelete,
   onToggleEnabled,
+  onUpdateOccurrence,
+  onDeleteOccurrence,
+  onUpdateFrom,
+  onTerminateFuture,
 }: {
   rule: ReadRecurringRule
   category: WorkspaceCategory | null
   currency: string
   iconPreviewUrlByFileId?: Record<string, string>
   canManage: boolean
+  expanded: boolean
+  occurrences: ReadTransaction[] | undefined
+  onToggleExpand: () => void
   onEdit: () => void
   onDelete: () => void
   onToggleEnabled: (next: boolean) => void
+  onUpdateOccurrence: (txId: string, payload: RecurringOccurrenceUpdatePayload) => void
+  onDeleteOccurrence: (txId: string) => void
+  onUpdateFrom: (txId: string, payload: RecurringUpdateFromPayload) => void
+  onTerminateFuture: () => void
 }) {
   const t = useT()
   const title =
     rule.tx_type === 'transfer'
       ? t('enum.txType.transfer')
       : category?.name || rule.category_name || t('budgets.label.unknownCategory')
+
+  const [editingTx, setEditingTx] = useState<ReadTransaction | null>(null)
+  const [updateFromTx, setUpdateFromTx] = useState<ReadTransaction | null>(null)
+  const [pendingTerminate, setPendingTerminate] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const sortedOccurrences = useMemo(
+    () =>
+      occurrences
+        ? [...occurrences].sort((a, b) => a.happened_at.localeCompare(b.happened_at))
+        : undefined,
+    [occurrences],
+  )
 
   return (
     <div className="rounded-xl border border-border/60 bg-card p-4 transition hover:border-primary/40 hover:shadow-sm">
@@ -512,7 +659,7 @@ function RecurringRuleCard({
         </div>
       </div>
 
-      <div className="mt-3 flex items-center justify-between">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           role="switch"
@@ -529,7 +676,13 @@ function RecurringRuleCard({
             }`}
           />
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={onToggleExpand}>
+            {expanded ? t('recurringRules.button.hideOccurrences') : t('recurringRules.button.showOccurrences')}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setPendingTerminate(true)}>
+            {t('recurringRules.button.terminateFuture')}
+          </Button>
           <Button size="sm" variant="ghost" disabled={!canManage} onClick={onEdit}>
             {t('common.edit')}
           </Button>
@@ -538,7 +691,178 @@ function RecurringRuleCard({
           </Button>
         </div>
       </div>
+
+      {expanded ? (
+        <div className="mt-3 space-y-1 rounded-lg border border-border/50 bg-muted/10 p-2">
+          {!sortedOccurrences ? (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">{t('common.loading')}</p>
+          ) : sortedOccurrences.length === 0 ? (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+              {t('recurringRules.occurrences.empty')}
+            </p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <tbody>
+                  {sortedOccurrences.map((tx) => (
+                    <tr key={tx.id} className="border-b border-border/30 last:border-0">
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-muted-foreground">
+                        {formatDate(tx.happened_at)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
+                        {tx.amount.toFixed(2)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2">
+                        {tx.recurring_occurrence_overridden ? (
+                          <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                            {t('installmentPlans.periods.overridden')}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 text-right">
+                        <button
+                          type="button"
+                          disabled={!canManage}
+                          className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                          onClick={() => setUpdateFromTx(tx)}
+                        >
+                          {t('recurringRules.occurrences.updateFrom')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canManage}
+                          className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                          onClick={() => setEditingTx(tx)}
+                        >
+                          {t('common.edit')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canManage}
+                          className="text-[11px] text-destructive underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                          onClick={() => onDeleteOccurrence(tx.id)}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {editingTx ? (
+        <OccurrenceEditDialog
+          tx={editingTx}
+          busy={busy}
+          title={t('recurringRules.occurrences.editTitle')}
+          onClose={() => setEditingTx(null)}
+          onConfirm={async (payload) => {
+            setBusy(true)
+            try {
+              await onUpdateOccurrence(editingTx.id, payload)
+              setEditingTx(null)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      ) : null}
+
+      {updateFromTx ? (
+        <OccurrenceEditDialog
+          tx={updateFromTx}
+          busy={busy}
+          title={t('recurringRules.occurrences.updateFromTitle')}
+          onClose={() => setUpdateFromTx(null)}
+          onConfirm={async (payload) => {
+            setBusy(true)
+            try {
+              await onUpdateFrom(updateFromTx.id, payload)
+              setUpdateFromTx(null)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={pendingTerminate}
+        onCancel={() => setPendingTerminate(false)}
+        onConfirm={async () => {
+          setBusy(true)
+          try {
+            await onTerminateFuture()
+            setPendingTerminate(false)
+          } finally {
+            setBusy(false)
+          }
+        }}
+        loading={busy}
+        title={t('recurringRules.terminateFuture.title')}
+        description={t('recurringRules.terminateFuture.confirm')}
+        confirmText={t('recurringRules.button.terminateFuture')}
+        confirmVariant="destructive"
+      />
     </div>
+  )
+}
+
+function OccurrenceEditDialog({
+  tx,
+  busy,
+  title,
+  onClose,
+  onConfirm,
+}: {
+  tx: ReadTransaction
+  busy: boolean
+  title: string
+  onClose: () => void
+  onConfirm: (payload: RecurringOccurrenceUpdatePayload) => void
+}) {
+  const t = useT()
+  const [amount, setAmount] = useState(String(tx.amount))
+  const [note, setNote] = useState(tx.note || '')
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>{t('transactions.table.amount')}</Label>
+            <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label>{t('transactions.table.note')}</Label>
+            <Input value={note} onChange={(e) => setNote(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('dialog.cancel')}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() =>
+              onConfirm({
+                amount: Number(amount) > 0 ? Number(amount) : undefined,
+                note: note || null,
+              })
+            }
+          >
+            {t('common.save')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -553,4 +877,11 @@ function formatLocalDate(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleDateString()
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }

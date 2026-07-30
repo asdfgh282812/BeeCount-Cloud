@@ -18,7 +18,15 @@ import {
   useT,
 } from '@beecount/ui'
 
-import type { ReadAccount, ReadInstallmentPlan, WorkspaceCategory } from '@beecount/api-client'
+import type {
+  InstallmentEarlyRepayPayload,
+  InstallmentPeriodUpdatePayload,
+  InstallmentRebalancePayload,
+  ReadAccount,
+  ReadInstallmentPeriod,
+  ReadInstallmentPlan,
+  WorkspaceCategory,
+} from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
 import { CategoryIcon } from '../components/CategoryIcon'
@@ -37,18 +45,35 @@ type InstallmentPlansPanelProps = {
   onFormChange: (next: InstallmentPlanForm) => void
   onSubmit: () => Promise<boolean> | boolean
   onDelete: (plan: ReadInstallmentPlan) => Promise<void> | void
-  onSettle: (plan: ReadInstallmentPlan) => Promise<void> | void
+  /** §2.12.1:每个计画的期数明细,懒加载(点开才 fetch),key=plan.id。 */
+  periodsByPlanId: Readonly<Record<string, ReadInstallmentPeriod[] | undefined>>
+  onLoadPeriods: (plan: ReadInstallmentPlan) => void
+  onUpdatePeriod: (
+    plan: ReadInstallmentPlan,
+    periodNo: number,
+    payload: InstallmentPeriodUpdatePayload,
+  ) => Promise<void> | void
+  onRebalance: (
+    plan: ReadInstallmentPlan,
+    periodNo: number,
+    payload: InstallmentRebalancePayload,
+  ) => Promise<void> | void
+  onEarlyRepay: (plan: ReadInstallmentPlan, payload: InstallmentEarlyRepayPayload) => Promise<void> | void
+  onPayoff: (plan: ReadInstallmentPlan) => Promise<void> | void
+  onTerminateFuture: (plan: ReadInstallmentPlan) => Promise<void> | void
   /** 账本 owner 才能写(server _OWNER_ONLY_ROLES),非 owner 时按钮禁用。 */
   canManage: boolean
 }
 
 /**
- * 分期付款计划管理面板(MOZE_FEATURE_GAP_SD.md §2.3)。
+ * 分期付款计划管理面板(MOZE_FEATURE_GAP_SD.md §2.3 / Phase 1.5 修正版 §2.12.1)。
  *
- * 建计画时 server 会同事务生成第一期交易;剩余各期由后端定时任务
- * (跟 §2.2 週期性收支共用同一个 worker)按月自动推进,这里只做计画本身的
- * 增删 + 提前结清,不提供"手动生成下一期"操作。
- * 创建后期数 / 总额 / 首期日不可改(server 约束,改这些走删除重建)。
+ * 建计画时 server 依攤還算法当下一次生成**全部**期数(不再是只生成第一期,
+ * 剩余靠排程推进)。这里展开"期数明细"可以看到每期本金/利息拆分,并提供
+ * 差异化编辑:单独改一期(overridden)、调利率连同未来(rebalance-from)、
+ * 部分还本(early-repay-principal)、提前结清(payoff)、终止未来分期
+ * (terminate-future)。创建后期数/总额/攤還参数不可改(要调这些走上面的
+ * 差异化端点,不是打平这个 PATCH)。
  */
 export function InstallmentPlansPanel({
   plans,
@@ -60,7 +85,13 @@ export function InstallmentPlansPanel({
   onFormChange,
   onSubmit,
   onDelete,
-  onSettle,
+  periodsByPlanId,
+  onLoadPeriods,
+  onUpdatePeriod,
+  onRebalance,
+  onEarlyRepay,
+  onPayoff,
+  onTerminateFuture,
   canManage,
 }: InstallmentPlansPanelProps) {
   const t = useT()
@@ -69,29 +100,10 @@ export function InstallmentPlansPanel({
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReadInstallmentPlan | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [pendingSettle, setPendingSettle] = useState<ReadInstallmentPlan | null>(null)
-  const [settling, setSettling] = useState(false)
+  const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null)
 
   const handleOpenCreate = () => {
     onFormChange(installmentPlanDefaults())
-    setDialogOpen(true)
-  }
-
-  const handleOpenEdit = (plan: ReadInstallmentPlan) => {
-    const account = plan.account_id ? accounts.find((a) => a.id === plan.account_id) : null
-    const cat = plan.category_id ? categories.find((c) => c.id === plan.category_id) : null
-    onFormChange({
-      editingId: plan.id,
-      total_amount: String(plan.total_amount),
-      periods: String(plan.periods),
-      first_period_at: isoToLocalInput(plan.first_period_at),
-      account_id: plan.account_id || '',
-      account_name: account?.name || '',
-      category_id: plan.category_id || '',
-      category_name: cat?.name || plan.category_id || '',
-      note: plan.note || '',
-      status: plan.status,
-    })
     setDialogOpen(true)
   }
 
@@ -116,15 +128,13 @@ export function InstallmentPlansPanel({
     }
   }
 
-  const handleConfirmSettle = async () => {
-    if (!pendingSettle) return
-    setSettling(true)
-    try {
-      await onSettle(pendingSettle)
-      setPendingSettle(null)
-    } finally {
-      setSettling(false)
+  const toggleExpand = (plan: ReadInstallmentPlan) => {
+    if (expandedPlanId === plan.id) {
+      setExpandedPlanId(null)
+      return
     }
+    setExpandedPlanId(plan.id)
+    if (!periodsByPlanId[plan.id]) onLoadPeriods(plan)
   }
 
   const categoryPickerRows = useMemo(
@@ -132,8 +142,7 @@ export function InstallmentPlansPanel({
     [categories],
   )
 
-  // 编辑模式下 total_amount/periods/first_period_at/category/account 都禁用
-  // 输入(server 只允许改 note/status),所以只有新建模式需要这几个字段校验。
+  // 新建模式才需要这几个字段校验(编辑模式只能改 note)。
   const canSubmit = form.editingId
     ? true
     : Boolean(form.total_amount.trim()) &&
@@ -181,9 +190,15 @@ export function InstallmentPlansPanel({
                 currency={currency}
                 iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                 canManage={canManage}
-                onEdit={() => handleOpenEdit(plan)}
+                expanded={expandedPlanId === plan.id}
+                periods={periodsByPlanId[plan.id]}
+                onToggleExpand={() => toggleExpand(plan)}
                 onDelete={() => setPendingDelete(plan)}
-                onSettle={() => setPendingSettle(plan)}
+                onUpdatePeriod={(periodNo, payload) => onUpdatePeriod(plan, periodNo, payload)}
+                onRebalance={(periodNo, payload) => onRebalance(plan, periodNo, payload)}
+                onEarlyRepay={(payload) => onEarlyRepay(plan, payload)}
+                onPayoff={() => onPayoff(plan)}
+                onTerminateFuture={() => onTerminateFuture(plan)}
               />
             )
           })}
@@ -220,7 +235,7 @@ export function InstallmentPlansPanel({
                 type="number"
                 inputMode="numeric"
                 min="1"
-                max="120"
+                max="600"
                 disabled={!!form.editingId}
                 value={form.periods}
                 onChange={(e) => onFormChange({ ...form, periods: e.target.value })}
@@ -235,6 +250,76 @@ export function InstallmentPlansPanel({
                 value={form.first_period_at}
                 onChange={(e) => onFormChange({ ...form, first_period_at: e.target.value })}
               />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>{t('installmentPlans.field.repaymentMethod')}</Label>
+                <Select
+                  value={form.repayment_method}
+                  disabled={!!form.editingId}
+                  onValueChange={(value) =>
+                    onFormChange({
+                      ...form,
+                      repayment_method: value as InstallmentPlanForm['repayment_method'],
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="equal_principal">
+                      {t('installmentPlans.repaymentMethod.equalPrincipal')}
+                    </SelectItem>
+                    <SelectItem value="equal_installment">
+                      {t('installmentPlans.repaymentMethod.equalInstallment')}
+                    </SelectItem>
+                    <SelectItem value="fixed_interest">
+                      {t('installmentPlans.repaymentMethod.fixedInterest')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>{t('installmentPlans.field.interestRate')}</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  disabled={!!form.editingId}
+                  value={form.interest_rate}
+                  onChange={(e) => onFormChange({ ...form, interest_rate: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('installmentPlans.field.interestPeriod')}</Label>
+                <Select
+                  value={form.interest_period}
+                  disabled={!!form.editingId}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, interest_period: value as InstallmentPlanForm['interest_period'] })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">{t('installmentPlans.interestPeriod.monthly')}</SelectItem>
+                    <SelectItem value="daily">{t('installmentPlans.interestPeriod.daily')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>{t('installmentPlans.field.gracePeriodMonths')}</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  disabled={!!form.editingId}
+                  value={form.grace_period_months}
+                  onChange={(e) => onFormChange({ ...form, grace_period_months: e.target.value })}
+                />
+              </div>
             </div>
 
             <div className="space-y-1">
@@ -330,19 +415,6 @@ export function InstallmentPlansPanel({
         confirmText={t('common.delete')}
         confirmVariant="destructive"
       />
-
-      <ConfirmDialog
-        open={pendingSettle !== null}
-        onCancel={() => {
-          if (!settling) setPendingSettle(null)
-        }}
-        onConfirm={() => void handleConfirmSettle()}
-        loading={settling}
-        title={t('installmentPlans.settle.title')}
-        description={t('installmentPlans.settle.confirm')}
-        confirmText={t('installmentPlans.settle.confirmButton')}
-        confirmVariant="default"
-      />
     </div>
   )
 }
@@ -353,23 +425,42 @@ function InstallmentPlanCard({
   currency,
   iconPreviewUrlByFileId,
   canManage,
-  onEdit,
+  expanded,
+  periods,
+  onToggleExpand,
   onDelete,
-  onSettle,
+  onUpdatePeriod,
+  onRebalance,
+  onEarlyRepay,
+  onPayoff,
+  onTerminateFuture,
 }: {
   plan: ReadInstallmentPlan
   category: WorkspaceCategory | null
   currency: string
   iconPreviewUrlByFileId?: Record<string, string>
   canManage: boolean
-  onEdit: () => void
+  expanded: boolean
+  periods: ReadInstallmentPeriod[] | undefined
+  onToggleExpand: () => void
   onDelete: () => void
-  onSettle: () => void
+  onUpdatePeriod: (periodNo: number, payload: InstallmentPeriodUpdatePayload) => void
+  onRebalance: (periodNo: number, payload: InstallmentRebalancePayload) => void
+  onEarlyRepay: (payload: InstallmentEarlyRepayPayload) => void
+  onPayoff: () => void
+  onTerminateFuture: () => void
 }) {
   const t = useT()
   const title = category?.name || plan.category_id || t('budgets.label.unknownCategory')
-  const isSettled = plan.status === 'settled'
+  const isDone = plan.status === 'settled' || plan.status === 'terminated'
   const ratio = plan.periods > 0 ? Math.min(plan.paid_periods / plan.periods, 1) : 0
+
+  const [editingPeriod, setEditingPeriod] = useState<ReadInstallmentPeriod | null>(null)
+  const [rebalanceOpen, setRebalanceOpen] = useState(false)
+  const [earlyRepayOpen, setEarlyRepayOpen] = useState(false)
+  const [pendingPayoff, setPendingPayoff] = useState(false)
+  const [pendingTerminate, setPendingTerminate] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   return (
     <div className="rounded-xl border border-border/60 bg-card p-4 transition hover:border-primary/40 hover:shadow-sm">
@@ -389,9 +480,14 @@ function InstallmentPlanCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{title}</span>
-            {isSettled ? (
+            {plan.status === 'settled' ? (
               <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {t('installmentPlans.status.settled')}
+              </span>
+            ) : null}
+            {plan.status === 'terminated' ? (
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {t('installmentPlans.status.terminated')}
               </span>
             ) : null}
           </div>
@@ -417,26 +513,331 @@ function InstallmentPlanCard({
         <div className="h-full bg-primary transition-all" style={{ width: `${ratio * 100}%` }} />
       </div>
 
-      <div className="mt-3 flex items-center justify-end gap-2">
-        {!isSettled ? (
-          <Button size="sm" variant="ghost" disabled={!canManage} onClick={onSettle}>
-            {t('installmentPlans.button.settle')}
-          </Button>
-        ) : null}
-        <Button size="sm" variant="ghost" disabled={!canManage} onClick={onEdit}>
-          {t('common.edit')}
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onToggleExpand}>
+          {expanded ? t('installmentPlans.button.hidePeriods') : t('installmentPlans.button.showPeriods')}
         </Button>
+        {!isDone ? (
+          <>
+            <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setRebalanceOpen(true)}>
+              {t('installmentPlans.button.rebalance')}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setEarlyRepayOpen(true)}>
+              {t('installmentPlans.button.earlyRepay')}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setPendingPayoff(true)}>
+              {t('installmentPlans.button.payoff')}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setPendingTerminate(true)}>
+              {t('installmentPlans.button.terminateFuture')}
+            </Button>
+          </>
+        ) : null}
         <Button size="sm" variant="ghost" disabled={!canManage} onClick={onDelete}>
           {t('common.delete')}
         </Button>
       </div>
+
+      {expanded ? (
+        <div className="mt-3 space-y-1 rounded-lg border border-border/50 bg-muted/10 p-2">
+          {!periods ? (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">{t('common.loading')}</p>
+          ) : periods.length === 0 ? (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+              {t('installmentPlans.periods.empty')}
+            </p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <tbody>
+                  {periods.map((p) => (
+                    <tr key={p.id} className="border-b border-border/30 last:border-0">
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-muted-foreground">#{p.period_no}</td>
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-muted-foreground">
+                        {formatDate(p.due_at)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums">
+                        {p.principal_amount.toFixed(2)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums text-muted-foreground">
+                        +{p.interest_amount.toFixed(2)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
+                        {p.total_amount.toFixed(2)}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-2">
+                        {p.status === 'overridden' ? (
+                          <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                            {t('installmentPlans.periods.overridden')}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 text-right">
+                        <button
+                          type="button"
+                          disabled={!canManage || isDone}
+                          className="text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                          onClick={() => setEditingPeriod(p)}
+                        >
+                          {t('common.edit')}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {editingPeriod ? (
+        <EditPeriodDialog
+          period={editingPeriod}
+          busy={busy}
+          onClose={() => setEditingPeriod(null)}
+          onConfirm={async (payload) => {
+            setBusy(true)
+            try {
+              await onUpdatePeriod(editingPeriod.period_no, payload)
+              setEditingPeriod(null)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      ) : null}
+
+      {rebalanceOpen ? (
+        <RebalanceDialog
+          maxPeriodNo={plan.periods}
+          busy={busy}
+          onClose={() => setRebalanceOpen(false)}
+          onConfirm={async (periodNo, payload) => {
+            setBusy(true)
+            try {
+              await onRebalance(periodNo, payload)
+              setRebalanceOpen(false)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      ) : null}
+
+      {earlyRepayOpen ? (
+        <EarlyRepayDialog
+          busy={busy}
+          onClose={() => setEarlyRepayOpen(false)}
+          onConfirm={async (payload) => {
+            setBusy(true)
+            try {
+              await onEarlyRepay(payload)
+              setEarlyRepayOpen(false)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={pendingPayoff}
+        onCancel={() => setPendingPayoff(false)}
+        onConfirm={async () => {
+          setBusy(true)
+          try {
+            await onPayoff()
+            setPendingPayoff(false)
+          } finally {
+            setBusy(false)
+          }
+        }}
+        loading={busy}
+        title={t('installmentPlans.payoff.title')}
+        description={t('installmentPlans.payoff.confirm')}
+        confirmText={t('installmentPlans.button.payoff')}
+        confirmVariant="destructive"
+      />
+
+      <ConfirmDialog
+        open={pendingTerminate}
+        onCancel={() => setPendingTerminate(false)}
+        onConfirm={async () => {
+          setBusy(true)
+          try {
+            await onTerminateFuture()
+            setPendingTerminate(false)
+          } finally {
+            setBusy(false)
+          }
+        }}
+        loading={busy}
+        title={t('installmentPlans.terminateFuture.title')}
+        description={t('installmentPlans.terminateFuture.confirm')}
+        confirmText={t('installmentPlans.button.terminateFuture')}
+        confirmVariant="destructive"
+      />
     </div>
   )
 }
 
-function isoToLocalInput(iso: string): string {
+function EditPeriodDialog({
+  period,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  period: ReadInstallmentPeriod
+  busy: boolean
+  onClose: () => void
+  onConfirm: (payload: InstallmentPeriodUpdatePayload) => void
+}) {
+  const t = useT()
+  const [amount, setAmount] = useState(String(period.total_amount))
+  const [note, setNote] = useState('')
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>
+            {t('installmentPlans.periods.editTitle').replace('{no}', String(period.period_no))}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>{t('transactions.table.amount')}</Label>
+            <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label>{t('transactions.table.note')}</Label>
+            <Input value={note} onChange={(e) => setNote(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('dialog.cancel')}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() =>
+              onConfirm({
+                amount: Number(amount) > 0 ? Number(amount) : undefined,
+                note: note || null,
+              })
+            }
+          >
+            {t('common.save')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RebalanceDialog({
+  maxPeriodNo,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  maxPeriodNo: number
+  busy: boolean
+  onClose: () => void
+  onConfirm: (periodNo: number, payload: InstallmentRebalancePayload) => void
+}) {
+  const t = useT()
+  const [periodNo, setPeriodNo] = useState('1')
+  const [rate, setRate] = useState('0')
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t('installmentPlans.button.rebalance')}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>{t('installmentPlans.rebalance.fromPeriod')}</Label>
+            <Input
+              type="number"
+              min={1}
+              max={maxPeriodNo}
+              value={periodNo}
+              onChange={(e) => setPeriodNo(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>{t('installmentPlans.field.interestRate')}</Label>
+            <Input type="number" min="0" step="0.001" value={rate} onChange={(e) => setRate(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('dialog.cancel')}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() => onConfirm(Math.max(1, Math.round(Number(periodNo)) || 1), { interest_rate: Number(rate) || 0 })}
+          >
+            {t('common.save')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function EarlyRepayDialog({
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  busy: boolean
+  onClose: () => void
+  onConfirm: (payload: InstallmentEarlyRepayPayload) => void
+}) {
+  const t = useT()
+  const [amount, setAmount] = useState('')
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t('installmentPlans.button.earlyRepay')}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>{t('installmentPlans.earlyRepay.amount')}</Label>
+            <Input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('dialog.cancel')}
+          </Button>
+          <Button
+            disabled={busy || !(Number(amount) > 0)}
+            onClick={() => onConfirm({ payment_amount: Number(amount) })}
+          >
+            {t('common.save')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function formatDate(iso: string): string {
   const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
+  if (Number.isNaN(d.getTime())) return iso
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }

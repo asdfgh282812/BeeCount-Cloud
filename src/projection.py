@@ -24,6 +24,7 @@ from .models import (
     AttachmentFile,
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -275,6 +276,11 @@ def upsert_tx(
         # merge_with_existing 负责。
         "refund_of_sync_id": _as_str(payload.get("refundOfId")),
         "installment_plan_sync_id": _as_str(payload.get("installmentPlanId")),
+        # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记,同款语义。
+        "recurring_rule_sync_id": _as_str(payload.get("recurringRuleId")),
+        "recurring_occurrence_overridden": _as_bool(
+            payload.get("recurringOccurrenceOverridden"), default=False
+        ),
         "source_change_id": source_change_id,
     }
 
@@ -495,6 +501,18 @@ def upsert_recurring_rule(
         "next_run_at": _parse_happened_at(payload.get("nextRunAt")),
         "end_at": _parse_happened_at(payload.get("endAt")) if payload.get("endAt") else None,
         "enabled": _as_bool(payload.get("enabled"), default=True),
+        # Phase 1.5(§2.12.2):视窗续产生进度 + 进阶规则,None = 未设置。
+        # advancedRuleJson 在 snapshot 层是嵌套 dict(跟 attachments/tagIds
+        # 同惯例),这里落库前才 json.dumps 成 TEXT 列。
+        "generated_until_at": (
+            _parse_happened_at(payload.get("generatedUntilAt"))
+            if payload.get("generatedUntilAt") else None
+        ),
+        "advanced_rule_json": (
+            json.dumps(payload.get("advancedRuleJson"))
+            if isinstance(payload.get("advancedRuleJson"), (dict, list))
+            else _as_str(payload.get("advancedRuleJson"))
+        ),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadRecurringRuleProjection, ("ledger_id", "sync_id"), values)
@@ -529,6 +547,14 @@ def upsert_installment_plan(
         "category_sync_id": _as_str(payload.get("categoryId")),
         "note": _as_str(payload.get("note")),
         "status": _as_str(payload.get("status")) or "active",
+        # Phase 1.5(§2.12.1)攤還算法参数,default 对齐既有 Phase 1 行为
+        # (等额本金/无息)。
+        "repayment_method": _as_str(payload.get("repaymentMethod")) or "equal_principal",
+        "interest_period": _as_str(payload.get("interestPeriod")) or "monthly",
+        "interest_rate": _as_float(payload.get("interestRate")),
+        "round_amounts": _as_bool(payload.get("roundAmounts"), default=True),
+        "remainder_position": _as_str(payload.get("remainderPosition")) or "last",
+        "grace_period_months": _as_int(payload.get("gracePeriodMonths"), default=0),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadInstallmentPlanProjection, ("ledger_id", "sync_id"), values)
@@ -536,6 +562,41 @@ def upsert_installment_plan(
 
 def delete_installment_plan(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadInstallmentPlanProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_installment_period(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """§2.12.1 Phase 1.5:分期每期明细。只由 server 端写入口(建计画/rebalance/
+    早偿/提前结清等)生成,client 不会直接建立单笔 period,但仍走完整
+    sync entity 六步(跨装置需要可见)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "plan_sync_id": _as_str(payload.get("planId")) or "",
+        "period_no": _as_int(payload.get("periodNo"), default=1) or 1,
+        "due_at": _parse_happened_at(payload.get("dueAt")),
+        "principal_amount": _as_float(payload.get("principalAmount")),
+        "interest_amount": _as_float(payload.get("interestAmount")),
+        "total_amount": _as_float(payload.get("totalAmount")),
+        "status": _as_str(payload.get("status")) or "generated",
+        "tx_sync_id": _as_str(payload.get("txId")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadInstallmentPeriodProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_installment_period(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadInstallmentPeriodProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def delete_entity(

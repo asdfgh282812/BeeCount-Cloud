@@ -35,10 +35,19 @@ let editCategoryHandlerCount = 0
  * 打开"新建交易" dialog 的可选预填项。
  * - happenedAt:ISO 8601 字符串,日历视图选中某一天后调用,prefill 到 happened_at 字段
  * - ledgerId:目标账本(留空 = 用 active ledger)
+ * - refundOf:§2.12.3,从原支出交易明细点「退款」发起时带上,预填金额/备注/
+ *   分类/账户 + 把 refund_of_id 指向原交易,tx_type 强制 income。
  */
 export type NewTxPrefill = {
   happenedAt?: string
   ledgerId?: string
+  refundOf?: {
+    id: string
+    amount: number
+    note: string | null
+    categoryName: string | null
+    accountName: string | null
+  }
 }
 
 export function dispatchOpenNewTx(prefill?: NewTxPrefill) {

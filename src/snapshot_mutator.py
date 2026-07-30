@@ -337,6 +337,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     item["excludeFromBudget"] = bool(payload.get("exclude_from_budget"))
     if payload.get("refund_of_id") is not None:
         item["refundOfId"] = str(payload.get("refund_of_id"))
+    if payload.get("recurring_rule_id") is not None:
+        item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
@@ -468,6 +470,13 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("refundOfId", None)
         else:
             item["refundOfId"] = str(value)
+    # 週期性收支(§2.12.2):單獨編輯/刪除某一期時,呼叫端強制帶
+    # recurring_occurrence_overridden=True,之後 update-from / 視窗續產生都要
+    # 跳過這筆,不能被批次覆蓋。
+    if "recurring_occurrence_overridden" in payload:
+        item["recurringOccurrenceOverridden"] = bool(
+            payload.get("recurring_occurrence_overridden")
+        )
     _mark_entity_actor(item, payload, create=False)
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
@@ -980,6 +989,16 @@ def create_recurring_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
         rule["toAccountId"] = str(payload.get("to_account_id"))
     if payload.get("end_at") is not None:
         rule["endAt"] = _to_iso8601(payload.get("end_at"))
+    # Phase 1.5(§2.12.2):进阶规则(snapshot 层保持嵌套 dict,序列化成 JSON
+    # 字串是 projection.py upsert 时才做的事,跟 attachments/tagIds 同一套
+    # "snapshot 存原生结构,projection 落库时才 json.dumps"惯例)+ 视窗生成
+    # 进度,建规则的 write endpoint 用
+    # recurring_schedule.plan_initial_generation 算出这次批次生成到哪里,
+    # 一起传进来跟规则本身一次建好,不用建完再补一次 update。
+    if payload.get("advanced_rule_json") is not None:
+        rule["advancedRuleJson"] = payload.get("advanced_rule_json")
+    if payload.get("generated_until_at") is not None:
+        rule["generatedUntilAt"] = _to_iso8601(payload.get("generated_until_at"))
     _mark_entity_actor(rule, payload, create=True)
     rules.append(rule)
     return target, sync_id
@@ -1031,6 +1050,18 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
                 rule.pop(snapshot_key, None)
             else:
                 rule[snapshot_key] = str(value)
+    if "advanced_rule_json" in payload:
+        value = payload.get("advanced_rule_json")
+        if value is None:
+            rule.pop("advancedRuleJson", None)
+        else:
+            rule["advancedRuleJson"] = value
+    if "generated_until_at" in payload:
+        value = payload.get("generated_until_at")
+        if value is None:
+            rule.pop("generatedUntilAt", None)
+        else:
+            rule["generatedUntilAt"] = _to_iso8601(value)
     _mark_entity_actor(rule, payload, create=False)
     return target
 
@@ -1045,11 +1076,18 @@ def delete_recurring_rule(snapshot: dict, rule_id: str, payload: dict | None = N
 
 
 # ============================================================================
-# Installment plans(§2.3)—— 建计画时立刻算好第一期(paidPeriods=1,
-# nextPeriodAt=firstPeriodAt 之后一个月),但**不**在这里生成第一期交易 ——
-# 那需要同时写 read_tx_projection,snapshot_mutator 只管这一个实体的字段,
-# 第一期交易的生成放在 write endpoint 里跟计画一起提交(同一个 _commit_write
-# 事务),复用 create_transaction。
+# Installment plans(§2.3 / Phase 1.5 修正版 §2.12.1)—— 建计画时算好攤還
+# 参数(repaymentMethod/interestPeriod/interestRate/roundAmounts/
+# remainderPosition/gracePeriodMonths)存进这个实体,但**不**在这里跑攤還
+# 演算法、也不生成任何 tx/period ——那需要 services.installment_amortization
+# + 同时写 read_tx_projection + read_installment_period_projection,
+# snapshot_mutator 只管这一个实体的字段。全部期数的生成放在 write endpoint
+# 里跟计画一起提交(同一个 _commit_write 事务),见 routers/write/
+# installment_plans.py。periodAmount/nextPeriodAt/paidPeriods 这三个字段
+# Phase 1.5 之后只是历史相容占位(不再被任何排程更新),真正的每期明细以
+# read_installment_period_projection 为准,读路径(snapshot_builder.build /
+# read/ledgers.py)从 period 行即时算出展示用的 paidPeriods/nextPeriodAt,
+# 不读这里存的值。
 # ============================================================================
 
 
@@ -1066,6 +1104,32 @@ def create_installment_plan(snapshot: dict, payload: dict) -> tuple[dict, str]:
     if first_period_at is None:
         raise ValueError("write validation failed: first_period_at is required")
     first_dt = datetime.fromisoformat(_to_iso8601(first_period_at))
+
+    repayment_method = str(payload.get("repayment_method") or "equal_principal")
+    if repayment_method not in {"equal_installment", "equal_principal", "fixed_interest"}:
+        raise ValueError("write validation failed: invalid repayment_method")
+    interest_period = str(payload.get("interest_period") or "monthly")
+    if interest_period not in {"monthly", "daily"}:
+        raise ValueError("write validation failed: invalid interest_period")
+    interest_rate = _to_optional_float(payload.get("interest_rate"))
+    if interest_rate is None:
+        interest_rate = 0.0
+    if interest_rate < 0:
+        raise ValueError("write validation failed: interest_rate must be >= 0")
+    round_amounts = (
+        bool(payload.get("round_amounts")) if payload.get("round_amounts") is not None else True
+    )
+    remainder_position = str(payload.get("remainder_position") or "last")
+    if remainder_position not in {"first", "last"}:
+        raise ValueError("write validation failed: invalid remainder_position")
+    grace_period_months = _to_optional_int(payload.get("grace_period_months"))
+    if grace_period_months is None:
+        grace_period_months = 0
+    if not (0 <= grace_period_months < periods):
+        raise ValueError(
+            "write validation failed: grace_period_months must be >= 0 and < periods"
+        )
+
     period_amount = round(total_amount / periods, 2)
     sync_id = _new_sync_id("ins")
     plan: dict[str, object] = {
@@ -1077,6 +1141,12 @@ def create_installment_plan(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "nextPeriodAt": _to_iso8601(add_months(first_dt, 1)),
         "paidPeriods": 1,
         "status": "active",
+        "repaymentMethod": repayment_method,
+        "interestPeriod": interest_period,
+        "interestRate": interest_rate,
+        "roundAmounts": round_amounts,
+        "remainderPosition": remainder_position,
+        "gracePeriodMonths": grace_period_months,
     }
     if payload.get("account_id") is not None:
         plan["accountId"] = str(payload.get("account_id"))
@@ -1090,6 +1160,13 @@ def create_installment_plan(snapshot: dict, payload: dict) -> tuple[dict, str]:
 
 
 def update_installment_plan(snapshot: dict, plan_id: str, payload: dict) -> dict:
+    """`note`/`status` 是 plain PATCH 端点(`WriteInstallmentPlanUpdateRequest`)
+    唯一暴露的字段 —— 金额/期数/攤還参数不给直接改,语义混乱(等同删了重建)。
+    `interest_rate`/`repayment_method` 两个 key 只有 §2.12.1 的
+    `rebalance-from` 端点内部会传(它自己的 request schema
+    `WriteInstallmentRebalanceRequest` 不长这样,是 endpoint 手工组 payload
+    调这里),用来把新利率/攤還方式记录回 plan 实体供之后展示/再次 rebalance
+    用,不是让 client 能直接打这个字段。"""
     target = ensure_snapshot_v2(snapshot)
     plans = _ensure_list(target, "installmentPlans")
     _, plan = _find_by_sync_id(plans, plan_id, expected_prefix="ins")
@@ -1102,9 +1179,16 @@ def update_installment_plan(snapshot: dict, plan_id: str, payload: dict) -> dict
             plan["note"] = str(value)
     if "status" in payload and payload.get("status") is not None:
         status = str(payload.get("status"))
-        if status not in {"active", "settled"}:
+        if status not in {"active", "settled", "terminated"}:
             raise ValueError("write validation failed: invalid status")
         plan["status"] = status
+    if "interest_rate" in payload and payload.get("interest_rate") is not None:
+        plan["interestRate"] = _to_float(payload.get("interest_rate"))
+    if "repayment_method" in payload and payload.get("repayment_method") is not None:
+        method = str(payload.get("repayment_method"))
+        if method not in {"equal_installment", "equal_principal", "fixed_interest"}:
+            raise ValueError("write validation failed: invalid repayment_method")
+        plan["repaymentMethod"] = method
     _mark_entity_actor(plan, payload, create=False)
     return target
 
@@ -1115,4 +1199,77 @@ def delete_installment_plan(snapshot: dict, plan_id: str, payload: dict | None =
     idx, plan = _find_by_sync_id(plans, plan_id, expected_prefix="ins")
     _assert_actor_can_modify(plan, payload or {})
     plans.pop(idx)
+    return target
+
+
+# ============================================================================
+# Installment periods(§2.12.1 Phase 1.5 新增)—— 每期本金/利息/合计明细。
+# 只由 server 端写入口(建计画 / rebalance-from / early-repay-principal /
+# payoff / terminate-future)生成,不接受 client 直接 POST 单笔 period,但
+# 仍走完整 sync entity 六步(需要跨装置可见)。跟 budget/recurring_rule 同款
+# boilerplate,snapshot 用 driftCamel:planId/periodNo/dueAt/principalAmount/
+# interestAmount/totalAmount/status/txId。
+# ============================================================================
+
+
+def create_installment_period(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    periods_list = _ensure_list(target, "installmentPeriods")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise ValueError("write validation failed: plan_id is required")
+    period_no = _to_optional_int(payload.get("period_no"))
+    if period_no is None or period_no < 1:
+        raise ValueError("write validation failed: period_no must be >= 1")
+    due_at = payload.get("due_at")
+    if due_at is None:
+        raise ValueError("write validation failed: due_at is required")
+    sync_id = _new_sync_id("insp")
+    period: dict[str, object] = {
+        "syncId": sync_id,
+        "planId": str(plan_id),
+        "periodNo": period_no,
+        "dueAt": _to_iso8601(due_at),
+        "principalAmount": _to_float(payload.get("principal_amount")),
+        "interestAmount": _to_float(payload.get("interest_amount")),
+        "totalAmount": _to_float(payload.get("total_amount")),
+        "status": str(payload.get("status") or "generated"),
+    }
+    if payload.get("tx_id") is not None:
+        period["txId"] = str(payload.get("tx_id"))
+    _mark_entity_actor(period, payload, create=True)
+    periods_list.append(period)
+    return target, sync_id
+
+
+def update_installment_period(snapshot: dict, period_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    periods_list = _ensure_list(target, "installmentPeriods")
+    _, period = _find_by_sync_id(periods_list, period_id, expected_prefix="insp")
+    _assert_actor_can_modify(period, payload)
+    if "due_at" in payload and payload.get("due_at") is not None:
+        period["dueAt"] = _to_iso8601(payload.get("due_at"))
+    if "principal_amount" in payload and payload.get("principal_amount") is not None:
+        period["principalAmount"] = _to_float(payload.get("principal_amount"))
+    if "interest_amount" in payload and payload.get("interest_amount") is not None:
+        period["interestAmount"] = _to_float(payload.get("interest_amount"))
+    if "total_amount" in payload and payload.get("total_amount") is not None:
+        period["totalAmount"] = _to_float(payload.get("total_amount"))
+    if "status" in payload and payload.get("status") is not None:
+        status = str(payload.get("status"))
+        if status not in {"pending", "generated", "overridden", "refunded"}:
+            raise ValueError("write validation failed: invalid status")
+        period["status"] = status
+    if "tx_id" in payload and payload.get("tx_id") is not None:
+        period["txId"] = str(payload.get("tx_id"))
+    _mark_entity_actor(period, payload, create=False)
+    return target
+
+
+def delete_installment_period(snapshot: dict, period_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    periods_list = _ensure_list(target, "installmentPeriods")
+    idx, period = _find_by_sync_id(periods_list, period_id, expected_prefix="insp")
+    _assert_actor_can_modify(period, payload or {})
+    periods_list.pop(idx)
     return target

@@ -9,6 +9,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
+from ...snapshot_mutator import create_transaction as _mutate_create_tx
+from ...services import recurring_schedule
 
 router = APIRouter()
 
@@ -47,9 +49,89 @@ async def create_tx(
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
     # 是 syncId,不再需要任何投影表。payload 直接传给 snapshot_mutator。
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
-    # issue #31 A1b:单笔新建走 fast path,不再全量 build snapshot(O(账本交易数)→O(1))。
-    # create 没有 diff 需求(新行即唯一变更),语义与 _commit_write 一致。
-    return await _commit_create_tx_fast(
+
+    if req.recurring is None:
+        # issue #31 A1b:单笔新建走 fast path,不再全量 build snapshot
+        # (O(账本交易数)→O(1))。create 没有 diff 需求(新行即唯一变更),
+        # 语义与 _commit_write 一致。
+        return await _commit_create_tx_fast(
+            request=request,
+            db=db,
+            current_user=current_user,
+            ledger=ledger,
+            base_change_id=req.base_change_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            device_id=device_id,
+            audit_action="web_tx_create",
+            mutate_payload=mutate_payload,
+        )
+
+    # Phase 1.5(§2.12.2):建交易当下顺便把它设成週期性收支的起点 —— 这笔
+    # 交易本身就是 occurrence #1,不重新合成一份,跟 recurring_rules.py 的
+    # POST 结构一致但省了"第一笔"那次生成。走多实体单一 commit(不能用上面
+    # 的单 tx fast path,因为要同时写规则 + 可能的更多 occurrence)。
+    recurring_req = req.recurring
+
+    def _mutate(snapshot: dict) -> tuple[dict, str]:
+        occurrences, generated_until_at, fully_generated = recurring_schedule.plan_initial_generation(
+            start=req.happened_at,
+            end=recurring_req.end_at,
+            frequency=recurring_req.frequency,
+            interval=recurring_req.interval,
+            advanced_rule=recurring_req.advanced_rule_json,
+        )
+        rule_payload = dict(mutate_payload)
+        rule_payload.update({
+            "tx_type": req.tx_type,
+            "amount": req.amount,
+            "note": req.note,
+            "category_id": req.category_id,
+            "account_id": req.account_id,
+            "from_account_id": req.from_account_id,
+            "to_account_id": req.to_account_id,
+            "frequency": recurring_req.frequency,
+            "interval": recurring_req.interval,
+            "next_run_at": req.happened_at,
+            "end_at": recurring_req.end_at,
+            "advanced_rule_json": recurring_req.advanced_rule_json,
+            "generated_until_at": generated_until_at,
+        })
+        if fully_generated:
+            rule_payload["enabled"] = False
+        next_snapshot, rule_id = create_recurring_rule(snapshot, rule_payload)
+
+        actor_fields = {
+            "__actor_user_id": mutate_payload.get("__actor_user_id"),
+            "__actor_is_admin": mutate_payload.get("__actor_is_admin"),
+            "__actor_in_shared_ledger": mutate_payload.get("__actor_in_shared_ledger"),
+        }
+        first_tx_payload = dict(mutate_payload)
+        first_tx_payload["recurring_rule_id"] = rule_id
+        next_snapshot, first_tx_id = _mutate_create_tx(next_snapshot, first_tx_payload)
+
+        for occ in occurrences[1:]:
+            tx_payload = {
+                "tx_type": req.tx_type,
+                "amount": req.amount,
+                "happened_at": occ,
+                "note": req.note,
+                "category_id": req.category_id,
+                "category_name": req.category_name,
+                "category_kind": req.category_kind,
+                "account_id": req.account_id,
+                "account_name": req.account_name,
+                "from_account_id": req.from_account_id,
+                "from_account_name": req.from_account_name,
+                "to_account_id": req.to_account_id,
+                "to_account_name": req.to_account_name,
+                "recurring_rule_id": rule_id,
+                **actor_fields,
+            }
+            next_snapshot, _tx_id = _mutate_create_tx(next_snapshot, tx_payload)
+        return next_snapshot, first_tx_id
+
+    return await _commit_write(
         request=request,
         db=db,
         current_user=current_user,
@@ -58,8 +140,8 @@ async def create_tx(
         request_payload=payload,
         idempotency_key=idempotency_key,
         device_id=device_id,
-        audit_action="web_tx_create",
-        mutate_payload=mutate_payload,
+        audit_action="web_tx_create_with_recurring",
+        mutate=_mutate,
     )
 
 

@@ -3,11 +3,21 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   createInstallmentPlan,
   deleteInstallmentPlan,
+  earlyRepayInstallmentPrincipal,
+  fetchInstallmentPeriods,
   fetchReadAccounts,
   fetchReadInstallmentPlans,
   fetchWorkspaceCategories,
+  payoffInstallmentPlan,
+  rebalanceInstallmentPlan,
+  terminateInstallmentPlanFuture,
+  updateInstallmentPeriod,
   updateInstallmentPlan,
+  type InstallmentEarlyRepayPayload,
+  type InstallmentPeriodUpdatePayload,
+  type InstallmentRebalancePayload,
   type ReadAccount,
+  type ReadInstallmentPeriod,
   type ReadInstallmentPlan,
   type WorkspaceCategory,
 } from '@beecount/api-client'
@@ -55,6 +65,9 @@ export function InstallmentPlansPage() {
     [],
   )
   const [form, setForm] = useState<InstallmentPlanForm>(installmentPlanDefaults())
+  // §2.12.1:每个计画的期数明细,懒加载(展开卡片才 fetch),不放进
+  // usePageCache —— 只是展开态的临时数据,ledger 切换/刷新时清空即可。
+  const [periodsByPlanId, setPeriodsByPlanId] = useState<Record<string, ReadInstallmentPeriod[]>>({})
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -80,6 +93,9 @@ export function InstallmentPlansPage() {
       setPlans(p)
       setCategories(c)
       setAccounts(a)
+      // 期数明细可能因为 rebalance/payoff/terminate 等操作变了,清掉缓存,
+      // 下次展开重新 fetch,避免展示过期数据。
+      setPeriodsByPlanId({})
     } catch (err) {
       notifyError(err)
     }
@@ -125,7 +141,7 @@ export function InstallmentPlansPage() {
           return false
         }
         const periods = Math.round(Number(form.periods || '0'))
-        if (!Number.isFinite(periods) || periods < 1 || periods > 120) {
+        if (!Number.isFinite(periods) || periods < 1 || periods > 600) {
           toast.error(t('installmentPlans.error.periodsInvalid'), t('notice.error'))
           return false
         }
@@ -141,6 +157,12 @@ export function InstallmentPlansPage() {
             account_id: form.account_id || null,
             category_id: form.category_id || null,
             note: form.note || null,
+            repayment_method: form.repayment_method,
+            interest_period: form.interest_period,
+            interest_rate: Number(form.interest_rate || 0),
+            round_amounts: form.round_amounts,
+            remainder_position: form.remainder_position,
+            grace_period_months: Math.max(0, Math.round(Number(form.grace_period_months) || 0)),
           }),
         )
         notifySuccess(t('installmentPlans.notice.created'))
@@ -169,13 +191,94 @@ export function InstallmentPlansPage() {
     }
   }
 
-  const onSettle = async (plan: ReadInstallmentPlan): Promise<void> => {
+  // §2.12.1:期数明细懒加载 —— 展开卡片才 fetch,失败时静默(展开区域自己
+  // 会显示"暂无期数明细"兜底,不需要额外 toast 打断)。
+  const onLoadPeriods = useCallback(
+    (plan: ReadInstallmentPlan) => {
+      if (!activeLedgerId) return
+      void fetchInstallmentPeriods(token, activeLedgerId, plan.id)
+        .then((rows) => setPeriodsByPlanId((prev) => ({ ...prev, [plan.id]: rows })))
+        .catch(() => setPeriodsByPlanId((prev) => ({ ...prev, [plan.id]: [] })))
+    },
+    [token, activeLedgerId],
+  )
+
+  const onUpdatePeriod = async (
+    plan: ReadInstallmentPlan,
+    periodNo: number,
+    payload: InstallmentPeriodUpdatePayload,
+  ): Promise<void> => {
     if (!activeLedgerId) return
     try {
       await retryOnConflict(activeLedgerId, (base) =>
-        updateInstallmentPlan(token, activeLedgerId, plan.id, base, { status: 'settled' }),
+        updateInstallmentPeriod(token, activeLedgerId, plan.id, periodNo, base, payload),
+      )
+      notifySuccess(t('notice.success'))
+      onLoadPeriods(plan)
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onRebalance = async (
+    plan: ReadInstallmentPlan,
+    periodNo: number,
+    payload: InstallmentRebalancePayload,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        rebalanceInstallmentPlan(token, activeLedgerId, plan.id, periodNo, base, payload),
+      )
+      notifySuccess(t('notice.success'))
+      onLoadPeriods(plan)
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onEarlyRepay = async (
+    plan: ReadInstallmentPlan,
+    payload: InstallmentEarlyRepayPayload,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        earlyRepayInstallmentPrincipal(token, activeLedgerId, plan.id, base, payload),
+      )
+      notifySuccess(t('notice.success'))
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onPayoff = async (plan: ReadInstallmentPlan): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        payoffInstallmentPlan(token, activeLedgerId, plan.id, base),
       )
       notifySuccess(t('installmentPlans.notice.settled'))
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onTerminateFuture = async (plan: ReadInstallmentPlan): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        terminateInstallmentPlanFuture(token, activeLedgerId, plan.id, base),
+      )
+      notifySuccess(t('notice.success'))
       await refresh()
     } catch (err) {
       if (isWriteConflict(err)) await refresh()
@@ -202,7 +305,13 @@ export function InstallmentPlansPage() {
             onFormChange={setForm}
             onSubmit={onSubmit}
             onDelete={onDelete}
-            onSettle={onSettle}
+            periodsByPlanId={periodsByPlanId}
+            onLoadPeriods={onLoadPeriods}
+            onUpdatePeriod={onUpdatePeriod}
+            onRebalance={onRebalance}
+            onEarlyRepay={onEarlyRepay}
+            onPayoff={onPayoff}
+            onTerminateFuture={onTerminateFuture}
             canManage={canManage}
           />
         )}

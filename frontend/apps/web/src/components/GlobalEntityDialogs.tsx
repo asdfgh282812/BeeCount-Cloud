@@ -16,6 +16,7 @@ import { useLedgers } from '../context/LedgersContext'
 import {
   dispatchOpenEditCategory,
   dispatchOpenEditTx,
+  dispatchOpenNewTx,
   onOpenDetailAccount,
   onOpenDetailCategory,
   onOpenDetailTag,
@@ -287,6 +288,29 @@ export function GlobalEntityDialogs() {
     [],
   )
 
+  // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原支出的
+  // 金额/备注/分类/账户预填 + refund_of_id 关联,tx_type 强制 income
+  // (GlobalEditDialogs 的 onOpenNewTx 监听器负责实际预填逻辑)。
+  const handleRefundTx = useCallback(
+    (target: WorkspaceTransaction) => {
+      setTx(null)
+      dispatchOpenNewTx({
+        ledgerId: target.ledger_id,
+        refundOf: {
+          id: target.id,
+          amount: target.amount,
+          note: target.note,
+          // 原交易的分类是 expense kind,退款交易是 income kind —— 两边分类
+          // 树互不相通,直接带名字过去只会指向一个不存在的 income 分类选项,
+          // 故意留空让用户自己选。
+          categoryName: null,
+          accountName: target.account_name,
+        },
+      })
+    },
+    [],
+  )
+
   const handleEditCategory = useCallback(
     (cat: WorkspaceCategory) => {
       setCategory(null)
@@ -319,6 +343,7 @@ export function GlobalEntityDialogs() {
         tags={tagsDict}
         onClose={() => setTx(null)}
         onEdit={handleEditTx}
+        onRefund={handleRefundTx}
       />
       <AccountDetailDialog
         account={account}

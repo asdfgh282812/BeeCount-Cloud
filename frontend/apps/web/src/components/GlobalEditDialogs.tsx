@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import {
   createCategory,
+  createInstallmentPlan,
   createTransaction,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
@@ -17,6 +18,8 @@ import { useT, useToast } from '@beecount/ui'
 import {
   resolveCurrencyFields,
   loadRatesToBase,
+  buildInstallmentPlanPayload,
+  buildRecurringInlinePayload,
   CategoriesPanel,
   categoryDefaults,
   TransactionsPanel,
@@ -136,6 +139,7 @@ export function GlobalEditDialogs() {
         tx.ledger_id || writableLedgers[0]?.ledger_id || ''
       setEditTxLedgerId(ledgerId)
       setEditTxForm({
+        ...txDefaults(),
         editingId: tx.id,
         editingOwnerUserId: tx.created_by_user_id || '',
         tx_type: tx.tx_type,
@@ -184,9 +188,24 @@ export function GlobalEditDialogs() {
         ''
       setEditTxLedgerId(ledgerId)
       const defaults = txDefaults()
+      const refundOf = prefill?.refundOf
       setEditTxForm({
         ...defaults,
         happened_at: prefill?.happenedAt || defaults.happened_at,
+        // §2.12.3:从原支出交易明细发起退款 —— 预填金额/备注/分类/账户,
+        // tx_type 强制 income(退款语意只在收入类型有意义),refund_of_id
+        // 指向原交易。用户仍可在表单里调整金额(支援部分退款)/改退款帐户。
+        ...(refundOf
+          ? {
+              tx_type: 'income' as const,
+              category_kind: 'income' as const,
+              amount: String(refundOf.amount),
+              note: refundOf.note || '',
+              category_name: refundOf.categoryName || '',
+              account_name: refundOf.accountName || '',
+              refund_of_id: refundOf.id,
+            }
+          : {}),
       })
       await loadRefsForLedger(ledgerId)
       setEditTxOpen(true)
@@ -233,6 +252,14 @@ export function GlobalEditDialogs() {
         return false
       }
     }
+    // Phase 1.5(§2.12.1):分期付款期数校验,跟 InstallmentPlansPage 同规则。
+    if (!editTxForm.editingId && editTxForm.installment_enabled) {
+      const periodsNum = Number(editTxForm.installment_periods)
+      if (!Number.isInteger(periodsNum) || periodsNum < 1 || periodsNum > 600) {
+        notifyError(new Error(t('installmentPlans.error.periodsInvalid')))
+        return false
+      }
+    }
 
     // v30 多币种:共享 helper(override 口径/编辑防漂移/改回本位币),与
     // TransactionsPage 提交完全同一实现。
@@ -268,6 +295,26 @@ export function GlobalEditDialogs() {
       }
     }
 
+    const resolvedAccountId =
+      editTxForm.tx_type === 'transfer'
+        ? null
+        : editTxAccounts.find(
+            (a) => (a.name || '').trim().toLowerCase() === editTxForm.account_name.trim().toLowerCase(),
+          )?.id || null
+    const resolvedCategoryId =
+      editTxForm.tx_type === 'transfer'
+        ? null
+        : editTxCategories.find(
+            (c) =>
+              c.kind === editTxForm.tx_type &&
+              (c.name || '').trim().toLowerCase() === editTxForm.category_name.trim().toLowerCase(),
+          )?.id || null
+
+    // Phase 1.5(§2.12.1):分期付款走独立的 createInstallmentPlan。
+    const installmentPayload = !editTxForm.editingId
+      ? buildInstallmentPlanPayload(editTxForm, { account_id: resolvedAccountId, category_id: resolvedCategoryId })
+      : null
+
     const payload = {
       tx_type: editTxForm.tx_type,
       amount: amountNum,
@@ -301,11 +348,18 @@ export function GlobalEditDialogs() {
       // 退款(§2.6):同 TransactionsPage.onSaveTransaction —— 只有 income 有意义。
       refund_of_id:
         editTxForm.tx_type === 'income' ? editTxForm.refund_of_id.trim() || null : null,
+      // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建生效。
+      recurring: !editTxForm.editingId ? buildRecurringInlinePayload(editTxForm) : null,
       ...currencyFields
     }
 
     try {
-      if (editTxForm.editingId) {
+      if (installmentPayload) {
+        await retryOnConflict(ledgerId, (base) =>
+          createInstallmentPlan(token, ledgerId, base, installmentPayload),
+        )
+        notifySuccess(t('notice.transactionCreated'))
+      } else if (editTxForm.editingId) {
         await retryOnConflict(ledgerId, (base) =>
           updateTransaction(token, ledgerId, editTxForm.editingId!, base, payload),
         )

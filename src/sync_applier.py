@@ -48,6 +48,7 @@ from . import projection
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -65,6 +66,7 @@ from .services.category_icon import resolve_icon_by_name
 INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
+    "installment_period",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -194,6 +196,11 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("nextRunAt", "next_run_at", _isoformat_or_none),
         ("endAt", "end_at", _isoformat_or_none),
         ("enabled", "enabled"),
+        # Phase 1.5(§2.12.2):视窗续产生进度 + 进阶规则。advancedRuleJson 落库
+        # 是 TEXT 列(json.dumps,见 projection.upsert_recurring_rule),merge
+        # 时用 _json_loads_safe 转回 dict,跟 tagIds/attachments 同一套惯例。
+        ("generatedUntilAt", "generated_until_at", _isoformat_or_none),
+        ("advancedRuleJson", "advanced_rule_json", _json_loads_safe),
     ]),
     "installment_plan": _MergeSpec(ReadInstallmentPlanProjection, [
         ("syncId", "sync_id"),
@@ -207,6 +214,24 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("categoryId", "category_sync_id"),
         ("note", "note"),
         ("status", "status"),
+        # Phase 1.5(§2.12.1)攤還算法参数。
+        ("repaymentMethod", "repayment_method"),
+        ("interestPeriod", "interest_period"),
+        ("interestRate", "interest_rate"),
+        ("roundAmounts", "round_amounts"),
+        ("remainderPosition", "remainder_position"),
+        ("gracePeriodMonths", "grace_period_months"),
+    ]),
+    "installment_period": _MergeSpec(ReadInstallmentPeriodProjection, [
+        ("syncId", "sync_id"),
+        ("planId", "plan_sync_id"),
+        ("periodNo", "period_no"),
+        ("dueAt", "due_at", _isoformat_or_none),
+        ("principalAmount", "principal_amount"),
+        ("interestAmount", "interest_amount"),
+        ("totalAmount", "total_amount"),
+        ("status", "status"),
+        ("txId", "tx_sync_id"),
     ]),
     "transaction": _MergeSpec(ReadTxProjection, [
         ("syncId", "sync_id"),
@@ -242,6 +267,9 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("nativeAmount", "native_amount"),
         ("refundOfId", "refund_of_sync_id"),
         ("installmentPlanId", "installment_plan_sync_id"),
+        # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记。
+        ("recurringRuleId", "recurring_rule_sync_id"),
+        ("recurringOccurrenceOverridden", "recurring_occurrence_overridden"),
     ]),
 }
 
@@ -261,6 +289,7 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "transaction": projection.upsert_tx,
     "recurring_rule": projection.upsert_recurring_rule,
     "installment_plan": projection.upsert_installment_plan,
+    "installment_period": projection.upsert_installment_period,
 }
 
 
@@ -366,6 +395,13 @@ def _delete_installment_plan(db: Session, ledger_id: str, sync_id: str, user_id:
     )
 
 
+def _delete_installment_period(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_installment_period(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="installment_period", entity_sync_id=sync_id,
+    )
+
+
 def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
     projection.delete_account(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -392,6 +428,7 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "budget": _delete_budget,
     "recurring_rule": _delete_recurring_rule,
     "installment_plan": _delete_installment_plan,
+    "installment_period": _delete_installment_period,
 }
 
 

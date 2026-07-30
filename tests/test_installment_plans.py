@@ -1,22 +1,26 @@
-"""分期付款(§2.3 MOZE_FEATURE_GAP_SD.md Phase 1)—— installment_plan entity 契约:
+"""分期付款(§2.3 / Phase 1.5 修正版 §2.12.1 MOZE_FEATURE_GAP_SD.md)——
+installment_plan / installment_period entity 契约:
 
-- web `/write/ledgers/{id}/installment-plans` 创建计画时同事务生成第一期交易
-  (`paid_periods=1`),交易带 `installment_plan_id` 反查
-- mobile `/sync/push` 的 `installment_plan` merge 契约(partial update 保留旧值)
-- `services.recurring_materializer.materialize_due_installment_plans`:
-  到期后续期生成交易 + 推进 paid_periods/next_period_at + 付满后 status='settled'
-  + 落一条通知
+- web `/write/ledgers/{id}/installment-plans` **建立當下依攤還算法一次算出
+  全部期数**,同事务为每期各写一笔 `read_tx_projection`(带
+  `installment_plan_id` 反查)+ 一笔 `read_installment_period_projection`,
+  不再依赖排程逐期生成(旧版
+  `recurring_materializer.materialize_due_installment_plans` 已整段删除)。
+- mobile `/sync/push` 的 `installment_plan` merge 契约(partial update 保留
+  旧值,含 Phase 1.5 新增的 6 个攤還参数字段)。
+- 差異化編輯:`PATCH .../periods/{n}` 單獨編輯(overridden)、
+  `POST .../rebalance-from/{n}` 調利率連同未來(跳過 overridden)、
+  `POST .../early-repay-principal` 部分還本、`POST .../payoff` 提前結清、
+  `POST .../terminate-future` 終止未來分期(不生成結清交易)。
 
 ============================================================================
-手动检查清单(跟 test_recurring_rules.py 同款,pytest 覆盖不到的运行时行为):
+手动检查清单(pytest 测不到的运行时行为):
 
-1. `POST /api/v1/internal/tasks/materialize-recurring`(admin token)手动触发
-   一次物化,确认返回体 `installment_transactions` 计数符合预期。
-2. `sqlite3 beecount.db` 查
-   `SELECT * FROM read_installment_plan_projection;` 确认
-   `paid_periods`/`next_period_at`/`status` 都正确推进 / 结清。
-3. `SELECT * FROM read_tx_projection WHERE installment_plan_sync_id = '<id>';`
-   应该能看到跟 periods 数一致的交易笔数(结清前是 paid_periods 笔)。
+1. `sqlite3 beecount.db` 查
+   `SELECT * FROM read_installment_period_projection WHERE plan_sync_id='<id>';`
+   确认本金/利息明细跟 `services/installment_amortization.py` 的算法一致。
+2. `GET /api/v1/notifications?category=reminder` 在 payoff / 早偿全额结清后
+   应该能看到"分期付款已结清"的通知。
 ============================================================================
 """
 from __future__ import annotations
@@ -30,8 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import Notification, ReadInstallmentPlanProjection, ReadTxProjection
-from src.services.recurring_materializer import materialize_due_installment_plans
+from src.models import ReadInstallmentPlanProjection
 
 
 def _make_client():
@@ -139,12 +142,37 @@ def _push(client, hdr, ledger_id, entity_type, sync_id, payload, *, device_id="d
     return r.json()
 
 
+def _transactions(client, hdr, ledger_id):
+    r = client.get(
+        f"/api/v1/read/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        params={"limit": 500},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _plans(client, hdr, ledger_id):
+    r = client.get(f"/api/v1/read/ledgers/{ledger_id}/installment-plans", headers=hdr)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _periods(client, hdr, ledger_id, plan_id):
+    r = client.get(
+        f"/api/v1/read/ledgers/{ledger_id}/installment-plans/{plan_id}/periods",
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
-# Web write:建计画同时生成第一期交易
+# Web write:建计画当下一次生成全部期数
 # ---------------------------------------------------------------------------
 
 
-def test_create_installment_plan_generates_first_period_tx():
+def test_create_installment_plan_generates_all_periods():
     client, _TS = _make_client()
     try:
         owner = _register(client, "ins1@example.com")
@@ -156,7 +184,7 @@ def test_create_installment_plan_generates_first_period_tx():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
-        first_period_at = datetime.now(timezone.utc)
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -172,37 +200,34 @@ def test_create_installment_plan_generates_first_period_tx():
         assert res.status_code == 200, res.text
         plan_id = res.json()["entity_id"]
 
-        # 计画本身:paid_periods=1,period_amount=100
-        res = client.get(
-            f"/api/v1/read/ledgers/{ledger_id}/installment-plans",
-            headers=hdr,
-        )
-        assert res.status_code == 200, res.text
-        plans = res.json()
+        plans = _plans(client, hdr, ledger_id)
         assert len(plans) == 1
         assert plans[0]["id"] == plan_id
         assert plans[0]["total_amount"] == 1200.0
         assert plans[0]["periods"] == 12
         assert plans[0]["period_amount"] == 100.0
-        assert plans[0]["paid_periods"] == 1
         assert plans[0]["status"] == "active"
+        assert plans[0]["repayment_method"] == "equal_principal"
+        assert plans[0]["paid_periods"] == 0, "首期还没到,全部都还没算发生"
 
-        # 第一期交易已经生成,带 installment_plan_id 反查
-        res = client.get(
-            f"/api/v1/read/ledgers/{ledger_id}/transactions",
-            headers=hdr,
-        )
-        assert res.status_code == 200, res.text
-        txs = res.json()
-        assert len(txs) == 1
-        assert txs[0]["amount"] == 100.0
-        assert txs[0]["installment_plan_id"] == plan_id
-        assert txs[0]["tx_type"] == "expense"
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 12, "建计画当下就应该生成全部 12 期,不是只有第一期"
+        assert all(t["amount"] == 100.0 for t in txs)
+        assert all(t["installment_plan_id"] == plan_id for t in txs)
+        assert all(t["tx_type"] == "expense" for t in txs)
+
+        periods = _periods(client, hdr, ledger_id, plan_id)
+        assert len(periods) == 12
+        assert [p["period_no"] for p in periods] == list(range(1, 13))
+        assert all(p["principal_amount"] == 100.0 for p in periods)
+        assert all(p["interest_amount"] == 0.0 for p in periods)
+        assert all(p["status"] == "generated" for p in periods)
+        assert all(p["tx_id"] is not None for p in periods)
     finally:
         app.dependency_overrides.clear()
 
 
-def test_update_installment_plan_can_settle_early():
+def test_installment_plan_plain_patch_can_settle():
     client, _TS = _make_client()
     try:
         owner = _register(client, "ins2@example.com")
@@ -222,7 +247,7 @@ def test_update_installment_plan_can_settle_early():
                 "base_change_id": base,
                 "total_amount": 300.0,
                 "periods": 3,
-                "first_period_at": datetime.now(timezone.utc).isoformat(),
+                "first_period_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             },
         )
         assert res.status_code == 200, res.text
@@ -235,10 +260,7 @@ def test_update_installment_plan_can_settle_early():
             json={"base_change_id": base, "status": "settled"},
         )
         assert res.status_code == 200, res.text
-
-        res = client.get(f"/api/v1/read/ledgers/{ledger_id}/installment-plans", headers=hdr)
-        plans = res.json()
-        assert plans[0]["status"] == "settled"
+        assert _plans(client, hdr, ledger_id)[0]["status"] == "settled"
     finally:
         app.dependency_overrides.clear()
 
@@ -267,6 +289,12 @@ def test_mobile_push_installment_plan_partial_update_keeps_existing_fields():
             "categoryId": "cat-electronics",
             "note": "手机",
             "status": "active",
+            "repaymentMethod": "equal_installment",
+            "interestPeriod": "daily",
+            "interestRate": 0.08,
+            "roundAmounts": False,
+            "remainderPosition": "first",
+            "gracePeriodMonths": 1,
         })
         # partial update:只改 note
         _push(client, hdr, "lg1", "installment_plan", "ins-1", {
@@ -285,86 +313,287 @@ def test_mobile_push_installment_plan_partial_update_keeps_existing_fields():
             assert row.total_amount == 600.0, "partial update 不该冲掉 total_amount"
             assert row.periods == 6
             assert row.category_sync_id == "cat-electronics"
-            assert row.paid_periods == 1
             assert row.status == "active"
+            assert row.repayment_method == "equal_installment"
+            assert row.interest_period == "daily"
+            assert row.interest_rate == 0.08
+            assert row.round_amounts is False
+            assert row.remainder_position == "first"
+            assert row.grace_period_months == 1
     finally:
         app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
-# 到期物化:后续各期
+# 差異化編輯
 # ---------------------------------------------------------------------------
 
 
-def test_materialize_due_installment_generates_next_period_and_settles():
-    client, TS = _make_client()
+def test_installment_period_patch_marks_overridden_and_skipped_by_rebalance():
+    client, _TS = _make_client()
     try:
-        owner = _register(client, "insmat1@example.com")
+        owner = _register(client, "insedit1@example.com")
         app_token, device = owner["access_token"], owner["device_id"]
-        ledger_id = "L_INSMAT1"
+        ledger_id = "L_INSEDIT1"
         _seed_ledger(client, app_token, device, ledger_id)
 
-        web = _login_web(client, "insmat1@example.com")
+        web = _login_web(client, "insedit1@example.com")
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
-        # 2 期计画,首期建计画时就生成;把 next_period_at 直接改到过去,
-        # 让 materializer 一跑就能补第二期并结清。
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
             headers=hdr,
             json={
                 "base_change_id": base,
-                "total_amount": 200.0,
-                "periods": 2,
-                "first_period_at": (datetime.now(timezone.utc) - timedelta(days=40)).isoformat(),
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+                "repayment_method": "equal_installment",
+                "interest_period": "monthly",
+                "interest_rate": 0.12,
             },
         )
         assert res.status_code == 200, res.text
         plan_id = res.json()["entity_id"]
 
-        with TS() as db:
-            plan_row = db.scalar(
-                select(ReadInstallmentPlanProjection).where(
-                    ReadInstallmentPlanProjection.sync_id == plan_id,
-                )
-            )
-            assert plan_row.paid_periods == 1
-            ledger_internal_id = plan_row.ledger_id
-            user_id = plan_row.user_id
-            # 强制过期,不依赖真实时间推进
-            plan_row.next_period_at = datetime.now(timezone.utc) - timedelta(hours=1)
-            db.commit()
+        periods_before = _periods(client, hdr, ledger_id, plan_id)
+        period_8_no = 8
 
-            generated = materialize_due_installment_plans(db)
-            db.commit()
-            assert generated == 1
+        # 单独编辑第 8 期,金额改成 500
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/periods/{period_8_no}",
+            headers=hdr,
+            json={"base_change_id": base, "amount": 500.0},
+        )
+        assert res.status_code == 200, res.text
 
-            txs = db.scalars(
-                select(ReadTxProjection).where(
-                    ReadTxProjection.ledger_id == ledger_internal_id,
-                )
-            ).all()
-            assert len(txs) == 2, "首期(建计画时)+ 第二期(materializer)共 2 笔"
-            assert all(t.installment_plan_sync_id == plan_id for t in txs)
+        periods = {p["period_no"]: p for p in _periods(client, hdr, ledger_id, plan_id)}
+        assert periods[8]["status"] == "overridden"
+        assert periods[8]["total_amount"] == 500.0
 
-            refreshed_plan = db.scalar(
-                select(ReadInstallmentPlanProjection).where(
-                    ReadInstallmentPlanProjection.sync_id == plan_id,
-                )
-            )
-            assert refreshed_plan.paid_periods == 2
-            assert refreshed_plan.status == "settled"
+        # 从第 6 期起调利率(连同未来),第 8 期(overridden)应该被跳过
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/rebalance-from/6",
+            headers=hdr,
+            json={"base_change_id": base, "interest_rate": 0.36},
+        )
+        assert res.status_code == 200, res.text
 
-            notif = db.scalar(select(Notification).where(Notification.user_id == user_id))
-            assert notif is not None
-            assert "结清" in notif.title
+        periods_after = {p["period_no"]: p for p in _periods(client, hdr, ledger_id, plan_id)}
+        # 第 1-5 期不受影响
+        for no in range(1, 6):
+            before = next(p for p in periods_before if p["period_no"] == no)
+            assert periods_after[no]["principal_amount"] == before["principal_amount"]
+            assert periods_after[no]["interest_amount"] == before["interest_amount"]
+        # 第 8 期(overridden)维持编辑后的值,不被 rebalance 覆盖
+        assert periods_after[8]["total_amount"] == 500.0
+        assert periods_after[8]["status"] == "overridden"
+        # 第 6/7/9-12 期被重算(利率大幅调高,利息应该变了)
+        assert periods_after[6]["interest_amount"] != periods_before[5]["interest_amount"]
+        # 未 overridden 的期数(6,7,9,10,11,12,共 7 期)本金加总应约等于剩余本金
+        remaining_targets = [periods_after[n] for n in (6, 7, 9, 10, 11, 12)]
+        recalculated_principal_sum = sum(p["principal_amount"] for p in remaining_targets)
+        prior_principal_sum = sum(
+            p["principal_amount"] for p in periods_before if p["period_no"] < 6
+        )
+        # 第 8 期(overridden)本金不算进"剩余待攤還本金"的重新分配里,单独核算
+        expected_remaining = 1200.0 - prior_principal_sum - periods_after[8]["principal_amount"]
+        assert abs(recalculated_principal_sum - expected_remaining) < 1.0
+    finally:
+        app.dependency_overrides.clear()
 
-        # 已结清,再跑一次不该继续生成
-        with TS() as db:
-            generated_again = materialize_due_installment_plans(db)
-            db.commit()
-            assert generated_again == 0
+
+def test_installment_early_repay_principal_reduces_future_periods():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrepay1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREPAY1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrepay1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/early-repay-principal",
+            headers=hdr,
+            json={"base_change_id": base, "payment_amount": 600.0},
+        )
+        assert res.status_code == 200, res.text
+
+        periods = _periods(client, hdr, ledger_id, plan_id)
+        assert len(periods) == 12, "部分还本不改变期数结构"
+        assert abs(sum(p["principal_amount"] for p in periods) - 600.0) < 1.0
+
+        txs = _transactions(client, hdr, ledger_id)
+        # 12 期分期交易 + 1 笔部分还本交易
+        assert len(txs) == 13
+        repay_tx = next(t for t in txs if t["note"] == "分期部分还本")
+        assert repay_tx["amount"] == 600.0
+
+        plans = _plans(client, hdr, ledger_id)
+        assert plans[0]["status"] == "active", "还没还清,计画维持 active"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_early_repay_principal_full_amount_settles_plan():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrepay2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREPAY2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrepay2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/early-repay-principal",
+            headers=hdr,
+            json={"base_change_id": base, "payment_amount": 1200.0},
+        )
+        assert res.status_code == 200, res.text
+
+        assert _periods(client, hdr, ledger_id, plan_id) == []
+        plans = _plans(client, hdr, ledger_id)
+        assert plans[0]["status"] == "settled"
+
+        txs = _transactions(client, hdr, ledger_id)
+        # 原 12 期交易全部删除,只留一笔还本交易
+        assert len(txs) == 1
+        assert txs[0]["note"] == "分期部分还本"
+        assert txs[0]["amount"] == 1200.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_payoff_deletes_future_periods_and_generates_settlement_tx():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "inspayoff1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSPAYOFF1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "inspayoff1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/payoff",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert res.status_code == 200, res.text
+
+        assert _periods(client, hdr, ledger_id, plan_id) == []
+        plans = _plans(client, hdr, ledger_id)
+        assert plans[0]["status"] == "settled"
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 1, "原 12 期交易全被提前结清删除,只留一笔结清交易"
+        assert txs[0]["note"] == "分期提前结清"
+        assert txs[0]["amount"] == 1200.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_terminate_future_deletes_without_settlement_tx():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insterm1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSTERM1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insterm1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/terminate-future",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert res.status_code == 200, res.text
+
+        assert _periods(client, hdr, ledger_id, plan_id) == []
+        plans = _plans(client, hdr, ledger_id)
+        assert plans[0]["status"] == "terminated"
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert txs == [], "终止未来分期不生成结清交易,全部未到期期直接删除"
     finally:
         app.dependency_overrides.clear()

@@ -4,15 +4,21 @@ import type {
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CategoryPayload,
+  InstallmentEarlyRepayPayload,
+  InstallmentPayoffPayload,
+  InstallmentPeriodUpdatePayload,
   InstallmentPlanCreatePayload,
   InstallmentPlanUpdatePayload,
+  InstallmentRebalancePayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
   ReadAccount,
   ReadCategory,
   ReadTag,
+  RecurringOccurrenceUpdatePayload,
   RecurringRuleCreatePayload,
   RecurringRuleUpdatePayload,
+  RecurringUpdateFromPayload,
   TagPayload,
   TxPayload,
   WriteCommitMeta
@@ -265,7 +271,69 @@ export async function deleteRecurringRule(
   )
 }
 
-/** MOZE_FEATURE_GAP_SD.md §2.3 —— 分期付款计划。POST 建计画会同事务生成第一期交易。 */
+/** §2.12.2:单独编辑某一期已生成的 occurrence 交易(标记 overridden)。 */
+export async function updateRecurringOccurrence(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  txId: string,
+  baseChangeId: number,
+  payload: RecurringOccurrenceUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}/occurrences/${encodeURIComponent(txId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.2:单独删除某一期已生成的 occurrence 交易。 */
+export async function deleteRecurringOccurrence(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  txId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}/occurrences/${encodeURIComponent(txId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** §2.12.2:修改連同未來 —— 更新规则本身字段 + 该期以后所有未 overridden 的已生成交易。 */
+export async function updateRecurringRuleFrom(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  txId: string,
+  baseChangeId: number,
+  payload: RecurringUpdateFromPayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}/update-from/${encodeURIComponent(txId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.2:终止未来週期 —— 删除所有未发生的已生成交易,规则标记 enabled=false。 */
+export async function terminateRecurringRuleFuture(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}/terminate-future`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.3 / Phase 1.5 修正版 §2.12.1 —— 分期付款计划。
+ * POST 建计画会依攤還算法同事务一次生成**全部**期数(不再只生成第一期)。 */
 export async function createInstallmentPlan(
   token: string,
   ledgerId: string,
@@ -304,6 +372,82 @@ export async function deleteInstallmentPlan(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** §2.12.1:编辑单期(金额/日期/备注),标记 overridden。 */
+export async function updateInstallmentPeriod(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  periodNo: number,
+  baseChangeId: number,
+  payload: InstallmentPeriodUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/periods/${periodNo}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.1:调利率(可选换攤還方式),连同未来对未 overridden 的期数重算。 */
+export async function rebalanceInstallmentPlan(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  periodNo: number,
+  baseChangeId: number,
+  payload: InstallmentRebalancePayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/rebalance-from/${periodNo}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.1:部分还本,重算未 overridden 的未来期数。 */
+export async function earlyRepayInstallmentPrincipal(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+  payload: InstallmentEarlyRepayPayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/early-repay-principal`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.1:提前结清,生成结清交易并删除未到期的未来期。 */
+export async function payoffInstallmentPlan(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+  payload: InstallmentPayoffPayload = {},
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/payoff`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** §2.12.1:终止未来分期,删除未到期期,不生成结清交易。 */
+export async function terminateInstallmentPlanFuture(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/terminate-future`,
     token,
     { base_change_id: baseChangeId },
   )

@@ -551,6 +551,14 @@ class ReadTxProjection(Base):
     # read_installment_plan_projection.sync_id。None = 普通交易(含分期计划
     # 本身可能已建了第一期时也带这个值)。
     installment_plan_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 週期性收支(§2.12.2 Phase 1.5):有值 = 这笔交易是某个 recurring rule
+    # 生成的一次 occurrence,反查 read_recurring_rule_projection.sync_id。
+    recurring_rule_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # True = 这笔 occurrence 被 PATCH .../occurrences/{tx_sync_id} 单独编辑过,
+    # 之后 update-from / 视窗续产生都要跳过它,不能被批次覆盖。
+    recurring_occurrence_overridden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
 
 Index(
@@ -727,10 +735,14 @@ Index(
 
 
 class ReadRecurringRuleProjection(Base):
-    """週期性收支规则(§2.2 MOZE_FEATURE_GAP_SD.md)。ledger-scoped,跟 budget
-    同款 PK=(ledger_id, sync_id)。到期由 services.recurring_materializer 扫
-    `enabled=True AND next_run_at <= now()` 生成真正的 transaction,并把
-    `next_run_at` 推进到下一週期(见该模块 docstring)。"""
+    """週期性收支规则(§2.2 / Phase 1.5 修正版 §2.12.2 MOZE_FEATURE_GAP_SD.md)。
+    ledger-scoped,跟 budget 同款 PK=(ledger_id, sync_id)。建规则(或建交易
+    当下顺便设週期)时就已经依 `services.recurring_schedule` 批次生成一个
+    视窗的 occurrence transaction(带 `recurring_rule_sync_id` 反查),
+    `generated_until_at` 记录生成到哪个时间点;没设 `end_at` 的长期规则由
+    `services.recurring_materializer.refill_recurring_windows` 低频续产生。
+    `next_run_at` 建规则之后不再被排程推进,只作为"这条规则的原始锚点时间"
+    历史相容字段保留。"""
 
     __tablename__ = "read_recurring_rule_projection"
 
@@ -755,6 +767,14 @@ class ReadRecurringRuleProjection(Base):
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Phase 1.5(§2.12.2):已经批次生成 occurrence 交易到哪个时间点了。
+    # None = 尚未生成过(理论上不会出现,POST 建规则时就会立刻生成一个窗口)。
+    generated_until_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 简单 frequency+interval 无法表达的规则(例如"每週六日"/"每月10号"),
+    # 存 JSON 字串,None = 用 frequency+interval。详见 services.recurring_schedule。
+    advanced_rule_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -766,11 +786,16 @@ Index(
 
 
 class ReadInstallmentPlanProjection(Base):
-    """分期付款计划(§2.3 MOZE_FEATURE_GAP_SD.md)。ledger-scoped。创建计画时
-    通常立刻生成第一期交易(`paid_periods=1`),之后由
-    services.recurring_materializer 按 `next_period_at` 逐期生成剩余交易,
-    每期都在 `read_tx_projection.installment_plan_sync_id` 反查回这张表。
-    `status`: 'active' / 'settled'(提前结清或已付满 periods)。"""
+    """分期付款计划(§2.3 / Phase 1.5 修正版见 §2.12.1 MOZE_FEATURE_GAP_SD.md)。
+    ledger-scoped。建计画当下依 `repayment_method`/`interest_period`/
+    `interest_rate`/`grace_period_months` 用 services.installment_amortization
+    一次算出全部期数,同一个 commit 写入 N 笔 read_installment_period_projection
+    + N 笔 read_tx_projection(每笔都带 installment_plan_sync_id 反查)。
+    `next_period_at`/`paid_periods` 不再由排程写入,改成读路径
+    (snapshot_builder.build)从 period 列即时算出的 derived 字段,只是保留
+    列位置维持向下相容,不主动写入。
+    `status`: 'active' / 'settled'(提前结清 payoff)/ 'terminated'(终止未来
+    分期 terminate-future,没有生成结清交易)。"""
 
     __tablename__ = "read_installment_plan_projection"
 
@@ -785,15 +810,26 @@ class ReadInstallmentPlanProjection(Base):
     periods: Mapped[int] = mapped_column(Integer, default=1)
     period_amount: Mapped[float] = mapped_column(Float, default=0.0)
     first_period_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    # 下一期(尚未生成交易的那期)应该落地的时间;第一期在建计画时已经生成,
-    # 所以初始值 = first_period_at 之后一个周期。
+    # 不再由排程推进,仅作历史相容字段,见类 docstring。
     next_period_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     paid_periods: Mapped[int] = mapped_column(Integer, default=0)
     account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 'active' / 'settled'
+    # 'active' / 'settled' / 'terminated'
     status: Mapped[str] = mapped_column(String(16), default="active")
+    # 攤還方式:'equal_installment'(等额本息)/ 'equal_principal'(等额本金,
+    # 与既有 Phase 1 行为等价的默认值)/ 'fixed_interest'(固定利率算在原始
+    # 本金上)。
+    repayment_method: Mapped[str] = mapped_column(String(32), default="equal_principal")
+    # 计息方式:'monthly'(每期固定 rate/12)/ 'daily'(按当期实际天数计息)。
+    interest_period: Mapped[str] = mapped_column(String(16), default="monthly")
+    # 年利率(如 0.06 = 6%/年),0 = 无息。
+    interest_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    round_amounts: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 取整后的尾差塞进哪一期:'first' / 'last'。
+    remainder_position: Mapped[str] = mapped_column(String(16), default="last")
+    grace_period_months: Mapped[int] = mapped_column(Integer, default=0)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -801,6 +837,43 @@ Index(
     "ix_read_installment_plan_due",
     ReadInstallmentPlanProjection.status,
     ReadInstallmentPlanProjection.next_period_at,
+)
+
+
+class ReadInstallmentPeriodProjection(Base):
+    """分期付款每期明细(§2.12.1 Phase 1.5 新增)。ledger-scoped,PK 跟同组
+    entity 一致 (ledger_id, sync_id)。永远只由 server 端(建计画 / rebalance /
+    早偿 / 提前结清等写入口)生成,不接受 client 直接建立单笔 period,但仍走
+    完整 sync entity 六步(需要跨装置可见)。`tx_sync_id` 反查该期实际生成的
+    read_tx_projection 行(status='overridden' 之前若已生成过 tx,tx_sync_id
+    维持指向原 tx,只是该 tx 的金额/日期被单独改过)。"""
+
+    __tablename__ = "read_installment_period_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    plan_sync_id: Mapped[str] = mapped_column(String(255), index=True)
+    period_no: Mapped[int] = mapped_column(Integer)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    principal_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    interest_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # 'pending'(理论上不会出现,建立即生成)/ 'generated' / 'overridden'
+    # (被 PATCH 单期改过)/ 'refunded'。
+    status: Mapped[str] = mapped_column(String(16), default="generated")
+    tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_installment_period_plan",
+    ReadInstallmentPeriodProjection.plan_sync_id,
+    ReadInstallmentPeriodProjection.period_no,
 )
 
 

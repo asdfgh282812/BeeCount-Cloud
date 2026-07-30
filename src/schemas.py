@@ -497,6 +497,14 @@ class ReadLedgerDetailOut(ReadLedgerOut):
     source_change_id: int
 
 
+class ReadTxRefundSummaryOut(BaseModel):
+    """§2.12.3:某笔支出收到的单笔退款摘要,给交易明细页"已退款金额 + 退款
+    交易清单"用。"""
+    id: str
+    amount: float
+    happened_at: datetime
+
+
 class ReadTransactionOut(BaseModel):
     id: str
     tx_index: int
@@ -529,6 +537,13 @@ class ReadTransactionOut(BaseModel):
     refund_of_id: str | None = None
     # 分期付款(§2.3):指向所属分期计划的 sync_id;None = 非分期生成的交易。
     installment_plan_id: str | None = None
+    # 週期性收支(§2.12.2 Phase 1.5):指向所属规则的 sync_id;None = 非规则
+    # 生成的交易。recurring_occurrence_overridden=True 表示这笔已被单独编辑
+    # 过,规则批次更新/视窗续产生不会再覆盖它。
+    recurring_rule_id: str | None = None
+    recurring_occurrence_overridden: bool = False
+    # 退款反查(§2.12.3):这笔支出收到过哪些退款,空列表 = 没有退款。
+    refunds: list["ReadTxRefundSummaryOut"] = Field(default_factory=list)
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -652,16 +667,23 @@ class ReadRecurringRuleOut(BaseModel):
     next_run_at: datetime
     end_at: datetime | None = None
     enabled: bool
+    # Phase 1.5(§2.12.2):视窗续产生进度 + 进阶规则,None = 未设置/用简单
+    # frequency+interval。
+    generated_until_at: datetime | None = None
+    advanced_rule_json: dict[str, Any] | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
 
 
-InstallmentPlanStatus = Literal["active", "settled"]
+InstallmentPlanStatus = Literal["active", "settled", "terminated"]
+InstallmentRepaymentMethod = Literal["equal_installment", "equal_principal", "fixed_interest"]
+InstallmentInterestPeriod = Literal["monthly", "daily"]
+InstallmentRemainderPosition = Literal["first", "last"]
 
 
 class ReadInstallmentPlanOut(BaseModel):
-    """分期付款计划只读视图(§2.3)。"""
+    """分期付款计划只读视图(§2.3 / §2.12.1)。"""
     id: str
     total_amount: float
     periods: int
@@ -673,9 +695,28 @@ class ReadInstallmentPlanOut(BaseModel):
     category_id: str | None = None
     note: str | None = None
     status: InstallmentPlanStatus
+    repayment_method: InstallmentRepaymentMethod = "equal_principal"
+    interest_period: InstallmentInterestPeriod = "monthly"
+    interest_rate: float = 0.0
+    round_amounts: bool = True
+    remainder_position: InstallmentRemainderPosition = "last"
+    grace_period_months: int = 0
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
+
+
+class ReadInstallmentPeriodOut(BaseModel):
+    """分期单期明细只读视图(§2.12.1 Phase 1.5 新增)。"""
+    id: str
+    plan_id: str
+    period_no: int
+    due_at: datetime
+    principal_amount: float
+    interest_amount: float
+    total_amount: float
+    status: Literal["pending", "generated", "overridden", "refunded"]
+    tx_id: str | None = None
 
 
 class WorkspaceTransactionOut(ReadTransactionOut):
@@ -838,6 +879,15 @@ class WriteLedgerMetaUpdateRequest(WriteBaseRequest):
     month_start_day: int | None = Field(default=None, ge=1, le=28)
 
 
+class WriteTransactionRecurringInline(BaseModel):
+    """§2.12.2:挂在 `WriteTransactionCreateRequest.recurring` 上的週期参数。
+    交易本身的 tx_type/amount/category/account 就是規則的內容,不重複填。"""
+    frequency: RecurringFrequency = "monthly"
+    interval: int = Field(default=1, ge=1, le=365)
+    end_at: datetime | None = None
+    advanced_rule_json: dict[str, Any] | None = None
+
+
 class WriteTransactionCreateRequest(WriteBaseRequest):
     tx_type: Literal["expense", "income", "transfer"] = "expense"
     amount: float
@@ -864,6 +914,9 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     native_amount: float | None = None
     # 退款(§2.6):这笔交易是对 refund_of_id 那笔支出的退款。None = 普通交易。
     refund_of_id: str | None = None
+    # Phase 1.5(§2.12.2):建交易当下顺便把它设成週期性收支的起点。None =
+    # 普通交易。跟独立的 POST /recurring-rules 端点(事后设週期起点)并存。
+    recurring: WriteTransactionRecurringInline | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -961,6 +1014,10 @@ class WriteRecurringRuleCreateRequest(WriteBaseRequest):
     next_run_at: datetime
     end_at: datetime | None = None
     enabled: bool = True
+    # Phase 1.5(§2.12.2):简单 frequency+interval 表达不了的进阶规则(每週
+    # 六日/每月 N 号),None = 用 frequency+interval。见
+    # services.recurring_schedule 的两种 type。
+    advanced_rule_json: dict[str, Any] | None = None
 
 
 class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
@@ -976,22 +1033,87 @@ class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
     next_run_at: datetime | None = None
     end_at: datetime | None = None
     enabled: bool | None = None
+    advanced_rule_json: dict[str, Any] | None = None
+
+
+class WriteRecurringOccurrenceUpdateRequest(WriteBaseRequest):
+    """§2.12.2:单独编辑某一期已生成的 occurrence 交易,强制标记
+    `recurring_occurrence_overridden=True`(不暴露成可选字段,呼叫这个端点
+    本身就意味着"要跳过之后的批次覆盖")。"""
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    happened_at: datetime | None = None
+
+
+class WriteRecurringUpdateFromRequest(WriteBaseRequest):
+    """§2.12.2:修改連同未來 —— 更新规则本身字段,并套用到该期以后所有未
+    `overridden` 的已生成交易(不动 `happened_at`,只改内容)。"""
+    tx_type: Literal["expense", "income", "transfer"] | None = None
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    frequency: RecurringFrequency | None = None
+    interval: int | None = Field(default=None, ge=1, le=365)
+    advanced_rule_json: dict[str, Any] | None = None
 
 
 class WriteInstallmentPlanCreateRequest(WriteBaseRequest):
     total_amount: float = Field(gt=0)
-    periods: int = Field(ge=1, le=120)
+    # 上限从 120 提高到 600(支援 30-50 年期);§2.12.1 文件本身举了 360 期
+    # 的例子(信用卡帐单分期常见到 60,房贷类场景到 360)。
+    periods: int = Field(ge=1, le=600)
     first_period_at: datetime
     account_id: str | None = None
     category_id: str | None = None
     note: str | None = None
+    # Phase 1.5(§2.12.1)攤還算法参数,default 对齐 Phase 1 既有行为(等额
+    # 本金/无息)。
+    repayment_method: InstallmentRepaymentMethod = "equal_principal"
+    interest_period: InstallmentInterestPeriod = "monthly"
+    interest_rate: float = Field(default=0.0, ge=0)
+    round_amounts: bool = True
+    remainder_position: InstallmentRemainderPosition = "last"
+    grace_period_months: int = Field(default=0, ge=0)
 
 
 class WriteInstallmentPlanUpdateRequest(WriteBaseRequest):
     """提前结清用:传 `status="settled"`。不允许改期数/金额(语义混乱,
-    等同删了重建),跟 budget 的 update 限制同一设计取舍。"""
+    等同删了重建),跟 budget 的 update 限制同一设计取舍。攤還参数同理不可
+    改 —— 要调利率/提前还本走下面的差异化端点,不是打平这个 PATCH。"""
     note: str | None = None
     status: InstallmentPlanStatus | None = None
+
+
+class WriteInstallmentPeriodUpdateRequest(WriteBaseRequest):
+    """§2.12.1:编辑单期(金额/日期/备注),`overridden=true`,之后整批重算
+    (rebalance-from/early-repay-principal)会跳过这期。"""
+    amount: float | None = Field(default=None, gt=0)
+    due_at: datetime | None = None
+    note: str | None = None
+
+
+class WriteInstallmentRebalanceRequest(WriteBaseRequest):
+    """§2.12.1:调利率(可选换攤還方式),连同未來 —— 从指定期数起对未
+    `overridden` 的期数依攤還演算法重算。"""
+    interest_rate: float = Field(ge=0)
+    repayment_method: InstallmentRepaymentMethod | None = None
+
+
+class WriteInstallmentEarlyRepayRequest(WriteBaseRequest):
+    """§2.12.1:部分还本 —— 减少剩余本金,重算未 overridden 的未来期数。"""
+    payment_amount: float = Field(gt=0)
+    account_id: str | None = None
+    happened_at: datetime | None = None
+
+
+class WriteInstallmentPayoffRequest(WriteBaseRequest):
+    """§2.12.1:提前结清 —— 算剩余本金+当期应计利息,生成一笔结清交易,
+    删除所有未到期的未来期。"""
+    account_id: str | None = None
+    happened_at: datetime | None = None
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):

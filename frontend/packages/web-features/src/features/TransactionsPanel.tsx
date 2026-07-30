@@ -334,18 +334,6 @@ export function TransactionsPanel({
     )
   }, [categories, form.category_name, form.tx_type])
 
-  // 退款(§2.6):候选列表来自当前已加载的 rows(该账本最近一页交易),只挑
-  // expense 类型且不是自己。这是已知限制 —— 只能从当前可见列表选,搜索范围
-  // 更大的场景需要专门的交易搜索 picker,先用轻量方案覆盖主流程。
-  const refundCandidates = useMemo(
-    () => rows.filter((row) => row.tx_type === 'expense' && row.id !== form.editingId),
-    [rows, form.editingId],
-  )
-  const selectedRefundTarget = useMemo(
-    () => refundCandidates.find((row) => row.id === form.refund_of_id) || null,
-    [refundCandidates, form.refund_of_id],
-  )
-
   const isTransfer = form.tx_type === 'transfer'
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
   // 转账必须两端都选（否则无法表达方向）。
@@ -368,7 +356,9 @@ export function TransactionsPanel({
         category_name: '',
         category_kind: 'transfer',
         exclude_from_stats: false,
-        exclude_from_budget: false
+        exclude_from_budget: false,
+        // 分期只对 expense 有意义,切走时关掉(Phase 1.5 §2.12.1)。
+        installment_enabled: false
       })
       return
     }
@@ -381,7 +371,8 @@ export function TransactionsPanel({
       from_account_name: '',
       to_account_name: '',
       // 不计入预算仅 expense 显示;切到 income 时清掉
-      exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false
+      exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false,
+      installment_enabled: nextType === 'expense' ? form.installment_enabled : false
     })
   }
 
@@ -670,39 +661,11 @@ export function TransactionsPanel({
                 <span className="text-xs text-muted-foreground opacity-60">▾</span>
               </button>
             </div>
-            {/* 退款(§2.6):把这笔收入标记为对某笔支出的退款,统计上会从收入
-                挪去冲抵原支出的净额。只在 income 类型显示 —— 支出/转账没有
-                "退款对象"这个语意。 */}
-            {form.tx_type === 'income' ? (
-              <div className="space-y-1 md:col-span-2">
-                <Label>{t('transactions.field.refundOf')}</Label>
-                <Select
-                  value={form.refund_of_id || '__none__'}
-                  onValueChange={(value) =>
-                    onFormChange({ ...form, refund_of_id: value === '__none__' ? '' : value })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('transactions.placeholder.refundOf')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
-                      <span className="text-muted-foreground">{t('common.none')}</span>
-                    </SelectItem>
-                    {selectedRefundTarget && !refundCandidates.some((row) => row.id === selectedRefundTarget.id) ? (
-                      <SelectItem value={selectedRefundTarget.id}>
-                        {refundTargetLabel(selectedRefundTarget)}
-                      </SelectItem>
-                    ) : null}
-                    {refundCandidates.map((row) => (
-                      <SelectItem key={row.id} value={row.id}>
-                        {refundTargetLabel(row)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
+            {/* 退款(§2.6 / §2.12.3):發起入口已搬到交易明細頁的「退款」按鈕
+                (TransactionDetailDialog),這裡不再提供手動挑選退款對象的
+                下拉——編輯既有退款交易時 `form.refund_of_id` 原樣保留,只是
+                沒有 UI 能再手動改它,對齊 Moze「退款關聯只能從發起流程建立」
+                的設計。 */}
 
             <div className="space-y-1 md:col-span-2">
               <Label>{t('transactions.table.note')}</Label>
@@ -712,6 +675,294 @@ export function TransactionsPanel({
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
+            {/* Phase 1.5(§2.12.1/§2.12.2):建交易当下顺便设成週期性收支/
+                分期付款起点。只在新建(非编辑)时显示,两者互斥(挂在同一笔
+                amount/happened_at 上,语意冲突);分期只对 expense 有意义。 */}
+            {!form.editingId ? (
+              <div className="space-y-1 md:col-span-2">
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                  <p className="text-sm font-medium">{t('transactions.toggle.recurring')}</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.recurring_enabled}
+                    aria-label={t('transactions.toggle.recurring') as string}
+                    onClick={() =>
+                      onFormChange({
+                        ...form,
+                        recurring_enabled: !form.recurring_enabled,
+                        installment_enabled: false
+                      })
+                    }
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                      form.recurring_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        form.recurring_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {form.recurring_enabled ? (
+                  <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>{t('recurringRules.field.frequency')}</Label>
+                      <Select
+                        value={form.recurring_frequency}
+                        onValueChange={(value) =>
+                          onFormChange({ ...form, recurring_frequency: value as TxForm['recurring_frequency'] })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="daily">{t('recurringRules.frequency.daily')}</SelectItem>
+                          <SelectItem value="weekly">{t('recurringRules.frequency.weekly')}</SelectItem>
+                          <SelectItem value="monthly">{t('recurringRules.frequency.monthly')}</SelectItem>
+                          <SelectItem value="yearly">{t('recurringRules.frequency.yearly')}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('recurringRules.field.interval')}</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={form.recurring_interval}
+                        onChange={(e) => onFormChange({ ...form, recurring_interval: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('recurringRules.field.endAt')}</Label>
+                      <Input
+                        type="datetime-local"
+                        value={form.recurring_end_at}
+                        onChange={(e) => onFormChange({ ...form, recurring_end_at: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('recurringRules.field.advancedMode')}</Label>
+                      <Select
+                        value={form.recurring_advanced_mode}
+                        onValueChange={(value) =>
+                          onFormChange({ ...form, recurring_advanced_mode: value as TxForm['recurring_advanced_mode'] })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">{t('recurringRules.advancedMode.none')}</SelectItem>
+                          <SelectItem value="weekly_days">{t('recurringRules.advancedMode.weeklyDays')}</SelectItem>
+                          <SelectItem value="monthly_day">{t('recurringRules.advancedMode.monthlyDay')}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {form.recurring_advanced_mode === 'weekly_days' ? (
+                      <div className="space-y-1 md:col-span-2">
+                        <Label>{t('recurringRules.field.weeklyDays')}</Label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const).map((key, index) => {
+                            const selected = form.recurring_weekly_days.includes(index)
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() =>
+                                  onFormChange({
+                                    ...form,
+                                    recurring_weekly_days: selected
+                                      ? form.recurring_weekly_days.filter((d) => d !== index)
+                                      : [...form.recurring_weekly_days, index].sort()
+                                  })
+                                }
+                                className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm transition-colors ${
+                                  selected
+                                    ? 'border-primary bg-primary text-primary-foreground'
+                                    : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40'
+                                }`}
+                              >
+                                {t(`recurringRules.weekday.${key}`)}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {form.recurring_advanced_mode === 'monthly_day' ? (
+                      <div className="space-y-1">
+                        <Label>{t('recurringRules.field.monthlyDay')}</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={form.recurring_monthly_day}
+                          onChange={(e) => onFormChange({ ...form, recurring_monthly_day: e.target.value })}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!form.editingId && form.tx_type === 'expense' ? (
+              <div className="space-y-1 md:col-span-2">
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                  <p className="text-sm font-medium">{t('transactions.toggle.installment')}</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.installment_enabled}
+                    aria-label={t('transactions.toggle.installment') as string}
+                    onClick={() =>
+                      onFormChange({
+                        ...form,
+                        installment_enabled: !form.installment_enabled,
+                        recurring_enabled: false
+                      })
+                    }
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                      form.installment_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        form.installment_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {form.installment_enabled ? (
+                  <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.periods')}</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={600}
+                        value={form.installment_periods}
+                        onChange={(e) => onFormChange({ ...form, installment_periods: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.repaymentMethod')}</Label>
+                      <Select
+                        value={form.installment_repayment_method}
+                        onValueChange={(value) =>
+                          onFormChange({
+                            ...form,
+                            installment_repayment_method: value as TxForm['installment_repayment_method']
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="equal_principal">
+                            {t('installmentPlans.repaymentMethod.equalPrincipal')}
+                          </SelectItem>
+                          <SelectItem value="equal_installment">
+                            {t('installmentPlans.repaymentMethod.equalInstallment')}
+                          </SelectItem>
+                          <SelectItem value="fixed_interest">
+                            {t('installmentPlans.repaymentMethod.fixedInterest')}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.interestRate')}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.001"
+                        value={form.installment_interest_rate}
+                        onChange={(e) => onFormChange({ ...form, installment_interest_rate: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.interestPeriod')}</Label>
+                      <Select
+                        value={form.installment_interest_period}
+                        onValueChange={(value) =>
+                          onFormChange({
+                            ...form,
+                            installment_interest_period: value as TxForm['installment_interest_period']
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="monthly">{t('installmentPlans.interestPeriod.monthly')}</SelectItem>
+                          <SelectItem value="daily">{t('installmentPlans.interestPeriod.daily')}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.gracePeriodMonths')}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={form.installment_grace_period_months}
+                        onChange={(e) =>
+                          onFormChange({ ...form, installment_grace_period_months: e.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('installmentPlans.field.remainderPosition')}</Label>
+                      <Select
+                        value={form.installment_remainder_position}
+                        onValueChange={(value) =>
+                          onFormChange({
+                            ...form,
+                            installment_remainder_position: value as TxForm['installment_remainder_position']
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="first">{t('installmentPlans.remainderPosition.first')}</SelectItem>
+                          <SelectItem value="last">{t('installmentPlans.remainderPosition.last')}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 md:col-span-2">
+                      <p className="text-sm font-medium">{t('installmentPlans.field.roundAmounts')}</p>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.installment_round_amounts}
+                        aria-label={t('installmentPlans.field.roundAmounts') as string}
+                        onClick={() =>
+                          onFormChange({ ...form, installment_round_amounts: !form.installment_round_amounts })
+                        }
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                          form.installment_round_amounts ? 'bg-primary' : 'bg-muted-foreground/30'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                            form.installment_round_amounts ? 'translate-x-[18px]' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {/* §三 标记开关 — 按当前 type 条件显示:
                   不计入收支:income / expense(转账本就不进收支,隐藏)
                   不计入预算:仅 expense(预算只统计支出) */}
@@ -820,14 +1071,6 @@ export function TransactionsPanel({
       />
     </>
   )
-}
-
-/** 退款 picker 里每行的展示文案:日期 · 分类 · 金额,方便在同金额的多笔支出里分辨。 */
-function refundTargetLabel(row: ReadTransaction): string {
-  const date = new Date(row.happened_at)
-  const dateStr = Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString()
-  const category = row.category_name || ''
-  return [dateStr, category, row.amount].filter((part) => `${part}`.trim().length > 0).join(' · ')
 }
 
 /**
