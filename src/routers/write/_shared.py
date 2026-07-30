@@ -63,6 +63,7 @@ from ...schemas import (
     WriteEntityDeleteRequest,
     WriteInstallmentEarlyRepayRequest,
     WriteInstallmentPayoffRequest,
+    WriteInstallmentPeriodRefundRequest,
     WriteInstallmentPeriodUpdateRequest,
     WriteInstallmentPlanCreateRequest,
     WriteInstallmentPlanUpdateRequest,
@@ -744,6 +745,25 @@ async def _commit_write_fast_tx(
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
+        if action == "delete" and prev_item.get("installmentPlanId"):
+            # 分期付款(§2.12.1 Phase 1.5):这笔交易是某个分期计画生成的一期。
+            # 这条快路径只删 read_tx_projection 单张表,不会清 read_
+            # installment_period_projection 里指回它的 tx_sync_id,也不会走
+            # SyncChange 通知别的设备该期已被移除 —— 直接放行会留下一条
+            # tx_sync_id 指向已删除交易的孤儿 period 记录(MOZE_FEATURE_GAP_SD.md
+            # §2.12.1 实测发现的"删除不联动"问题)。改期/结清/终止未来分期都
+            # 已经有对应端点会正确地同时清理 period + 交易,这里改成引导用户
+            # 去那边操作,而不是允许产生不一致状态。
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This transaction belongs to an installment plan. "
+                    "Use the installment plan's own actions (early repayment, "
+                    "payoff, stop future periods, or delete the plan) instead "
+                    "of deleting the transaction directly."
+                ),
+            )
+
         if action == "delete":
             # 删 tx 前收集引用的 cloudFileId,删后 GC 孤立附件(物理 blob + 行)
             tx_file_ids = projection.collect_tx_attachment_fileids(
@@ -949,6 +969,11 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["recurringRuleId"] = row.recurring_rule_sync_id
     if row.recurring_occurrence_overridden:
         item["recurringOccurrenceOverridden"] = True
+    # 分期付款(§2.12.1 Phase 1.5):同理,fast path 编辑一笔分期期数交易的
+    # 其它字段时,不带上这个会让 installmentPlanId 反查在这次 upsert 后被
+    # 静默清空(merge 逻辑只保留 prev_item 里已有的 key)。
+    if row.installment_plan_sync_id is not None:
+        item["installmentPlanId"] = row.installment_plan_sync_id
     return item
 
 
@@ -1370,6 +1395,7 @@ __all__ = [
     'WriteEntityDeleteRequest',
     'WriteInstallmentEarlyRepayRequest',
     'WriteInstallmentPayoffRequest',
+    'WriteInstallmentPeriodRefundRequest',
     'WriteInstallmentPeriodUpdateRequest',
     'WriteInstallmentPlanCreateRequest',
     'WriteInstallmentPlanUpdateRequest',

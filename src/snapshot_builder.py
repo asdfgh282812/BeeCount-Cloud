@@ -414,20 +414,28 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          interest_rate, round_amounts, remainder_position,
          grace_period_months) in db.execute(ins_stmt).all():
         plan_periods = periods_by_plan.get(sid) or []
-        # paidPeriods/nextPeriodAt 不再由排程写入,这里从 period 明细即时算出
-        # (见 ReadInstallmentPlanProjection docstring)。没有 period 明细
-        # (理论上不会出现,兜底)时退回旧字段语义:0 期已付,下一期=首期。
-        due_dates = sorted(
-            datetime.fromisoformat(p["dueAt"]) for p in plan_periods if p.get("dueAt")
+        # paidPeriods/nextPeriodAt/periodAmount 不再由排程写入,这里从 period
+        # 明细即时算出(见 ReadInstallmentPlanProjection docstring)。没有
+        # period 明细(理论上不会出现,兜底)时退回旧字段语义:0 期已付,
+        # 下一期=首期,periodAmount=创建时算的天真平均值。
+        periods_sorted = sorted(
+            (datetime.fromisoformat(p["dueAt"]), p["totalAmount"])
+            for p in plan_periods if p.get("dueAt")
         )
+        due_dates = [d for d, _ in periods_sorted]
         paid_periods = sum(1 for d in due_dates if d <= now)
-        future_dates = [d for d in due_dates if d > now]
-        next_period_at = future_dates[0] if future_dates else (due_dates[-1] if due_dates else first_period_at)
+        future_periods = [(d, amt) for d, amt in periods_sorted if d > now]
+        if future_periods:
+            next_period_at, current_period_amount = future_periods[0]
+        elif periods_sorted:
+            next_period_at, current_period_amount = periods_sorted[-1]
+        else:
+            next_period_at, current_period_amount = first_period_at, period_amount
         p: dict[str, Any] = {
             "syncId": sid,
             "totalAmount": total_amount,
             "periods": periods,
-            "periodAmount": period_amount,
+            "periodAmount": current_period_amount,
             "firstPeriodAt": _to_iso_utc(first_period_at),
             "nextPeriodAt": _to_iso_utc(next_period_at),
             "paidPeriods": paid_periods,

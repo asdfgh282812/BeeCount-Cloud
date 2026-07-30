@@ -14,6 +14,9 @@ POST 建計畫時依 `services.installment_amortization` 一次算出**全部**�
 - `POST .../early-repay-principal`:部分还本,重算未来期 + 生成一笔还本交易。
 - `POST .../payoff`:提前结清,生成结清交易 + 删除未到期期。
 - `POST .../terminate-future`:终止未来分期,删除未到期期,不生成结清交易。
+- `POST .../refund-period`:单期退款(§2.6),按 tx_id 定位某一期,建一笔
+  income 退款交易 + 把该期状态标成 'refunded',原交易保留不动。跟"整笔
+  退款"(前端改叫 `DELETE .../{plan_id}` 整个计划)是互斥的两个选项。
 """
 from __future__ import annotations
 
@@ -274,6 +277,85 @@ async def update_installment_period_ep(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_installment_period_update",
+        mutate=_mutate,
+    )
+
+
+@router.post(
+    "/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+    response_model=WriteCommitMeta,
+    responses=_WRITE_RESPONSES,
+)
+async def refund_installment_period_ep(
+    ledger_id: str,
+    plan_id: str,
+    req: WriteInstallmentPeriodRefundRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    device_id: str = Header(default="web-console", alias="X-Device-ID"),
+    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WriteCommitMeta:
+    payload = req.model_dump(mode="json")
+    ledger, replay = _prepare_write(
+        db=db,
+        current_user=current_user,
+        ledger_external_id=ledger_id,
+        required_roles=_OWNER_ONLY_ROLES,
+        idempotency_key=idempotency_key,
+        device_id=device_id,
+        method=request.method,
+        path=request.url.path,
+        payload=payload,
+    )
+    if replay:
+        return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    now = req.happened_at or _utcnow()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    def _mutate(snapshot: dict) -> tuple[dict, str]:
+        plan = _find_plan(snapshot, plan_id)
+        all_periods = _plan_periods(snapshot, plan_id)
+        target = next((p for p in all_periods if p.get("txId") == req.tx_id), None)
+        if target is None:
+            raise KeyError("installment period not found for tx_id")
+        if target.get("status") == "refunded":
+            raise ValueError("write validation failed: period already refunded")
+        actor_fields = _actor_fields(mutate_payload)
+
+        # 单期退款:建一笔 income 交易指回原本那期的 expense tx(跟一般交易
+        # 退款走同一套 refund_of_id 契约,§2.6),不额外打上 installmentPlanId
+        # —— 这笔退款交易本身不是计划管理的"一期",只是普通引用,才不会被
+        # `_commit_write_fast_tx` 的"分期交易不能直接删"防呆挡住用户之后
+        # 想删掉/改掉这笔退款记录。
+        refund_tx_payload = {
+            "tx_type": "income",
+            "amount": req.amount if req.amount is not None else float(target.get("totalAmount") or 0.0),
+            "happened_at": now,
+            "note": req.note or "分期退款",
+            "account_id": plan.get("accountId"),
+            "refund_of_id": req.tx_id,
+            **actor_fields,
+        }
+        next_snapshot, refund_tx_id = _mutate_create_tx(snapshot, refund_tx_payload)
+        next_snapshot = update_installment_period(
+            next_snapshot, target["syncId"], {"status": "refunded", **actor_fields}
+        )
+        return next_snapshot, refund_tx_id
+
+    return await _commit_write(
+        request=request,
+        db=db,
+        current_user=current_user,
+        ledger=ledger,
+        base_change_id=req.base_change_id,
+        request_payload=payload,
+        idempotency_key=idempotency_key,
+        device_id=device_id,
+        audit_action="web_installment_period_refund",
         mutate=_mutate,
     )
 
@@ -723,6 +805,23 @@ async def delete_installment_plan_ep(
     if replay:
         return replay
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+
+    def _mutate(snapshot: dict) -> tuple[dict, str]:
+        _find_plan(snapshot, plan_id)  # 404 早退
+        all_periods = _plan_periods(snapshot, plan_id)
+        next_snapshot = snapshot
+        # 整个计画都要删,不像 terminate-future 只砍未到期期 —— 已发生的期数
+        # 生成的交易也一并清掉,否则删计画后 Transactions 页还留着一堆挂着
+        # 已失效 installmentPlanId 的孤儿交易(见 MOZE_FEATURE_GAP_SD.md
+        # §2.12.1 实测发现的"删除不联动"问题)。
+        for entry in all_periods:
+            next_snapshot = delete_installment_period(next_snapshot, entry["syncId"])
+            tx_id = entry.get("txId")
+            if tx_id:
+                next_snapshot = delete_transaction(next_snapshot, tx_id)
+        next_snapshot = delete_installment_plan(next_snapshot, plan_id, mutate_payload)
+        return next_snapshot, plan_id
+
     return await _commit_write(
         request=request,
         db=db,
@@ -733,5 +832,5 @@ async def delete_installment_plan_ep(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_installment_plan_delete",
-        mutate=lambda snapshot: (delete_installment_plan(snapshot, plan_id, mutate_payload), plan_id),
+        mutate=_mutate,
     )

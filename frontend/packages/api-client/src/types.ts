@@ -953,6 +953,18 @@ export type ReadInstallmentPeriod = {
   total_amount: number
   status: 'pending' | 'generated' | 'overridden' | 'refunded'
   tx_id?: string | null
+  // 单期退款(§2.6/§2.12.1):status === 'refunded' 时才有值。
+  refund_tx_id?: string | null
+  refund_amount?: number | null
+  refunded_at?: string | null
+}
+
+/** §2.6/§2.12.1:单期退款 —— 按该期的 tx_id 定位,建一笔 income 退款交易。 */
+export type InstallmentPeriodRefundPayload = {
+  tx_id: string
+  amount?: number | null
+  note?: string | null
+  happened_at?: string | null
 }
 
 /** §2.12.1:编辑单期(金额/日期/备注)，`overridden=true`。 */

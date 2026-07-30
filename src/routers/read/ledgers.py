@@ -742,27 +742,31 @@ def list_installment_plans(
         select(
             ReadInstallmentPeriodProjection.plan_sync_id,
             ReadInstallmentPeriodProjection.due_at,
+            ReadInstallmentPeriodProjection.total_amount,
         ).where(ReadInstallmentPeriodProjection.ledger_id == ledger.id)
     ).all()
-    due_dates_by_plan: dict[str, list[datetime]] = {}
-    for plan_sid, due_at in period_rows:
-        due_dates_by_plan.setdefault(plan_sid, []).append(_to_utc(due_at))
+    periods_by_plan: dict[str, list[tuple[datetime, float]]] = {}
+    for plan_sid, due_at, total_amount in period_rows:
+        periods_by_plan.setdefault(plan_sid, []).append((_to_utc(due_at), float(total_amount or 0)))
 
     out: list[ReadInstallmentPlanOut] = []
     for row in rows:
-        due_dates = sorted(due_dates_by_plan.get(row.sync_id) or [])
+        periods_sorted = sorted(periods_by_plan.get(row.sync_id) or [])
+        due_dates = [d for d, _ in periods_sorted]
         paid_periods = sum(1 for d in due_dates if d <= now)
-        future_dates = [d for d in due_dates if d > now]
-        next_period_at = (
-            future_dates[0] if future_dates
-            else (due_dates[-1] if due_dates else _to_utc(row.first_period_at))
-        )
+        future_periods = [(d, amt) for d, amt in periods_sorted if d > now]
+        if future_periods:
+            next_period_at, current_period_amount = future_periods[0]
+        elif periods_sorted:
+            next_period_at, current_period_amount = periods_sorted[-1]
+        else:
+            next_period_at, current_period_amount = _to_utc(row.first_period_at), float(row.period_amount or 0)
         out.append(
             ReadInstallmentPlanOut(
                 id=row.sync_id,
                 total_amount=float(row.total_amount or 0),
                 periods=int(row.periods or 1),
-                period_amount=float(row.period_amount or 0),
+                period_amount=current_period_amount,
                 first_period_at=row.first_period_at,
                 next_period_at=next_period_at,
                 paid_periods=paid_periods,
@@ -806,20 +810,50 @@ def list_installment_periods(
             ReadInstallmentPeriodProjection.plan_sync_id == plan_id,
         ).order_by(ReadInstallmentPeriodProjection.period_no.asc())
     ).all()
-    return [
-        ReadInstallmentPeriodOut(
-            id=row.sync_id,
-            plan_id=row.plan_sync_id,
-            period_no=row.period_no,
-            due_at=row.due_at,
-            principal_amount=float(row.principal_amount or 0.0),
-            interest_amount=float(row.interest_amount or 0.0),
-            total_amount=float(row.total_amount or 0.0),
-            status=cast("Any", row.status or "generated"),
-            tx_id=row.tx_sync_id,
+    # 单期退款(§2.6/§2.12.1)反查:哪期收到过退款,同 ledgers.py 里给普通交易
+    # 用的 refunds_by_target 是同一个模式,只是 join key 换成 period.tx_sync_id
+    # (退款交易的 refund_of_sync_id 指向的是"原本那期的 tx",不是 period 自己
+    # 的 sync_id)。一期理论上只会被退一次,多笔情况下取最新一笔。
+    period_tx_ids = [row.tx_sync_id for row in rows if row.tx_sync_id]
+    refund_by_tx_id: dict[str, tuple[str, float, datetime]] = {}
+    if period_tx_ids:
+        refund_rows = db.execute(
+            select(
+                ReadTxProjection.refund_of_sync_id,
+                ReadTxProjection.sync_id,
+                ReadTxProjection.amount,
+                ReadTxProjection.happened_at,
+            ).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.refund_of_sync_id.in_(period_tx_ids),
+            )
+        ).all()
+        for target_tx_id, refund_sync_id, refund_amount, refund_happened_at in refund_rows:
+            happened_at_utc = _to_utc(refund_happened_at)
+            existing = refund_by_tx_id.get(target_tx_id)
+            if existing is None or happened_at_utc > existing[2]:
+                refund_by_tx_id[target_tx_id] = (refund_sync_id, float(refund_amount), happened_at_utc)
+
+    out: list[ReadInstallmentPeriodOut] = []
+    for row in rows:
+        refund_info = refund_by_tx_id.get(row.tx_sync_id) if row.tx_sync_id else None
+        out.append(
+            ReadInstallmentPeriodOut(
+                id=row.sync_id,
+                plan_id=row.plan_sync_id,
+                period_no=row.period_no,
+                due_at=row.due_at,
+                principal_amount=float(row.principal_amount or 0.0),
+                interest_amount=float(row.interest_amount or 0.0),
+                total_amount=float(row.total_amount or 0.0),
+                status=cast("Any", row.status or "generated"),
+                tx_id=row.tx_sync_id,
+                refund_tx_id=refund_info[0] if refund_info else None,
+                refund_amount=refund_info[1] if refund_info else None,
+                refunded_at=refund_info[2] if refund_info else None,
+            )
         )
-        for row in rows
-    ]
+    return out
 
 
 def _current_period_range(

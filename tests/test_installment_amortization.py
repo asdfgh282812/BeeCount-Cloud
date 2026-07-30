@@ -34,11 +34,11 @@ def test_equal_installment_monthly_locked_values():
         interest_rate=0.12,
     )
     assert len(periods) == 12
-    assert periods[0].principal_amount == 94.62
+    assert periods[0].principal_amount == 95.0
     assert periods[0].interest_amount == 12.0
-    assert periods[0].total_amount == 106.62
-    assert periods[11].principal_amount == 105.56
-    assert periods[11].interest_amount == 1.06
+    assert periods[0].total_amount == 107.0
+    assert periods[11].principal_amount == 107.0
+    assert periods[11].interest_amount == 1.0
     # 取整后本金加总必须精确等于本金(尾差已被 remainder_position 吸收)
     assert round(sum(p.principal_amount for p in periods), 2) == 1200.0
 
@@ -70,7 +70,7 @@ def test_grace_period_interest_only_then_amortize():
     assert periods[2].principal_amount == 120.0
     assert periods[2].interest_amount == 12.0
     # 余额递减,利息逐期减少
-    assert periods[3].interest_amount == 10.8
+    assert periods[3].interest_amount == 11.0
     assert round(sum(p.principal_amount for p in periods), 2) == 1200.0
 
 
@@ -81,9 +81,9 @@ def test_equal_installment_daily_interest_period_locked_values():
         interest_rate=0.12,
     )
     assert len(periods) == 12
-    assert periods[0].principal_amount == 94.38
-    assert periods[0].interest_amount == 12.23
-    assert periods[0].total_amount == 106.61
+    assert periods[0].principal_amount == 94.0
+    assert periods[0].interest_amount == 12.0
+    assert periods[0].total_amount == 106.0
     assert round(sum(p.principal_amount for p in periods), 2) == 1200.0
 
 
@@ -92,17 +92,17 @@ def test_remainder_position_first_vs_last():
         total_amount=1000, periods=3, first_period_at=FIRST,
         repayment_method="equal_principal", remainder_position="first",
     )
-    assert first_variant[0].principal_amount == 333.34
-    assert first_variant[1].principal_amount == 333.33
-    assert first_variant[2].principal_amount == 333.33
+    assert first_variant[0].principal_amount == 334.0
+    assert first_variant[1].principal_amount == 333.0
+    assert first_variant[2].principal_amount == 333.0
 
     last_variant = compute_periods(
         total_amount=1000, periods=3, first_period_at=FIRST,
         repayment_method="equal_principal", remainder_position="last",
     )
-    assert last_variant[0].principal_amount == 333.33
-    assert last_variant[1].principal_amount == 333.33
-    assert last_variant[2].principal_amount == 333.34
+    assert last_variant[0].principal_amount == 333.0
+    assert last_variant[1].principal_amount == 333.0
+    assert last_variant[2].principal_amount == 334.0
 
 
 def test_round_amounts_false_skips_rounding():

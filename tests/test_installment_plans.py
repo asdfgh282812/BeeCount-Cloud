@@ -393,8 +393,11 @@ def test_installment_period_patch_marks_overridden_and_skipped_by_rebalance():
         # 第 8 期(overridden)维持编辑后的值,不被 rebalance 覆盖
         assert periods_after[8]["total_amount"] == 500.0
         assert periods_after[8]["status"] == "overridden"
-        # 第 6/7/9-12 期被重算(利率大幅调高,利息应该变了)
-        assert periods_after[6]["interest_amount"] != periods_before[5]["interest_amount"]
+        # 第 6/7/9-12 期被重算(利率大幅调高,合计金额应该变了)
+        # 注意:不比较 interest_amount 本身——round_amounts 取整到整数金额后,
+        # 利率调整前后的利息raw值可能凑巧四舍五入到同一个整数(小额、小利率差
+        # 时很容易发生),total_amount 变动幅度更大,不会有这种巧合碰撞。
+        assert periods_after[6]["total_amount"] != periods_before[5]["total_amount"]
         # 未 overridden 的期数(6,7,9,10,11,12,共 7 期)本金加总应约等于剩余本金
         remaining_targets = [periods_after[n] for n in (6, 7, 9, 10, 11, 12)]
         recalculated_principal_sum = sum(p["principal_amount"] for p in remaining_targets)
@@ -595,5 +598,238 @@ def test_installment_terminate_future_deletes_without_settlement_tx():
 
         txs = _transactions(client, hdr, ledger_id)
         assert txs == [], "终止未来分期不生成结清交易,全部未到期期直接删除"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 单期退款(§2.6/§2.12.1):跟"整笔退款"(直接 DELETE 整个计划)是互斥的
+# 两个前端选项 —— 这里只测单期退款那条路径,整笔删除已有
+# test_installment_plan_delete_cascades_periods_and_transactions 覆盖。
+# ---------------------------------------------------------------------------
+
+
+def test_installment_refund_period_marks_refunded_and_creates_income_tx():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrefund1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREFUND1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrefund1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        periods_before = _periods(client, hdr, ledger_id, plan_id)
+        target = periods_before[0]
+        original_tx_id = target["tx_id"]
+        assert target["status"] == "generated"
+        assert target["refund_tx_id"] is None
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+            headers=hdr,
+            json={"base_change_id": base, "tx_id": original_tx_id},
+        )
+        assert res.status_code == 200, res.text
+        refund_tx_id = res.json()["entity_id"]
+        assert refund_tx_id != original_tx_id
+
+        periods_after = _periods(client, hdr, ledger_id, plan_id)
+        refunded = next(p for p in periods_after if p["tx_id"] == original_tx_id)
+        assert refunded["status"] == "refunded"
+        assert refunded["refund_tx_id"] == refund_tx_id
+        assert refunded["refund_amount"] == 100.0
+        assert refunded["refunded_at"] is not None
+        # 其它 11 期不受影响
+        others = [p for p in periods_after if p["tx_id"] != original_tx_id]
+        assert all(p["status"] == "generated" for p in others)
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 13, "原 12 期 expense + 1 笔退款 income,原交易不删除"
+        original_tx = next(t for t in txs if t["id"] == original_tx_id)
+        assert original_tx["tx_type"] == "expense"
+        assert original_tx["amount"] == 100.0, "原交易金额/内容不受退款影响"
+        refund_tx = next(t for t in txs if t["id"] == refund_tx_id)
+        assert refund_tx["tx_type"] == "income"
+        assert refund_tx["amount"] == 100.0
+        assert refund_tx["refund_of_id"] == original_tx_id
+        assert refund_tx["installment_plan_id"] is None, (
+            "退款交易本身不算这个计划管理的一期,不打 installmentPlanId,"
+            "否则会被 fast-path 的「分期交易不能直接删」防呆挡住用户改/删这笔退款"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_refund_period_custom_amount_and_note():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrefund2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREFUND2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrefund2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 300.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+        original_tx_id = _periods(client, hdr, ledger_id, plan_id)[0]["tx_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_id": original_tx_id,
+                "amount": 50.0,
+                "note": "只退一半",
+            },
+        )
+        assert res.status_code == 200, res.text
+        refund_tx_id = res.json()["entity_id"]
+
+        txs = _transactions(client, hdr, ledger_id)
+        refund_tx = next(t for t in txs if t["id"] == refund_tx_id)
+        assert refund_tx["amount"] == 50.0
+        assert refund_tx["note"] == "只退一半"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_refund_period_rejects_double_refund():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrefund3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREFUND3"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrefund3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 300.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+        original_tx_id = _periods(client, hdr, ledger_id, plan_id)[0]["tx_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+            headers=hdr,
+            json={"base_change_id": base, "tx_id": original_tx_id},
+        )
+        assert res.status_code == 200, res.text
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+            headers=hdr,
+            json={"base_change_id": base, "tx_id": original_tx_id},
+        )
+        assert res.status_code == 400, res.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_plan_delete_cascades_periods_and_transactions_after_partial_refund():
+    """整笔退款(前端第二个选项)复用既有的 DELETE 整个计划端点 —— 这里确认
+    即使某一期已经单独退过款,整笔删除仍然能正常级联清掉所有期数 + 交易
+    (含那笔单独退款生成的 income 交易本身不受影响,只是跟计划无关的普通交易,
+    删计划不会牵连到它)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insrefund4@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSREFUND4"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insrefund4@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 300.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+        original_tx_id = _periods(client, hdr, ledger_id, plan_id)[0]["tx_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}/refund-period",
+            headers=hdr,
+            json={"base_change_id": base, "tx_id": original_tx_id},
+        )
+        assert res.status_code == 200, res.text
+        refund_tx_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert res.status_code == 200, res.text
+
+        assert _plans(client, hdr, ledger_id) == []
+        assert _periods(client, hdr, ledger_id, plan_id) == []
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 1, "3 期 expense + 退款生成的 income 都要被删,只剩退款交易本身"
+        assert txs[0]["id"] == refund_tx_id
     finally:
         app.dependency_overrides.clear()

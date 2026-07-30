@@ -1782,12 +1782,22 @@ export function TransactionsPage() {
         txIds: Array.from(selectedTxIds),
       })
       const deleted = result.deleted_tx_ids.length
-      const failed = result.failed.length
-      if (failed > 0) {
+      const installmentLinked = result.failed.filter(
+        (f) => f.reason === 'installment_linked',
+      ).length
+      const otherFailed = result.failed.length - installmentLinked
+      if (installmentLinked > 0) {
+        toast.error(
+          t('txBatch.deleteResult.installmentLinked', {
+            deleted,
+            count: installmentLinked,
+          }) as string,
+        )
+      } else if (otherFailed > 0) {
         toast.error(
           t('txBatch.deleteResult.partial', {
             deleted,
-            failed,
+            failed: otherFailed,
           }) as string,
         )
       } else {
@@ -2157,6 +2167,11 @@ export function TransactionsPage() {
                     setTxFilterDraft((prev) => ({ ...prev, dateFrom: event.target.value }))
                   }
                 />
+                {txFilterDraft.dateFrom && !txFilterDraft.dateTo ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t('shell.filter.dateFromOnlyHint')}
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-1">
                 <Label>{t('shell.filter.dateTo')}</Label>
@@ -2167,6 +2182,11 @@ export function TransactionsPage() {
                     setTxFilterDraft((prev) => ({ ...prev, dateTo: event.target.value }))
                   }
                 />
+                {txFilterDraft.dateTo && !txFilterDraft.dateFrom ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t('shell.filter.dateToOnlyHint')}
+                  </p>
+                ) : null}
               </div>
             </div>
 

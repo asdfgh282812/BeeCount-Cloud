@@ -6,6 +6,7 @@ import type {
   CategoryPayload,
   InstallmentEarlyRepayPayload,
   InstallmentPayoffPayload,
+  InstallmentPeriodRefundPayload,
   InstallmentPeriodUpdatePayload,
   InstallmentPlanCreatePayload,
   InstallmentPlanUpdatePayload,
@@ -89,7 +90,7 @@ export async function deleteTransaction(
 
 export type BatchDeleteTxFailure = {
   tx_id: string
-  reason: 'not_found' | 'permission_denied' | 'conflict'
+  reason: 'not_found' | 'permission_denied' | 'conflict' | 'installment_linked'
   message?: string | null
 }
 
@@ -450,6 +451,23 @@ export async function terminateInstallmentPlanFuture(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/terminate-future`,
     token,
     { base_change_id: baseChangeId },
+  )
+}
+
+/** §2.6/§2.12.1:单期退款 —— 建一笔 income 退款交易(refund_of_id 指回该期
+ * 原本的 expense 交易),并把该期状态标成 'refunded'。原交易保留不动。跟
+ * "整笔退款"(直接 deleteInstallmentPlan)是互斥的两个前端选项。 */
+export async function refundInstallmentPeriod(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+  payload: InstallmentPeriodRefundPayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/refund-period`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
   )
 }
 

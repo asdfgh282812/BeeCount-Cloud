@@ -2,17 +2,23 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
+  deleteInstallmentPlan,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
+  refundInstallmentPeriod,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
+import { useT, useToast } from '@beecount/ui'
+import { ConfirmDialog } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
+import { useLedgerWrite } from '../app/useLedgerWrite'
+import { localizeError } from '../i18n/errors'
 import {
   dispatchOpenEditCategory,
   dispatchOpenEditTx,
@@ -25,6 +31,7 @@ import {
 } from '../lib/txDialogEvents'
 import { AccountDetailDialog } from './dialogs/AccountDetailDialog'
 import { CategoryDetailDialog } from './dialogs/CategoryDetailDialog'
+import { InstallmentRefundChoiceDialog } from './dialogs/InstallmentRefundChoiceDialog'
 import { TagDetailDialog } from './dialogs/TagDetailDialog'
 import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
 
@@ -50,12 +57,23 @@ const CATEGORY_STATS_LIMIT = 1000
  */
 export function GlobalEntityDialogs() {
   const navigate = useNavigate()
+  const t = useT()
+  const toast = useToast()
   const { token } = useAuth()
   const { activeLedgerId, currentLedger, currency: activeCurrency } = useLedgers()
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
+  const { retryOnConflict } = useLedgerWrite()
 
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
   const [tx, setTx] = useState<WorkspaceTransaction | null>(null)
+
+  // §2.6:分期交易的退款发起点 —— 先问「只退这一期」还是「整笔退款」。
+  // step === 'confirmWhole' 时展示第二个 destructive 二次确认(删整个计划
+  // 不可复原,跟本应用其它破坏性分期操作的既有模式一致)。
+  const [installmentRefund, setInstallmentRefund] = useState<
+    { tx: WorkspaceTransaction; step: 'choice' | 'confirmWhole' } | null
+  >(null)
+  const [installmentRefundBusy, setInstallmentRefundBusy] = useState(false)
 
   const [account, setAccount] = useState<WorkspaceAccount | null>(null)
   const [accountScope, setAccountScope] = useState<DetailScope>('current')
@@ -294,6 +312,13 @@ export function GlobalEntityDialogs() {
   const handleRefundTx = useCallback(
     (target: WorkspaceTransaction) => {
       setTx(null)
+      // §2.6:这笔交易是某个分期计划自动生成的一期 —— 先问用户要「只退这
+      // 一期」还是「整笔退款」,不直接走下面的一般退款预填表单(那条路径
+      // 不知道分期期数的存在,也不会把该期标记成 refunded)。
+      if (target.installment_plan_id) {
+        setInstallmentRefund({ tx: target, step: 'choice' })
+        return
+      }
       dispatchOpenNewTx({
         ledgerId: target.ledger_id,
         refundOf: {
@@ -310,6 +335,44 @@ export function GlobalEntityDialogs() {
     },
     [],
   )
+
+  const handleSingleInstallmentPeriodRefund = useCallback(async () => {
+    if (!installmentRefund) return
+    const target = installmentRefund.tx
+    const planId = target.installment_plan_id
+    if (!planId) return
+    setInstallmentRefundBusy(true)
+    try {
+      await retryOnConflict(target.ledger_id, (base) =>
+        refundInstallmentPeriod(token, target.ledger_id, planId, base, { tx_id: target.id }),
+      )
+      toast.success(t('installmentPlans.notice.periodRefunded'), t('notice.success'))
+      setInstallmentRefund(null)
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setInstallmentRefundBusy(false)
+    }
+  }, [installmentRefund, retryOnConflict, token, toast, t])
+
+  const handleConfirmWholeInstallmentPlanRefund = useCallback(async () => {
+    if (!installmentRefund) return
+    const target = installmentRefund.tx
+    const planId = target.installment_plan_id
+    if (!planId) return
+    setInstallmentRefundBusy(true)
+    try {
+      await retryOnConflict(target.ledger_id, (base) =>
+        deleteInstallmentPlan(token, target.ledger_id, planId, base),
+      )
+      toast.success(t('installmentPlans.notice.deleted'), t('notice.success'))
+      setInstallmentRefund(null)
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setInstallmentRefundBusy(false)
+    }
+  }, [installmentRefund, retryOnConflict, token, toast, t])
 
   const handleEditCategory = useCallback(
     (cat: WorkspaceCategory) => {
@@ -344,6 +407,25 @@ export function GlobalEntityDialogs() {
         onClose={() => setTx(null)}
         onEdit={handleEditTx}
         onRefund={handleRefundTx}
+      />
+      <InstallmentRefundChoiceDialog
+        open={installmentRefund?.step === 'choice'}
+        loading={installmentRefundBusy}
+        onCancel={() => setInstallmentRefund(null)}
+        onChooseSingle={() => void handleSingleInstallmentPeriodRefund()}
+        onChooseWhole={() =>
+          setInstallmentRefund((prev) => (prev ? { ...prev, step: 'confirmWhole' } : prev))
+        }
+      />
+      <ConfirmDialog
+        open={installmentRefund?.step === 'confirmWhole'}
+        title={t('installmentPlans.refundChoice.wholeConfirmTitle')}
+        description={t('installmentPlans.refundChoice.wholeConfirmDescription')}
+        confirmText={t('installmentPlans.refundChoice.whole')}
+        cancelText={t('dialog.cancel')}
+        loading={installmentRefundBusy}
+        onCancel={() => setInstallmentRefund(null)}
+        onConfirm={() => void handleConfirmWholeInstallmentPlanRefund()}
       />
       <AccountDetailDialog
         account={account}

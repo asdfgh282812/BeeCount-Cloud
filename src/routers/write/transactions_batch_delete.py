@@ -51,7 +51,7 @@ class BatchTxDeleteRequest(BaseModel):
 
 class BatchTxFailure(BaseModel):
     tx_id: str
-    reason: Literal["not_found", "permission_denied", "conflict"]
+    reason: Literal["not_found", "permission_denied", "conflict", "installment_linked"]
     message: str | None = None
 
 
@@ -136,7 +136,30 @@ async def delete_tx_batch(
     failed: list[BatchTxFailure] = []
     delete_payload = _payload_with_actor({}, current_user)
 
+    # 分期付款(§2.12.1 Phase 1.5):跟单笔 DELETE(_shared.py 的
+    # _commit_write_fast_tx)同理拦截 —— 直接删掉分期期数对应的交易会让
+    # read_installment_period_projection 悬空指向一笔不存在的 tx。这里在
+    # mutate 前先按 syncId 扫一遍 snapshot 算出哪些 tx_id 挂着分期计划,
+    # 不调用 delete_transaction、直接记 failed,跳过而不是让它半途抛异常。
+    plan_id_by_tx: dict[str, object] = {
+        str(it.get("syncId")): it.get("installmentPlanId")
+        for it in (snapshot.get("items") or [])
+        if isinstance(it, dict)
+    }
+
     for tx_id in unique_ids:
+        if plan_id_by_tx.get(tx_id):
+            failed.append(
+                BatchTxFailure(
+                    tx_id=tx_id,
+                    reason="installment_linked",
+                    message=(
+                        "This transaction belongs to an installment plan. "
+                        "Use the installment plan's own actions instead."
+                    ),
+                )
+            )
+            continue
         try:
             snapshot = delete_transaction(snapshot, tx_id, delete_payload)
             deleted_ids.append(tx_id)

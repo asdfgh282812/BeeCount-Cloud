@@ -717,6 +717,10 @@ class ReadInstallmentPeriodOut(BaseModel):
     total_amount: float
     status: Literal["pending", "generated", "overridden", "refunded"]
     tx_id: str | None = None
+    # 单期退款(§2.6/§2.12.1):反查指向本期 tx_id 的退款交易。None = 未退款。
+    refund_tx_id: str | None = None
+    refund_amount: float | None = None
+    refunded_at: datetime | None = None
 
 
 class WorkspaceTransactionOut(ReadTransactionOut):
@@ -1113,6 +1117,19 @@ class WriteInstallmentPayoffRequest(WriteBaseRequest):
     """§2.12.1:提前结清 —— 算剩余本金+当期应计利息,生成一笔结清交易,
     删除所有未到期的未来期。"""
     account_id: str | None = None
+    happened_at: datetime | None = None
+
+
+class WriteInstallmentPeriodRefundRequest(WriteBaseRequest):
+    """§2.6/§2.12.1:单期退款 —— 对分期计划里某一期(以其生成的 tx_id 定位)
+    建一笔 income 退款交易(refund_of_id 指向该期原本的 expense 交易),并把
+    该期状态标成 'refunded'。原交易本身不删除、不改动,在分期总表里仍可见,
+    只是多一个"已退款"标记 + 日期。跟"整笔退款"(直接 DELETE 整个计划,见
+    `delete_installment_plan_ep`)是互斥的两个选项,由前端在退款发起点先问
+    使用者要选哪一种。"""
+    tx_id: str
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
     happened_at: datetime | None = None
 
 

@@ -15,11 +15,13 @@ rebalance-from(調利率連同未來)/ early-repay-principal(部分還本連同�
   这个字段控制。
 - 寬限期(grace_period_months)对三种攤還方式一视同仁:前 g 期只還息不還本
   (principal=0,interest=按当期利率乘当前余额),从第 g+1 期才开始摊本金。
-- 取整(round_amounts)+ 余数位置(remainder_position):取整后每期本金加总
-  可能跟 total_amount 有 1 分以内的尾差,全部塞进 remainder_position 指定
-  的那一期(first=第一个摊还期,last=最后一期),该期利息不变,合计
-  (total_amount)重新算 principal+interest。round_amounts=False 时完全跳过
-  取整/尾差调整,保留浮点数原始精度。
+- 取整(round_amounts)+ 余数位置(remainder_position):这里的"取整"是取到
+  整数金额(元),不是取到分——UI 上叫「金額取整」,用户预期打开后每期
+  本金/利息/合计都不带小数。取整后每期本金加总可能跟 total_amount 有
+  1 元以内的尾差,全部塞进 remainder_position 指定的那一期(first=第一个
+  摊还期,last=最后一期),该期利息不变,合计(total_amount)重新算
+  principal+interest。round_amounts=False 时完全跳过取整/尾差调整,保留
+  浮点数原始精度。
 - `equal_installment`(等額本息)+ `interest_period="daily"` 时,标准年金公式
   假设每期利率相同,但按日计息下每期天数不同(28/30/31 天),利率会略有差异,
   没有闭式解可以直接套。这里用折现因子法广义化:对每个摊还期 k 的利率 r_k,
@@ -52,8 +54,9 @@ class PeriodPlan:
     total_amount: float
 
 
-def _round2(x: float) -> float:
-    return round(x, 2)
+def _round_unit(x: float) -> float:
+    """round_amounts=True 时的取整粒度:整数(元),不是分。"""
+    return float(round(x))
 
 
 def _period_rates(
@@ -168,11 +171,14 @@ def _apply_rounding(
     remainder_position: str,
 ) -> list[PeriodPlan]:
     rounded = [
-        PeriodPlan(r.period_no, r.due_at, _round2(r.principal_amount), _round2(r.interest_amount), 0.0)
+        PeriodPlan(
+            r.period_no, r.due_at,
+            _round_unit(r.principal_amount), _round_unit(r.interest_amount), 0.0,
+        )
         for r in results
     ]
-    principal_sum = round(sum(r.principal_amount for r in rounded), 2)
-    diff = round(total_amount - principal_sum, 2)
+    principal_sum = sum(r.principal_amount for r in rounded)
+    diff = round(total_amount) - principal_sum
     if diff:
         amort_indices = [i for i, r in enumerate(rounded) if r.period_no > grace_period_months]
         if amort_indices:
@@ -180,10 +186,10 @@ def _apply_rounding(
             adjusted = rounded[idx]
             rounded[idx] = PeriodPlan(
                 adjusted.period_no, adjusted.due_at,
-                _round2(adjusted.principal_amount + diff), adjusted.interest_amount, 0.0,
+                adjusted.principal_amount + diff, adjusted.interest_amount, 0.0,
             )
     return [
         PeriodPlan(r.period_no, r.due_at, r.principal_amount, r.interest_amount,
-                   _round2(r.principal_amount + r.interest_amount))
+                   r.principal_amount + r.interest_amount)
         for r in rounded
     ]

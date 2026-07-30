@@ -358,17 +358,17 @@ export function GlobalEditDialogs() {
         await retryOnConflict(ledgerId, (base) =>
           createInstallmentPlan(token, ledgerId, base, installmentPayload),
         )
-        notifySuccess(t('notice.transactionCreated'))
+        notifySuccess(t('notice.txCreated'))
       } else if (editTxForm.editingId) {
         await retryOnConflict(ledgerId, (base) =>
           updateTransaction(token, ledgerId, editTxForm.editingId!, base, payload),
         )
-        notifySuccess(t('notice.transactionUpdated'))
+        notifySuccess(t('notice.txUpdated'))
       } else {
         await retryOnConflict(ledgerId, (base) =>
           createTransaction(token, ledgerId, base, payload),
         )
-        notifySuccess(t('notice.transactionCreated'))
+        notifySuccess(t('notice.txCreated'))
       }
       return true
     } catch (err) {
