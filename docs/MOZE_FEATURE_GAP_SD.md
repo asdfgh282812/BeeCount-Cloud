@@ -25,7 +25,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 帳戶設置 | ✅ 已支援(`accounts`：type/currency/初始餘額/note/信用額度/帳單日/繳款日/末四碼/隱藏) |
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
-| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳、**週期性/分期/退款(Phase 1，server + web UI 已完成，mobile UI 待排期)**已有；拆帳/範本/語音記帳/記帳模式缺) |
+| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**週期性/分期/退款 Phase 1 已實作，但 2026-07-30 對照 Moze 原文發現建立時機/編輯語意/退款發起入口都跟真實設計有落差，Phase 1.5 修正見 §2.12，尚未開始**；拆帳/範本/語音記帳/記帳模式缺) |
 | 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期(分期本身已做通用版)/折抵/紅利/免息期建議全缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
@@ -71,6 +71,11 @@ main.py 註冊；也可手動 `POST /internal/tasks/materialize-recurring` 立�
 `/app/recurring-rules`(`RecurringRulesPage` + `RecurringRulesPanel`），入口
 在頭像下拉「工具」組，僅帳本 owner 可寫。mobile UI 仍待排期。
 
+**⚠️ 2026-07-30 對照 Moze 原文更正**：以上實作的「排程 loop 逐期生成」
+「獨立表單建規則」跟 Moze 真實設計（建立當下直接生成未來交易、掛在交易
+建立流程上、編輯要區分單筆/連同未來）有落差，修正版設計見 §2.12.2，
+下方原始 gap 分析內容予以保留供對照。
+
 Moze: [record/recurring.md](https://doc.moze.app/record/recurring.md)
 
 **現況**：完全沒有。`WriteTransactionCreateRequest` 只能建立單筆立即
@@ -112,6 +117,12 @@ Moze: [record/recurring.md](https://doc.moze.app/record/recurring.md)
 `/app/installment-plans`(`InstallmentPlansPage` + `InstallmentPlansPanel`），
 建計畫後 total_amount/periods/first_period_at 不可改(對齊 server 約束),
 只能提前結清或改備註。mobile UI 仍待排期。
+
+**⚠️ 2026-07-30 對照 Moze 原文更正**：以上實作缺攤還演算法(本息均攤/
+本金均攤/固定利息)、寬限期、餘額配置，且「僅生成第一期、其餘靠排程按月
+推進」「獨立表單建計畫」跟 Moze 真實設計（建立交易當下就能設定分期、
+當場算出全部期數、編輯要區分單筆/連同未來調息）有落差，修正版設計見
+§2.12.1，下方原始 gap 分析內容予以保留供對照。
 
 Moze: [record/installment.md](https://doc.moze.app/record/installment.md)、
 信用卡的「[帳單分期](https://doc.moze.app/credit-card/statement-installment.md)」
@@ -197,6 +208,11 @@ income 記正號，數學上等價)。測試見 `tests/test_refund_stats.py`。*
 限制)；交易詳情彈窗顯示「退款」徽章。**尚未做**的:CSV 匯出欄位、跨月退款
 回溯到原支出月份的口徑(目前退款淨額算在退款自己發生的那個月/分類，不會
 回溯修正原支出那個月)、全量交易搜尋 picker(mobile UI 也待排期)。
+
+**⚠️ 2026-07-30 對照 Moze 原文更正**：發起路徑不對——Moze 是從**原支出
+交易明細**的選單發起退款且自動帶入原始金額/備註，現況是在「新建交易」
+表單裡手動挑一筆既有交易當退款對象、手動重填所有欄位。修正版設計見
+§2.12.3，下方原始 gap 分析內容予以保留供對照。
 
 Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
 
@@ -368,6 +384,263 @@ tag 目前是多對多、無層級、無預算掛勾，跟 Moze 的「專案」�
 
 ---
 
+### 2.12 Phase 1.5：週期性收支／分期付款／退款 設計修正
+
+**背景**：2026-07-30 使用者對照 Moze 官方文件
+（[record/installment](https://doc.moze.app/record/installment)、
+[record/recurring](https://doc.moze.app/record/recurring)、
+[record/refund](https://doc.moze.app/record/refund)）重新檢視後發現，
+§2.2/§2.3/§2.6 的 Phase 1 實作跟 Moze 的真實設計有三個系統性落差，需要
+在下一輪迭代（Phase 1.5）修正：
+
+1. **分期付款、週期性收支都應該在「建立當下」直接生成所有（或一大段）
+   未來交易，不是靠背景排程逐期推進**。目前 `recurring_materializer.py`
+   「每 15 分鐘掃一次 `next_run_at`」的模式，跟 Moze「一鍵建立、後續
+   日期直接看到對應記錄」的體感不一致（使用者建完週期規則後要等最多
+   15 分鐘、每次只多一期，才會看到下一筆），也讓「修改連同未來」這種
+   批次編輯操作在還沒生成的期數上無從下手。
+2. **兩者都需要支援「編輯單筆 vs 編輯整批（連同未來）」的差異化語意**，
+   不是現有的一個 PATCH 端點打平所有欄位。
+3. **退款的發起點應該在原支出交易的明細頁（右上角選單「退款」）**，
+   點擊後開的新交易表單要自動帶入原支出的金額/備註等資料，而不是像
+   現在這樣在「新建交易」表單裡從下拉選單挑一筆既有交易關聯（且需要
+   手動填全部欄位）。
+
+以下逐項列出修正後的規格，附流程圖供審閱（Moze 原文部分細節未載明的地方
+已標注為「待決策項」，需要產品面拍板）。
+
+#### 2.12.1 分期付款（修正版）
+
+**Moze 真實設計**（見 [record/installment](https://doc.moze.app/record/installment)）：
+- 建立時機：在**建立交易的當下**勾選「分期」，同一個表單設定分期參數，
+  不是先建一個獨立的「分期計畫」再回頭補第一筆交易
+- 可設定參數：總金額、期數、每期金額、金額是否取整、餘額（除不盡的
+  零頭）納入首期或末期
+- 利率類型三選一：本息均攤／本金均攤／固定利息；計息方式：按月／按日
+- 特殊參數：寬限期（設定 N 個月「只繳息不還本」）
+- 建立後：系統**當場算出所有期數的本金/利息明細**並讓使用者在「分期
+  事件」頁查看，之後每期到期會自動出現在帳本
+- 編輯時區分：
+  - 編輯單筆：只改該期金額/日期/備註，可選是否連動重算剩餘本金
+  - 編輯連同未來（利率調整）：從指定期數起套用新利率，系統自動重算
+    後續所有期數
+  - 提前還本（部分還款）：減少本金，重算後續期數與利息
+  - 提前繳清：一次算出剩餘本金+當期利息，移除尚未到期的未來期數
+  - 終止未來分期：直接砍掉未產生的未來期數，不強制當下額外還款
+  - 分期退款：對某一期或全部期數做退款（複用退款機制）
+
+**跟現有 Phase 1 實作的落差**：
+- 現況入口是獨立的「建立分期計畫」表單（`InstallmentPlansPanel`），
+  不是掛在交易建立流程上
+- 現況只在 POST 當下生成**第一期**交易，其餘期數靠
+  `recurring_materializer.py` 每 15 分鐘按月推進一期（`add_months`），
+  使用者要等排程才看得到後續期數
+- 現況沒有本息均攤/本金均攤/固定利息三種攤還演算法，也沒有寬限期、
+  餘額配置(首期/末期)、金額取整這些參數
+- 現況 PATCH 只能「提前結清」或改備註，沒有「編輯單筆」「編輯連同
+  未來（利率調整）」的差異化語意
+
+**修改內容**：
+1. `read_installment_plan_projection` 加欄位：
+   `repayment_method`(equal_installment/equal_principal/fixed_interest)、
+   `interest_period`(monthly/daily)、`interest_rate`、
+   `round_amounts`(bool)、`remainder_position`(first/last)、
+   `grace_period_months`(int, default 0)
+2. 新表 `read_installment_period_projection`：`sync_id, plan_sync_id,
+   ledger_id, period_no, due_at, principal_amount, interest_amount,
+   total_amount, status(pending/generated/overridden/refunded),
+   tx_sync_id`（每期一行，`tx_sync_id` 指回實際生成的那筆
+   `read_tx_projection`）
+3. `POST /ledgers/{id}/installment-plans`：建立時依攤還演算法**一次
+   算出全部期數**，同一個 sync 事務內為每期各寫一筆
+   `read_tx_projection`（`installment_plan_sync_id` 反查欄位延續現有
+   設計）+ 一筆 `read_installment_period_projection`；不再依賴
+   `recurring_materializer` 逐期生成分期交易（該檔案裡屬於 installment
+   的推進邏輯可以整段移除，僅保留 recurring 相關部分，見 2.12.2）
+4. 新端點支援差異化編輯：
+   - `PATCH /ledgers/{id}/installment-plans/{plan_id}/periods/{period_no}`：
+     編輯單筆（金額/日期/備註），`overridden=true`，之後整批重算會
+     跳過這期
+   - `POST /ledgers/{id}/installment-plans/{plan_id}/rebalance-from/{period_no}`：
+     帶新利率，從該期起依攤還演算法重算並覆蓋後續未 `overridden` 的期數
+   - `POST /ledgers/{id}/installment-plans/{plan_id}/early-repay-principal`：
+     部分還本，重算後續期數
+   - `POST /ledgers/{id}/installment-plans/{plan_id}/payoff`：提前結清，
+     算出剩餘本金+當期利息生成一筆結清交易，刪除未到期的未來期
+     `read_tx_projection`
+   - `POST /ledgers/{id}/installment-plans/{plan_id}/terminate-future`：
+     直接刪除未到期的未來期交易，不生成結清交易
+   - 分期退款直接複用 §2.6 修正版的退款機制（見 §2.12.3），退款目標
+     指向某期的 `tx_sync_id`
+5. 攤還演算法（本息均攤/本金均攤/固定利息 × 按月/按日 × 寬限期）建議
+   抽成 `src/services/installment_amortization.py` 純函式，方便寫單元
+   測試鎖定精度（分期最容易出的 bug 是尾差/四捨五入，`remainder_position`
+   參數就是處理這個）
+6. pytest：三種攤還方式的本金/利息明細正確；`overridden` 期數在
+   rebalance 時被跳過；payoff/terminate-future 正確刪除未來期且保留
+   已發生期
+
+```mermaid
+flowchart TD
+    A[建立交易表單] --> B{勾選「分期付款」?}
+    B -- 否 --> Z[一般交易，走現有流程]
+    B -- 是 --> C[填分期參數：總金額/期數/攤還方式/計息方式/寬限期/餘額配置]
+    C --> D[POST /installment-plans]
+    D --> E[server 依攤還演算法算出全部期數]
+    E --> F[同事務寫入 N 筆 read_tx_projection + N 筆 read_installment_period_projection]
+    F --> G[分期事件頁可立即看到所有期數明細]
+
+    G --> H{使用者編輯}
+    H -- 編輯單筆 --> I["PATCH .../periods/{period_no}\n該期 overridden=true"]
+    H -- 編輯連同未來（調利率） --> J["POST rebalance-from/{period_no}\n重算未 overridden 的後續期"]
+    H -- 提前還本 --> K[POST early-repay-principal\n重算後續期]
+    H -- 提前繳清 --> L[POST payoff\n生成結清交易 + 刪除未到期期]
+    H -- 終止未來分期 --> M[POST terminate-future\n刪除未到期期，不生成結清交易]
+    H -- 對某期退款 --> N["走 2.12.3 退款流程，refund_of 指向該期 tx_sync_id"]
+```
+
+#### 2.12.2 週期性收支（修正版）
+
+**Moze 真實設計**（見 [record/recurring](https://doc.moze.app/record/recurring)）：
+- 建立時機：從一筆交易的「更多」選單勾選「設為週期事件」，不是獨立
+  表單先建規則
+- 頻率：日/週/月/年，並支援進階規則（如「每週六日」「每月 10 號」）
+- 建立後即可在對應的未來日期看到交易，不需要額外操作
+- 管理頁面列出「進行中」和「已結束」的週期事件，左滑編輯/刪除
+- 編輯時區分：
+  - 單獨編輯/刪除某一期
+  - 修改連同未來週期：從某期起套用新內容
+  - 終止未來週期：把尚未發生的未來期一次刪除，規則標記結束
+
+**跟現有 Phase 1 實作的落差**：
+- 現況入口是獨立的「新增週期規則」表單（`RecurringRulesPanel`），不是
+  掛在交易建立/交易明細流程上
+- 現況靠 `recurring_materializer.py` 排程（15 分鐘一次）掃
+  `next_run_at` 逐筆生成，使用者建完規則後不會立即在未來日期看到交易，
+  且「未來一段時間內會產生哪些交易」在生成之前無法預覽或批次編輯
+- 現況 PATCH 只能改規則本身欄位（金額/分類/頻率等），沒有「這期以後」
+  跟「只改這一筆」的差異化語意，也沒有反查欄位讓已生成的交易知道自己
+  屬於哪個規則版本
+
+**待決策項**（Moze 原文未載明，需要產品面拍板）：文件沒說「預先產生到
+多久之後」。日/週頻率如果無限期預先產生會炸資料量。建議：
+- 若使用者有設定 `end_at` → 建立當下一次把 `[first_run_at, end_at]`
+  全部生成
+- 若沒有 `end_at`（長期規則）→ 建立當下先生成一個預設視窗（例如未來
+  12 個月，或最多 200 筆，取先到者），規則加 `generated_until_at`
+  欄位記錄「已生成到哪個時間點」；`recurring_materializer.py` 保留
+  一個低頻（例如每天一次而非每 15 分鐘）的「續產生」loop，只負責把
+  `generated_until_at` 往前推進一段（例如再補未來 12 個月），語意從
+  「到期才生成」改成「保持未來視窗被填滿」
+- 這個視窗策略要跟前端討論 UX（例如管理頁怎麼呈現「已生成 vs 尚未
+  生成」的分界）
+
+**修改內容**：
+1. `read_recurring_rule_projection` 加欄位：`generated_until_at`
+   (datetime)、`advanced_rule_json`(存「每週六日」「每月10號」這類
+   進階規則，簡單 frequency+interval 不夠表達時使用)
+2. 建立交易時若帶 `recurring: {...}` 參數，`POST /ledgers/{id}/
+   transactions` 這條既有路徑直接建規則 + 依上面的視窗策略批次生成
+   未來交易（複用交易建立本體的邏輯，而不是要求前端先呼叫
+   recurring-rules 端點再呼叫交易端點）；獨立的 `POST /ledgers/{id}/
+   recurring-rules` 端點保留給「事後把已存在的交易設為週期起點」的情境
+3. 每筆生成的交易延續現有 `installment_plan_sync_id` 的反查欄位模式，
+   加 `recurring_rule_sync_id`（若現有欄位命名不同需對齊）
+4. 新端點支援差異化編輯：
+   - `PATCH /ledgers/{id}/recurring-rules/{rule_id}/occurrences/{tx_sync_id}`：
+     單獨編輯/刪除某一期（本質是編輯/刪除那筆 `read_tx_projection`，但
+     要標記「不要被下面的整批更新覆蓋」，比照 §2.12.1 的 `overridden`）
+   - `POST /ledgers/{id}/recurring-rules/{rule_id}/update-from/{tx_sync_id}`：
+     帶新內容，更新該期以後所有「未 overridden」的已生成交易，並讓
+     後續視窗內新生成的交易也套用新規則版本
+   - `POST /ledgers/{id}/recurring-rules/{rule_id}/terminate-future`：
+     刪除所有未發生（`happened_at > now()`）的已生成交易，規則標記
+     `enabled=false`
+5. `recurring_materializer.py` 重構：拆成「視窗續產生」（recurring
+   專用，低頻）和「分期期數推進」（§2.12.1 已改成建立當下一次生成，
+   這部分邏輯整段刪除）兩塊，不要共用同一個 loop 語意
+6. pytest：視窗生成範圍正確；`update-from` 只影響未 overridden 的未來
+   期；`terminate-future` 只刪未發生的交易，已發生的保留；
+   `generated_until_at` 正確推進
+
+```mermaid
+flowchart TD
+    A[交易表單 / 交易明細「更多」選單] --> B[勾選「設為週期事件」]
+    B --> C[設定頻率：日/週/月/年 或進階規則]
+    C --> D{是否有 end_at?}
+    D -- 有 --> E[一次生成 first_run_at ~ end_at 全部交易]
+    D -- 沒有（長期） --> F[生成預設視窗內交易\n記錄 generated_until_at]
+    F --> G[低頻 worker 定期把視窗往前補滿]
+    E --> H[週期事件管理頁：進行中/已結束列表]
+    G --> H
+
+    H --> I{使用者編輯}
+    I -- 編輯/刪除單一期 --> J["PATCH occurrences/{tx_sync_id}\n該期標記 overridden"]
+    I -- 修改連同未來週期 --> K["POST update-from/{tx_sync_id}\n更新未 overridden 的未來期 + 影響後續視窗生成"]
+    I -- 終止未來週期 --> L[POST terminate-future\n刪除未發生交易，規則標記結束]
+```
+
+#### 2.12.3 退款（修正版）
+
+**Moze 真實設計**（見 [record/refund](https://doc.moze.app/record/refund)）：
+- 發起點：點開**原支出交易的明細**，右上角選單選「退款」
+- 開啟的退款表單：自動帶入原支出的金額/備註等資料（可修改，支援部分
+  退款）；退款帳戶預設同原支付帳戶，但可指定不同帳戶
+- 原交易明細上會顯示「已退款」的金額資訊，可以點進去查看對應的退款
+  交易
+- 支援對同一筆支出建立多筆退款（部分退款＋多次退款）
+- 多分類（拆帳，§2.4）交易不能整筆退款，要對拆帳子項目個別退款
+
+**跟現有 Phase 1 實作的落差**：
+- 現況入口是在「新建交易」表單裡，透過下拉選單從「當前已載入的交易
+  列表」挑一個既有交易當退款對象（`TransactionsPanel.tsx`），不是從
+  原支出交易明細發起
+- 現況不會自動帶入原支出的金額/備註，使用者要手動重新輸入
+- 現況候選清單只從當前已載入交易來，不是全量搜尋（文件已知限制，見
+  §2.6 現有段落）
+- server 端 `refund_of_sync_id`／`refund_of_id` 欄位本身**不需要
+  改**，落差主要在前端發起路徑跟預填邏輯，屬於 UI 改動，不是資料模型
+  改動
+
+**修改內容**（主要是前端，server 端小改）：
+1. Web/mobile：交易明細頁加「退款」按鈕（僅 `tx_type=expense` 顯示），
+   點擊後開交易建立表單，用當前這筆交易的
+   `amount/note/category_id/account_id` 預填，並把 `refund_of_id` 預設
+   指向這筆交易；金額欄位可改（支援部分退款），帳戶欄位可改
+2. 交易明細頁需要顯示「這筆已被退款的累計金額」跟「退款交易清單」——
+   目前只有徽章顯示「這是一筆退款」，缺「這筆支出收到過哪些退款」的
+   反向查詢；建議 `GET /ledgers/{id}/transactions/{tx_id}` 或交易列表
+   回應加 `refunds: [{sync_id, amount, happened_at}]` 聚合欄位
+   （`read_tx_projection` 已有 `refund_of_sync_id`，只是目前沒有反向
+   查詢的讀端點/欄位）
+3. 允許同一筆支出對應多筆退款（現有欄位設計是 nullable FK，本來就
+   允許 1 對多，不需要 schema 改動，只是要確認寫入/讀取路徑沒有假設
+   「只有一筆」）
+4. 拆帳（§2.4）子項目退款依賴 §2.4 落地後才能做，先在 §2.4 的修改
+   內容加一行備註：`read_tx_split_projection` 也要能被
+   `refund_of_sync_id` 指到（而不是只有父交易）
+
+```mermaid
+flowchart TD
+    A[交易明細頁 原支出交易] --> B[右上角選單「退款」]
+    B --> C[開交易建立表單\n預填 amount/note/category/account]
+    C --> D{是否為拆帳交易?}
+    D -- 是 --> E[需先點進拆帳子項目\n對子項目個別退款]
+    D -- 否 --> F[使用者可調整金額（部分退款）/ 改退款帳戶]
+    F --> G[送出，refund_of_id 指向原交易]
+    G --> H[原交易明細顯示已退款金額 + 退款交易清單]
+```
+
+---
+
+需要跟前端（web + mobile）一起排期，因為這次修正的核心是「建立時機」跟
+「發起入口」都要搬到交易建立/交易明細流程裡，不是獨立表單能解決的；
+server 端排程 worker（`recurring_materializer.py`）的語意也要跟著改
+（從「逐期生成」改成「視窗續產生」），這塊改完要重新過一次 §2.2/§2.3
+既有的 pytest，確認舊測試的假設（例如「一次只生成一期」）要更新或刪除。
+
+---
+
 ## 3. Client-only，本倉庫不需要動的項目
 
 以下是 Moze 文件裡的功能，但屬於 iOS 系統整合層，跟 server 端資料模型
@@ -400,6 +673,10 @@ tag 目前是多對多、無層級、無預算掛勾，跟 Moze 的「專案」�
 Phase 0(地基）: §2.1 通知中心 ✅ server + web UI 已完成(2026-07-30);mobile UI 待排期
 Phase 1(核心記帳擴充）: §2.2 週期性收支 → §2.3 分期付款 → §2.6 退款(輕量，可插隊)
                         ✅ server + web UI 已完成(2026-07-30);mobile UI 待排期
+Phase 1.5(設計修正，對照 Moze 原文重新對齊）: §2.12 週期性收支/分期付款
+                        建立時機改成「建立當下直接生成」、編輯語意加上
+                        單筆/連同未來區分、退款發起入口搬到原交易明細
+                        🔴 尚未開始(2026-07-30 記錄需求，排在 Phase 2 之前)
 Phase 2(統計口徑動刀，建議獨立 PR）: §2.4 拆帳
 Phase 3(往來/範本，彼此獨立可並行）: §2.5 借還款追蹤、§2.7 範本
 Phase 4(信用卡整組，依賴 Phase 1 的 recurring/installment）: §2.9
