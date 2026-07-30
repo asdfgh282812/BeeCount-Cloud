@@ -6,6 +6,8 @@ export type AppSection =
   | 'categories'
   | 'tags'
   | 'budgets'
+  | 'recurring-rules'
+  | 'installment-plans'
   | 'ledgers'
   | 'settings-profile'
   | 'settings-appearance'

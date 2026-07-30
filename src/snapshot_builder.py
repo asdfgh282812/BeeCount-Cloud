@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPlanProjection,
+    ReadRecurringRuleProjection,
     ReadTxProjection,
     SyncChange,
     UserAccountProjection,
@@ -71,6 +73,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 全量同步后外币折算全部丢失(apply 缺省 nativeAmount=amount 退化 1:1)。
         ReadTxProjection.currency_code,
         ReadTxProjection.native_amount,
+        # 退款(§2.6)/ 分期(§2.3)反查字段:同样必须进 full snapshot,否则新
+        # 设备首次同步 / 重装后这两个关联全丢。
+        ReadTxProjection.refund_of_sync_id,
+        ReadTxProjection.installment_plan_sync_id,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -83,7 +89,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          to_sid, to_name,
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
-         currency_code, native_amount) = row
+         currency_code, native_amount,
+         refund_of_id, installment_plan_id) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -135,6 +142,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["currencyCode"] = currency_code
         if native_amount is not None:
             item["nativeAmount"] = native_amount
+        if refund_of_id:
+            item["refundOfId"] = refund_of_id
+        if installment_plan_id:
+            item["installmentPlanId"] = installment_plan_id
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
@@ -278,6 +289,83 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         b["enabled"] = bool(enabled)
         budgets.append(b)
 
+    # Recurring rules(§2.2)
+    recurring_rules: list[dict[str, Any]] = []
+    rec_stmt = select(
+        ReadRecurringRuleProjection.sync_id,
+        ReadRecurringRuleProjection.tx_type,
+        ReadRecurringRuleProjection.amount,
+        ReadRecurringRuleProjection.note,
+        ReadRecurringRuleProjection.category_sync_id,
+        ReadRecurringRuleProjection.account_sync_id,
+        ReadRecurringRuleProjection.from_account_sync_id,
+        ReadRecurringRuleProjection.to_account_sync_id,
+        ReadRecurringRuleProjection.frequency,
+        ReadRecurringRuleProjection.interval,
+        ReadRecurringRuleProjection.next_run_at,
+        ReadRecurringRuleProjection.end_at,
+        ReadRecurringRuleProjection.enabled,
+    ).where(ReadRecurringRuleProjection.ledger_id == ledger_id)
+    for (sid, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
+         frequency, interval, next_run_at, end_at, enabled) in db.execute(rec_stmt).all():
+        r: dict[str, Any] = {
+            "syncId": sid,
+            "txType": tx_type,
+            "amount": amount,
+            "frequency": frequency,
+            "interval": interval,
+            "nextRunAt": _to_iso_utc(next_run_at),
+            "enabled": bool(enabled),
+        }
+        if note is not None:
+            r["note"] = note
+        if cat_sid:
+            r["categoryId"] = cat_sid
+        if acc_sid:
+            r["accountId"] = acc_sid
+        if from_sid:
+            r["fromAccountId"] = from_sid
+        if to_sid:
+            r["toAccountId"] = to_sid
+        if end_at is not None:
+            r["endAt"] = _to_iso_utc(end_at)
+        recurring_rules.append(r)
+
+    # Installment plans(§2.3)
+    installment_plans: list[dict[str, Any]] = []
+    ins_stmt = select(
+        ReadInstallmentPlanProjection.sync_id,
+        ReadInstallmentPlanProjection.total_amount,
+        ReadInstallmentPlanProjection.periods,
+        ReadInstallmentPlanProjection.period_amount,
+        ReadInstallmentPlanProjection.first_period_at,
+        ReadInstallmentPlanProjection.next_period_at,
+        ReadInstallmentPlanProjection.paid_periods,
+        ReadInstallmentPlanProjection.account_sync_id,
+        ReadInstallmentPlanProjection.category_sync_id,
+        ReadInstallmentPlanProjection.note,
+        ReadInstallmentPlanProjection.status,
+    ).where(ReadInstallmentPlanProjection.ledger_id == ledger_id)
+    for (sid, total_amount, periods, period_amount, first_period_at, next_period_at,
+         paid_periods, acc_sid, cat_sid, note, status) in db.execute(ins_stmt).all():
+        p: dict[str, Any] = {
+            "syncId": sid,
+            "totalAmount": total_amount,
+            "periods": periods,
+            "periodAmount": period_amount,
+            "firstPeriodAt": _to_iso_utc(first_period_at),
+            "nextPeriodAt": _to_iso_utc(next_period_at),
+            "paidPeriods": paid_periods,
+            "status": status,
+        }
+        if acc_sid:
+            p["accountId"] = acc_sid
+        if cat_sid:
+            p["categoryId"] = cat_sid
+        if note is not None:
+            p["note"] = note
+        installment_plans.append(p)
+
     return {
         # ledgerSyncId 给 mutator 用 —— 新建预算时要把它写进 budget payload,
         # 让 mobile sync_engine._applyBudgetChange 能解析本地 ledger int id。
@@ -291,6 +379,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "categories": categories,
         "tags": tags,
         "budgets": budgets,
+        "recurringRules": recurring_rules,
+        "installmentPlans": installment_plans,
     }
 
 

@@ -19,6 +19,7 @@ import {
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
+import { NotificationBell } from '../components/NotificationBell'
 import { useAuth } from '../context/AuthContext'
 
 // CommandPalette + AnnualReportLauncher 都不在首屏关键路径,只在用户主动
@@ -293,6 +294,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 <ScrollText className="h-4 w-4" />
               </button>
             ) : null}
+            <NotificationBell />
             {profileMe?.email ? (
               <AvatarDropdown
                 profileMe={{

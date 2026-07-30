@@ -208,6 +208,8 @@ def list_workspace_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                refund_of_id=row.refund_of_sync_id,
+                installment_plan_id=row.installment_plan_sync_id,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -1016,6 +1018,9 @@ def workspace_analytics(
             func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
             ReadTxProjection.happened_at,
             ReadTxProjection.category_name,
+            # 退款(§2.6):非空 = 这笔(income)交易是对某笔支出的退款,netting
+            # 逻辑见下方循环。
+            ReadTxProjection.refund_of_sync_id,
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             # exclude_from_stats=True 的交易不计入收支统计(D1);该端点所有
@@ -1033,7 +1038,7 @@ def workspace_analytics(
         # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
         from datetime import timedelta as _td
 
-        for tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
+        for tx_type_val, amount, happened_at_raw, cat_name, refund_of_id in db.execute(tx_query).all():
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
@@ -1047,6 +1052,21 @@ def workspace_analytics(
                 last_tx_at = happened_at
             bucket = _bucket_key(scope, happened_at, tz_offset_minutes, month_start_day)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
+            category = (cat_name or "").strip() or "Uncategorized"
+            category_slot = category_map.setdefault(
+                category, {"income": 0.0, "expense": 0.0, "count": 0.0})
+            # 退款(§2.6):不计入当期收入,改冲抵当期支出净额(自己所在的
+            # bucket/category,不追溯回被退款那笔支出原本的月份/分类 ——
+            # 简化口径,退款和被退款支出通常发生在相近时间)。
+            is_refund = tx_type_val == "income" and refund_of_id is not None
+            if is_refund:
+                expense_total -= amt
+                slot["expense"] -= amt
+                category_slot["count"] += 1.0
+                category_slot["expense"] -= amt
+                bucket_cat = category_by_bucket.setdefault(bucket, {})
+                bucket_cat[category] = bucket_cat.get(category, 0.0) - amt
+                continue
             if tx_type_val == "income":
                 income_total += amt
                 slot["income"] += amt
@@ -1055,9 +1075,6 @@ def workspace_analytics(
                 slot["expense"] += amt
             else:
                 continue
-            category = (cat_name or "").strip() or "Uncategorized"
-            category_slot = category_map.setdefault(
-                category, {"income": 0.0, "expense": 0.0, "count": 0.0})
             category_slot["count"] += 1.0
             if tx_type_val == "income":
                 category_slot["income"] += amt

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -335,6 +335,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     # serializer + projection.upsert_tx(读 excludeFromStats)对齐。create 默认 False。
     item["excludeFromStats"] = bool(payload.get("exclude_from_stats"))
     item["excludeFromBudget"] = bool(payload.get("exclude_from_budget"))
+    if payload.get("refund_of_id") is not None:
+        item["refundOfId"] = str(payload.get("refund_of_id"))
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
@@ -460,6 +462,12 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
     ):
         if req_key in payload and payload.get(req_key) is not None:
             item[snapshot_key] = bool(payload.get(req_key))
+    if "refund_of_id" in payload:
+        value = payload.get("refund_of_id")
+        if value is None or str(value).strip() == "":
+            item.pop("refundOfId", None)
+        else:
+            item["refundOfId"] = str(value)
     _mark_entity_actor(item, payload, create=False)
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
@@ -902,4 +910,209 @@ def delete_budget(snapshot: dict, budget_id: str, payload: dict | None = None) -
     idx, budget = _find_by_sync_id(budgets, budget_id, expected_prefix="bgt")
     _assert_actor_can_modify(budget, payload or {})
     budgets.pop(idx)
+    return target
+
+
+# ============================================================================
+# Recurring rules(§2.2)—— 跟 budget 同款 boilerplate。snapshot 用
+# driftCamel:txType/categoryId/accountId/fromAccountId/toAccountId/frequency/
+# interval/nextRunAt/endAt/enabled。
+# ============================================================================
+
+
+def next_run_from(now: datetime, frequency: str, interval: int) -> datetime:
+    """算下一次 next_run_at:frequency 单位 * interval。月/年用日历推进(处理
+    月末溢出:借用 `add_months` 风格,31 号 + 1 月 → 2 月最后一天,不进 3 月)。"""
+    interval = max(1, int(interval or 1))
+    if frequency == "daily":
+        return now + timedelta(days=interval)
+    if frequency == "weekly":
+        return now + timedelta(weeks=interval)
+    if frequency == "yearly":
+        return add_months(now, interval * 12)
+    return add_months(now, interval)  # monthly(默认兜底)
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    import calendar
+
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def create_recurring_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "recurringRules")
+    tx_type = str(payload.get("tx_type") or "expense")
+    if tx_type not in {"expense", "income", "transfer"}:
+        raise ValueError("write validation failed: invalid transaction type")
+    amount = _to_optional_float(payload.get("amount"))
+    if amount is None or amount <= 0:
+        raise ValueError("write validation failed: amount must be > 0")
+    frequency = str(payload.get("frequency") or "monthly")
+    if frequency not in {"daily", "weekly", "monthly", "yearly"}:
+        raise ValueError("write validation failed: invalid frequency")
+    next_run_at = payload.get("next_run_at")
+    if next_run_at is None:
+        raise ValueError("write validation failed: next_run_at is required")
+    sync_id = _new_sync_id("rec")
+    rule: dict[str, object] = {
+        "syncId": sync_id,
+        "txType": tx_type,
+        "amount": amount,
+        "frequency": frequency,
+        "interval": _to_optional_int(payload.get("interval")) or 1,
+        "nextRunAt": _to_iso8601(next_run_at),
+        "enabled": bool(payload.get("enabled")) if payload.get("enabled") is not None else True,
+    }
+    if payload.get("note") is not None:
+        rule["note"] = str(payload.get("note"))
+    if payload.get("category_id") is not None:
+        rule["categoryId"] = str(payload.get("category_id"))
+    if payload.get("account_id") is not None:
+        rule["accountId"] = str(payload.get("account_id"))
+    if payload.get("from_account_id") is not None:
+        rule["fromAccountId"] = str(payload.get("from_account_id"))
+    if payload.get("to_account_id") is not None:
+        rule["toAccountId"] = str(payload.get("to_account_id"))
+    if payload.get("end_at") is not None:
+        rule["endAt"] = _to_iso8601(payload.get("end_at"))
+    _mark_entity_actor(rule, payload, create=True)
+    rules.append(rule)
+    return target, sync_id
+
+
+def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "recurringRules")
+    _, rule = _find_by_sync_id(rules, rule_id, expected_prefix="rec")
+    _assert_actor_can_modify(rule, payload)
+
+    if "tx_type" in payload:
+        tx_type = str(payload.get("tx_type") or "")
+        if tx_type not in {"expense", "income", "transfer"}:
+            raise ValueError("write validation failed: invalid transaction type")
+        rule["txType"] = tx_type
+    if "amount" in payload:
+        amount = _to_optional_float(payload.get("amount"))
+        if amount is None or amount <= 0:
+            raise ValueError("write validation failed: amount must be > 0")
+        rule["amount"] = amount
+    if "frequency" in payload:
+        frequency = str(payload.get("frequency") or "")
+        if frequency not in {"daily", "weekly", "monthly", "yearly"}:
+            raise ValueError("write validation failed: invalid frequency")
+        rule["frequency"] = frequency
+    if "interval" in payload:
+        rule["interval"] = _to_optional_int(payload.get("interval")) or 1
+    if "next_run_at" in payload and payload.get("next_run_at") is not None:
+        rule["nextRunAt"] = _to_iso8601(payload.get("next_run_at"))
+    if "end_at" in payload:
+        value = payload.get("end_at")
+        if value is None:
+            rule.pop("endAt", None)
+        else:
+            rule["endAt"] = _to_iso8601(value)
+    if "enabled" in payload:
+        rule["enabled"] = bool(payload.get("enabled"))
+    for req_key, snapshot_key in (
+        ("note", "note"),
+        ("category_id", "categoryId"),
+        ("account_id", "accountId"),
+        ("from_account_id", "fromAccountId"),
+        ("to_account_id", "toAccountId"),
+    ):
+        if req_key in payload:
+            value = payload.get(req_key)
+            if value is None or str(value).strip() == "":
+                rule.pop(snapshot_key, None)
+            else:
+                rule[snapshot_key] = str(value)
+    _mark_entity_actor(rule, payload, create=False)
+    return target
+
+
+def delete_recurring_rule(snapshot: dict, rule_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "recurringRules")
+    idx, rule = _find_by_sync_id(rules, rule_id, expected_prefix="rec")
+    _assert_actor_can_modify(rule, payload or {})
+    rules.pop(idx)
+    return target
+
+
+# ============================================================================
+# Installment plans(§2.3)—— 建计画时立刻算好第一期(paidPeriods=1,
+# nextPeriodAt=firstPeriodAt 之后一个月),但**不**在这里生成第一期交易 ——
+# 那需要同时写 read_tx_projection,snapshot_mutator 只管这一个实体的字段,
+# 第一期交易的生成放在 write endpoint 里跟计画一起提交(同一个 _commit_write
+# 事务),复用 create_transaction。
+# ============================================================================
+
+
+def create_installment_plan(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    plans = _ensure_list(target, "installmentPlans")
+    total_amount = _to_optional_float(payload.get("total_amount"))
+    if total_amount is None or total_amount <= 0:
+        raise ValueError("write validation failed: total_amount must be > 0")
+    periods = _to_optional_int(payload.get("periods"))
+    if periods is None or periods < 1:
+        raise ValueError("write validation failed: periods must be >= 1")
+    first_period_at = payload.get("first_period_at")
+    if first_period_at is None:
+        raise ValueError("write validation failed: first_period_at is required")
+    first_dt = datetime.fromisoformat(_to_iso8601(first_period_at))
+    period_amount = round(total_amount / periods, 2)
+    sync_id = _new_sync_id("ins")
+    plan: dict[str, object] = {
+        "syncId": sync_id,
+        "totalAmount": total_amount,
+        "periods": periods,
+        "periodAmount": period_amount,
+        "firstPeriodAt": _to_iso8601(first_period_at),
+        "nextPeriodAt": _to_iso8601(add_months(first_dt, 1)),
+        "paidPeriods": 1,
+        "status": "active",
+    }
+    if payload.get("account_id") is not None:
+        plan["accountId"] = str(payload.get("account_id"))
+    if payload.get("category_id") is not None:
+        plan["categoryId"] = str(payload.get("category_id"))
+    if payload.get("note") is not None:
+        plan["note"] = str(payload.get("note"))
+    _mark_entity_actor(plan, payload, create=True)
+    plans.append(plan)
+    return target, sync_id
+
+
+def update_installment_plan(snapshot: dict, plan_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    plans = _ensure_list(target, "installmentPlans")
+    _, plan = _find_by_sync_id(plans, plan_id, expected_prefix="ins")
+    _assert_actor_can_modify(plan, payload)
+    if "note" in payload:
+        value = payload.get("note")
+        if value is None or str(value).strip() == "":
+            plan.pop("note", None)
+        else:
+            plan["note"] = str(value)
+    if "status" in payload and payload.get("status") is not None:
+        status = str(payload.get("status"))
+        if status not in {"active", "settled"}:
+            raise ValueError("write validation failed: invalid status")
+        plan["status"] = status
+    _mark_entity_actor(plan, payload, create=False)
+    return target
+
+
+def delete_installment_plan(snapshot: dict, plan_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    plans = _ensure_list(target, "installmentPlans")
+    idx, plan = _find_by_sync_id(plans, plan_id, expected_prefix="ins")
+    _assert_actor_can_modify(plan, payload or {})
+    plans.pop(idx)
     return target

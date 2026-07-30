@@ -4,11 +4,15 @@ import type {
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CategoryPayload,
+  InstallmentPlanCreatePayload,
+  InstallmentPlanUpdatePayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
   ReadAccount,
   ReadCategory,
   ReadTag,
+  RecurringRuleCreatePayload,
+  RecurringRuleUpdatePayload,
   TagPayload,
   TxPayload,
   WriteCommitMeta
@@ -213,6 +217,93 @@ export async function deleteBudget(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.2 —— 週期性收支规则。仅账本 owner 可写(server _OWNER_ONLY_ROLES)。 */
+export async function createRecurringRule(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: RecurringRuleCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+export async function updateRecurringRule(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  baseChangeId: number,
+  payload: RecurringRuleUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function deleteRecurringRule(
+  token: string,
+  ledgerId: string,
+  ruleId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.3 —— 分期付款计划。POST 建计画会同事务生成第一期交易。 */
+export async function createInstallmentPlan(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: InstallmentPlanCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+/** 只用于提前结清(status: 'settled')/ 改备注 —— 期数 / 金额不可改。 */
+export async function updateInstallmentPlan(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+  payload: InstallmentPlanUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function deleteInstallmentPlan(
+  token: string,
+  ledgerId: string,
+  planId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}`,
     token,
     { base_change_id: baseChangeId },
   )

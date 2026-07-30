@@ -24,6 +24,8 @@ export type TxForm = {
   exclude_from_stats: boolean
   /** 不计入预算用量(仅 expense 显示开关)。 */
   exclude_from_budget: boolean
+  /** 退款(§2.6):这笔交易是对哪笔支出的退款,存目标交易 syncId。''=普通交易。 */
+  refund_of_id: string
 }
 
 export type AccountForm = {
@@ -92,6 +94,43 @@ export type TagForm = {
   color: string
 }
 
+export type RecurringRuleForm = {
+  /** 编辑模式 = rule syncId,新建 = null。 */
+  editingId: string | null
+  tx_type: 'expense' | 'income' | 'transfer'
+  amount: string
+  note: string
+  category_id: string
+  category_name: string
+  account_id: string
+  account_name: string
+  from_account_id: string
+  from_account_name: string
+  to_account_id: string
+  to_account_name: string
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'
+  interval: string
+  /** datetime-local 输入用的本地时间字符串。 */
+  next_run_at: string
+  /** 空字符串 = 不设结束日期。 */
+  end_at: string
+  enabled: boolean
+}
+
+export type InstallmentPlanForm = {
+  /** 编辑模式 = plan syncId,新建 = null。新建后期数/总额不可改(server 约束)。 */
+  editingId: string | null
+  total_amount: string
+  periods: string
+  first_period_at: string
+  account_id: string
+  account_name: string
+  category_id: string
+  category_name: string
+  note: string
+  status: 'active' | 'settled'
+}
+
 export const txDefaults = (): TxForm => ({
   editingId: null,
   editingOwnerUserId: '',
@@ -109,7 +148,8 @@ export const txDefaults = (): TxForm => ({
   currency: '',
   original_currency: '',
   exclude_from_stats: false,
-  exclude_from_budget: false
+  exclude_from_budget: false,
+  refund_of_id: ''
 })
 
 export const accountDefaults = (): AccountForm => ({
@@ -160,4 +200,48 @@ export const budgetDefaults = (): BudgetForm => ({
   amount: '',
   start_day: '1',
   period: 'monthly',
+})
+
+/** next_run_at 默认明天此刻,避免用户忘填被 server 拒绝(next_run_at 必填)。 */
+function tomorrowLocalDatetime(): string {
+  const d = new Date(Date.now() + 24 * 60 * 60 * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+export const recurringRuleDefaults = (): RecurringRuleForm => ({
+  editingId: null,
+  tx_type: 'expense',
+  amount: '',
+  note: '',
+  category_id: '',
+  category_name: '',
+  account_id: '',
+  account_name: '',
+  from_account_id: '',
+  from_account_name: '',
+  to_account_id: '',
+  to_account_name: '',
+  frequency: 'monthly',
+  interval: '1',
+  next_run_at: tomorrowLocalDatetime(),
+  end_at: '',
+  enabled: true,
+})
+
+export const installmentPlanDefaults = (): InstallmentPlanForm => ({
+  editingId: null,
+  total_amount: '',
+  periods: '',
+  first_period_at: (() => {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  })(),
+  account_id: '',
+  account_name: '',
+  category_id: '',
+  category_name: '',
+  note: '',
+  status: 'active',
 })

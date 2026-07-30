@@ -86,8 +86,13 @@ export function TransactionDetailDialog({
           <div className="flex flex-col">
             {/* 大金额 */}
             <div className="flex flex-col items-center gap-1 border-b border-border/60 bg-muted/20 px-6 py-6">
-              <span className="text-[11px] uppercase tracking-widest text-muted-foreground">
+              <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-muted-foreground">
                 {typeLabel}
+                {tx.refund_of_id ? (
+                  <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] normal-case text-primary">
+                    {t('transactions.badge.refund')}
+                  </span>
+                ) : null}
               </span>
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
                 {sign}

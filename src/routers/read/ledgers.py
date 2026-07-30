@@ -331,6 +331,8 @@ def list_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                refund_of_id=row.refund_of_sync_id,
+                installment_plan_id=row.installment_plan_sync_id,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -610,6 +612,104 @@ def list_budgets_usage(
         items.append(ReadBudgetUsageItemOut(budget_id=b.sync_id, used=abs(used)))
 
     return ReadBudgetUsageOut(items=items)
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/recurring-rules",
+    response_model=list[ReadRecurringRuleOut],
+)
+def list_recurring_rules(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadRecurringRuleOut]:
+    """週期性收支规则只读列表(§2.2)。到期后的实际生成交易走
+    services.recurring_materializer,不在这个端点里处理。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    cat_rows = db.execute(
+        select(UserCategoryProjection.sync_id, UserCategoryProjection.name)
+        .where(UserCategoryProjection.user_id == current_user.id)
+    ).all()
+    cat_name_by_sync = {r.sync_id: (r.name or "").strip() for r in cat_rows}
+
+    rows = db.scalars(
+        select(ReadRecurringRuleProjection).where(
+            ReadRecurringRuleProjection.ledger_id == ledger.id,
+        ).order_by(ReadRecurringRuleProjection.next_run_at.asc())
+    ).all()
+    return [
+        ReadRecurringRuleOut(
+            id=row.sync_id,
+            tx_type=row.tx_type,
+            amount=float(row.amount or 0),
+            note=row.note,
+            category_id=row.category_sync_id,
+            category_name=cat_name_by_sync.get(row.category_sync_id) if row.category_sync_id else None,
+            account_id=row.account_sync_id,
+            from_account_id=row.from_account_sync_id,
+            to_account_id=row.to_account_sync_id,
+            frequency=cast("Any", row.frequency or "monthly"),
+            interval=int(row.interval or 1),
+            next_run_at=row.next_run_at,
+            end_at=row.end_at,
+            enabled=bool(row.enabled),
+            last_change_id=source_change_id,
+            ledger_id=ledger.external_id,
+            ledger_name=ledger_name,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/installment-plans",
+    response_model=list[ReadInstallmentPlanOut],
+)
+def list_installment_plans(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadInstallmentPlanOut]:
+    """分期付款计划只读列表(§2.3)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadInstallmentPlanProjection).where(
+            ReadInstallmentPlanProjection.ledger_id == ledger.id,
+        ).order_by(ReadInstallmentPlanProjection.first_period_at.desc())
+    ).all()
+    return [
+        ReadInstallmentPlanOut(
+            id=row.sync_id,
+            total_amount=float(row.total_amount or 0),
+            periods=int(row.periods or 1),
+            period_amount=float(row.period_amount or 0),
+            first_period_at=row.first_period_at,
+            next_period_at=row.next_period_at,
+            paid_periods=int(row.paid_periods or 0),
+            account_id=row.account_sync_id,
+            category_id=row.category_sync_id,
+            note=row.note,
+            status=cast("Any", row.status or "active"),
+            last_change_id=source_change_id,
+            ledger_id=ledger.external_id,
+            ledger_name=ledger_name,
+        )
+        for row in rows
+    ]
 
 
 def _current_period_range(

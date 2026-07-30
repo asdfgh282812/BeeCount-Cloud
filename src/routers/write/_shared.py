@@ -59,8 +59,12 @@ from ...schemas import (
     WriteCategoryUpdateRequest,
     WriteCommitMeta,
     WriteEntityDeleteRequest,
+    WriteInstallmentPlanCreateRequest,
+    WriteInstallmentPlanUpdateRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteRecurringRuleCreateRequest,
+    WriteRecurringRuleUpdateRequest,
     WriteTagCreateRequest,
     WriteTagUpdateRequest,
     WriteTransactionCreateRequest,
@@ -73,17 +77,23 @@ from ...snapshot_mutator import (
     create_account,
     create_budget,
     create_category,
+    create_installment_plan,
+    create_recurring_rule,
     create_tag,
     create_transaction,
     delete_account,
     delete_budget,
     delete_category,
+    delete_installment_plan,
+    delete_recurring_rule,
     delete_tag,
     delete_transaction,
     ensure_snapshot_v2,
     update_account,
     update_budget,
     update_category,
+    update_installment_plan,
+    update_recurring_rule,
     update_tag,
     update_transaction,
 )
@@ -148,10 +158,14 @@ _USER_PROJECTION_DELETERS: dict[str, Any] = {
 _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "transaction": projection.upsert_tx,
     "budget": projection.upsert_budget,
+    "recurring_rule": projection.upsert_recurring_rule,
+    "installment_plan": projection.upsert_installment_plan,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "transaction": projection.delete_tx,
     "budget": projection.delete_budget,
+    "recurring_rule": projection.delete_recurring_rule,
+    "installment_plan": projection.delete_installment_plan,
 }
 
 # tx 里的 denormalized 字段 —— 当 account/category/tag rename 时,
@@ -418,6 +432,12 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("budgets") or [], next_snapshot.get("budgets") or [],
                       "budget", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("recurringRules") or [], next_snapshot.get("recurringRules") or [],
+                      "recurring_rule", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("installmentPlans") or [], next_snapshot.get("installmentPlans") or [],
+                      "installment_plan", emitted_ids)
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", len(emitted_ids), ledger.external_id)
     return emitted_ids
 
@@ -901,6 +921,11 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["currencyCode"] = row.currency_code
     if row.native_amount is not None:
         item["nativeAmount"] = row.native_amount
+    # 退款(§2.6):fast path 的 prev_item 也要带上,否则 PATCH 走
+    # update_transaction 时读不到 payload.get("refund_of_id") in item 的旧值,
+    # 未显式改 refund_of_id 的 update 请求会把关联静默丢掉。
+    if row.refund_of_sync_id is not None:
+        item["refundOfId"] = row.refund_of_sync_id
     return item
 
 
@@ -943,7 +968,10 @@ async def _commit_write(
         snapshot = snapshot_builder.build(db, ledger)
         # Shallow-per-entity copy for diffing(mutator 会原地改 items[i] 等)
         prev_snapshot = {**snapshot}
-        for _k in ("items", "accounts", "categories", "tags", "budgets"):
+        for _k in (
+            "items", "accounts", "categories", "tags", "budgets",
+            "recurringRules", "installmentPlans",
+        ):
             arr = snapshot.get(_k)
             if isinstance(arr, list):
                 prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
@@ -1281,8 +1309,12 @@ __all__ = [
     'WriteCategoryUpdateRequest',
     'WriteCommitMeta',
     'WriteEntityDeleteRequest',
+    'WriteInstallmentPlanCreateRequest',
+    'WriteInstallmentPlanUpdateRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteRecurringRuleCreateRequest',
+    'WriteRecurringRuleUpdateRequest',
     'WriteTagCreateRequest',
     'WriteTagUpdateRequest',
     'WriteTransactionCreateRequest',
@@ -1295,17 +1327,23 @@ __all__ = [
     'create_account',
     'create_budget',
     'create_category',
+    'create_installment_plan',
+    'create_recurring_rule',
     'create_tag',
     'create_transaction',
     'delete_account',
     'delete_budget',
     'delete_category',
+    'delete_installment_plan',
+    'delete_recurring_rule',
     'delete_tag',
     'delete_transaction',
     'ensure_snapshot_v2',
     'update_account',
     'update_budget',
     'update_category',
+    'update_installment_plan',
+    'update_recurring_rule',
     'update_tag',
     'update_transaction',
     'logger',

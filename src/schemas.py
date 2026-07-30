@@ -525,6 +525,10 @@ class ReadTransactionOut(BaseModel):
     # native_amount=折账本本位币快照(null 时前端 fallback 用 amount)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 退款(§2.6):指向被退款那笔支出的 sync_id;None = 普通交易。
+    refund_of_id: str | None = None
+    # 分期付款(§2.3):指向所属分期计划的 sync_id;None = 非分期生成的交易。
+    installment_plan_id: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -627,6 +631,51 @@ class ReadBudgetUsageOut(BaseModel):
     """`/ledgers/{id}/budgets/usage` 返回。周期窗口统一取账本 month_start_day
     (设计 D5:budget.start_day 弃用,所有 budget 共享同一周期),前端只用 used 数字。"""
     items: list[ReadBudgetUsageItemOut] = Field(default_factory=list)
+
+
+RecurringFrequency = Literal["daily", "weekly", "monthly", "yearly"]
+
+
+class ReadRecurringRuleOut(BaseModel):
+    """週期性收支规则只读视图(§2.2)。"""
+    id: str
+    tx_type: str
+    amount: float
+    note: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    frequency: RecurringFrequency
+    interval: int
+    next_run_at: datetime
+    end_at: datetime | None = None
+    enabled: bool
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+InstallmentPlanStatus = Literal["active", "settled"]
+
+
+class ReadInstallmentPlanOut(BaseModel):
+    """分期付款计划只读视图(§2.3)。"""
+    id: str
+    total_amount: float
+    periods: int
+    period_amount: float
+    first_period_at: datetime
+    next_period_at: datetime
+    paid_periods: int
+    account_id: str | None = None
+    category_id: str | None = None
+    note: str | None = None
+    status: InstallmentPlanStatus
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
 
 
 class WorkspaceTransactionOut(ReadTransactionOut):
@@ -813,6 +862,8 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 折账本本位币快照(前端按汇率算好传入)。不传 → item 不产生字段(旧行为)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 退款(§2.6):这笔交易是对 refund_of_id 那笔支出的退款。None = 普通交易。
+    refund_of_id: str | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -838,6 +889,8 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 交易级多币种(0018):显式传入优先(mutator 不再联动);None = 不变。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 退款(§2.6):None = 不变。传空字符串清空关联(mutator 按空串处理成 null)。
+    refund_of_id: str | None = None
 
 
 
@@ -893,6 +946,52 @@ class WriteBudgetUpdateRequest(WriteBaseRequest):
     # deprecated:预算周期已统一跟随账本 month_start_day(D5),该字段仅作兼容保留
     start_day: int | None = Field(default=None, ge=1, le=28)
     enabled: bool | None = None
+
+
+class WriteRecurringRuleCreateRequest(WriteBaseRequest):
+    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    amount: float = Field(gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    frequency: RecurringFrequency = "monthly"
+    interval: int = Field(default=1, ge=1, le=365)
+    next_run_at: datetime
+    end_at: datetime | None = None
+    enabled: bool = True
+
+
+class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
+    tx_type: Literal["expense", "income", "transfer"] | None = None
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    frequency: RecurringFrequency | None = None
+    interval: int | None = Field(default=None, ge=1, le=365)
+    next_run_at: datetime | None = None
+    end_at: datetime | None = None
+    enabled: bool | None = None
+
+
+class WriteInstallmentPlanCreateRequest(WriteBaseRequest):
+    total_amount: float = Field(gt=0)
+    periods: int = Field(ge=1, le=120)
+    first_period_at: datetime
+    account_id: str | None = None
+    category_id: str | None = None
+    note: str | None = None
+
+
+class WriteInstallmentPlanUpdateRequest(WriteBaseRequest):
+    """提前结清用:传 `status="settled"`。不允许改期数/金额(语义混乱,
+    等同删了重建),跟 budget 的 update 限制同一设计取舍。"""
+    note: str | None = None
+    status: InstallmentPlanStatus | None = None
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):

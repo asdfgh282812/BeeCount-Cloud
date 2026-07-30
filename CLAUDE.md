@@ -77,7 +77,16 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src（只跑单元测�
 **如果要对标 Moze 补功能缺口**(週期性收支/分期/拆帳/借還款/信用卡/對帳等),
 先看 [docs/MOZE_FEATURE_GAP_SD.md](./docs/MOZE_FEATURE_GAP_SD.md) —— 逐項列了
 現況、修改內容、跨端依賴跟建議實作順序(Phase 0~7)。§2.1 通知中心
-(Phase 0)已落地,見下方 `src/routers/notifications.py`。
+(Phase 0)已落地,見下方 `src/routers/notifications.py`。§2.2/§2.3/§2.6
+週期性收支/分期付款/退款(Phase 1,server 端)也已落地,見下方
+`src/services/recurring_materializer.py` 一節。**Phase 0/Phase 1 的 web UI
+(2026-07-30)已落地**:通知中心(header 🔔 铃铛,`apps/web/src/components/
+NotificationBell.tsx`,轮询 `GET /notifications`,不接 WS)、週期性收支
+(`/app/recurring-rules`,`RecurringRulesPage`/`RecurringRulesPanel`)、分期
+付款(`/app/installment-plans`,`InstallmentPlansPage`/`InstallmentPlansPanel`)
+——两者入口都在头像下拉「工具」组,仅账本 owner 可写(对齐 server
+`_OWNER_ONLY_ROLES`);退款(交易表单新增「退款对象」下拉,仅 income 类型
+显示,候选来自当前已加载的交易列表,非全量搜索)。mobile 端 UI 仍待排期。
 
 ## 架构总览(server 端)
 
@@ -102,7 +111,8 @@ dev-api` 实际跑的是 `uvicorn server:app`)。核心模块:
 - `src/services/` —— 领域服务:`ai/`(LLM provider 适配 + 文档 RAG 问答)、
   `backup/`(rclone 多远端加密备份、调度、恢复)、`exchange_rate/`、
   `import_data/`、`data_cleanup/`、`notifications.py`(通知中心写入
-  helper,见下)。
+  helper,见下)、`recurring_materializer.py`(週期性收支/分期付款到期物化,
+  见下)。
 - `src/routers/notifications.py` + `src/models.py:Notification` —— 通知
   中心(MOZE_FEATURE_GAP_SD.md §2.1)。**user-global,不进
   `sync_changes`/projection**,是普通 REST 资源,跟本节其它"sync entity"
@@ -110,6 +120,15 @@ dev-api` 实际跑的是 `uvicorn server:app`)。核心模块:
   `services.notifications.create_notification(db, user_id=..., category=...,
   title=..., body=..., payload=...)` 落一行,不 commit,由调用方业务事务
   一起提交;不要为了发通知单独开事务。
+- `src/services/recurring_materializer.py` + `read_recurring_rule_projection`
+  / `read_installment_plan_projection`(MOZE_FEATURE_GAP_SD.md §2.2/§2.3)。
+  跟其它 sync entity 一样走 `_MERGE_SPECS`/`_UPSERT_DISPATCH`/
+  `_DELETE_DISPATCH` + `src/routers/write/recurring_rules.py` /
+  `installment_plans.py`;区别是这两种 entity **到期后还要自动生成
+  transaction**——`materialize_all_due()` 由 `main.py` 的周期性 asyncio
+  loop(每 15 分钟)调用,也可以手动 `POST /internal/tasks/
+  materialize-recurring`(admin scope)立即触发。新增"到期自动生成实体"
+  这类功能时可以复用这个 loop 模式,不需要重新引入 APScheduler。
 - `src/models.py` / `src/schemas.py` —— SQLAlchemy ORM 模型 / Pydantic
   schema。
 - `src/database.py` —— SQLite(默认,WAL + busy_timeout,生产必需)和

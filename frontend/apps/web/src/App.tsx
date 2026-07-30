@@ -65,6 +65,14 @@ const TagsPage = lazy(() =>
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
+const RecurringRulesPage = lazy(() =>
+  import('./pages/sections/RecurringRulesPage').then((m) => ({ default: m.RecurringRulesPage })),
+)
+const InstallmentPlansPage = lazy(() =>
+  import('./pages/sections/InstallmentPlansPage').then((m) => ({
+    default: m.InstallmentPlansPage,
+  })),
+)
 const ShareIncomingPage = lazy(() =>
   import('./pages/sections/ShareIncomingPage').then((m) => ({ default: m.ShareIncomingPage })),
 )
@@ -225,6 +233,22 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <BudgetsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="recurring-rules"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <RecurringRulesPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="installment-plans"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <InstallmentPlansPage />
             </Suspense>
           }
         />

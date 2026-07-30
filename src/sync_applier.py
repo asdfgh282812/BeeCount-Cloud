@@ -48,6 +48,8 @@ from . import projection
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPlanProjection,
+    ReadRecurringRuleProjection,
     ReadTxProjection,
     SyncChange,
     UserAccountProjection,
@@ -60,7 +62,10 @@ from .services.category_icon import resolve_icon_by_name
 
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
 # 比如 ``ledger_snapshot`` 是 sync_changes 里的元数据行,不走这条路径)。
-INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger", "exchange_rate_override"}
+INDIVIDUAL_ENTITY_TYPES = {
+    "transaction", "account", "category", "tag", "budget", "ledger",
+    "exchange_rate_override", "recurring_rule", "installment_plan",
+}
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
 # 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
@@ -175,6 +180,34 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("startDay", "start_day"),
         ("enabled", "enabled"),
     ]),
+    "recurring_rule": _MergeSpec(ReadRecurringRuleProjection, [
+        ("syncId", "sync_id"),
+        ("txType", "tx_type"),
+        ("amount", "amount"),
+        ("note", "note"),
+        ("categoryId", "category_sync_id"),
+        ("accountId", "account_sync_id"),
+        ("fromAccountId", "from_account_sync_id"),
+        ("toAccountId", "to_account_sync_id"),
+        ("frequency", "frequency"),
+        ("interval", "interval"),
+        ("nextRunAt", "next_run_at", _isoformat_or_none),
+        ("endAt", "end_at", _isoformat_or_none),
+        ("enabled", "enabled"),
+    ]),
+    "installment_plan": _MergeSpec(ReadInstallmentPlanProjection, [
+        ("syncId", "sync_id"),
+        ("totalAmount", "total_amount"),
+        ("periods", "periods"),
+        ("periodAmount", "period_amount"),
+        ("firstPeriodAt", "first_period_at", _isoformat_or_none),
+        ("nextPeriodAt", "next_period_at", _isoformat_or_none),
+        ("paidPeriods", "paid_periods"),
+        ("accountId", "account_sync_id"),
+        ("categoryId", "category_sync_id"),
+        ("note", "note"),
+        ("status", "status"),
+    ]),
     "transaction": _MergeSpec(ReadTxProjection, [
         ("syncId", "sync_id"),
         ("type", "tx_type"),
@@ -207,6 +240,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # _sync_native_amount_after_merge。
         ("currencyCode", "currency_code"),
         ("nativeAmount", "native_amount"),
+        ("refundOfId", "refund_of_sync_id"),
+        ("installmentPlanId", "installment_plan_sync_id"),
     ]),
 }
 
@@ -224,6 +259,8 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
 _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "budget": projection.upsert_budget,
     "transaction": projection.upsert_tx,
+    "recurring_rule": projection.upsert_recurring_rule,
+    "installment_plan": projection.upsert_installment_plan,
 }
 
 
@@ -315,6 +352,20 @@ def _delete_budget(db: Session, ledger_id: str, sync_id: str, user_id: str) -> N
     )
 
 
+def _delete_recurring_rule(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_recurring_rule(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="recurring_rule", entity_sync_id=sync_id,
+    )
+
+
+def _delete_installment_plan(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_installment_plan(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="installment_plan", entity_sync_id=sync_id,
+    )
+
+
 def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
     projection.delete_account(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -339,6 +390,8 @@ def _delete_user_exchange_rate_override(db: Session, user_id: str, sync_id: str)
 _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
     "budget": _delete_budget,
+    "recurring_rule": _delete_recurring_rule,
+    "installment_plan": _delete_installment_plan,
 }
 
 

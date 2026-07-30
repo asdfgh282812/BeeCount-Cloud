@@ -7,8 +7,10 @@ import type {
   ReadAccount,
   ReadBudget,
   ReadCategory,
+  ReadInstallmentPlan,
   ReadLedger,
   ReadLedgerDetail,
+  ReadRecurringRule,
   ReadTag,
   ReadTransaction,
   SharedResourcesBundle,
@@ -119,6 +121,28 @@ export async function fetchReadLedgerStats(
 ): Promise<ReadLedgerStats> {
   return authedGet<ReadLedgerStats>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/stats`,
+    token,
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.2 —— 週期性收支规则列表,按 next_run_at 升序。 */
+export async function fetchReadRecurringRules(
+  token: string,
+  ledgerId: string,
+): Promise<ReadRecurringRule[]> {
+  return authedGet<ReadRecurringRule[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules`,
+    token,
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.3 —— 分期付款计划列表,按 first_period_at 倒序。 */
+export async function fetchReadInstallmentPlans(
+  token: string,
+  ledgerId: string,
+): Promise<ReadInstallmentPlan[]> {
+  return authedGet<ReadInstallmentPlan[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/installment-plans`,
     token,
   )
 }

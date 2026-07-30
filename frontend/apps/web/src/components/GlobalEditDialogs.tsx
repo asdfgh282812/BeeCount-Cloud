@@ -161,6 +161,7 @@ export function GlobalEditDialogs() {
         attachments: Array.isArray(tx.attachments) ? tx.attachments : [],
         exclude_from_stats: Boolean(tx.exclude_from_stats),
         exclude_from_budget: Boolean(tx.exclude_from_budget),
+        refund_of_id: tx.refund_of_id || '',
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
@@ -297,6 +298,9 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type === 'transfer' ? false : editTxForm.exclude_from_stats,
       exclude_from_budget:
         editTxForm.tx_type === 'expense' ? editTxForm.exclude_from_budget : false,
+      // 退款(§2.6):同 TransactionsPage.onSaveTransaction —— 只有 income 有意义。
+      refund_of_id:
+        editTxForm.tx_type === 'income' ? editTxForm.refund_of_id.trim() || null : null,
       ...currencyFields
     }
 

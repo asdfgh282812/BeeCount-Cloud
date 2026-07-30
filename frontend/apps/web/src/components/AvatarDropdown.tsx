@@ -4,6 +4,8 @@ import {
   BookOpen,
   Bot,
   Brush,
+  CalendarClock,
+  CreditCard,
   Info,
   Key,
   Languages,
@@ -134,6 +136,20 @@ export function AvatarDropdown({
             onClick={() => onNavigate('budgets')}
           >
             {t('nav.budgets')}
+          </MenuButton>
+          <MenuButton
+            icon={CalendarClock}
+            active={currentSection === 'recurring-rules'}
+            onClick={() => onNavigate('recurring-rules')}
+          >
+            {t('nav.recurringRules')}
+          </MenuButton>
+          <MenuButton
+            icon={CreditCard}
+            active={currentSection === 'installment-plans'}
+            onClick={() => onNavigate('installment-plans')}
+          >
+            {t('nav.installmentPlans')}
           </MenuButton>
           <MenuButton
             icon={BookOpen}

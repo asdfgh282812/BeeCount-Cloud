@@ -542,6 +542,15 @@ class ReadTxProjection(Base):
     # 统计端 COALESCE 回退 amount)。账本维度统计读 native_amount,账户维度仍 amount。
     currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     native_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 退款(§2.6 MOZE_FEATURE_GAP_SD.md):指向被退款的那笔支出 tx 的 sync_id。
+    # 有值 = 这笔(通常是 income)交易是对某笔支出的退款,统计口径从"当期收入"
+    # 挪走,改冲抵该笔支出净额(见 read/_shared._projection_totals、
+    # read/workspace.workspace_analytics 的 netting 逻辑)。None = 普通交易。
+    refund_of_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 分期付款(§2.3):有值 = 这笔交易是某个分期计划自动生成的一期,反查
+    # read_installment_plan_projection.sync_id。None = 普通交易(含分期计划
+    # 本身可能已建了第一期时也带这个值)。
+    installment_plan_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 Index(
@@ -714,6 +723,84 @@ Index(
     "ix_read_budget_ledger_cat",
     ReadBudgetProjection.ledger_id,
     ReadBudgetProjection.category_sync_id,
+)
+
+
+class ReadRecurringRuleProjection(Base):
+    """週期性收支规则(§2.2 MOZE_FEATURE_GAP_SD.md)。ledger-scoped,跟 budget
+    同款 PK=(ledger_id, sync_id)。到期由 services.recurring_materializer 扫
+    `enabled=True AND next_run_at <= now()` 生成真正的 transaction,并把
+    `next_run_at` 推进到下一週期(见该模块 docstring)。"""
+
+    __tablename__ = "read_recurring_rule_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    tx_type: Mapped[str] = mapped_column(String(16), default="expense")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    from_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 'daily' / 'weekly' / 'monthly' / 'yearly'
+    frequency: Mapped[str] = mapped_column(String(16), default="monthly")
+    # 每隔几个 frequency 单位触发一次(1 = 每次都触发)
+    interval: Mapped[int] = mapped_column(Integer, default=1)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_recurring_rule_due",
+    ReadRecurringRuleProjection.enabled,
+    ReadRecurringRuleProjection.next_run_at,
+)
+
+
+class ReadInstallmentPlanProjection(Base):
+    """分期付款计划(§2.3 MOZE_FEATURE_GAP_SD.md)。ledger-scoped。创建计画时
+    通常立刻生成第一期交易(`paid_periods=1`),之后由
+    services.recurring_materializer 按 `next_period_at` 逐期生成剩余交易,
+    每期都在 `read_tx_projection.installment_plan_sync_id` 反查回这张表。
+    `status`: 'active' / 'settled'(提前结清或已付满 periods)。"""
+
+    __tablename__ = "read_installment_plan_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    periods: Mapped[int] = mapped_column(Integer, default=1)
+    period_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    first_period_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 下一期(尚未生成交易的那期)应该落地的时间;第一期在建计画时已经生成,
+    # 所以初始值 = first_period_at 之后一个周期。
+    next_period_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    paid_periods: Mapped[int] = mapped_column(Integer, default=0)
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 'active' / 'settled'
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_installment_plan_due",
+    ReadInstallmentPlanProjection.status,
+    ReadInstallmentPlanProjection.next_period_at,
 )
 
 

@@ -24,6 +24,8 @@ from .models import (
     AttachmentFile,
     Ledger,
     ReadBudgetProjection,
+    ReadInstallmentPlanProjection,
+    ReadRecurringRuleProjection,
     ReadTxProjection,
     UserAccountProjection,
     UserCategoryProjection,
@@ -269,6 +271,10 @@ def upsert_tx(
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),
         "native_amount": _as_float_or_none(payload.get("nativeAmount")),
+        # 退款(§2.6)/ 分期(§2.3)反查字段:None = 普通交易,缺键保留由上游
+        # merge_with_existing 负责。
+        "refund_of_sync_id": _as_str(payload.get("refundOfId")),
+        "installment_plan_sync_id": _as_str(payload.get("installmentPlanId")),
         "source_change_id": source_change_id,
     }
 
@@ -462,6 +468,76 @@ def upsert_budget(
     _upsert(db, ReadBudgetProjection, ("ledger_id", "sync_id"), values)
 
 
+def upsert_recurring_rule(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "tx_type": _as_str(payload.get("txType")) or "expense",
+        "amount": _as_float(payload.get("amount")),
+        "note": _as_str(payload.get("note")),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "from_account_sync_id": _as_str(payload.get("fromAccountId")),
+        "to_account_sync_id": _as_str(payload.get("toAccountId")),
+        "frequency": _as_str(payload.get("frequency")) or "monthly",
+        "interval": _as_int(payload.get("interval"), default=1) or 1,
+        "next_run_at": _parse_happened_at(payload.get("nextRunAt")),
+        "end_at": _parse_happened_at(payload.get("endAt")) if payload.get("endAt") else None,
+        "enabled": _as_bool(payload.get("enabled"), default=True),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadRecurringRuleProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_recurring_rule(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadRecurringRuleProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_installment_plan(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "total_amount": _as_float(payload.get("totalAmount")),
+        "periods": _as_int(payload.get("periods"), default=1) or 1,
+        "period_amount": _as_float(payload.get("periodAmount")),
+        "first_period_at": _parse_happened_at(payload.get("firstPeriodAt")),
+        "next_period_at": _parse_happened_at(payload.get("nextPeriodAt")),
+        "paid_periods": _as_int(payload.get("paidPeriods"), default=0),
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "note": _as_str(payload.get("note")),
+        "status": _as_str(payload.get("status")) or "active",
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadInstallmentPlanProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_installment_plan(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadInstallmentPlanProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
 def delete_entity(
     db: Session, model, *, ledger_id: str, sync_id: str
 ) -> None:
@@ -639,7 +715,12 @@ def rename_cascade_tag(
 def _truncate_ledger(db: Session, ledger_id: str) -> None:
     """清掉该 ledger 的 ledger-scoped projection。user-global(account/
     category/tag)是 per-user 表,不按 ledger 清,**不在此处处理**。"""
-    for model in (ReadTxProjection, ReadBudgetProjection):
+    for model in (
+        ReadTxProjection,
+        ReadBudgetProjection,
+        ReadRecurringRuleProjection,
+        ReadInstallmentPlanProjection,
+    ):
         db.execute(delete(model).where(model.ledger_id == ledger_id))
 
 
@@ -695,6 +776,24 @@ def rebuild_from_snapshot(
     for item in snapshot.get("budgets") or []:
         if isinstance(item, dict):
             upsert_budget(
+                db,
+                ledger_id=ledger_id,
+                user_id=user_id,
+                source_change_id=source_change_id,
+                payload=item,
+            )
+    for item in snapshot.get("recurringRules") or []:
+        if isinstance(item, dict):
+            upsert_recurring_rule(
+                db,
+                ledger_id=ledger_id,
+                user_id=user_id,
+                source_change_id=source_change_id,
+                payload=item,
+            )
+    for item in snapshot.get("installmentPlans") or []:
+        if isinstance(item, dict):
+            upsert_installment_plan(
                 db,
                 ledger_id=ledger_id,
                 user_id=user_id,

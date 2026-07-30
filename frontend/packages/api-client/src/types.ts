@@ -189,6 +189,8 @@ export type ReadTransaction = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(记账时汇率,保存即定)。null 时 fallback 用 amount。 */
   native_amount?: number | null
+  /** 退款(§2.6):这笔交易是对哪笔支出的退款。null = 普通交易。 */
+  refund_of_id?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -566,6 +568,8 @@ export type TxPayload = {
   exclude_from_stats?: boolean | null
   /** 不计入预算用量(仅 expense 有意义)。 */
   exclude_from_budget?: boolean | null
+  /** 退款(§2.6):这笔交易是对 refund_of_id 那笔支出的退款。null = 普通交易/不改。 */
+  refund_of_id?: string | null
 }
 
 export type BudgetCreatePayload = {
@@ -741,4 +745,116 @@ export type NetWorthHistorySeriesItem = {
 export type NetWorthHistory = {
   series: NetWorthHistorySeriesItem[]
   multi_currency: boolean
+}
+
+// ────────── 通知中心(MOZE_FEATURE_GAP_SD.md §2.1，Phase 0）──────────
+// user-global，非 sync 实体，走普通 REST（GET /notifications 等），跟其余
+// ledger-scoped read/write 契约不是一回事。
+
+export type NotificationItem = {
+  id: number
+  /** 'reminder' | 'budget_alert' | 'card_due' | 'system'，服务端未做枚举校验。 */
+  category: string
+  title: string
+  body: string | null
+  payload: Record<string, unknown> | null
+  read_at: string | null
+  created_at: string
+}
+
+export type NotificationListResponse = {
+  total: number
+  /** 始终是当前用户全部未读数，不受 limit/offset/category/unread_only 影响。 */
+  unread_count: number
+  items: NotificationItem[]
+}
+
+// ────────── 週期性收支 (Recurring Rules，MOZE_FEATURE_GAP_SD.md §2.2）──────────
+
+export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
+
+export type ReadRecurringRule = {
+  id: string
+  tx_type: 'expense' | 'income' | 'transfer' | string
+  amount: number
+  note?: string | null
+  category_id?: string | null
+  category_name?: string | null
+  account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  frequency: RecurringFrequency
+  interval: number
+  next_run_at: string
+  end_at?: string | null
+  enabled: boolean
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type RecurringRuleCreatePayload = {
+  tx_type: 'expense' | 'income' | 'transfer'
+  amount: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  frequency: RecurringFrequency
+  interval: number
+  next_run_at: string
+  end_at?: string | null
+  enabled?: boolean
+}
+
+export type RecurringRuleUpdatePayload = {
+  tx_type?: 'expense' | 'income' | 'transfer'
+  amount?: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  frequency?: RecurringFrequency
+  interval?: number
+  next_run_at?: string
+  end_at?: string | null
+  enabled?: boolean
+}
+
+// ────────── 分期付款 (Installment Plans，MOZE_FEATURE_GAP_SD.md §2.3）──────────
+
+export type InstallmentPlanStatus = 'active' | 'settled'
+
+export type ReadInstallmentPlan = {
+  id: string
+  total_amount: number
+  periods: number
+  period_amount: number
+  first_period_at: string
+  next_period_at: string
+  paid_periods: number
+  account_id?: string | null
+  category_id?: string | null
+  note?: string | null
+  status: InstallmentPlanStatus
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type InstallmentPlanCreatePayload = {
+  total_amount: number
+  periods: number
+  first_period_at: string
+  account_id?: string | null
+  category_id?: string | null
+  note?: string | null
+}
+
+/** 只支持提前结清(status='settled')/改备注，期数/金额不可改（对齐 budgets 的设计约束：改这些走删除重建）。 */
+export type InstallmentPlanUpdatePayload = {
+  note?: string | null
+  status?: InstallmentPlanStatus
 }

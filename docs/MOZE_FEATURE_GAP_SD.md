@@ -25,12 +25,12 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 帳戶設置 | ✅ 已支援(`accounts`：type/currency/初始餘額/note/信用額度/帳單日/繳款日/末四碼/隱藏) |
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
-| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；週期性/分期/拆帳/退款/範本/語音記帳/記帳模式缺) |
-| 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期/折抵/紅利/免息期建議全缺**) |
+| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳、**週期性/分期/退款(Phase 1，server + web UI 已完成，mobile UI 待排期)**已有；拆帳/範本/語音記帳/記帳模式缺) |
+| 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期(分期本身已做通用版)/折抵/紅利/免息期建議全缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
 | 捷徑功能 | ⚪ Client-only，server 不需改動 |
-| 其他功能 | 🟡 部分(備份還原、搜尋、批次改刪、匯入匯出已有；**通知中心缺，台灣電子發票視市場決定要不要做**) |
+| 其他功能 | 🟡 部分(備份還原、搜尋、批次改刪、匯入匯出、**通知中心(Phase 0)**已有；台灣電子發票視市場決定要不要做) |
 
 ---
 
@@ -61,6 +61,16 @@ Moze: [feature/notification.md](https://doc.moze.app/feature/notification.md)
 
 ### 2.2 週期性收支 (Recurring Transactions)
 
+**✅ Phase 1 已實作(2026-07-30）**：`read_recurring_rule_projection` +
+`src/routers/write/recurring_rules.py`(POST/PATCH/DELETE)+
+`src/routers/read/ledgers.py` 的 `GET /ledgers/{id}/recurring-rules` +
+`src/services/recurring_materializer.py`（asyncio 定時 loop,15 分鐘一次,
+main.py 註冊；也可手動 `POST /internal/tasks/materialize-recurring` 立即
+觸發）。到期生成交易時順帶寫 §2.1 notification。測試見
+`tests/test_recurring_rules.py`。**web UI 已完成(2026-07-30）**：
+`/app/recurring-rules`(`RecurringRulesPage` + `RecurringRulesPanel`），入口
+在頭像下拉「工具」組，僅帳本 owner 可寫。mobile UI 仍待排期。
+
 Moze: [record/recurring.md](https://doc.moze.app/record/recurring.md)
 
 **現況**：完全沒有。`WriteTransactionCreateRequest` 只能建立單筆立即
@@ -90,6 +100,18 @@ Moze: [record/recurring.md](https://doc.moze.app/record/recurring.md)
 ---
 
 ### 2.3 分期付款 (Installment)
+
+**✅ Phase 1 已實作(2026-07-30）**：`read_installment_plan_projection` +
+`read_tx_projection.installment_plan_sync_id` 反查欄位 +
+`src/routers/write/installment_plans.py`(POST 建計畫時同事務生成第一期
+交易 / PATCH 可提前結清 / DELETE)+ `GET /ledgers/{id}/installment-plans`。
+剩餘各期由 `src/services/recurring_materializer.py` 共用同一個排程 worker
+按月推進(`add_months` 假設每期間隔一個月，跟信用卡帳單週期常見場景對齊；
+未做免息期/折抵等信用卡專屬計算，那些排在 §2.9)。測試見
+`tests/test_installment_plans.py`。**web UI 已完成(2026-07-30）**：
+`/app/installment-plans`(`InstallmentPlansPage` + `InstallmentPlansPanel`），
+建計畫後 total_amount/periods/first_period_at 不可改(對齊 server 約束),
+只能提前結清或改備註。mobile UI 仍待排期。
 
 Moze: [record/installment.md](https://doc.moze.app/record/installment.md)、
 信用卡的「[帳單分期](https://doc.moze.app/credit-card/statement-installment.md)」
@@ -163,6 +185,18 @@ Moze: [record/payables-receivables.md](https://doc.moze.app/record/payables-rece
 ---
 
 ### 2.6 退款 (Refund)
+
+**✅ Phase 1 已實作(2026-07-30）**：`read_tx_projection.refund_of_sync_id` +
+`WriteTransactionCreateRequest/UpdateRequest.refund_of_id`。統計口徑淨額
+在三處生效：`read/_shared.py::_projection_totals`(`/summary` 與
+`list_ledgers` 共用)以及 `read/workspace.py::workspace_analytics`(含
+income/expense 總額、series、分類排行）。`balance` 口徑不受影響(退款仍按
+income 記正號，數學上等價)。測試見 `tests/test_refund_stats.py`。**web UI
+已完成(2026-07-30）**：交易表單新增「退款對象」下拉(僅 income 類型顯示，
+`TransactionsPanel.tsx`)，候選來自當前已載入的交易列表(非全量搜尋，已知
+限制)；交易詳情彈窗顯示「退款」徽章。**尚未做**的:CSV 匯出欄位、跨月退款
+回溯到原支出月份的口徑(目前退款淨額算在退款自己發生的那個月/分類，不會
+回溯修正原支出那個月)、全量交易搜尋 picker(mobile UI 也待排期)。
 
 Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
 
@@ -363,8 +397,9 @@ tag 目前是多對多、無層級、無預算掛勾，跟 Moze 的「專案」�
 ## 4. 建議實作順序
 
 ```
-Phase 0(地基）: §2.1 通知中心
+Phase 0(地基）: §2.1 通知中心 ✅ server + web UI 已完成(2026-07-30);mobile UI 待排期
 Phase 1(核心記帳擴充）: §2.2 週期性收支 → §2.3 分期付款 → §2.6 退款(輕量，可插隊)
+                        ✅ server + web UI 已完成(2026-07-30);mobile UI 待排期
 Phase 2(統計口徑動刀，建議獨立 PR）: §2.4 拆帳
 Phase 3(往來/範本，彼此獨立可並行）: §2.5 借還款追蹤、§2.7 範本
 Phase 4(信用卡整組，依賴 Phase 1 的 recurring/installment）: §2.9

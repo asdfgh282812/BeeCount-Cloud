@@ -334,6 +334,18 @@ export function TransactionsPanel({
     )
   }, [categories, form.category_name, form.tx_type])
 
+  // 退款(§2.6):候选列表来自当前已加载的 rows(该账本最近一页交易),只挑
+  // expense 类型且不是自己。这是已知限制 —— 只能从当前可见列表选,搜索范围
+  // 更大的场景需要专门的交易搜索 picker,先用轻量方案覆盖主流程。
+  const refundCandidates = useMemo(
+    () => rows.filter((row) => row.tx_type === 'expense' && row.id !== form.editingId),
+    [rows, form.editingId],
+  )
+  const selectedRefundTarget = useMemo(
+    () => refundCandidates.find((row) => row.id === form.refund_of_id) || null,
+    [refundCandidates, form.refund_of_id],
+  )
+
   const isTransfer = form.tx_type === 'transfer'
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
   // 转账必须两端都选（否则无法表达方向）。
@@ -658,6 +670,40 @@ export function TransactionsPanel({
                 <span className="text-xs text-muted-foreground opacity-60">▾</span>
               </button>
             </div>
+            {/* 退款(§2.6):把这笔收入标记为对某笔支出的退款,统计上会从收入
+                挪去冲抵原支出的净额。只在 income 类型显示 —— 支出/转账没有
+                "退款对象"这个语意。 */}
+            {form.tx_type === 'income' ? (
+              <div className="space-y-1 md:col-span-2">
+                <Label>{t('transactions.field.refundOf')}</Label>
+                <Select
+                  value={form.refund_of_id || '__none__'}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, refund_of_id: value === '__none__' ? '' : value })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('transactions.placeholder.refundOf')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      <span className="text-muted-foreground">{t('common.none')}</span>
+                    </SelectItem>
+                    {selectedRefundTarget && !refundCandidates.some((row) => row.id === selectedRefundTarget.id) ? (
+                      <SelectItem value={selectedRefundTarget.id}>
+                        {refundTargetLabel(selectedRefundTarget)}
+                      </SelectItem>
+                    ) : null}
+                    {refundCandidates.map((row) => (
+                      <SelectItem key={row.id} value={row.id}>
+                        {refundTargetLabel(row)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+
             <div className="space-y-1 md:col-span-2">
               <Label>{t('transactions.table.note')}</Label>
               <Input
@@ -774,6 +820,14 @@ export function TransactionsPanel({
       />
     </>
   )
+}
+
+/** 退款 picker 里每行的展示文案:日期 · 分类 · 金额,方便在同金额的多笔支出里分辨。 */
+function refundTargetLabel(row: ReadTransaction): string {
+  const date = new Date(row.happened_at)
+  const dateStr = Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString()
+  const category = row.category_name || ''
+  return [dateStr, category, row.amount].filter((part) => `${part}`.trim().length > 0).join(' · ')
 }
 
 /**

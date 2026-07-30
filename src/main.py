@@ -24,7 +24,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, write, ws
-from .routers import admin_backup, mcp_calls, two_factor
+from .routers import admin_backup, internal_tasks, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
 from .routers import invites as invites_router
@@ -169,6 +169,11 @@ app.include_router(
     notifications.router,
     prefix=f"{settings.api_prefix}/notifications",
     tags=["notifications"],
+)
+app.include_router(
+    internal_tasks.router,
+    prefix=f"{settings.api_prefix}/internal",
+    tags=["internal"],
 )
 # Streamable HTTP MCP 端点。用精确 Route(而非 app.mount)挂载:mount 对
 # "无尾斜杠的根请求"(POST /api/v1/mcp)会 307 重定向到带斜杠,而内置 HTTP
@@ -331,6 +336,52 @@ def _prune_mcp_logs() -> None:
 @app.on_event("shutdown")
 async def _stop_mcp_log_retention() -> None:  # noqa: B008
     task = getattr(app.state, "mcp_log_retention_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# ============================================================================
+# Recurring rule / installment plan 到期物化(MOZE_FEATURE_GAP_SD.md §2.2/§2.3
+# Phase 1)—— 纯 asyncio loop,不依赖 APScheduler,跟 mcp log retention 同款
+# 写法。每 15 分钟扫一次全库到期项;首次冷启动等 15 分钟才跑第一次,不影响
+# 测试(test 进程秒级退出,任务永远不触发)。想立即触发一次(手动 / 外部
+# cron)走 POST /api/v1/internal/tasks/materialize-recurring。
+# ============================================================================
+
+
+_RECURRING_MATERIALIZE_INTERVAL_SECONDS = 15 * 60
+
+
+@app.on_event("startup")
+async def _start_recurring_materializer() -> None:  # noqa: B008
+    import asyncio
+
+    async def _loop() -> None:
+        while True:
+            await asyncio.sleep(_RECURRING_MATERIALIZE_INTERVAL_SECONDS)
+            try:
+                await asyncio.to_thread(_run_materialize_once)
+            except Exception:
+                logging.getLogger(__name__).exception("recurring materializer loop failed")
+
+    app.state.recurring_materializer_task = asyncio.create_task(_loop())
+
+
+def _run_materialize_once() -> None:
+    from .services import recurring_materializer
+
+    with SessionLocal() as db:
+        result = recurring_materializer.materialize_all_due(db)
+        if result["recurring_transactions"] or result["installment_transactions"]:
+            logging.getLogger(__name__).info(
+                "recurring materializer: recurring=%d installment=%d",
+                result["recurring_transactions"], result["installment_transactions"],
+            )
+
+
+@app.on_event("shutdown")
+async def _stop_recurring_materializer() -> None:  # noqa: B008
+    task = getattr(app.state, "recurring_materializer_task", None)
     if task is not None and not task.done():
         task.cancel()
 

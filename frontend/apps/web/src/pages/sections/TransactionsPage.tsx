@@ -1473,6 +1473,9 @@ export function TransactionsPage() {
         // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
         exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
         exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false,
+        // 退款(§2.6):只有 income 类型才有意义;切换类型/清空选择时发 null
+        // 显式清掉关联(server:值为 null/'' 时 pop 掉 refundOfId)。
+        refund_of_id: txForm.tx_type === 'income' ? txForm.refund_of_id.trim() || null : null,
         ...currencyFields
       }
       // eslint-disable-next-line no-console
@@ -1998,7 +2001,8 @@ export function TransactionsPage() {
                             .filter((value) => value.length > 0),
                     attachments: normalizeAttachmentRefs(tx.attachments),
                     exclude_from_stats: Boolean(tx.exclude_from_stats),
-                    exclude_from_budget: Boolean(tx.exclude_from_budget)
+                    exclude_from_budget: Boolean(tx.exclude_from_budget),
+                    refund_of_id: tx.refund_of_id || ''
                   })
                 }}
                 onDelete={(row) =>
