@@ -451,6 +451,36 @@ class AuditLog(Base):
     )
 
 
+class Notification(Base):
+    """用户通知中心(§2.1 MOZE_FEATURE_GAP_SD.md)。user-global,不进
+    `sync_changes`/projection —— 走普通 REST,跨端各自 poll 或收 WS 推播。
+
+    产生通知的来源分散在各功能里(budget 超支判断、recurring 到期、信用卡
+    繳款日提醒等),故意不集中成一个 job,避免跨模块耦合。各功能调用
+    `services.notifications.create_notification()` 落地一条记录即可。
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # 'reminder' | 'budget_alert' | 'card_due' | 'system'
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 结构化附加数据(如关联的 ledger_id / tx_sync_id),前端跳转用
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+Index(
+    "ix_notifications_user_time",
+    Notification.user_id,
+    Notification.created_at.desc(),
+)
+
+
 # ============================================================================
 # Read projection tables (CQRS Q-side)
 # ============================================================================

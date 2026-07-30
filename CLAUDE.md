@@ -74,6 +74,11 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src（只跑单元测�
 误用 + budget import path 错误),根因都是"有隐式契约但没在契约点强制"。
 动之前花 5 分钟读完 `SYNC_ARCHITECTURE.md` 省几小时 debug。
 
+**如果要对标 Moze 补功能缺口**(週期性收支/分期/拆帳/借還款/信用卡/對帳等),
+先看 [docs/MOZE_FEATURE_GAP_SD.md](./docs/MOZE_FEATURE_GAP_SD.md) —— 逐項列了
+現況、修改內容、跨端依賴跟建議實作順序(Phase 0~7)。§2.1 通知中心
+(Phase 0)已落地,見下方 `src/routers/notifications.py`。
+
 ## 架构总览(server 端)
 
 FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make
@@ -96,7 +101,15 @@ dev-api` 实际跑的是 `uvicorn server:app`)。核心模块:
   记账操作。
 - `src/services/` —— 领域服务:`ai/`(LLM provider 适配 + 文档 RAG 问答)、
   `backup/`(rclone 多远端加密备份、调度、恢复)、`exchange_rate/`、
-  `import_data/`、`data_cleanup/`。
+  `import_data/`、`data_cleanup/`、`notifications.py`(通知中心写入
+  helper,见下)。
+- `src/routers/notifications.py` + `src/models.py:Notification` —— 通知
+  中心(MOZE_FEATURE_GAP_SD.md §2.1)。**user-global,不进
+  `sync_changes`/projection**,是普通 REST 资源,跟本节其它"sync entity"
+  的模式不一样。各功能(budget 超支、recurring 到期等)要发通知时,调
+  `services.notifications.create_notification(db, user_id=..., category=...,
+  title=..., body=..., payload=...)` 落一行,不 commit,由调用方业务事务
+  一起提交;不要为了发通知单独开事务。
 - `src/models.py` / `src/schemas.py` —— SQLAlchemy ORM 模型 / Pydantic
   schema。
 - `src/database.py` —— SQLite(默认,WAL + busy_timeout,生产必需)和

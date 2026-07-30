@@ -23,7 +23,7 @@ from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
-from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
+from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, write, ws
 from .routers import admin_backup, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
@@ -164,6 +164,11 @@ app.include_router(
     mcp_calls.router,
     prefix=f"{settings.api_prefix}/profile/mcp-calls",
     tags=["mcp-calls"],
+)
+app.include_router(
+    notifications.router,
+    prefix=f"{settings.api_prefix}/notifications",
+    tags=["notifications"],
 )
 # Streamable HTTP MCP 端点。用精确 Route(而非 app.mount)挂载:mount 对
 # "无尾斜杠的根请求"(POST /api/v1/mcp)会 307 重定向到带斜杠,而内置 HTTP
