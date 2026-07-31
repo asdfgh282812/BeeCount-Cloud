@@ -96,6 +96,20 @@ NotificationBell.tsx`,轮询 `GET /notifications`,不接 WS)、週期性收支
 (`read/_shared.py::_projection_totals`、`read/workspace.py::
 workspace_analytics`)对称处理两个退款方向。详见
 `docs/MOZE_FEATURE_GAP_SD.md` §2.6/§2.12.3。mobile 端 UI 仍待排期。
+**§2.4 拆帳(Phase 2,server + web UI,2026-07-31)已落地**:
+`WriteTransactionCreateRequest/UpdateRequest.splits`(至少 2 笔、
+tx_type 只能 expense/income、金额加总须等于交易 amount,校验见
+`write/_shared.py::_validate_tx_splits`);新表
+`read_tx_split_projection`(不是独立 sync entity,权威值走父交易
+payload 的 `splits` 字段,`projection.upsert_tx` 每次整批
+delete-then-insert 重建);`has_splits=True` 时父行
+`category_sync_id`/`category_name` 清空,`workspace_analytics`
+按 split 明细展开分别累加分类排行,分类预算用量同样把 split 明细计入
+对应分类。拆帳交易不能整笔退款,退款交易不能同时拆帳,拆帳跟
+週期性收支/分期付款组合暂不支持(write 层 + 前端 UI 都挡)。web 入口:
+`TransactionsPanel.tsx` 分类字段旁「拆分到多个分类」开关。详见
+`docs/MOZE_FEATURE_GAP_SD.md` §2.4,测试见 `tests/test_tx_splits.py`。
+mobile 端(本地 SQLite 子表)仍待排期。
 
 ## 架构总览(server 端)
 

@@ -272,6 +272,34 @@ def _normalize_tx_tags(raw: object) -> str | None:
     return None
 
 
+def _normalize_tx_splits(raw: object) -> list[dict] | None:
+    """拆帳(§2.4):request payload 的 `splits`(snake_case dict 列表,
+    `category_id`/`category_name`/`amount`/`note`)→ item 里存的 camelCase
+    dict 列表。空/非法输入一律 None(= 不产生 splits key,等同没拆帳)。"""
+    if not isinstance(raw, list) or not raw:
+        return None
+    normalized: list[dict] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        category_id = entry.get("category_id") or entry.get("categoryId")
+        if not category_id:
+            continue
+        split_item: dict[str, object] = {
+            "categoryId": str(category_id),
+            "amount": _to_float(entry.get("amount")),
+            "sortOrder": idx,
+        }
+        category_name = entry.get("category_name") or entry.get("categoryName")
+        if category_name:
+            split_item["categoryName"] = str(category_name)
+        note = entry.get("note")
+        if note:
+            split_item["note"] = str(note)
+        normalized.append(split_item)
+    return normalized or None
+
+
 def _sort_transactions(snapshot: dict) -> None:
     items = _ensure_list(snapshot, "items")
     items.sort(key=lambda item: _to_iso8601(item.get("happenedAt")), reverse=True)
@@ -339,6 +367,9 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["refundOfId"] = str(payload.get("refund_of_id"))
     if payload.get("recurring_rule_id") is not None:
         item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
+    splits = _normalize_tx_splits(payload.get("splits"))
+    if splits is not None:
+        item["splits"] = splits
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
@@ -477,6 +508,12 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
         item["recurringOccurrenceOverridden"] = bool(
             payload.get("recurring_occurrence_overridden")
         )
+    if "splits" in payload:
+        splits = _normalize_tx_splits(payload.get("splits"))
+        if splits is None:
+            item.pop("splits", None)
+        else:
+            item["splits"] = splits
     _mark_entity_actor(item, payload, create=False)
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。

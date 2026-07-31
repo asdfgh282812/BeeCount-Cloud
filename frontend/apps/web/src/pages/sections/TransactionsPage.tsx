@@ -86,6 +86,8 @@ import {
   loadRatesToBase,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
+  buildTxSplitsPayload,
+  validateTxSplits,
   CategoryPickerDialog,
   ConfirmDialog,
   TagPickerDialog,
@@ -1388,9 +1390,23 @@ export function TransactionsPage() {
     }
     // 非转账交易必须选分类(transfer 自动归虚拟"转账"分类,server 处理)。
     // mobile 端 transaction_editor_page 也强制必选,跨端一致避免 ungrouped tx
-    // 污染分类统计。
-    if (txForm.tx_type !== 'transfer' && !txForm.category_name.trim()) {
+    // 污染分类统计。拆帳(§2.4)时不看单一 category,改看 splits。
+    if (txForm.tx_type !== 'transfer' && !txForm.split_enabled && !txForm.category_name.trim()) {
       setErrorNotice(t('transactions.error.categoryRequired'))
+      return false
+    }
+    // 拆帳(§2.4):跟 server 端 _validate_tx_splits 同一套规则,前端先挡一遍。
+    const splitError = validateTxSplits(txForm, amountNum)
+    if (splitError) {
+      setErrorNotice(t(splitError))
+      return false
+    }
+    if (txForm.split_enabled && (txForm.recurring_enabled || txForm.installment_enabled)) {
+      setErrorNotice(t('transactions.error.splitRecurringNotSupported'))
+      return false
+    }
+    if (txForm.split_enabled && txForm.refund_of_id.trim()) {
+      setErrorNotice(t('transactions.error.splitRefundNotSupported'))
       return false
     }
     if (txForm.tx_type === 'transfer') {
@@ -1481,9 +1497,9 @@ export function TransactionsPage() {
         amount: Number(txForm.amount || 0),
         happened_at: txForm.happened_at || new Date().toISOString(),
         note: txForm.note || null,
-        category_name: isTransfer ? null : categoryName || null,
+        category_name: isTransfer || txForm.split_enabled ? null : categoryName || null,
         category_kind: isTransfer ? null : categoryKind || null,
-        category_id: resolvedCategoryId,
+        category_id: isTransfer || txForm.split_enabled ? null : resolvedCategoryId,
         account_name: isTransfer ? null : accountName || null,
         account_id: resolvedAccountId,
         from_account_name: isTransfer ? fromAccountName || null : null,
@@ -1503,6 +1519,9 @@ export function TransactionsPage() {
         // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
         // 时生效(server 也只认 create 路径的这个字段)。
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
+        // 拆帳(§2.4):disabled → 空数组(create 场景等同"没有 splits";update
+        // 场景显式清空既有 splits,回到单一 category)。
+        splits: buildTxSplitsPayload(txForm),
         ...currencyFields
       }
       // eslint-disable-next-line no-console
@@ -2042,7 +2061,17 @@ export function TransactionsPage() {
                     attachments: normalizeAttachmentRefs(tx.attachments),
                     exclude_from_stats: Boolean(tx.exclude_from_stats),
                     exclude_from_budget: Boolean(tx.exclude_from_budget),
-                    refund_of_id: tx.refund_of_id || ''
+                    refund_of_id: tx.refund_of_id || '',
+                    // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
+                    split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
+                    splits: Boolean(tx.has_splits)
+                      ? (tx.splits || []).map((s) => ({
+                          category_id: s.category_id || '',
+                          category_name: s.category_name || '',
+                          amount: String(s.amount),
+                          note: s.note || ''
+                        }))
+                      : []
                   })
                 }}
                 onDelete={(row) =>

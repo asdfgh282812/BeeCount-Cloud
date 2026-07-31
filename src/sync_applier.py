@@ -270,6 +270,11 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记。
         ("recurringRuleId", "recurring_rule_sync_id"),
         ("recurringOccurrenceOverridden", "recurring_occurrence_overridden"),
+        # 拆帳(§2.4):缺键保留既有 splits(跟 attachments 同一套惯例)——
+        # payload 没带 "splits" key(旧客户端 / 只改其它字段的 push)时,merge
+        # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批
+        # delete-then-insert read_tx_split_projection。
+        ("splits", "splits_json", _json_loads_safe),
     ]),
 }
 

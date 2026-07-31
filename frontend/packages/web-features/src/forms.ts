@@ -7,6 +7,7 @@ import type {
   InstallmentRepaymentMethod,
   RecurringAdvancedRule,
   RecurringInlineCreatePayload,
+  TxSplitPayload,
 } from '@beecount/api-client'
 
 export type TxForm = {
@@ -58,7 +59,28 @@ export type TxForm = {
   installment_round_amounts: boolean
   installment_remainder_position: 'first' | 'last'
   installment_grace_period_months: string
+  /** 拆帳(§2.4):把这笔交易拆到多个分类。tx_type 只能 expense/income,跟
+   *  transfer 互斥;开启时上面单选的 category_name 不使用,改看 splits。
+   *  跟 recurring/installment 不同 —— 编辑既有交易时也能开关(对齐 Moze
+   *  编辑既有交易能改分类的语意)。 */
+  split_enabled: boolean
+  splits: TxSplitFormItem[]
 }
+
+/** 拆帳(§2.4):`TxForm.splits` 单行明细的表单态(金额存字符串绑 input)。 */
+export type TxSplitFormItem = {
+  category_id: string
+  category_name: string
+  amount: string
+  note: string
+}
+
+export const txSplitItemDefaults = (): TxSplitFormItem => ({
+  category_id: '',
+  category_name: '',
+  amount: '',
+  note: '',
+})
 
 export type AccountForm = {
   editingId: string | null
@@ -210,6 +232,8 @@ export const txDefaults = (): TxForm => ({
   installment_round_amounts: true,
   installment_remainder_position: 'last',
   installment_grace_period_months: '0',
+  split_enabled: false,
+  splits: [],
 })
 
 export const accountDefaults = (): AccountForm => ({
@@ -369,4 +393,46 @@ export function buildInstallmentPlanPayload(
     remainder_position: form.installment_remainder_position,
     grace_period_months: graceMonths,
   }
+}
+
+/**
+ * 拆帳(§2.4):`TxForm.splits` 里已经填了分类的行(空分类行忽略,让用户能
+ * 先加一行还没选分类的占位)。UI 校验 + 组 payload 共用同一份过滤逻辑,
+ * 避免两处各写一套导致行数不一致。
+ */
+function _filledTxSplitRows(form: TxForm): TxSplitFormItem[] {
+  return form.splits.filter((row) => row.category_id.trim().length > 0)
+}
+
+/**
+ * 拆帳(§2.4)表单校验,`GlobalEditDialogs.tsx`/`TransactionsPage.tsx` 两处
+ * 提交前共用,回传 i18n key(null = 通过)。跟 server 端
+ * `write/_shared.py::_validate_tx_splits` 同一套规则:tx_type 只能
+ * expense/income、至少 2 笔、每笔金额 > 0、加总等于交易 amount。
+ */
+export function validateTxSplits(form: TxForm, amountNum: number): string | null {
+  if (!form.split_enabled) return null
+  if (form.tx_type === 'transfer') return 'transactions.error.splitTransferNotAllowed'
+  const rows = _filledTxSplitRows(form)
+  if (rows.length < 2) return 'transactions.error.splitNeedsTwo'
+  if (rows.some((row) => !(Number(row.amount) > 0))) return 'transactions.error.splitAmountInvalid'
+  const sum = rows.reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
+  if (Math.abs(sum - amountNum) > 0.01) return 'transactions.error.splitSumMismatch'
+  return null
+}
+
+/**
+ * 拆帳(§2.4):把 `TxForm.splits` 组成 `TxPayload.splits`。调用前必须先跑
+ * `validateTxSplits` 确认通过(本函数不重新校验,只负责转型)。
+ * `form.split_enabled=false` → 返回空数组(server 语义:显式 [] 清空既有
+ * splits,回到单一 category;create 场景下等同"没有 splits")。
+ */
+export function buildTxSplitsPayload(form: TxForm): TxSplitPayload[] {
+  if (!form.split_enabled) return []
+  return _filledTxSplitRows(form).map((row) => ({
+    category_id: row.category_id.trim(),
+    category_name: row.category_name.trim() || null,
+    amount: Number(row.amount) || 0,
+    note: row.note.trim() || null,
+  }))
 }

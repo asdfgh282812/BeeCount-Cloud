@@ -20,6 +20,8 @@ import {
   loadRatesToBase,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
+  buildTxSplitsPayload,
+  validateTxSplits,
   CategoriesPanel,
   categoryDefaults,
   TransactionsPanel,
@@ -166,6 +168,16 @@ export function GlobalEditDialogs() {
         exclude_from_stats: Boolean(tx.exclude_from_stats),
         exclude_from_budget: Boolean(tx.exclude_from_budget),
         refund_of_id: tx.refund_of_id || '',
+        // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
+        split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
+        splits: Boolean(tx.has_splits)
+          ? (tx.splits || []).map((s) => ({
+              category_id: s.category_id || '',
+              category_name: s.category_name || '',
+              amount: String(s.amount),
+              note: s.note || '',
+            }))
+          : [],
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
@@ -237,8 +249,19 @@ export function GlobalEditDialogs() {
       notifyError(new Error(t('transactions.error.amountInvalid')))
       return false
     }
-    if (editTxForm.tx_type !== 'transfer' && !editTxForm.category_name.trim()) {
+    if (
+      editTxForm.tx_type !== 'transfer' &&
+      !editTxForm.split_enabled &&
+      !editTxForm.category_name.trim()
+    ) {
       notifyError(new Error(t('transactions.error.categoryRequired')))
+      return false
+    }
+    // 拆帳(§2.4):跟 server 端 _validate_tx_splits 同一套规则(至少 2 笔/
+    // 每笔金额 > 0/加总等于交易 amount),前端先挡一遍减少来回请求。
+    const splitError = validateTxSplits(editTxForm, amountNum)
+    if (splitError) {
+      notifyError(new Error(t(splitError)))
       return false
     }
     if (editTxForm.tx_type === 'transfer') {
@@ -264,6 +287,19 @@ export function GlobalEditDialogs() {
         notifyError(new Error(t('installmentPlans.error.periodsInvalid')))
         return false
       }
+    }
+    // 拆帳(§2.4)跟週期性收支/分期付款組合尚未支援(server 端也会拒绝
+    // splits+recurring;installment 本身走独立的 createInstallmentPlan,不
+    // 会带 splits 字段,这里只挡 recurring 那一种 UI 上就能同时勾选的组合)。
+    if (editTxForm.split_enabled && (editTxForm.recurring_enabled || editTxForm.installment_enabled)) {
+      notifyError(new Error(t('transactions.error.splitRecurringNotSupported')))
+      return false
+    }
+    // 拆帳(§2.4)跟退款(§2.6)互斥:server 端 _validate_tx_splits 挡"退款
+    // 交易不能拆帳",这里同步在前端挡,避免用户填完一堆 split 行才被拒。
+    if (editTxForm.split_enabled && editTxForm.refund_of_id.trim()) {
+      notifyError(new Error(t('transactions.error.splitRefundNotSupported')))
+      return false
     }
 
     // v30 多币种:共享 helper(override 口径/编辑防漂移/改回本位币),与
@@ -326,7 +362,7 @@ export function GlobalEditDialogs() {
       happened_at: editTxForm.happened_at,
       note: editTxForm.note.trim() || null,
       category_name:
-        editTxForm.tx_type === 'transfer'
+        editTxForm.tx_type === 'transfer' || editTxForm.split_enabled
           ? null
           : editTxForm.category_name.trim() || null,
       category_kind:
@@ -357,6 +393,9 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type !== 'transfer' ? editTxForm.refund_of_id.trim() || null : null,
       // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建生效。
       recurring: !editTxForm.editingId ? buildRecurringInlinePayload(editTxForm) : null,
+      // 拆帳(§2.4):disabled → 空数组(create 场景等同"没有 splits";update
+      // 场景显式清空既有 splits,回到单一 category)。
+      splits: buildTxSplitsPayload(editTxForm),
       ...currencyFields
     }
 

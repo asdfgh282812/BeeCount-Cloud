@@ -199,6 +199,10 @@ export type ReadTransaction = {
   recurring_occurrence_overridden?: boolean
   /** 退款反查(§2.12.3):这笔支出收到过哪些退款,空数组 = 没有退款。 */
   refunds?: ReadTxRefundSummary[]
+  /** 拆帳(§2.4):true = 这笔交易拆到多个分类,category_id/category_name 为 null,明细在 splits。 */
+  has_splits?: boolean
+  /** 拆帳(§2.4):has_splits=true 时的分类明细,空数组 = 没有拆帳。 */
+  splits?: ReadTxSplit[]
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -221,6 +225,15 @@ export type ReadTxRefundSummary = {
   id: string
   amount: number
   happened_at: string
+}
+
+/** 拆帳(§2.4):一笔交易拆到某个分类下的明细行。 */
+export type ReadTxSplit = {
+  category_id: string | null
+  category_name: string | null
+  amount: number
+  note: string | null
+  sort_order: number
 }
 
 export type ReadAccount = {
@@ -590,6 +603,21 @@ export type TxPayload = {
    * create 有效(update 会被忽略)。
    */
   recurring?: RecurringInlineCreatePayload | null
+  /**
+   * 拆帳(§2.4):不传/undefined = 维持现行单一 category(向下相容);传入
+   * 至少 2 笔、tx_type 只能是 expense/income、金额加总须等于 amount ——
+   * server 端校验,详见 src/routers/write/_shared.py `_validate_tx_splits`。
+   * update 传空数组 [] = 清空 splits,交易变回单一 category。
+   */
+  splits?: TxSplitPayload[] | null
+}
+
+/** 拆帳(§2.4):挂在 `TxPayload.splits` 上的单个分类明细。 */
+export type TxSplitPayload = {
+  category_id: string
+  category_name?: string | null
+  amount: number
+  note?: string | null
 }
 
 export type BudgetCreatePayload = {

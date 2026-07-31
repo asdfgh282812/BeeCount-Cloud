@@ -363,6 +363,8 @@ def list_transactions(
                 recurring_rule_id=row.recurring_rule_sync_id,
                 recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
                 refunds=refunds_by_target.get(row.sync_id, []),
+                has_splits=bool(row.has_splits),
+                splits=_tx_splits_list(row.splits_json),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -636,9 +638,37 @@ def list_budgets_usage(
                 )
             ).all())
             ids = [b.category_sync_id, *child_ids]
-            base_q = base_q.where(ReadTxProjection.category_sync_id.in_(ids))
-
-        used = float(db.scalar(base_q) or 0.0)
+            # 拆帳(§2.4):has_splits=True 的父行 category_sync_id 是 NULL,
+            # 下面这个条件天然排除拆帳交易(NULL IN (...) 不成立)—— 分到这个
+            # 分类的那部分金额要另外从 read_tx_split_projection 查,按整笔的
+            # native/amount 折算比例缩放后累加,两边加总才是这个分类的真实用量。
+            non_split_used = float(db.scalar(
+                base_q.where(ReadTxProjection.category_sync_id.in_(ids))
+            ) or 0.0)
+            scale_expr = (
+                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+                / func.nullif(ReadTxProjection.amount, 0.0)
+            )
+            split_used = float(db.scalar(
+                select(func.coalesce(func.sum(ReadTxSplitProjection.amount * scale_expr), 0.0))
+                .select_from(ReadTxSplitProjection)
+                .join(
+                    ReadTxProjection,
+                    (ReadTxProjection.ledger_id == ReadTxSplitProjection.ledger_id)
+                    & (ReadTxProjection.sync_id == ReadTxSplitProjection.tx_sync_id),
+                )
+                .where(
+                    ReadTxSplitProjection.ledger_id == ledger.id,
+                    ReadTxSplitProjection.category_sync_id.in_(ids),
+                    ReadTxProjection.tx_type == "expense",
+                    ReadTxProjection.happened_at >= start,
+                    ReadTxProjection.happened_at < end,
+                    ReadTxProjection.exclude_from_budget == sa_false(),
+                )
+            ) or 0.0)
+            used = non_split_used + split_used
+        else:
+            used = float(db.scalar(base_q) or 0.0)
         items.append(ReadBudgetUsageItemOut(budget_id=b.sync_id, used=abs(used)))
 
     return ReadBudgetUsageOut(items=items)

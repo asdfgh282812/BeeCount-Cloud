@@ -505,6 +505,16 @@ class ReadTxRefundSummaryOut(BaseModel):
     happened_at: datetime
 
 
+class ReadTxSplitOut(BaseModel):
+    """拆帳(§2.4):一笔交易拆到某个分类下的明细行,给交易明细页/编辑表单
+    回显用。"""
+    category_id: str | None = None
+    category_name: str | None = None
+    amount: float
+    note: str | None = None
+    sort_order: int = 0
+
+
 class ReadTransactionOut(BaseModel):
     id: str
     tx_index: int
@@ -544,6 +554,10 @@ class ReadTransactionOut(BaseModel):
     recurring_occurrence_overridden: bool = False
     # 退款反查(§2.12.3):这笔支出收到过哪些退款,空列表 = 没有退款。
     refunds: list["ReadTxRefundSummaryOut"] = Field(default_factory=list)
+    # 拆帳(§2.4):has_splits=True 时 category_id/category_name 为 None(前端
+    # 显示"多分类"),明细在 splits;False 时 splits 是空列表,走原本单分类显示。
+    has_splits: bool = False
+    splits: list["ReadTxSplitOut"] = Field(default_factory=list)
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -892,6 +906,16 @@ class WriteTransactionRecurringInline(BaseModel):
     advanced_rule_json: dict[str, Any] | None = None
 
 
+class WriteTxSplitItem(BaseModel):
+    """拆帳(§2.4):挂在 `WriteTransactionCreateRequest`/`UpdateRequest.splits`
+    上的单个分类明细。`amount` 是这个分类分到的金额,所有明细项加总必须等于
+    交易本身的 amount(server 端校验,见 write/_shared.py `_validate_tx_splits`)。"""
+    category_id: str = Field(min_length=1)
+    category_name: str | None = None
+    amount: float = Field(gt=0)
+    note: str | None = None
+
+
 class WriteTransactionCreateRequest(WriteBaseRequest):
     tx_type: Literal["expense", "income", "transfer"] = "expense"
     amount: float
@@ -921,6 +945,10 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # Phase 1.5(§2.12.2):建交易当下顺便把它设成週期性收支的起点。None =
     # 普通交易。跟独立的 POST /recurring-rules 端点(事后设週期起点)并存。
     recurring: WriteTransactionRecurringInline | None = None
+    # 拆帳(§2.4):不传/None = 维持现行单一 category 行为(向下相容)。传入时
+    # 至少 2 笔、tx_type 只能是 expense/income、金额加总须等于 amount ——
+    # 校验见 write/_shared.py `_validate_tx_splits`。
+    splits: list["WriteTxSplitItem"] | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -948,6 +976,10 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     native_amount: float | None = None
     # 退款(§2.6):None = 不变。传空字符串清空关联(mutator 按空串处理成 null)。
     refund_of_id: str | None = None
+    # 拆帳(§2.4):None(不传该 key)= 不变,沿用既有 splits(或维持无 splits)。
+    # 传空列表 [] = 清空 splits,交易变回单一 category。传非空列表 = 整批替换
+    # (delete-then-insert),同样要满足 create 的校验规则。
+    splits: list["WriteTxSplitItem"] | None = None
 
 
 

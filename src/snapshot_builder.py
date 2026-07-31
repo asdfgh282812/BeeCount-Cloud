@@ -82,6 +82,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # full snapshot,否则下一次 _commit_write 的 diff 会把这两个字段撤销。
         ReadTxProjection.recurring_rule_sync_id,
         ReadTxProjection.recurring_occurrence_overridden,
+        # 拆帳(§2.4):splits_json 是 LWW merge fallback 的权威值,full snapshot
+        # 必须带上,否则新设备首次同步 / _commit_write 的下一次 diff 会把
+        # 已有 splits 当成"这笔交易本来就没有 splits"而静默清空。
+        ReadTxProjection.splits_json,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -96,7 +100,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          tx_index, created_by,
          currency_code, native_amount,
          refund_of_id, installment_plan_id,
-         recurring_rule_id, recurring_occurrence_overridden) = row
+         recurring_rule_id, recurring_occurrence_overridden,
+         splits_json) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -156,6 +161,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["recurringRuleId"] = recurring_rule_id
         if recurring_occurrence_overridden:
             item["recurringOccurrenceOverridden"] = True
+        if splits_json:
+            try:
+                splits = json.loads(splits_json)
+                if isinstance(splits, list) and splits:
+                    item["splits"] = splits
+            except json.JSONDecodeError:
+                pass
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户

@@ -559,6 +559,15 @@ class ReadTxProjection(Base):
     recurring_occurrence_overridden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # 拆帳(§2.4 MOZE_FEATURE_GAP_SD.md):has_splits=True 时这笔交易的
+    # category_sync_id/category_name 应为 NULL(前端显示"多分类"),明细行在
+    # read_tx_split_projection。splits_json 是 LWW merge 的 fallback 值(跟
+    # attachments_json 同款模式,权威可查询结构仍是下面那张子表,upsert_tx
+    # 每次都从这个 JSON 整批 delete-then-insert 重建子表行)。
+    has_splits: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    splits_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 Index(
@@ -874,6 +883,42 @@ Index(
     "ix_read_installment_period_plan",
     ReadInstallmentPeriodProjection.plan_sync_id,
     ReadInstallmentPeriodProjection.period_no,
+)
+
+
+class ReadTxSplitProjection(Base):
+    """拆帳(§2.4 MOZE_FEATURE_GAP_SD.md Phase 2):一笔交易拆成多个分类的
+    明细行。不是独立 sync entity(没有自己的 client syncId,不接受单独的
+    push/pull),而是挂在父交易上的只读投影 —— 权威值是父交易 SyncChange
+    payload 里的 `splits` 字段(跟 attachments 一样整批带),每次
+    `projection.upsert_tx` 都对这张表整批 delete-then-insert 重建
+    (`ledger_id`, `tx_sync_id`) 下的所有行,不做增量 diff。"""
+
+    __tablename__ = "read_tx_split_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    tx_sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    sort_order: Mapped[int] = mapped_column(Integer, primary_key=True, default=0)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+Index(
+    "ix_read_tx_split_ledger_tx",
+    ReadTxSplitProjection.ledger_id,
+    ReadTxSplitProjection.tx_sync_id,
+)
+Index(
+    "ix_read_tx_split_ledger_category",
+    ReadTxSplitProjection.ledger_id,
+    ReadTxSplitProjection.category_sync_id,
 )
 
 

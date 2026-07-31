@@ -37,6 +37,7 @@ from ...models import (
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
+    ReadTxSplitProjection,
     SyncChange,
     User,
     UserAccountProjection,
@@ -61,6 +62,7 @@ from ...schemas import (
     ReadTagOut,
     ReadTransactionOut,
     ReadTxRefundSummaryOut,
+    ReadTxSplitOut,
     WorkspaceAccountOut,
     WorkspaceAnalyticsAnomalyAttributionOut,
     WorkspaceAnalyticsAnomalyMonthOut,
@@ -427,6 +429,31 @@ def _tags_list(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _tx_splits_list(raw: str | None) -> list["ReadTxSplitOut"]:
+    """拆帳(§2.4):`read_tx_projection.splits_json` → `ReadTxSplitOut` 列表,
+    交易列表/明细两处读端点共用。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[ReadTxSplitOut] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        out.append(ReadTxSplitOut(
+            category_id=entry.get("categoryId"),
+            category_name=entry.get("categoryName"),
+            amount=float(entry.get("amount") or 0.0),
+            note=entry.get("note"),
+            sort_order=int(entry.get("sortOrder") or 0),
+        ))
+    return out
+
+
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -659,6 +686,7 @@ def _sanitize_filename(name: str | None, max_len: int = 64) -> str:
 
 
 __all__ = [
+    '_tx_splits_list',
     'json',
     'datetime',
     'timedelta',
@@ -689,6 +717,7 @@ __all__ = [
     'ReadInstallmentPlanProjection',
     'ReadRecurringRuleProjection',
     'ReadTxProjection',
+    'ReadTxSplitProjection',
     'UserAccountProjection',
     'UserCategoryProjection',
     'UserTagProjection',
@@ -711,6 +740,7 @@ __all__ = [
     'ReadTagOut',
     'ReadTransactionOut',
     'ReadTxRefundSummaryOut',
+    'ReadTxSplitOut',
     'WorkspaceAccountOut',
     'WorkspaceAnalyticsAnomalyAttributionOut',
     'WorkspaceAnalyticsAnomalyMonthOut',

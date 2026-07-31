@@ -28,6 +28,7 @@ from .models import (
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
+    ReadTxSplitProjection,
     UserAccountProjection,
     UserCategoryProjection,
     UserExchangeRateProjection,
@@ -182,6 +183,54 @@ def _resolve_account_sync_id_by_name(
     return rows[0] if len(rows) == 1 else None
 
 
+def _normalize_tx_splits_for_projection(raw: Any) -> list[dict[str, Any]]:
+    """`payload["splits"]`(item 里已经是 camelCase dict 列表,由
+    snapshot_mutator._normalize_tx_splits 规范化过)→ 落 read_tx_split_projection
+    的 dict 列表,过滤掉没有 categoryId 的脏行。"""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        category_sync_id = _as_str(entry.get("categoryId"))
+        if category_sync_id is None:
+            continue
+        out.append({
+            "sort_order": _as_int(entry.get("sortOrder"), default=idx),
+            "category_sync_id": category_sync_id,
+            "category_name": _as_str(entry.get("categoryName")),
+            "amount": _as_float(entry.get("amount")),
+            "note": _as_str(entry.get("note")),
+        })
+    return out
+
+
+def _replace_tx_splits(
+    db: Session, *, ledger_id: str, tx_sync_id: str, user_id: str, splits_raw: Any,
+) -> bool:
+    """拆帳(§2.4):整批 delete-then-insert `read_tx_split_projection` 里
+    (ledger_id, tx_sync_id) 下的所有行,权威值是 payload["splits"](已经过
+    `merge_with_existing`/`_projection_row_to_tx_dict` 补齐"没传就沿用旧值"
+    的语义,到这里时永远是"这次 upsert 后应该有的最终列表")。返回是否有
+    splits(供调用方设置 has_splits 列)。"""
+    db.execute(
+        delete(ReadTxSplitProjection).where(
+            ReadTxSplitProjection.ledger_id == ledger_id,
+            ReadTxSplitProjection.tx_sync_id == tx_sync_id,
+        )
+    )
+    rows = _normalize_tx_splits_for_projection(splits_raw)
+    for row in rows:
+        db.add(ReadTxSplitProjection(
+            ledger_id=ledger_id,
+            tx_sync_id=tx_sync_id,
+            user_id=user_id,
+            **row,
+        ))
+    return bool(rows)
+
+
 def upsert_tx(
     db: Session,
     *,
@@ -284,6 +333,17 @@ def upsert_tx(
         "source_change_id": source_change_id,
     }
 
+    # 拆帳(§2.4):has_splits 时父行的 category_sync_id/category_name 强制清空
+    # (前端靠这两个字段是否为 None 判断是否显示"多分类"),避免拆帳交易的
+    # 父行 category 跟 splits 明细里的分类混淆展示。
+    splits_raw = payload.get("splits")
+    has_splits = isinstance(splits_raw, list) and len(splits_raw) > 0
+    values["has_splits"] = has_splits
+    values["splits_json"] = json.dumps(splits_raw) if has_splits else None
+    if has_splits:
+        values["category_sync_id"] = None
+        values["category_name"] = None
+
     # #41:payload 只带名不带 id 时(老 web / 前端映射 miss),按名唯一反查补全。
     # 三组 account 字段各自独立处理;同名多账户保持 NULL,宁缺勿错。
     for id_key, name_key in (
@@ -297,6 +357,10 @@ def upsert_tx(
             )
 
     _upsert(db, ReadTxProjection, ("ledger_id", "sync_id"), values)
+    _replace_tx_splits(
+        db, ledger_id=ledger_id, tx_sync_id=sync_id, user_id=user_id,
+        splits_raw=splits_raw,
+    )
 
     # 新行已落地,对 prev - new 的 fileId 查还有无引用 → GC。
     # gc_orphan_attachments 契约要求新行就位后再调,这里顺序正确。
@@ -612,6 +676,14 @@ def delete_entity(
 
 def delete_tx(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadTxProjection, ledger_id=ledger_id, sync_id=sync_id)
+    # 拆帳(§2.4):tx_sync_id 不是外键,ledger 级联删不到这张表,删单笔交易
+    # 要顺手清掉它的 split 明细行,否则留下指向已删除交易的孤儿行。
+    db.execute(
+        delete(ReadTxSplitProjection).where(
+            ReadTxSplitProjection.ledger_id == ledger_id,
+            ReadTxSplitProjection.tx_sync_id == sync_id,
+        )
+    )
 
 
 def delete_account(db: Session, *, user_id: str, sync_id: str) -> None:

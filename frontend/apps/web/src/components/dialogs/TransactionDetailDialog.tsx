@@ -121,6 +121,11 @@ export function TransactionDetailDialog({
                     </span>
                   )
                 ) : null}
+                {tx.has_splits ? (
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground">
+                    {t('transactions.split.badge')}
+                  </span>
+                ) : null}
               </span>
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
                 {sign}
@@ -154,10 +159,30 @@ export function TransactionDetailDialog({
 
             {/* 字段列表 */}
             <div className="flex flex-col divide-y divide-border/40 px-6">
+              {/* 拆帳(§2.4):has_splits=True 时这行改显示"分类明细"多行拆分,
+                  不是单个 category_name(此时是 null)。 */}
               <DetailRow
                 icon={<Hash className="h-4 w-4" />}
-                label={t('detail.transaction.category')}
-                value={tx.category_name || '—'}
+                label={tx.has_splits ? t('transactions.split.detailTitle') : t('detail.transaction.category')}
+                value={
+                  tx.has_splits && tx.splits && tx.splits.length > 0 ? (
+                    <div className="flex flex-col items-end gap-1">
+                      {tx.splits.map((s, i) => (
+                        <div key={`${s.category_id || 'uncategorized'}-${i}`} className="flex items-center gap-2 text-sm">
+                          <span>{s.category_name || '—'}</span>
+                          <span className="tabular-nums text-muted-foreground">
+                            {s.amount.toLocaleString('zh-CN', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    tx.category_name || '—'
+                  )
+                }
               />
               <DetailRow
                 icon={<Wallet className="h-4 w-4" />}
@@ -274,8 +299,14 @@ export function TransactionDetailDialog({
             <Button
               variant="outline"
               size="sm"
-              disabled={!canManage || alreadyRefunded}
-              title={alreadyRefunded ? t('transactions.button.refund.alreadyRefunded') : undefined}
+              disabled={!canManage || alreadyRefunded || Boolean(tx.has_splits)}
+              title={
+                alreadyRefunded
+                  ? t('transactions.button.refund.alreadyRefunded')
+                  : tx.has_splits
+                    ? t('transactions.error.splitRefundNotSupported')
+                    : undefined
+              }
               onClick={() => onRefund(tx)}
             >
               <RotateCcw className="mr-1 h-3.5 w-3.5" />

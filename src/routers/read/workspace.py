@@ -238,6 +238,8 @@ def list_workspace_transactions(
                 recurring_rule_id=row.recurring_rule_sync_id,
                 recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
                 refunds=refunds_by_target.get(row.sync_id, []),
+                has_splits=bool(row.has_splits),
+                splits=_tx_splits_list(row.splits_json),
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -782,6 +784,24 @@ def list_workspace_categories(
             sid = row[0]
             if sid:
                 tx_count_by_sync_id[sid] += int(row[1] or 0)
+        # 拆帳(§2.4):拆帳交易的父行 category_sync_id 是 NULL,不会进上面那个
+        # group by;分到某分类的笔数要另外从 split 明细表数(同一笔交易拆到
+        # 同一分类两次极少见,这里按 split 行数计,不做去重)。
+        split_count_rows = db.execute(
+            select(
+                ReadTxSplitProjection.category_sync_id,
+                func.count(),
+            )
+            .where(
+                ReadTxSplitProjection.ledger_id.in_(ledger_internal_ids),
+                ReadTxSplitProjection.category_sync_id.is_not(None),
+            )
+            .group_by(ReadTxSplitProjection.category_sync_id)
+        ).all()
+        for row in split_count_rows:
+            sid = row[0]
+            if sid:
+                tx_count_by_sync_id[sid] += int(row[1] or 0)
 
     all_categories: list[WorkspaceCategoryOut] = []
     for cat in db.scalars(cat_query).all():
@@ -1042,13 +1062,19 @@ def workspace_analytics(
     if ledger_internal_ids:
         tx_query = select(
             ReadTxProjection.tx_type,
-            # 账本维度折本位币口径(0018):native_amount ?? amount。
-            func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
+            # 账本维度折本位币口径(0018):amount 是原币,下面按 native_amount
+            # 是否存在算折算比例(拆帳的每个 split 金额也要按同一比例缩放)。
+            ReadTxProjection.amount,
+            ReadTxProjection.native_amount,
             ReadTxProjection.happened_at,
             ReadTxProjection.category_name,
             # 退款(§2.6/§2.12.3):非空 = 这笔交易是对另一笔交易的退款(income
             # 退 expense,或 expense 退 income),netting 逻辑见下方循环。
             ReadTxProjection.refund_of_sync_id,
+            # 拆帳(§2.4):has_splits=True 时按 splits_json 展开成多个分类
+            # "腿"分别累加,而不是整笔归到(此时已是 NULL 的)category_name。
+            ReadTxProjection.has_splits,
+            ReadTxProjection.splits_json,
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             # exclude_from_stats=True 的交易不计入收支统计(D1);该端点所有
@@ -1066,11 +1092,14 @@ def workspace_analytics(
         # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
         from datetime import timedelta as _td
 
-        for tx_type_val, amount, happened_at_raw, cat_name, refund_of_id in db.execute(tx_query).all():
+        for (tx_type_val, raw_amount, native_amount_val, happened_at_raw, cat_name,
+             refund_of_id, has_splits, splits_json) in db.execute(tx_query).all():
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
-            amt = float(amount or 0.0)
+            raw_amt = float(raw_amount or 0.0)
+            # 账本维度折本位币口径(0018):native_amount ?? amount。
+            coalesced_amt = float(native_amount_val) if native_amount_val is not None else raw_amt
             transaction_count += 1
             local_for_day = happened_at + _td(minutes=tz_offset_minutes)
             distinct_days_set.add(local_for_day.strftime("%Y-%m-%d"))
@@ -1080,45 +1109,70 @@ def workspace_analytics(
                 last_tx_at = happened_at
             bucket = _bucket_key(scope, happened_at, tz_offset_minutes, month_start_day)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
-            category = (cat_name or "").strip() or "Uncategorized"
-            category_slot = category_map.setdefault(
-                category, {"income": 0.0, "expense": 0.0, "count": 0.0})
+
+            # 拆帳(§2.4):has_splits 时展开成多个 (category, amount) "腿",
+            # 每个 split 的原币金额按整笔的 native/amount 折算比例缩放,
+            # 分别累加到各自的 category_map/series/anomaly 归因里,而不是
+            # 整笔归到父行 category(此时已是 NULL)。非拆帳交易维持单一
+            # "腿" == 整笔金额,行为跟改动前完全一致。
+            legs: list[tuple[str, float]] = []
+            if has_splits and splits_json:
+                try:
+                    raw_splits = json.loads(splits_json)
+                except (TypeError, json.JSONDecodeError):
+                    raw_splits = None
+                if isinstance(raw_splits, list) and raw_splits:
+                    scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
+                    for entry in raw_splits:
+                        if not isinstance(entry, dict):
+                            continue
+                        leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
+                        leg_amt = float(entry.get("amount") or 0.0) * scale
+                        legs.append((leg_cat, leg_amt))
+            if not legs:
+                legs = [((cat_name or "").strip() or "Uncategorized", coalesced_amt)]
+
             # 退款(§2.6/§2.12.3):不计入自己那个分项,改冲抵对方分项净额
             # (自己所在的 bucket/category,不追溯回被退那笔交易原本的月份/
             # 分类 —— 简化口径,退款和被退交易通常发生在相近时间)。income
             # 退 expense(原逻辑)与 expense 退 income(income 也能退款)对称。
+            # 拆帳交易不会同时是退款(write 层已挡两者组合),legs 循环对
+            # 非拆帳交易等价于原来的单笔处理。
             is_income_refund = tx_type_val == "income" and refund_of_id is not None
             is_expense_refund = tx_type_val == "expense" and refund_of_id is not None
-            if is_income_refund:
-                expense_total -= amt
-                slot["expense"] -= amt
+            for leg_cat, leg_amt in legs:
+                category_slot = category_map.setdefault(
+                    leg_cat, {"income": 0.0, "expense": 0.0, "count": 0.0})
+                if is_income_refund:
+                    expense_total -= leg_amt
+                    slot["expense"] -= leg_amt
+                    category_slot["count"] += 1.0
+                    category_slot["expense"] -= leg_amt
+                    bucket_cat = category_by_bucket.setdefault(bucket, {})
+                    bucket_cat[leg_cat] = bucket_cat.get(leg_cat, 0.0) - leg_amt
+                    continue
+                if is_expense_refund:
+                    income_total -= leg_amt
+                    slot["income"] -= leg_amt
+                    category_slot["count"] += 1.0
+                    category_slot["income"] -= leg_amt
+                    continue
+                if tx_type_val == "income":
+                    income_total += leg_amt
+                    slot["income"] += leg_amt
+                elif tx_type_val == "expense":
+                    expense_total += leg_amt
+                    slot["expense"] += leg_amt
+                else:
+                    continue
                 category_slot["count"] += 1.0
-                category_slot["expense"] -= amt
-                bucket_cat = category_by_bucket.setdefault(bucket, {})
-                bucket_cat[category] = bucket_cat.get(category, 0.0) - amt
-                continue
-            if is_expense_refund:
-                income_total -= amt
-                slot["income"] -= amt
-                category_slot["count"] += 1.0
-                category_slot["income"] -= amt
-                continue
-            if tx_type_val == "income":
-                income_total += amt
-                slot["income"] += amt
-            elif tx_type_val == "expense":
-                expense_total += amt
-                slot["expense"] += amt
-            else:
-                continue
-            category_slot["count"] += 1.0
-            if tx_type_val == "income":
-                category_slot["income"] += amt
-            elif tx_type_val == "expense":
-                category_slot["expense"] += amt
-                # 同步累加 per-bucket category → anomaly 归因输入
-                bucket_cat = category_by_bucket.setdefault(bucket, {})
-                bucket_cat[category] = bucket_cat.get(category, 0.0) + amt
+                if tx_type_val == "income":
+                    category_slot["income"] += leg_amt
+                elif tx_type_val == "expense":
+                    category_slot["expense"] += leg_amt
+                    # 同步累加 per-bucket category → anomaly 归因输入
+                    bucket_cat = category_by_bucket.setdefault(bucket, {})
+                    bucket_cat[leg_cat] = bucket_cat.get(leg_cat, 0.0) + leg_amt
 
     series = [
         WorkspaceAnalyticsSeriesItemOut(

@@ -34,7 +34,7 @@ import { CategoryIcon } from '../components/CategoryIcon'
 import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { tagTextColorOn } from '../lib/tagColorPalette'
-import type { TxForm } from '../forms'
+import { txSplitItemDefaults, type TxForm } from '../forms'
 
 type TransactionsPanelProps = {
   form: TxForm
@@ -278,6 +278,9 @@ export function TransactionsPanel({
   const setOpen = onDialogOpenChange
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  // 拆帳(§2.4):null = 分类 picker 打开时选的是主分类字段;数字 = 选的是
+  // splits[index] 那一行,同一个 CategoryPickerDialog 实例按这个分流 onSelect。
+  const [splitPickerIndex, setSplitPickerIndex] = useState<number | null>(null)
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -342,6 +345,11 @@ export function TransactionsPanel({
     : true)
   const selectedTags = form.tags
   const categoryValue = form.category_name.trim()
+  // 拆帳(§2.4):已填金额的行加总,给"已分配 X / 总额 Y"提示用;跟
+  // forms.ts::validateTxSplits 的加总逻辑口径一致(未选分类的占位行不计入)。
+  const splitAssignedTotal = form.splits
+    .filter((row) => row.category_id.trim().length > 0)
+    .reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
 
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
@@ -358,16 +366,24 @@ export function TransactionsPanel({
         exclude_from_stats: false,
         exclude_from_budget: false,
         // 分期只对 expense 有意义,切走时关掉(Phase 1.5 §2.12.1)。
-        installment_enabled: false
+        installment_enabled: false,
+        // 拆帳(§2.4)只对 expense/income 有意义(跟 category 同语意),
+        // 切到 transfer 时关掉 + 清空明细。
+        split_enabled: false,
+        splits: []
       })
       return
     }
     const keepCategory = form.category_kind === nextType ? form.category_name : ''
+    // 分类分 expense/income 两棵树,切类型时旧的 splits 分类都不再有效,
+    // 跟单一 category 字段(keepCategory)同样清掉重选。
+    const keepSplits = form.category_kind === nextType ? form.splits : []
     onFormChange({
       ...form,
       tx_type: nextType,
       category_kind: nextType,
       category_name: keepCategory,
+      splits: keepSplits,
       from_account_name: '',
       to_account_name: '',
       // 不计入预算仅 expense 显示;切到 income 时清掉
@@ -493,17 +509,118 @@ export function TransactionsPanel({
                 }
               />
             </div>
-            <div className="space-y-1">
-              <Label>{t('transactions.table.category')}</Label>
+            <div className={form.split_enabled && !isTransfer ? 'space-y-1 md:col-span-2' : 'space-y-1'}>
+              <div className="flex items-center justify-between">
+                <Label>{t('transactions.table.category')}</Label>
+                {/* 拆帳(§2.4):只对 expense/income 有意义,跟 transfer 互斥。
+                    编辑既有交易时也能开关(对齐 Moze 编辑既有交易能改分类的语意),
+                    不像 recurring/installment 只在新建时显示。 */}
+                {!isTransfer ? (
+                  <button
+                    type="button"
+                    className={textActionClass}
+                    onClick={() => {
+                      if (form.split_enabled) {
+                        onFormChange({ ...form, split_enabled: false, splits: [] })
+                      } else {
+                        onFormChange({
+                          ...form,
+                          split_enabled: true,
+                          category_name: '',
+                          splits:
+                            form.splits.length >= 2
+                              ? form.splits
+                              : [txSplitItemDefaults(), txSplitItemDefaults()]
+                        })
+                      }
+                    }}
+                  >
+                    {form.split_enabled
+                      ? t('transactions.split.disable')
+                      : t('transactions.split.enable')}
+                  </button>
+                ) : null}
+              </div>
               {isTransfer ? (
                 <Input disabled value={t('common.none')} />
+              ) : form.split_enabled ? (
+                <div className="space-y-2 rounded-lg border border-border/60 bg-muted/10 p-3">
+                  {form.splits.map((row, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={dictionariesLoading}
+                        onClick={() => {
+                          setSplitPickerIndex(idx)
+                          setCategoryPickerOpen(true)
+                        }}
+                        className="flex h-9 flex-1 items-center gap-2 rounded-md border border-input bg-muted px-3 py-1.5 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span
+                          className={`flex-1 truncate ${
+                            row.category_name ? '' : 'text-muted-foreground'
+                          }`}
+                        >
+                          {row.category_name || t('transactions.placeholder.categoryName')}
+                        </span>
+                      </button>
+                      <Input
+                        className="h-9 w-28"
+                        placeholder={t('transactions.table.amount')}
+                        value={row.amount}
+                        onChange={(e) => {
+                          const next = form.splits.slice()
+                          next[idx] = { ...next[idx], amount: e.target.value }
+                          onFormChange({ ...form, splits: next })
+                        }}
+                      />
+                      <button
+                        type="button"
+                        aria-label={t('transactions.split.removeRow') as string}
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            splits: form.splits.filter((_, i) => i !== idx)
+                          })
+                        }
+                        className="shrink-0 px-1 text-sm text-muted-foreground hover:text-destructive"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className={textActionClass}
+                    onClick={() =>
+                      onFormChange({ ...form, splits: [...form.splits, txSplitItemDefaults()] })
+                    }
+                  >
+                    + {t('transactions.split.addRow')}
+                  </button>
+                  <p
+                    className={`text-xs ${
+                      Math.abs(splitAssignedTotal - (Number(form.amount) || 0)) > 0.01
+                        ? 'text-destructive'
+                        : 'text-muted-foreground'
+                    }`}
+                  >
+                    {t('transactions.split.sumHint', {
+                      sum: splitAssignedTotal,
+                      total: Number(form.amount) || 0
+                    })}
+                  </p>
+                </div>
               ) : (
                 // 跟同行的 SelectTrigger 视觉对齐:h-10 + bg-muted + border-input,
                 // 图标用 h-6 w-6 圆形塞得进 40px 高度,不撑大行高。
                 <button
                   type="button"
                   disabled={dictionariesLoading}
-                  onClick={() => setCategoryPickerOpen(true)}
+                  onClick={() => {
+                    setSplitPickerIndex(null)
+                    setCategoryPickerOpen(true)
+                  }}
                   className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {selectedCategoryRow ? (
@@ -1055,13 +1172,31 @@ export function TransactionsPanel({
           page 层 onSaveTransaction 也会再 guard 一次)。 */}
       <CategoryPickerDialog
         open={categoryPickerOpen}
-        onClose={() => setCategoryPickerOpen(false)}
+        onClose={() => {
+          setCategoryPickerOpen(false)
+          setSplitPickerIndex(null)
+        }}
         kind={form.tx_type === 'income' ? 'income' : 'expense'}
         rows={categories as WorkspaceCategory[]}
         iconPreviewUrlByFileId={iconPreviewUrlByFileId}
-        selectedId={selectedCategoryRow?.id}
+        selectedId={
+          splitPickerIndex === null
+            ? selectedCategoryRow?.id
+            : form.splits[splitPickerIndex]?.category_id || undefined
+        }
         title={t('transactions.placeholder.categoryName')}
         onSelect={(cat) => {
+          // 拆帳(§2.4):splitPickerIndex 非 null = 这次选的是某个 split 行的
+          // 分类,写回 form.splits[index] 而不是主 category 字段。
+          if (splitPickerIndex !== null) {
+            const next = form.splits.slice()
+            const idx = splitPickerIndex
+            if (next[idx]) {
+              next[idx] = { ...next[idx], category_id: cat.id, category_name: cat.name.trim() }
+              onFormChange({ ...form, splits: next })
+            }
+            return
+          }
           onFormChange({
             ...form,
             category_name: cat.name.trim(),

@@ -95,7 +95,18 @@ export function TransactionRow({
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
-  const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  // 拆帳(§2.4):has_splits=True 时 category_name 是 null,改显示各分类名
+  // 拼接(如"餐饮、交通"),让列表一眼看出这笔已拆到多个分类,而不是显示"-"。
+  const splitCategoryNames = row.has_splits
+    ? Array.from(
+        new Set((row.splits || []).map((s) => s.category_name?.trim()).filter((s): s is string => Boolean(s)))
+      )
+    : []
+  const categoryText = row.has_splits
+    ? splitCategoryNames.length > 0
+      ? splitCategoryNames.join('、')
+      : t('transactions.split.badge')
+    : row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
     categoryName: row.category_name,

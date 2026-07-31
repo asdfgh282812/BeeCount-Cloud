@@ -25,7 +25,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 帳戶設置 | ✅ 已支援(`accounts`：type/currency/初始餘額/note/信用額度/帳單日/繳款日/末四碼/隱藏) |
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
-| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**週期性/分期/退款 Phase 1 已實作，但 2026-07-30 對照 Moze 原文發現建立時機/編輯語意/退款發起入口都跟真實設計有落差，Phase 1.5 修正見 §2.12，尚未開始**；拆帳/範本/語音記帳/記帳模式缺) |
+| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)已完成，週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)仍待開始；拆帳(§2.4)Phase 2 已完成(server+web)**；範本/語音記帳/記帳模式缺) |
 | 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期(分期本身已做通用版)/折抵/紅利/免息期建議全缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
@@ -150,27 +150,38 @@ Moze: [record/installment.md](https://doc.moze.app/record/installment.md)、
 
 ### 2.4 拆帳 (Split a Transaction Across Multiple Categories)
 
+**✅ Phase 2 server + web UI 已實作(2026-07-31）**：
+`WriteTransactionCreateRequest/UpdateRequest.splits`（`WriteTxSplitItem`：
+`category_id`/`category_name`/`amount`/`note`）；新表
+`read_tx_split_projection`（`(ledger_id, tx_sync_id, sort_order)` 複合
+PK，`projection.upsert_tx` 每次整批 delete-then-insert 重建，非獨立 sync
+entity）；`read_tx_projection` 加 `has_splits`/`splits_json`
+兩個欄位（`splits_json` 是 LWW merge fallback 的權威值,跟
+`attachments_json` 同款模式,登記在 `sync_applier._LEDGER_MERGE_SPECS
+["transaction"]`,沿用既有 partial-update 機制,沒有新增 entity_type）。
+`has_splits=True` 時父行 `category_sync_id`/`category_name` 強制清空。
+校驗（`write/_shared.py::_validate_tx_splits`）：tx_type 只能
+expense/income、至少 2 筆、每筆金額 > 0、加總須等於交易 amount；且拆帳
+交易不能整筆退款（`_assert_refund_target_has_no_splits`）、退款交易不能
+同時是拆帳。`workspace_analytics` 展開 split 明細分別累加分類排行（按
+整筆的 native/amount 折算比例縮放每筆 split 金額）；分類預算用量
+（`GET /ledgers/{id}/budgets/usage`）額外從 `read_tx_split_projection`
+查詢把 split 明細計入對應分類。web UI：`TransactionsPanel.tsx` 分類欄位
+旁邊「拆分到多個分類」開關，開啟後可增刪多行「分類 + 金額」，即時顯示
+「已分配 X / 總額 Y」；`TransactionDetailDialog.tsx` 顯示「拆分」徽章 +
+分類明細多行，退款按鈕對拆帳交易灰掉；交易列表分類欄顯示拆帳交易的各
+分類名拼接。測試見 `tests/test_tx_splits.py`（14 例）+
+`frontend/apps/web/src/txSplitForms.test.ts`（11 例，純函數校驗邏輯）。
+手動測試清單見 `docs/PH2_SPLIT_WEB_UI_MANUAL_TEST_PLAN.md`。
+
+**尚未做**：拆帳子項目個別退款（Moze 原文支援，這次選擇直接擋整筆退款，
+需要退款時用戶得先撤銷拆帳）、CSV 匯出的拆帳明細列、mobile 端本地
+SQLite 子表（server 已經把 `splits` 塞進 sync payload,mobile 拉到會被
+忽略,不會崩但看不到明細）、拆帳跟週期性收支/分期付款組合（`create_tx`
+的 recurring 內聯創建路徑、`installment_plans.py` 生成各期交易的路徑都
+沒有接 `splits` 參數，UI 層兩者互斥）。
+
 Moze: [record/split-categories.md](https://doc.moze.app/record/split-categories.md)
-
-**現況**：`ReadTxProjection` / `WriteTransactionCreateRequest` 都是
-一筆交易對一個 `category_id`，沒有「一筆 200 元拆成餐飲 150 + 交通 50」
-的資料結構。
-
-**修改內容**（這個影響面最大，動到核心 tx 契約，建議獨立一個 PR）：
-1. `WriteTransactionCreateRequest` / `Update` 新增可選欄位
-   `splits: list[{category_id, amount, note}] | None`；不傳 → 維持現行
-   單一 category 行為（向下相容）
-2. 新表 `read_tx_split_projection`：`tx_sync_id(FK), category_sync_id,
-   amount, note, sort_order`，一對多掛在父交易上
-3. `src/sync_applier.py` upsert 交易時，若 payload 帶 `splits`，額外
-   寫入/覆蓋 `read_tx_split_projection` 的對應行(先 delete 該
-   tx_sync_id 下所有舊 split 行再重新插入，避免 diff 複雜度)
-4. **統計報表(§2.10)要改**：目前 `workspace_analytics` 按
-   `ReadTxProjection.category_sync_id` 分組，拆帳交易要改成先展開
-   split 行再分組，否則會把整筆金額全部歸到父交易的(此時應為
-   null 或 "混合")category 上
-5. mobile 端既有的本地 SQLite schema 也要加對應子表，這塊要跟
-   `../BeeCount/CLAUDE.md` 的 mobile 契約一起改，不是 server 單邊能完成
 
 ---
 
@@ -685,8 +696,16 @@ Phase 1(核心記帳擴充）: §2.2 週期性收支 → §2.3 分期付款 → 
 Phase 1.5(設計修正，對照 Moze 原文重新對齊）: §2.12 週期性收支/分期付款
                         建立時機改成「建立當下直接生成」、編輯語意加上
                         單筆/連同未來區分、退款發起入口搬到原交易明細
-                        🔴 尚未開始(2026-07-30 記錄需求，排在 Phase 2 之前)
+                        §2.12.3 退款部分 ✅ 已完成(2026-07-30/31)；
+                        §2.12.1 分期付款、§2.12.2 週期性收支的建立時機/
+                        差異化編輯修正 🔴 仍未開始
 Phase 2(統計口徑動刀，建議獨立 PR）: §2.4 拆帳
+                        ✅ server + web UI 已完成(2026-07-31)；先於
+                        Phase 1.5 剩餘部分(§2.12.1/§2.12.2)落地，因為
+                        使用者這次直接指定先做 §2.4；跟拆帳互動的邊界
+                        (splits + recurring/installment 組合)已在
+                        write 層跟前端 UI 擋住，等 §2.12.1/§2.12.2 真的
+                        落地時要重新檢視這個互斥要不要放開
 Phase 3(往來/範本，彼此獨立可並行）: §2.5 借還款追蹤、§2.7 範本
 Phase 4(信用卡整組，依賴 Phase 1 的 recurring/installment）: §2.9
 Phase 5(分析對帳，必做）: 延後入帳(必做前置) → §2.10 對帳模式/餘額調整 → 比較報表(輕)

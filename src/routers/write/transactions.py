@@ -50,6 +50,16 @@ async def create_tx(
     # 是 syncId,不再需要任何投影表。payload 直接传给 snapshot_mutator。
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
+    if req.splits and req.recurring is not None:
+        # 拆帳(§2.4)跟週期性收支(§2.12.2)組合尚未支援:兩者都各自有整批
+        # 生成/重算的邏輯,疊在一起會讓「這期以後」跟「splits 校驗」的語意
+        # 打架。先擋掉,之後要支援得先確定 recurring 產生的每期 occurrence
+        # 各自怎麼拆。
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="creating a split transaction together with a recurring rule is not supported yet",
+        )
+
     if req.recurring is None:
         # issue #31 A1b:单笔新建走 fast path,不再全量 build snapshot
         # (O(账本交易数)→O(1))。create 没有 diff 需求(新行即唯一变更),

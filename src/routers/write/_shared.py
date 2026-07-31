@@ -615,6 +615,71 @@ def _assert_refund_target_not_already_refunded(
         )
 
 
+# 拆帳(§2.4 MOZE_FEATURE_GAP_SD.md Phase 2)。
+_SPLIT_MIN_COUNT = 2
+_SPLIT_AMOUNT_EPSILON = 0.01
+
+
+def _validate_tx_splits(
+    *, tx_type: str | None, amount: float | None, splits: list[dict],
+) -> None:
+    """拆帳金额/张数/類型校验,create 跟 update(effective 值算好后)共用。
+    splits 是 request payload 的原始 dict 列表(snake_case:category_id/
+    amount/note)。"""
+    if tx_type not in {"expense", "income"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="only expense/income transactions can be split across categories",
+        )
+    if len(splits) < _SPLIT_MIN_COUNT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"a split transaction needs at least {_SPLIT_MIN_COUNT} category entries",
+        )
+    total = 0.0
+    for entry in splits:
+        category_id = entry.get("category_id") or entry.get("categoryId")
+        if not category_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="each split entry must have a category",
+            )
+        try:
+            split_amount = float(entry.get("amount") or 0)
+        except (TypeError, ValueError):
+            split_amount = 0.0
+        if split_amount <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="each split amount must be greater than zero",
+            )
+        total += split_amount
+    if amount is None or abs(total - float(amount)) > _SPLIT_AMOUNT_EPSILON:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="split amounts must add up to the transaction amount",
+        )
+
+
+def _assert_refund_target_has_no_splits(
+    db: Session, *, ledger_id: str, refund_of_id: str,
+) -> None:
+    """拆帳(§2.4):多分類（拆帳）交易不能整筆退款——原文规格明确要求对拆帳
+    子项目个别退款(尚未实作,见 MOZE_FEATURE_GAP_SD.md §2.12.3),这里先挡
+    住整笔退款一个 has_splits=True 的交易。"""
+    has_splits = db.scalar(
+        select(ReadTxProjection.has_splits).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == refund_of_id,
+        )
+    )
+    if has_splits:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="a split transaction cannot be refunded as a whole",
+        )
+
+
 async def _commit_create_tx_fast(
     *,
     request: Request,
@@ -645,9 +710,24 @@ async def _commit_create_tx_fast(
         """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
         lock_ledger_for_materialize(db, ledger.id)
         now = _utcnow()
+        splits_payload = mutate_payload.get("splits")
         refund_of_id = mutate_payload.get("refund_of_id")
+        if splits_payload:
+            if refund_of_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="a refund transaction cannot itself be split",
+                )
+            _validate_tx_splits(
+                tx_type=mutate_payload.get("tx_type"),
+                amount=mutate_payload.get("amount"),
+                splits=splits_payload,
+            )
         if refund_of_id:
             _assert_refund_target_not_already_refunded(
+                db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
+            )
+            _assert_refund_target_has_no_splits(
                 db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
             )
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
@@ -851,12 +931,30 @@ async def _commit_write_fast_tx(
                     db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
                     exclude_tx_id=tx_id,
                 )
+                _assert_refund_target_has_no_splits(
+                    db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
+                )
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
             minimal_snap = {"items": [prev_item], "count": 1}
             minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
             new_item = minimal_snap["items"][0]
+
+            # 拆帳(§2.4):在 merge 后的最终状态上校验(而不是只看这次 PATCH
+            # 带的字段)—— 单独改 amount 不改 splits 时,也要保证新 amount
+            # 还能被既有 splits 加总对上。
+            if new_item.get("splits"):
+                if new_item.get("refundOfId"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="a refund transaction cannot itself be split",
+                    )
+                _validate_tx_splits(
+                    tx_type=new_item.get("type"),
+                    amount=new_item.get("amount"),
+                    splits=new_item["splits"],
+                )
 
             change_row = SyncChange(
                 user_id=ledger.user_id,
@@ -1038,6 +1136,16 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 静默清空(merge 逻辑只保留 prev_item 里已有的 key)。
     if row.installment_plan_sync_id is not None:
         item["installmentPlanId"] = row.installment_plan_sync_id
+    # 拆帳(§2.4):同理,fast path 编辑一笔拆帳交易的其它字段(备注/金额)时,
+    # 不带上旧 splits 会让 update_transaction 因为 payload 没传 "splits" key
+    # 而保留 prev_item 里的值 —— 前提是这里真的把它塞进 prev_item。
+    if row.splits_json:
+        try:
+            splits = json.loads(row.splits_json)
+            if isinstance(splits, list) and splits:
+                item["splits"] = splits
+        except json.JSONDecodeError:
+            pass
     return item
 
 
