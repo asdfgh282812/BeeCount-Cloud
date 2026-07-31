@@ -1194,8 +1194,12 @@ const zhTW = {
   'transactions.placeholder.toAccountName': '轉入帳戶',
   'transactions.placeholder.tags': '選擇標籤',
   'transactions.badge.refund': '退款',
+  'transactions.badge.refund.jumpHint': '點擊查看原交易',
   'transactions.button.refund': '退款',
+  'transactions.button.refund.alreadyRefunded': '這筆交易已經退過款，不能重複退款',
   'transactions.field.refundedTotal': '已退款金額',
+  'transactions.error.jumpTargetNotFound': '找不到關聯的交易，可能已被刪除',
+  'transactions.error.refundChainForbidden': '退款交易本身不能再被退款',
   // 帳單標記(per-transaction flags,issue #340 / .docs/transaction-flags)
   txFlagExcludeFromStats: '不計入收支',
   txFlagExcludeFromBudget: '不計入預算',
@@ -1595,6 +1599,8 @@ const zhTW = {
   'error.ENTITY_NOT_FOUND': '舊資料 ID 正在自動修復，請重新整理後再試一次。',
   'error.WRITE_VALIDATION_FAILED': '寫入驗證失敗，請檢查輸入。',
   'error.TX_DELETE_INSTALLMENT_LINKED': '這筆交易屬於一個分期付款計畫，請改用計畫自身的操作（部分還本、提前結清、終止未來分期或刪除整個計畫），不要直接刪除這筆交易。',
+  'error.TX_ALREADY_REFUNDED': '這筆交易已經退過款，不能重複退款。',
+  'error.TX_REFUND_CHAIN_FORBIDDEN': '退款交易本身不能再被退款。',
   'error.USER_EMAIL_EXISTS': '此信箱已存在。',
   'error.USER_PASSWORD_TOO_SHORT': '密碼至少需 6 碼。',
 

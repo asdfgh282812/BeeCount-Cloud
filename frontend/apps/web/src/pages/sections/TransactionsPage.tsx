@@ -1496,9 +1496,10 @@ export function TransactionsPage() {
         // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
         exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
         exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false,
-        // 退款(§2.6):只有 income 类型才有意义;切换类型/清空选择时发 null
-        // 显式清掉关联(server:值为 null/'' 时 pop 掉 refundOfId)。
-        refund_of_id: txForm.tx_type === 'income' ? txForm.refund_of_id.trim() || null : null,
+        // 退款(§2.6):income/expense 都能是退款交易(income 也能被退款),
+        // 只有 transfer 没有退款语意;切到 transfer 时发 null 显式清掉关联
+        // (server:值为 null/'' 时 pop 掉 refundOfId)。
+        refund_of_id: txForm.tx_type !== 'transfer' ? txForm.refund_of_id.trim() || null : null,
         // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
         // 时生效(server 也只认 create 路径的这个字段)。
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,

@@ -451,19 +451,26 @@ def _projection_totals(
     **不排除**标记笔的收支差 —— 「余额=钱的位置」必须含标记笔(D5,与 App
     getLedgerStats 口径一致),否则跨端余额对不上。
 
-    退款(§2.6 MOZE_FEATURE_GAP_SD.md):`refund_of_sync_id` 非空的交易(约定
-    tx_type='income')**不计入 income_ex**,改成冲抵 expense_ex(净额口径)——
-    退款不该拉高"当期收入",而是抵掉原支出。balance_all 不用改:退款本来就
-    是 tx_type='income' 记正号,净效果(income - expense)跟"income 挪到冲抵
-    expense"完全等价,只是 income/expense 两个分项口径变了。"""
+    退款(§2.6 MOZE_FEATURE_GAP_SD.md):`refund_of_sync_id` 非空的交易分两种
+    方向,都**不计入自己那个分项**,改成冲抵对方分项(净额口径)——退款不该
+    拉高"当期收支",而是抵掉被退那笔的净额:
+      - tx_type='income'(退一笔支出):不计入 income_ex,冲抵 expense_ex
+      - tx_type='expense'(退一笔收入,§2.12.3 income 也能退款后新增):不计入
+        expense_ex,冲抵 income_ex
+    balance_all 不用改:退款方向已经保证跟原支出/收入相反的符号入账,净效果
+    (income - expense)天然正确,只是 income/expense 两个分项口径变了。"""
     from sqlalchemy import and_
     from sqlalchemy import case as sa_case
     from sqlalchemy import false as sa_false
 
     _native = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
     _counted = ReadTxProjection.exclude_from_stats == sa_false()
-    _is_refund = and_(
+    _is_income_refund = and_(
         ReadTxProjection.tx_type == "income",
+        ReadTxProjection.refund_of_sync_id.isnot(None),
+    )
+    _is_expense_refund = and_(
+        ReadTxProjection.tx_type == "expense",
         ReadTxProjection.refund_of_sync_id.isnot(None),
     )
     row = db.execute(
@@ -471,18 +478,20 @@ def _projection_totals(
             func.count(ReadTxProjection.sync_id),
             func.coalesce(func.sum(
                 sa_case(
-                    ((ReadTxProjection.tx_type == "income") & _counted & ~_is_refund, _native),
+                    ((ReadTxProjection.tx_type == "income") & _counted & ~_is_income_refund, _native),
+                    (_is_expense_refund & _counted, -_native),
                     else_=0.0,
                 )
             ), 0.0),
             func.coalesce(func.sum(
                 sa_case(
-                    ((ReadTxProjection.tx_type == "expense") & _counted, _native),
-                    (_is_refund & _counted, -_native),
+                    ((ReadTxProjection.tx_type == "expense") & _counted & ~_is_expense_refund, _native),
+                    (_is_income_refund & _counted, -_native),
                     else_=0.0,
                 )
             ), 0.0),
-            # balance_all:不排除标记笔(D5「余额=钱的位置」),退款仍按 income 计正号。
+            # balance_all:不排除标记笔(D5「余额=钱的位置」),退款仍按自己
+            # 记账时的 tx_type 计入正负号(income 正、expense 负)。
             func.coalesce(func.sum(
                 sa_case(
                     (ReadTxProjection.tx_type == "income", _native),

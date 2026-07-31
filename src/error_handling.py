@@ -28,6 +28,8 @@ _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("write validation failed", "WRITE_VALIDATION_FAILED"),
     ("write role forbidden", "WRITE_ROLE_FORBIDDEN"),
     ("entity not found", "ENTITY_NOT_FOUND"),
+    ("transaction has already been refunded", "TX_ALREADY_REFUNDED"),
+    ("cannot create a refund of a refund transaction", "TX_REFUND_CHAIN_FORBIDDEN"),
     ("belongs to an installment plan", "TX_DELETE_INSTALLMENT_LINKED"),
     ("idempotency key reused with different payload", "IDEMPOTENCY_KEY_REUSED"),
     ("backup file is empty", "BACKUP_FILE_EMPTY"),

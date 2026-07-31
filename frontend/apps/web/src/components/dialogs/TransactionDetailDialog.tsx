@@ -23,8 +23,13 @@ interface Props {
   tags?: WorkspaceTag[]
   onClose: () => void
   onEdit: (tx: WorkspaceTransaction) => void
-  /** §2.12.3:仅 expense 显示 —— 点击后关闭详情、开建交易表单并预填退款信息。 */
+  /** §2.12.3:expense/income 均显示(转账不可退款)—— 点击后关闭详情、开建
+   *  交易表单并预填退款信息。已经被退过款的交易(tx.refunds.length > 0)
+   *  不再显示为可点击 —— 一笔交易只能被退款一次,见按钮 disabled 逻辑。 */
   onRefund?: (tx: WorkspaceTransaction) => void
+  /** 退款双向勾稽(ph1.5+):点击「退款」徽章跳原交易,或点反查清单里的某笔
+   *  退款跳去那笔退款交易 —— 用同一个 detail 弹窗原地切换展示对象。 */
+  onJumpToTx?: (txId: string) => void
 }
 
 /**
@@ -45,11 +50,20 @@ export function TransactionDetailDialog({
   onClose,
   onEdit,
   onRefund,
+  onJumpToTx,
 }: Props) {
   const t = useT()
 
   // tag name(lowercased)→ color 字典,跟 TransactionRow 用同样模式
   const tagColorByName = useMemo(() => buildTagColorMap(tags), [tags])
+  // 已被退过款(refunds 反查非空)—— 一笔交易只能被退一次(§2.6),命中就
+  // 灰掉退款按钮 + 用 title 提示原因,不需要再点进去才知道被拒绝。
+  const alreadyRefunded = Boolean(tx?.refunds && tx.refunds.length > 0)
+  // 这笔交易本身就是一笔退款(tx.refund_of_id 非空)—— 不允许「退款的退款」,
+  // 不然会形成链式退款(A 退 B,B 又被 C 退……),跟 Moze 原设计也不符,
+  // server 端没有额外挡这个(refund_of_id 只查目标是否已被别人退过,不检查
+  // 目标本身是不是退款交易),所以前端直接不出这个按钮,从入口上避免。
+  const isRefundTx = Boolean(tx?.refund_of_id)
 
   const open = Boolean(tx)
   const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
@@ -92,9 +106,20 @@ export function TransactionDetailDialog({
               <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-muted-foreground">
                 {typeLabel}
                 {tx.refund_of_id ? (
-                  <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] normal-case text-primary">
-                    {t('transactions.badge.refund')}
-                  </span>
+                  onJumpToTx ? (
+                    <button
+                      type="button"
+                      onClick={() => onJumpToTx(tx.refund_of_id!)}
+                      className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] normal-case text-primary transition hover:bg-primary/25"
+                      title={t('transactions.badge.refund.jumpHint')}
+                    >
+                      {t('transactions.badge.refund')}
+                    </button>
+                  ) : (
+                    <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] normal-case text-primary">
+                      {t('transactions.badge.refund')}
+                    </span>
+                  )
                 ) : null}
               </span>
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
@@ -170,8 +195,9 @@ export function TransactionDetailDialog({
               {attachments.length > 0 ? (
                 <AttachmentRow attachments={attachments} />
               ) : null}
-              {/* 退款反查(§2.12.3):这笔支出收到过的退款汇总 + 清单。 */}
-              {tx.tx_type === 'expense' && tx.refunds && tx.refunds.length > 0 ? (
+              {/* 退款反查(§2.12.3):这笔交易收到过的退款汇总 + 清单 —— 不再
+                  限 expense,income 也能被退款(§2.6 一起修改)。 */}
+              {tx.refunds && tx.refunds.length > 0 ? (
                 <DetailRow
                   icon={<RotateCcw className="h-4 w-4" />}
                   label={t('transactions.field.refundedTotal')}
@@ -183,11 +209,22 @@ export function TransactionDetailDialog({
                           .toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                       <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
-                        {tx.refunds.map((r) => (
-                          <span key={r.id}>
-                            {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                        ))}
+                        {tx.refunds.map((r) =>
+                          onJumpToTx ? (
+                            <button
+                              key={r.id}
+                              type="button"
+                              onClick={() => onJumpToTx(r.id)}
+                              className="underline-offset-2 hover:text-primary hover:underline"
+                            >
+                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </button>
+                          ) : (
+                            <span key={r.id}>
+                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          ),
+                        )}
                       </div>
                     </div>
                   }
@@ -228,13 +265,17 @@ export function TransactionDetailDialog({
         ) : null}
 
         <DialogFooter className="flex flex-row items-center justify-end gap-2 border-t border-border/60 bg-muted/20 px-6 py-3">
-          {/* §2.12.3:退款发起点搬到这里 —— 只在原支出交易明细显示,取代
-              旧版「新建交易表单里挑退款对象」的下拉。 */}
-          {tx && tx.tx_type === 'expense' && onRefund ? (
+          {/* §2.12.3:退款发起点搬到这里 —— 原支出/收入交易明细都显示(转账
+              不可退款),取代旧版「新建交易表单里挑退款对象」的下拉。§2.6:
+              已经被退过款的交易(alreadyRefunded)不能再退,按钮灰掉 + title
+              说明原因,不需要点了才知道被拒绝。退款交易本身(isRefundTx)
+              不出这个按钮 —— 不允许「退款的退款」,链式退款没有意义。 */}
+          {tx && (tx.tx_type === 'expense' || tx.tx_type === 'income') && !isRefundTx && onRefund ? (
             <Button
               variant="outline"
               size="sm"
-              disabled={!canManage}
+              disabled={!canManage || alreadyRefunded}
+              title={alreadyRefunded ? t('transactions.button.refund.alreadyRefunded') : undefined}
               onClick={() => onRefund(tx)}
             >
               <RotateCcw className="mr-1 h-3.5 w-3.5" />

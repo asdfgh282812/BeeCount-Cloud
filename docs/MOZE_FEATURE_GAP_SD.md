@@ -199,34 +199,48 @@ Moze: [record/payables-receivables.md](https://doc.moze.app/record/payables-rece
 
 **✅ Phase 1 已實作(2026-07-30）**：`read_tx_projection.refund_of_sync_id` +
 `WriteTransactionCreateRequest/UpdateRequest.refund_of_id`。統計口徑淨額
-在三處生效：`read/_shared.py::_projection_totals`(`/summary` 與
+在兩處生效:`read/_shared.py::_projection_totals`(`/summary` 與
 `list_ledgers` 共用)以及 `read/workspace.py::workspace_analytics`(含
-income/expense 總額、series、分類排行）。`balance` 口徑不受影響(退款仍按
-income 記正號，數學上等價)。測試見 `tests/test_refund_stats.py`。**web UI
-已完成(2026-07-30）**：交易表單新增「退款對象」下拉(僅 income 類型顯示，
-`TransactionsPanel.tsx`)，候選來自當前已載入的交易列表(非全量搜尋，已知
-限制)；交易詳情彈窗顯示「退款」徽章。**尚未做**的:CSV 匯出欄位、跨月退款
-回溯到原支出月份的口徑(目前退款淨額算在退款自己發生的那個月/分類，不會
-回溯修正原支出那個月)、全量交易搜尋 picker(mobile UI 也待排期)。
+income/expense 總額、series、分類排行）。`balance` 口徑不受影響(退款方向
+天然跟被退那筆的符號相反，數學上等價)。測試見 `tests/test_refund_stats.py`。
 
-**⚠️ 2026-07-30 對照 Moze 原文更正**：發起路徑不對——Moze 是從**原支出
-交易明細**的選單發起退款且自動帶入原始金額/備註，現況是在「新建交易」
-表單裡手動挑一筆既有交易當退款對象、手動重填所有欄位。修正版設計見
-§2.12.3，下方原始 gap 分析內容予以保留供對照。
+**✅ web UI 發起點已改為交易明細頁按鈕(2026-07-30，取代舊版「新建交易表單
+下拉選退款對象」設計)**：交易明細彈窗(`TransactionDetailDialog.tsx`)右下
+角「退款」按鈕，點擊後開「新建交易」表單並自動帶入原交易的
+金額/備註/帳戶(分類留空讓使用者自己選，因為 expense/income 分類樹不互通)、
+`refund_of_id` 指向原交易；交易詳情彈窗顯示「退款」徽章 + 反查「已退款
+金額 + 退款交易清單」。
+
+**✅ Phase 1.5 三項加強(2026-07-31）**：
+1. **禁止重複退款**:一筆交易一旦已經被某筆退款交易引用過
+   (`refund_of_sync_id` 指向它)，就不能再發起第二筆退款——server 端在
+   `src/routers/write/_shared.py::_assert_refund_target_not_already_refunded`
+   查重(create/update 兩條 fast path 都掛)，命中回 400
+   `TX_ALREADY_REFUNDED`；web UI 對應把「退款」按鈕灰掉並用 `title`
+   提示「這筆交易已經退過款」(`TransactionDetailDialog.tsx`)。**注意這
+   跟 Moze 原文「支援對同一筆支出建立多筆退款(部分退款＋多次退款)」
+   的設計不同**——BeeCount 這裡刻意選擇「一筆交易只能退一次」的簡化
+   口徑(使用者需求明確要求)，未來如果要支援多次部分退款需要另外評估。
+2. **雙向勾稽可點擊查詢**:退款交易的「退款」徽章可點擊跳轉回原交易；
+   原交易「已退款金額」清單裡每一筆也可點擊跳轉到對應退款交易——用
+   `GET /read/workspace/transactions?tx_sync_id=` 精確查單筆(不局限在
+   當前已載入分頁)，同一個 detail 弹窗原地切換展示對象
+   (`GlobalEntityDialogs.tsx::handleJumpToTx`)。
+3. **income 也能被退款**:原本退款交易固定 `tx_type=income`(只能退
+   expense)，現在退款交易的類型是被退那筆的反向類型——退 expense 用
+   income 冲回來(不變)，退 income 改用 expense 冲回去。前端入口從
+   `tx_type===expense` 放寬到 `expense || income`(仍排除 transfer)；
+   統計口徑的 netting 邏輯(`_projection_totals` / `workspace_analytics`）
+   對稱處理兩個方向：income 型退款冲抵 `expense_total`,expense 型退款
+   冲抵 `income_total`。
+
+**尚未做**的:CSV 匯出欄位、跨月退款回溯到原支出月份的口徑(目前退款淨額
+算在退款自己發生的那個月/分類，不會回溯修正原支出那個月)、全量交易
+搜尋 picker(目前退款發起走明細頁按鈕不需要搜尋 picker 了，此項僅影響
+mobile UI 待排期部分)、拆帳(§2.4)子項目退款(依賴 §2.4 落地)、多次
+部分退款(見上方「禁止重複退款」的取捨說明)。
 
 Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
-
-**現況**：沒有「這筆收入是對某筆支出的退款」的關聯，統計上退款會被
-當成一筆普通收入，拉高當期收入而不是沖銷原支出。
-
-**修改內容**（比前面幾項輕量）：
-1. `ReadTxProjection` 加 nullable 欄位 `refund_of_sync_id`
-2. `WriteTransactionCreateRequest` 加 `refund_of_id: str | None`
-3. `src/routers/read/workspace.py` 的統計聚合：退款交易預設從「當期
-   收入」裡挪走，改成沖抵 `refund_of_sync_id` 指向那筆支出的淨額
-   （這是統計口徑變動，需要在 `workspace_analytics` / `summary.py`
-   兩處都改，並補測試鎖住新舊兩種口徑的預期輸出）
-4. 不需要新表，複用 `read_tx_projection` 加欄位即可，遷移成本低
 
 ---
 
@@ -580,7 +594,7 @@ flowchart TD
     I -- 終止未來週期 --> L[POST terminate-future\n刪除未發生交易，規則標記結束]
 ```
 
-#### 2.12.3 退款（修正版）
+#### 2.12.3 退款（修正版，✅ web 已落地 2026-07-30/31，mobile 待排期）
 
 **Moze 真實設計**（見 [record/refund](https://doc.moze.app/record/refund)）：
 - 發起點：點開**原支出交易的明細**，右上角選單選「退款」
@@ -591,44 +605,39 @@ flowchart TD
 - 支援對同一筆支出建立多筆退款（部分退款＋多次退款）
 - 多分類（拆帳，§2.4）交易不能整筆退款，要對拆帳子項目個別退款
 
-**跟現有 Phase 1 實作的落差**：
-- 現況入口是在「新建交易」表單裡，透過下拉選單從「當前已載入的交易
-  列表」挑一個既有交易當退款對象（`TransactionsPanel.tsx`），不是從
-  原支出交易明細發起
-- 現況不會自動帶入原支出的金額/備註，使用者要手動重新輸入
-- 現況候選清單只從當前已載入交易來，不是全量搜尋（文件已知限制，見
-  §2.6 現有段落）
-- server 端 `refund_of_sync_id`／`refund_of_id` 欄位本身**不需要
-  改**，落差主要在前端發起路徑跟預填邏輯，屬於 UI 改動，不是資料模型
-  改動
+**BeeCount web 現況(對照 Moze 逐項)**：
+- ✅ 發起點：交易明細彈窗（`TransactionDetailDialog.tsx`）「退款」按鈕，
+  取代舊版「新建交易表單下拉選退款對象」
+- ✅ 自動帶入原交易金額/備註/帳戶（分類故意留空，見 §2.6）；金額可改
+  （支援部分退款）
+- ✅ 原交易明細顯示「已退款金額」+ 退款交易清單，**且可點擊查看對應的
+  退款交易**（雙向勾稽，見 §2.6 Phase 1.5 項 2）——比 Moze 原文描述的
+  單向「可以點進去查看」更完整，退款交易本身也能點徽章跳回原交易
+- ⚠️ **刻意不做**「支援對同一筆支出建立多筆退款」：BeeCount 選擇「一筆
+  交易只能被退一次」的簡化口徑（§2.6 Phase 1.5 項 1，使用者需求明確
+  要求），這是跟 Moze 原文的既知差異，不是尚待實作的落差
+- ✅ income 也能被退款（原本只有 expense，§2.6 Phase 1.5 項 3；Moze 原文
+  沒有明確提這點，算 BeeCount 自己的擴充）
+- ❌ 拆帳（§2.4）子項目個別退款：依賴 §2.4 落地，見下方修改內容第 4 點
+  （原樣保留，尚未實作）
+- ❌ 退款帳戶預設同原支付帳戶但可指定不同帳戶：現況帳戶欄位是空的普通
+  帳戶選擇器，沒有「預設同原帳戶」的自動帶入邏輯（小落差，未修）
 
-**修改內容**（主要是前端，server 端小改）：
-1. Web/mobile：交易明細頁加「退款」按鈕（僅 `tx_type=expense` 顯示），
-   點擊後開交易建立表單，用當前這筆交易的
-   `amount/note/category_id/account_id` 預填，並把 `refund_of_id` 預設
-   指向這筆交易；金額欄位可改（支援部分退款），帳戶欄位可改
-2. 交易明細頁需要顯示「這筆已被退款的累計金額」跟「退款交易清單」——
-   目前只有徽章顯示「這是一筆退款」，缺「這筆支出收到過哪些退款」的
-   反向查詢；建議 `GET /ledgers/{id}/transactions/{tx_id}` 或交易列表
-   回應加 `refunds: [{sync_id, amount, happened_at}]` 聚合欄位
-   （`read_tx_projection` 已有 `refund_of_sync_id`，只是目前沒有反向
-   查詢的讀端點/欄位）
-3. 允許同一筆支出對應多筆退款（現有欄位設計是 nullable FK，本來就
-   允許 1 對多，不需要 schema 改動，只是要確認寫入/讀取路徑沒有假設
-   「只有一筆」）
-4. 拆帳（§2.4）子項目退款依賴 §2.4 落地後才能做，先在 §2.4 的修改
+**剩餘修改內容**（拆帳子項目退款，依賴 §2.4）：
+1. 拆帳（§2.4）子項目退款依賴 §2.4 落地後才能做，先在 §2.4 的修改
    內容加一行備註：`read_tx_split_projection` 也要能被
    `refund_of_sync_id` 指到（而不是只有父交易）
 
 ```mermaid
 flowchart TD
-    A[交易明細頁 原支出交易] --> B[右上角選單「退款」]
-    B --> C[開交易建立表單\n預填 amount/note/category/account]
+    A[交易明細頁 原交易] --> B[「退款」按鈕\n已退款過則灰掉+提示]
+    B --> C[開交易建立表單\n預填 amount/note/account，type 為反向類型]
     C --> D{是否為拆帳交易?}
-    D -- 是 --> E[需先點進拆帳子項目\n對子項目個別退款]
-    D -- 否 --> F[使用者可調整金額（部分退款）/ 改退款帳戶]
-    F --> G[送出，refund_of_id 指向原交易]
-    G --> H[原交易明細顯示已退款金額 + 退款交易清單]
+    D -- 是 --> E[需先點進拆帳子項目\n對子項目個別退款\n尚未實作]
+    D -- 否 --> F[使用者可調整金額（部分退款）]
+    F --> G[送出，refund_of_id 指向原交易\nserver 端查重擋二次退款]
+    G --> H[原交易明細顯示已退款金額 + 可點擊的退款交易清單]
+    H --> I[退款交易明細徽章可點擊跳回原交易]
 ```
 
 ---

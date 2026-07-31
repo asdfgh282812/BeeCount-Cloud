@@ -306,12 +306,24 @@ export function GlobalEntityDialogs() {
     [],
   )
 
-  // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原支出的
-  // 金额/备注/分类/账户预填 + refund_of_id 关联,tx_type 强制 income
-  // (GlobalEditDialogs 的 onOpenNewTx 监听器负责实际预填逻辑)。
+  // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原交易的
+  // 金额/备注/分类/账户预填 + refund_of_id 关联,tx_type 强制为原交易的
+  // 反向类型(§2.6:income 也能被退款,GlobalEditDialogs 的 onOpenNewTx
+  // 监听器负责实际预填逻辑)。
   const handleRefundTx = useCallback(
     (target: WorkspaceTransaction) => {
       setTx(null)
+      // §2.6:已经被退过款的交易不能再退,退款交易本身也不能再被退款(不允许
+      // 链式退款)—— detail 弹窗的按钮已经 disabled/隐藏,这里再挡一道防呆
+      // (万一未来有其它入口直接调这个 handler)。
+      if (target.refunds && target.refunds.length > 0) {
+        toast.error(t('transactions.button.refund.alreadyRefunded'), t('notice.error'))
+        return
+      }
+      if (target.refund_of_id) {
+        toast.error(t('transactions.error.refundChainForbidden'), t('notice.error'))
+        return
+      }
       // §2.6:这笔交易是某个分期计划自动生成的一期 —— 先问用户要「只退这
       // 一期」还是「整笔退款」,不直接走下面的一般退款预填表单(那条路径
       // 不知道分期期数的存在,也不会把该期标记成 refunded)。
@@ -325,15 +337,36 @@ export function GlobalEntityDialogs() {
           id: target.id,
           amount: target.amount,
           note: target.note,
-          // 原交易的分类是 expense kind,退款交易是 income kind —— 两边分类
-          // 树互不相通,直接带名字过去只会指向一个不存在的 income 分类选项,
-          // 故意留空让用户自己选。
+          // 原交易的分类是 expense kind,退款交易是 income kind(或反过来)
+          // —— 两边分类树互不相通,直接带名字过去只会指向一个不存在的
+          // 分类选项,故意留空让用户自己选。
           categoryName: null,
           accountName: target.account_name,
+          origTxType: target.tx_type as 'expense' | 'income',
         },
       })
     },
-    [],
+    [toast, t],
+  )
+
+  // 退款双向勾稽(ph1.5+):点击退款徽章 / 反查清单里的某一笔,原地把 detail
+  // 弹窗切换成那笔交易 —— 用 tx_sync_id 精确查(跨分页/跨账本都能查到,不
+  // 局限在当前已加载的列表里)。
+  const handleJumpToTx = useCallback(
+    async (txId: string) => {
+      try {
+        const page = await fetchWorkspaceTransactions(token, { txSyncId: txId, limit: 1 })
+        const found = page.items[0]
+        if (!found) {
+          toast.error(t('transactions.error.jumpTargetNotFound'), t('notice.error'))
+          return
+        }
+        setTx(found)
+      } catch (err) {
+        toast.error(localizeError(err, t), t('notice.error'))
+      }
+    },
+    [token, toast, t],
   )
 
   const handleSingleInstallmentPeriodRefund = useCallback(async () => {
@@ -407,6 +440,7 @@ export function GlobalEntityDialogs() {
         onClose={() => setTx(null)}
         onEdit={handleEditTx}
         onRefund={handleRefundTx}
+        onJumpToTx={(txId) => void handleJumpToTx(txId)}
       />
       <InstallmentRefundChoiceDialog
         open={installmentRefund?.step === 'choice'}

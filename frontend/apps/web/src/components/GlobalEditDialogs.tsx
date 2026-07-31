@@ -189,16 +189,21 @@ export function GlobalEditDialogs() {
       setEditTxLedgerId(ledgerId)
       const defaults = txDefaults()
       const refundOf = prefill?.refundOf
+      // §2.6:退款交易的 tx_type 是原交易的反向类型 —— 退一笔支出用收入
+      // 冲回来,退一笔收入用支出冲回去。
+      const refundVehicleType: 'income' | 'expense' | undefined = refundOf
+        ? refundOf.origTxType === 'income' ? 'expense' : 'income'
+        : undefined
       setEditTxForm({
         ...defaults,
         happened_at: prefill?.happenedAt || defaults.happened_at,
-        // §2.12.3:从原支出交易明细发起退款 —— 预填金额/备注/分类/账户,
-        // tx_type 强制 income(退款语意只在收入类型有意义),refund_of_id
-        // 指向原交易。用户仍可在表单里调整金额(支援部分退款)/改退款帐户。
-        ...(refundOf
+        // §2.12.3:从原交易明细发起退款 —— 预填金额/备注/分类/账户,
+        // tx_type 强制为原交易的反向类型,refund_of_id 指向原交易。用户
+        // 仍可在表单里调整金额(支援部分退款)/改退款帐户。
+        ...(refundOf && refundVehicleType
           ? {
-              tx_type: 'income' as const,
-              category_kind: 'income' as const,
+              tx_type: refundVehicleType,
+              category_kind: refundVehicleType,
               amount: String(refundOf.amount),
               note: refundOf.note || '',
               category_name: refundOf.categoryName || '',
@@ -345,9 +350,11 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type === 'transfer' ? false : editTxForm.exclude_from_stats,
       exclude_from_budget:
         editTxForm.tx_type === 'expense' ? editTxForm.exclude_from_budget : false,
-      // 退款(§2.6):同 TransactionsPage.onSaveTransaction —— 只有 income 有意义。
+      // 退款(§2.6):同 TransactionsPage.onSaveTransaction —— income/expense
+      // 都能是退款交易(income 也能被退款后,退款载体可以是 expense),只有
+      // transfer 没有退款语意。
       refund_of_id:
-        editTxForm.tx_type === 'income' ? editTxForm.refund_of_id.trim() || null : null,
+        editTxForm.tx_type !== 'transfer' ? editTxForm.refund_of_id.trim() || null : null,
       // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建生效。
       recurring: !editTxForm.editingId ? buildRecurringInlinePayload(editTxForm) : null,
       ...currencyFields

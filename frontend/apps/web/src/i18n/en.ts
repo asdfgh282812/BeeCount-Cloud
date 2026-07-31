@@ -1193,8 +1193,12 @@ const en = {
   'transactions.placeholder.toAccountName': 'to_account_name',
   'transactions.placeholder.tags': 'Select tags',
   'transactions.badge.refund': 'Refund',
+  'transactions.badge.refund.jumpHint': 'Click to view the original transaction',
   'transactions.button.refund': 'Refund',
+  'transactions.button.refund.alreadyRefunded': 'This transaction has already been refunded',
   'transactions.field.refundedTotal': 'Refunded total',
+  'transactions.error.jumpTargetNotFound': 'The linked transaction could not be found, it may have been deleted',
+  'transactions.error.refundChainForbidden': 'A refund transaction cannot itself be refunded',
   // 账单标记(per-transaction flags,issue #340 / .docs/transaction-flags)
   txFlagExcludeFromStats: 'Exclude from income/expense',
   txFlagExcludeFromBudget: 'Exclude from budget',
@@ -1596,6 +1600,8 @@ const en = {
   'error.ENTITY_NOT_FOUND': 'Legacy data ID is being repaired. Please refresh and try again.',
   'error.WRITE_VALIDATION_FAILED': 'Write validation failed. Please check input values.',
   'error.TX_DELETE_INSTALLMENT_LINKED': "This transaction belongs to an installment plan. Use the plan's own actions (early repayment, payoff, stop future periods, or delete the plan) instead of deleting the transaction directly.",
+  'error.TX_ALREADY_REFUNDED': 'This transaction has already been refunded and cannot be refunded again.',
+  'error.TX_REFUND_CHAIN_FORBIDDEN': 'A refund transaction cannot itself be refunded.',
   'error.USER_EMAIL_EXISTS': 'Email already exists.',
   'error.USER_PASSWORD_TOO_SHORT': 'Password must be at least 6 characters.',
 

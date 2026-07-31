@@ -85,8 +85,17 @@ NotificationBell.tsx`,轮询 `GET /notifications`,不接 WS)、週期性收支
 (`/app/recurring-rules`,`RecurringRulesPage`/`RecurringRulesPanel`)、分期
 付款(`/app/installment-plans`,`InstallmentPlansPage`/`InstallmentPlansPanel`)
 ——两者入口都在头像下拉「工具」组,仅账本 owner 可写(对齐 server
-`_OWNER_ONLY_ROLES`);退款(交易表单新增「退款对象」下拉,仅 income 类型
-显示,候选来自当前已加载的交易列表,非全量搜索)。mobile 端 UI 仍待排期。
+`_OWNER_ONLY_ROLES`)。退款入口(2026-07-30 起改版,取代旧版「新建交易表单
+下拉选退款对象」)在交易详情弹窗(`TransactionDetailDialog.tsx`)的「退款」
+按钮,点击后开建交易表单并预填原交易金额/备注/账户;income/expense 都能
+被退款(仅 transfer 不行),退款交易类型自动取原交易的反向类型。2026-07-31
+补了三项:①一笔交易只能被退一次,已退过款的交易按钮变灰并提示(server 端
+`_assert_refund_target_not_already_refunded` 兜底,命中回 400
+`TX_ALREADY_REFUNDED`);②原交易与退款交易双向勾稽且可点击跳转查看
+(`GlobalEntityDialogs.tsx::handleJumpToTx`);③统计口径 netting
+(`read/_shared.py::_projection_totals`、`read/workspace.py::
+workspace_analytics`)对称处理两个退款方向。详见
+`docs/MOZE_FEATURE_GAP_SD.md` §2.6/§2.12.3。mobile 端 UI 仍待排期。
 
 ## 架构总览(server 端)
 

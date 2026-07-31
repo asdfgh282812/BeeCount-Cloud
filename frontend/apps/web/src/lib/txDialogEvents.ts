@@ -35,8 +35,10 @@ let editCategoryHandlerCount = 0
  * 打开"新建交易" dialog 的可选预填项。
  * - happenedAt:ISO 8601 字符串,日历视图选中某一天后调用,prefill 到 happened_at 字段
  * - ledgerId:目标账本(留空 = 用 active ledger)
- * - refundOf:§2.12.3,从原支出交易明细点「退款」发起时带上,预填金额/备注/
- *   分类/账户 + 把 refund_of_id 指向原交易,tx_type 强制 income。
+ * - refundOf:§2.12.3,从原交易明细点「退款」发起时带上,预填金额/备注/
+ *   分类/账户 + 把 refund_of_id 指向原交易。§2.6:income 也能被退款后,
+ *   退款交易的 tx_type 不再固定 income,而是原交易 origTxType 的反向类型
+ *   (expense 被退→income 退款交易;income 被退→expense 退款交易)。
  */
 export type NewTxPrefill = {
   happenedAt?: string
@@ -47,6 +49,8 @@ export type NewTxPrefill = {
     note: string | null
     categoryName: string | null
     accountName: string | null
+    /** 原交易的类型 —— 决定退款交易反向应该是 income 还是 expense。 */
+    origTxType: 'expense' | 'income'
   }
 }
 

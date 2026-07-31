@@ -1,17 +1,24 @@
-"""退款(§2.6 MOZE_FEATURE_GAP_SD.md Phase 1)—— refund_of_sync_id 契约:
+"""退款(§2.6/§2.12.3 MOZE_FEATURE_GAP_SD.md Phase 1/1.5)—— refund_of_sync_id
+契约:
 
 - web `/write/ledgers/{id}/transactions` 建交易可带 `refund_of_id`,落
   `read_tx_projection.refund_of_sync_id`,读接口原样透传
 - mobile `/sync/push` 的 transaction merge 契约:partial update 不带
   `refundOfId` 时保留旧值
-- 统计口径:退款(tx_type=income 且 refund_of_id 非空)**不计入当期收入**,
-  改冲抵当期支出净额 —— `/summary`(_projection_totals 共享给 list_ledgers)
-  与 `/workspace/analytics`(workspace_analytics)两处都要验证新旧口径
+- 统计口径:退款不计入自己那个分项,改冲抵对方分项净额 —— income 型退款
+  (退一笔支出)冲抵 expense,expense 型退款(退一笔收入)冲抵 income。
+  `/summary`(_projection_totals 共享给 list_ledgers)与 `/workspace/
+  analytics`(workspace_analytics)两处都要验证
+- Phase 1.5:一笔交易已经被退过款就不能再发起第二笔退款(create/update
+  两条路径都要挡),命中回 400 `TX_ALREADY_REFUNDED`
+
+Web UI 入口(2026-07-30 起)在交易详情弹窗的「退款」按钮
+(`TransactionDetailDialog.tsx`),本文件只覆盖 server 端契约;UI 层的
+按钮 disabled / 双向勾稽跳转是纯前端逻辑,没有对应的 pytest。
 
 ============================================================================
-手动检查清单(Web UI 目前还没有"退款"入口,§2.6 只做了 server 端契约,
-UI 排期见 MOZE_FEATURE_GAP_SD.md;真要在 Web 上肉眼验证只能先用 API 调试
-面板或 curl 直接打 `/write/ledgers/{id}/transactions` 带上 `refund_of_id`):
+手动检查清单(server 端契约已有上面的自动化测试覆盖,这份清单留给要在
+Web UI 肉眼过一遍完整流程的场景使用):
 
 1. 建一笔支出(如 500 元「购物」),再建一笔收入(如 200 元)并带
    `"refund_of_id": "<那笔支出的 id>"`。
@@ -344,5 +351,392 @@ def test_workspace_analytics_nets_refund_against_expense():
         )
         ranks = {r["category_name"]: r["total"] for r in res_income.json()["category_ranks"]}
         assert ranks.get("电子产品") == 300.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5:禁止重复退款(一笔交易只能被退一次)
+# ---------------------------------------------------------------------------
+
+
+def test_create_second_refund_rejected_with_already_refunded_code():
+    """expense 已经被一笔 income 退款过 → 再建第二笔指向同一笔 expense 的
+    退款交易必须被拒绝(400 TX_ALREADY_REFUNDED),不是静默允许多笔退款。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refdup1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFDUP1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refdup1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        now = datetime.now(timezone.utc)
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 500.0,
+                "happened_at": now.isoformat(),
+                "category_name": "购物",
+            },
+        )
+        assert res.status_code == 200, res.text
+        expense_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 200.0,
+                "happened_at": (now + timedelta(hours=1)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": expense_id,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        # 第二笔退款(哪怕是不同金额的部分退款)必须被拒绝。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 100.0,
+                "happened_at": (now + timedelta(hours=2)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": expense_id,
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert res.json()["error"]["code"] == "TX_ALREADY_REFUNDED"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_tx_rejects_pointing_refund_of_id_to_already_refunded_target():
+    """PATCH 一笔既有交易,把 refund_of_id 指向一笔已经被退过款的交易 ——
+    跟 create 路径同一道防呆,update 路径(_commit_write_fast_tx)也要挡。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refdup2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFDUP2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refdup2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        now = datetime.now(timezone.utc)
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 500.0,
+                "happened_at": now.isoformat(),
+                "category_name": "购物",
+            },
+        )
+        assert res.status_code == 200, res.text
+        expense_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 200.0,
+                "happened_at": (now + timedelta(hours=1)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": expense_id,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        # 建一笔不相干的普通收入,之后想改成第二笔退款。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 300.0,
+                "happened_at": (now + timedelta(hours=2)).isoformat(),
+                "category_name": "工资",
+            },
+        )
+        assert res.status_code == 200, res.text
+        other_income_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{other_income_id}",
+            headers=hdr,
+            json={"base_change_id": base, "refund_of_id": expense_id},
+        )
+        assert res.status_code == 400, res.text
+        assert res.json()["error"]["code"] == "TX_ALREADY_REFUNDED"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_refund_of_refund_tx_rejected():
+    """退款交易本身(refund_of_id 已经指向别的交易)不能再被当成退款目标 ——
+    不允许链式退款(A 退 B,再有 C 想退 B 那笔退款交易)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refchain1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFCHAIN1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refchain1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        now = datetime.now(timezone.utc)
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 500.0,
+                "happened_at": now.isoformat(),
+                "category_name": "购物",
+            },
+        )
+        assert res.status_code == 200, res.text
+        expense_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 200.0,
+                "happened_at": (now + timedelta(hours=1)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": expense_id,
+            },
+        )
+        assert res.status_code == 200, res.text
+        refund_id = res.json()["entity_id"]
+
+        # 想对那笔「退款交易」本身再建一笔退款 —— 必须被拒绝。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 50.0,
+                "happened_at": (now + timedelta(hours=2)).isoformat(),
+                "category_name": "购物",
+                "refund_of_id": refund_id,
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert res.json()["error"]["code"] == "TX_REFUND_CHAIN_FORBIDDEN"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_existing_refund_tx_can_resave_other_fields():
+    """编辑一笔已经是退款的交易(只改 note,不碰 refund_of_id)不应该被
+    "已经退过款"防呆误伤 —— exclude_unset 下 refund_of_id 压根不在 payload
+    里,不用重新校验;这条测试锁住这个不回归。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refdup3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFDUP3"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refdup3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        now = datetime.now(timezone.utc)
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 500.0,
+                "happened_at": now.isoformat(),
+                "category_name": "购物",
+            },
+        )
+        assert res.status_code == 200, res.text
+        expense_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 200.0,
+                "happened_at": (now + timedelta(hours=1)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": expense_id,
+            },
+        )
+        assert res.status_code == 200, res.text
+        refund_id = res.json()["entity_id"]
+
+        # 场景一:PATCH 不带 refund_of_id(exclude_unset)—— 必须放行。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{refund_id}",
+            headers=hdr,
+            json={"base_change_id": base, "note": "已核对"},
+        )
+        assert res.status_code == 200, res.text
+
+        # 场景二:PATCH 显式带回同一个 refund_of_id(前端编辑表单的真实行为,
+        # 见 GlobalEditDialogs.tsx)—— 排除自己后也必须放行,不能自己挡自己。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{refund_id}",
+            headers=hdr,
+            json={"base_change_id": base, "refund_of_id": expense_id, "note": "再次核对"},
+        )
+        assert res.status_code == 200, res.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# income 也能被退款(§2.6 Phase 1.5 项 3):netting 方向对称
+# ---------------------------------------------------------------------------
+
+
+def _setup_income_and_refund(client, hdr, ledger_id, token):
+    """salary(income,1000)被一笔 expense 型退款(200)冲抵;另有一笔不相干
+    的普通支出(500)不应受影响 —— 跟 _setup_expense_and_refund 方向相反。"""
+    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    base = _latest_change_id(client, token, ledger_id)
+    res = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        json={
+            "base_change_id": base,
+            "tx_type": "income",
+            "amount": 1000.0,
+            "happened_at": now.isoformat(),
+            "category_name": "工资",
+        },
+    )
+    assert res.status_code == 200, res.text
+    income_id = res.json()["entity_id"]
+
+    base = _latest_change_id(client, token, ledger_id)
+    res = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        json={
+            "base_change_id": base,
+            "tx_type": "expense",
+            "amount": 200.0,
+            "happened_at": (now + timedelta(hours=2)).isoformat(),
+            "category_name": "工资",
+            "refund_of_id": income_id,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # 一笔普通支出,不应受退款 netting 影响
+    base = _latest_change_id(client, token, ledger_id)
+    res = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        json={
+            "base_change_id": base,
+            "tx_type": "expense",
+            "amount": 500.0,
+            "happened_at": now.isoformat(),
+            "category_name": "电子产品",
+        },
+    )
+    assert res.status_code == 200, res.text
+    return income_id
+
+
+def test_summary_nets_refund_of_income_against_income():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refinc1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFINC1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refinc1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _setup_income_and_refund(client, hdr, ledger_id, token)
+
+        res = client.get(f"/api/v1/read/summary?ledger_id={ledger_id}", headers=hdr)
+        assert res.status_code == 200, res.text
+        body = res.json()
+        # income: 1000 - 200(退款净额) = 800;expense: 只有普通支出 500(退款不计入)
+        assert body["income_total"] == 800.0
+        assert body["expense_total"] == 500.0
+        # balance 口径不受影响:1000 - 500 - 200(退款仍按 expense 记负号) = 300
+        assert body["balance"] == 300.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_workspace_analytics_nets_refund_of_income_against_income():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "refinc2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REFINC2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "refinc2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _setup_income_and_refund(client, hdr, ledger_id, token)
+
+        res = client.get(
+            "/api/v1/read/workspace/analytics",
+            headers=hdr,
+            params={"scope": "month", "metric": "income"},
+        )
+        assert res.status_code == 200, res.text
+        summary = res.json()["summary"]
+        assert summary["income_total"] == 800.0
+        assert summary["expense_total"] == 500.0
     finally:
         app.dependency_overrides.clear()

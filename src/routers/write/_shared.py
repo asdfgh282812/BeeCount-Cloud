@@ -566,6 +566,55 @@ def _load_idempotent_response(
     return WriteCommitMeta.model_validate(payload)
 
 
+def _assert_refund_target_not_already_refunded(
+    db: Session,
+    *,
+    ledger_id: str,
+    refund_of_id: str,
+    exclude_tx_id: str | None = None,
+) -> None:
+    """退款(§2.6/§2.12.3):`refund_of_id` 指向的那笔交易一旦已经被某笔退款
+    交易引用过,就不能再建第二笔退款 —— 跟 installment_plans.py 单期退款的
+    "period already refunded" 防呆同语意(见该文件 refund_installment_period_ep),
+    这里补的是普通交易退款路径(POST/PATCH .../transactions)一直缺失的那道
+    检查(c320cf5 commit message 提过但当时只实作了分期那一半)。
+
+    exclude_tx_id:PATCH 场景下当前这笔 tx 本身可能就是已经引用了这个
+    refund_of_id 的那一行(用户只是编辑其它字段,refund_of_id 原样带回),
+    要排除自己,否则每次保存都会命中。
+
+    顺带挡「退款的退款」:`refund_of_id` 指向的那笔交易如果自己也是一笔
+    退款(它的 refund_of_sync_id 非空),不允许对它再建退款 —— 不然会形成
+    链式退款,跟 Moze 原设计不符,web UI 也已经不出这个入口
+    (`TransactionDetailDialog.tsx` 的 `isRefundTx`),这里是 API 层兜底,
+    防 mobile / 直接调 API 绕过。
+    """
+    query = select(ReadTxProjection.sync_id).where(
+        ReadTxProjection.ledger_id == ledger_id,
+        ReadTxProjection.refund_of_sync_id == refund_of_id,
+    )
+    if exclude_tx_id is not None:
+        query = query.where(ReadTxProjection.sync_id != exclude_tx_id)
+    existing = db.scalar(query.limit(1))
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="transaction has already been refunded",
+        )
+
+    target_refund_of = db.scalar(
+        select(ReadTxProjection.refund_of_sync_id).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == refund_of_id,
+        )
+    )
+    if target_refund_of is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="cannot create a refund of a refund transaction",
+        )
+
+
 async def _commit_create_tx_fast(
     *,
     request: Request,
@@ -596,6 +645,11 @@ async def _commit_create_tx_fast(
         """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
         lock_ledger_for_materialize(db, ledger.id)
         now = _utcnow()
+        refund_of_id = mutate_payload.get("refund_of_id")
+        if refund_of_id:
+            _assert_refund_target_not_already_refunded(
+                db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
+            )
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
         _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
         new_item = _snap["items"][0]
@@ -787,6 +841,16 @@ async def _commit_write_fast_tx(
                 db, user_id=ledger.user_id, file_ids=tx_file_ids,
             )
         else:
+            # 退款(§2.6):显式改 refund_of_id(非空)时才查重 —— 没传该 key
+            # (exclude_unset)代表这次 PATCH 不动这个字段,不用重新校验;排除
+            # 自己这行,否则编辑一笔已经是退款的交易(refund_of_id 原样带回)
+            # 每次保存都会被自己命中。
+            refund_of_id = mutate_payload.get("refund_of_id")
+            if refund_of_id:
+                _assert_refund_target_not_already_refunded(
+                    db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
+                    exclude_tx_id=tx_id,
+                )
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)

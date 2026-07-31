@@ -1046,8 +1046,8 @@ def workspace_analytics(
             func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
             ReadTxProjection.happened_at,
             ReadTxProjection.category_name,
-            # 退款(§2.6):非空 = 这笔(income)交易是对某笔支出的退款,netting
-            # 逻辑见下方循环。
+            # 退款(§2.6/§2.12.3):非空 = 这笔交易是对另一笔交易的退款(income
+            # 退 expense,或 expense 退 income),netting 逻辑见下方循环。
             ReadTxProjection.refund_of_sync_id,
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
@@ -1083,17 +1083,25 @@ def workspace_analytics(
             category = (cat_name or "").strip() or "Uncategorized"
             category_slot = category_map.setdefault(
                 category, {"income": 0.0, "expense": 0.0, "count": 0.0})
-            # 退款(§2.6):不计入当期收入,改冲抵当期支出净额(自己所在的
-            # bucket/category,不追溯回被退款那笔支出原本的月份/分类 ——
-            # 简化口径,退款和被退款支出通常发生在相近时间)。
-            is_refund = tx_type_val == "income" and refund_of_id is not None
-            if is_refund:
+            # 退款(§2.6/§2.12.3):不计入自己那个分项,改冲抵对方分项净额
+            # (自己所在的 bucket/category,不追溯回被退那笔交易原本的月份/
+            # 分类 —— 简化口径,退款和被退交易通常发生在相近时间)。income
+            # 退 expense(原逻辑)与 expense 退 income(income 也能退款)对称。
+            is_income_refund = tx_type_val == "income" and refund_of_id is not None
+            is_expense_refund = tx_type_val == "expense" and refund_of_id is not None
+            if is_income_refund:
                 expense_total -= amt
                 slot["expense"] -= amt
                 category_slot["count"] += 1.0
                 category_slot["expense"] -= amt
                 bucket_cat = category_by_bucket.setdefault(bucket, {})
                 bucket_cat[category] = bucket_cat.get(category, 0.0) - amt
+                continue
+            if is_expense_refund:
+                income_total -= amt
+                slot["income"] -= amt
+                category_slot["count"] += 1.0
+                category_slot["income"] -= amt
                 continue
             if tx_type_val == "income":
                 income_total += amt
