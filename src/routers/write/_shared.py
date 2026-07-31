@@ -661,25 +661,6 @@ def _validate_tx_splits(
         )
 
 
-def _assert_refund_target_has_no_splits(
-    db: Session, *, ledger_id: str, refund_of_id: str,
-) -> None:
-    """拆帳(§2.4):多分類（拆帳）交易不能整筆退款——原文规格明确要求对拆帳
-    子项目个别退款(尚未实作,见 MOZE_FEATURE_GAP_SD.md §2.12.3),这里先挡
-    住整笔退款一个 has_splits=True 的交易。"""
-    has_splits = db.scalar(
-        select(ReadTxProjection.has_splits).where(
-            ReadTxProjection.ledger_id == ledger_id,
-            ReadTxProjection.sync_id == refund_of_id,
-        )
-    )
-    if has_splits:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="a split transaction cannot be refunded as a whole",
-        )
-
-
 async def _commit_create_tx_fast(
     *,
     request: Request,
@@ -725,9 +706,6 @@ async def _commit_create_tx_fast(
             )
         if refund_of_id:
             _assert_refund_target_not_already_refunded(
-                db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
-            )
-            _assert_refund_target_has_no_splits(
                 db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
             )
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
@@ -930,9 +908,6 @@ async def _commit_write_fast_tx(
                 _assert_refund_target_not_already_refunded(
                     db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
                     exclude_tx_id=tx_id,
-                )
-                _assert_refund_target_has_no_splits(
-                    db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
                 )
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction

@@ -294,18 +294,20 @@ export function TransactionDetailDialog({
               不可退款),取代旧版「新建交易表单里挑退款对象」的下拉。§2.6:
               已经被退过款的交易(alreadyRefunded)不能再退,按钮灰掉 + title
               说明原因,不需要点了才知道被拒绝。退款交易本身(isRefundTx)
-              不出这个按钮 —— 不允许「退款的退款」,链式退款没有意义。 */}
+              不出这个按钮 —— 不允许「退款的退款」,链式退款没有意义。拆帳
+              (§2.4)交易(has_splits)现在也能整笔退款,跟非拆帳交易走同一套
+              规则 —— 退款表单不预填分类(categoryName 留空,见
+              GlobalEntityDialogs.tsx::handleRefundTx),用户自己选退款交易
+              要挂到哪个分类,不尝试拆回原交易的多个分类明细。 */}
           {tx && (tx.tx_type === 'expense' || tx.tx_type === 'income') && !isRefundTx && onRefund ? (
             <Button
               variant="outline"
               size="sm"
-              disabled={!canManage || alreadyRefunded || Boolean(tx.has_splits)}
+              disabled={!canManage || alreadyRefunded}
               title={
                 alreadyRefunded
                   ? t('transactions.button.refund.alreadyRefunded')
-                  : tx.has_splits
-                    ? t('transactions.error.splitRefundNotSupported')
-                    : undefined
+                  : undefined
               }
               onClick={() => onRefund(tx)}
             >

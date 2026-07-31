@@ -5,8 +5,9 @@
   category
 - has_splits=True 时父行 category_sync_id/category_name 清空,明细落
   `read_tx_split_projection`(整批 delete-then-insert)
-- 退款互斥:拆帳交易不能作为 refund_of 目标(整笔退款),也不能同时是
-  splits + refund_of_id
+- 退款互斥:拆帳交易可以整笔退款(2026-07-31 起,见下方
+  `test_refund_of_split_transaction_allowed`),但退款交易本身不能同时
+  带 splits(splits + refund_of_id 不能共存于同一笔交易)
 - Web PATCH fast path(`update_transaction`)跟 mobile `/sync/push` merge
   路径都要满足"没传 splits key 时保留旧值,传空列表清空"的 LWW 语义
 - `read/workspace.py::workspace_analytics` 分类排行按 split 明细展开分别
@@ -292,8 +293,9 @@ def test_create_tx_splits_and_refund_of_id_together_rejected():
         app.dependency_overrides.clear()
 
 
-def test_refund_of_split_transaction_rejected():
-    """§2.12.3:多分類（拆帳）交易不能整筆退款。"""
+def test_refund_of_split_transaction_allowed():
+    """2026-07-31 起:多分類（拆帳）交易可以整笔退款,退款行为跟非拆帳交易
+    完全一样 —— 只是对原交易整笔按金额退,不会拆回原交易的各分类明细。"""
     client, TS, token, hdr, ledger_id, cat_food, cat_transport = _setup("split6@example.com")
     try:
         res = _create_tx(
@@ -312,6 +314,67 @@ def test_refund_of_split_transaction_rejected():
             tx_type="income",
             amount=200.0,
             refund_of_id=split_tx_id,
+        )
+        assert res.status_code == 200, res.text
+        refund_tx_id = res.json()["entity_id"]
+
+        # 原交易的 splits 明细不受退款影响,依旧是 has_splits=True + 两条明细。
+        with TS() as db:
+            orig_row = db.scalar(
+                select(ReadTxProjection).where(ReadTxProjection.sync_id == split_tx_id)
+            )
+            assert orig_row.has_splits is True
+            split_rows = db.scalars(
+                select(ReadTxSplitProjection)
+                .where(ReadTxSplitProjection.tx_sync_id == split_tx_id)
+            ).all()
+            assert len(split_rows) == 2
+
+        # 读接口双向勾稽:原交易能反查到这笔退款,退款交易的 refund_of_id 回显正确。
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        by_id = {t["id"]: t for t in r.json()}
+        assert by_id[refund_tx_id]["refund_of_id"] == split_tx_id
+        refunds = by_id[split_tx_id].get("refunds") or []
+        assert [r["id"] for r in refunds] == [refund_tx_id]
+
+        # 一笔交易只能被退一次:对同一笔拆帳交易再发起第二笔退款要被拒绝,
+        # 跟非拆帳交易的"已退款"防呆同语意。
+        res = _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="income",
+            amount=50.0,
+            refund_of_id=split_tx_id,
+        )
+        assert res.status_code == 400, res.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refund_of_split_transaction_cannot_itself_be_split():
+    """退款交易本身不能同时带 splits —— 这条互斥不受本次改动影响,只是
+    "拆帳交易不能整笔退款"这条挡被拿掉了,"退款交易不能同时拆帳"还在。"""
+    client, TS, token, hdr, ledger_id, cat_food, cat_transport = _setup("split6b@example.com")
+    try:
+        res = _create_tx(
+            client, hdr, ledger_id, token,
+            amount=200.0,
+            splits=[
+                {"category_id": cat_food, "amount": 150.0},
+                {"category_id": cat_transport, "amount": 50.0},
+            ],
+        )
+        assert res.status_code == 200, res.text
+        split_tx_id = res.json()["entity_id"]
+
+        res = _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="income",
+            amount=200.0,
+            refund_of_id=split_tx_id,
+            splits=[
+                {"category_id": cat_food, "amount": 120.0},
+                {"category_id": cat_transport, "amount": 80.0},
+            ],
         )
         assert res.status_code == 400, res.text
     finally:

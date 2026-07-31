@@ -161,25 +161,35 @@ entity）；`read_tx_projection` 加 `has_splits`/`splits_json`
 ["transaction"]`,沿用既有 partial-update 機制,沒有新增 entity_type）。
 `has_splits=True` 時父行 `category_sync_id`/`category_name` 強制清空。
 校驗（`write/_shared.py::_validate_tx_splits`）：tx_type 只能
-expense/income、至少 2 筆、每筆金額 > 0、加總須等於交易 amount；且拆帳
-交易不能整筆退款（`_assert_refund_target_has_no_splits`）、退款交易不能
-同時是拆帳。`workspace_analytics` 展開 split 明細分別累加分類排行（按
+expense/income、至少 2 筆、每筆金額 > 0、加總須等於交易 amount；退款
+交易不能同時是拆帳（`splits` + `refund_of_id` 不能共存於同一筆交易）。
+`workspace_analytics` 展開 split 明細分別累加分類排行（按
 整筆的 native/amount 折算比例縮放每筆 split 金額）；分類預算用量
 （`GET /ledgers/{id}/budgets/usage`）額外從 `read_tx_split_projection`
 查詢把 split 明細計入對應分類。web UI：`TransactionsPanel.tsx` 分類欄位
 旁邊「拆分到多個分類」開關，開啟後可增刪多行「分類 + 金額」，即時顯示
 「已分配 X / 總額 Y」；`TransactionDetailDialog.tsx` 顯示「拆分」徽章 +
-分類明細多行，退款按鈕對拆帳交易灰掉；交易列表分類欄顯示拆帳交易的各
-分類名拼接。測試見 `tests/test_tx_splits.py`（14 例）+
+分類明細多行；交易列表分類欄顯示拆帳交易的各
+分類名拼接。測試見 `tests/test_tx_splits.py`（16 例）+
 `frontend/apps/web/src/txSplitForms.test.ts`（11 例，純函數校驗邏輯）。
 手動測試清單見 `docs/PH2_SPLIT_WEB_UI_MANUAL_TEST_PLAN.md`。
 
-**尚未做**：拆帳子項目個別退款（Moze 原文支援，這次選擇直接擋整筆退款，
-需要退款時用戶得先撤銷拆帳）、CSV 匯出的拆帳明細列、mobile 端本地
-SQLite 子表（server 已經把 `splits` 塞進 sync payload,mobile 拉到會被
-忽略,不會崩但看不到明細）、拆帳跟週期性收支/分期付款組合（`create_tx`
-的 recurring 內聯創建路徑、`installment_plans.py` 生成各期交易的路徑都
-沒有接 `splits` 參數，UI 層兩者互斥）。
+**✅ 拆帳交易整筆退款（2026-07-31）**：拆帳交易現在可以整筆退款，跟非
+拆帳交易走同一套規則（server 端拿掉了原本的
+`_assert_refund_target_has_no_splits` 擋，見下方 §2.6）——退款只對原交易
+的總金額整筆退，不會拆回「餐飲/交通」各自的明細，退款交易本身也不能
+帶 `splits`（維持「退款交易不能同時拆帳」這條互斥）。測試見
+`tests/test_tx_splits.py::test_refund_of_split_transaction_allowed` +
+`tests/test_refund_stats.py::test_workspace_analytics_nets_refund_of_split_transaction`。
+手動測試清單見 `docs/PH2_SPLIT_REFUND_WEB_UI_MANUAL_TEST_PLAN.md`。
+
+**尚未做**：拆帳子項目個別退款（Moze 原文支援對拆帳的某個子分類單獨退款，
+BeeCount 目前只支援整筆退款，不支援對某一筆 split 明細單獨退款）、CSV
+匯出的拆帳明細列、mobile 端本地 SQLite 子表（server 已經把 `splits`
+塞進 sync payload,mobile 拉到會被忽略,不會崩但看不到明細）、拆帳跟
+週期性收支/分期付款組合（`create_tx` 的 recurring 內聯創建路徑、
+`installment_plans.py` 生成各期交易的路徑都沒有接 `splits` 參數，UI 層
+兩者互斥）。
 
 Moze: [record/split-categories.md](https://doc.moze.app/record/split-categories.md)
 
@@ -245,11 +255,23 @@ income/expense 總額、series、分類排行）。`balance` 口徑不受影響(
    對稱處理兩個方向：income 型退款冲抵 `expense_total`,expense 型退款
    冲抵 `income_total`。
 
+**✅ 拆帳交易可整筆退款（2026-07-31）**：`write/_shared.py::
+_assert_refund_target_has_no_splits` 這道擋已拿掉，`refund_of_id` 指向
+一筆 `has_splits=True` 的交易現在會成功，行為跟非拆帳交易完全一樣——
+退款表單不預填分類（`categoryName` 留空，跟原本非拆帳退款一致，因為
+expense/income 分類樹不互通），退款只整筆冲抵原交易總金額，不會拆回
+原交易「餐飲/交通」各自的明細金額。`TransactionDetailDialog.tsx` 的
+「退款」按鈕不再對 `has_splits` 交易灰掉。仍然維持「退款交易本身不能
+帶 `splits`」這條互斥（一筆交易不能同時是拆帳又是退款）。測試見
+`tests/test_tx_splits.py::test_refund_of_split_transaction_allowed` +
+`tests/test_refund_stats.py::test_workspace_analytics_nets_refund_of_split_transaction`。
+
 **尚未做**的:CSV 匯出欄位、跨月退款回溯到原支出月份的口徑(目前退款淨額
 算在退款自己發生的那個月/分類，不會回溯修正原支出那個月)、全量交易
 搜尋 picker(目前退款發起走明細頁按鈕不需要搜尋 picker 了，此項僅影響
-mobile UI 待排期部分)、拆帳(§2.4)子項目退款(依賴 §2.4 落地)、多次
-部分退款(見上方「禁止重複退款」的取捨說明)。
+mobile UI 待排期部分)、拆帳(§2.4)子項目個別退款(對某一筆 split 明細
+單獨退款，目前只支援整筆退款)、多次部分退款(見上方「禁止重複退款」的
+取捨說明)。
 
 Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
 
@@ -629,26 +651,24 @@ flowchart TD
   要求），這是跟 Moze 原文的既知差異，不是尚待實作的落差
 - ✅ income 也能被退款（原本只有 expense，§2.6 Phase 1.5 項 3；Moze 原文
   沒有明確提這點，算 BeeCount 自己的擴充）
-- ❌ 拆帳（§2.4）子項目個別退款：依賴 §2.4 落地，見下方修改內容第 4 點
-  （原樣保留，尚未實作）
+- ⚠️ **拆帳（§2.4）交易可以整筆退款（2026-07-31）**：跟 Moze 原文「拆帳
+  交易不能整筆退款，要對拆帳子項目個別退款」的設計不同——BeeCount 選擇
+  「拆帳交易可以整筆退款，但不支援對某一筆 split 明細單獨退款」的簡化
+  口徑（使用者需求明確要求），這是跟 Moze 原文的既知差異，不是尚待
+  實作的落差。退款只整筆冲抵原交易總金額，不會拆回各 split 明細各自的
+  金額（`read_tx_split_projection` 不需要能被 `refund_of_sync_id`
+  指到，父交易的 `refund_of_sync_id` 已經足夠表達退款關聯）。
 - ❌ 退款帳戶預設同原支付帳戶但可指定不同帳戶：現況帳戶欄位是空的普通
   帳戶選擇器，沒有「預設同原帳戶」的自動帶入邏輯（小落差，未修）
-
-**剩餘修改內容**（拆帳子項目退款，依賴 §2.4）：
-1. 拆帳（§2.4）子項目退款依賴 §2.4 落地後才能做，先在 §2.4 的修改
-   內容加一行備註：`read_tx_split_projection` 也要能被
-   `refund_of_sync_id` 指到（而不是只有父交易）
 
 ```mermaid
 flowchart TD
     A[交易明細頁 原交易] --> B[「退款」按鈕\n已退款過則灰掉+提示]
-    B --> C[開交易建立表單\n預填 amount/note/account，type 為反向類型]
-    C --> D{是否為拆帳交易?}
-    D -- 是 --> E[需先點進拆帳子項目\n對子項目個別退款\n尚未實作]
-    D -- 否 --> F[使用者可調整金額（部分退款）]
-    F --> G[送出，refund_of_id 指向原交易\nserver 端查重擋二次退款]
-    G --> H[原交易明細顯示已退款金額 + 可點擊的退款交易清單]
-    H --> I[退款交易明細徽章可點擊跳回原交易]
+    B --> C[開交易建立表單\n預填 amount/note/account，type 為反向類型\n分類留空(拆帳/非拆帳都一樣,由用戶自選)]
+    C --> D[使用者可調整金額（部分退款）]
+    D --> E[送出，refund_of_id 指向原交易\nserver 端查重擋二次退款\n拆帳(§2.4)/非拆帳原交易走同一套規則]
+    E --> F[原交易明細顯示已退款金額 + 可點擊的退款交易清單]
+    F --> G[退款交易明細徽章可點擊跳回原交易]
 ```
 
 ---

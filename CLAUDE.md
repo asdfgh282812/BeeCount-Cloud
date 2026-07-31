@@ -105,11 +105,14 @@ payload 的 `splits` 字段,`projection.upsert_tx` 每次整批
 delete-then-insert 重建);`has_splits=True` 时父行
 `category_sync_id`/`category_name` 清空,`workspace_analytics`
 按 split 明细展开分别累加分类排行,分类预算用量同样把 split 明细计入
-对应分类。拆帳交易不能整笔退款,退款交易不能同时拆帳,拆帳跟
-週期性收支/分期付款组合暂不支持(write 层 + 前端 UI 都挡)。web 入口:
-`TransactionsPanel.tsx` 分类字段旁「拆分到多个分类」开关。详见
-`docs/MOZE_FEATURE_GAP_SD.md` §2.4,测试见 `tests/test_tx_splits.py`。
-mobile 端(本地 SQLite 子表)仍待排期。
+对应分类。**拆帳交易可以整笔退款(2026-07-31 起,行为跟非拆帳退款一致
+——退款按原交易总金额整笔退,不会拆回各 split 明细各自的金额)**,但
+退款交易本身不能同时拆帳(splits + refund_of_id 不能共存于同一笔交易),
+拆帳跟週期性收支/分期付款组合暂不支持(write 层 + 前端 UI 都挡)。web
+入口:`TransactionsPanel.tsx` 分类字段旁「拆分到多个分类」开关;
+`TransactionDetailDialog.tsx`「退款」按钮不再对拆帳交易灰掉。详见
+`docs/MOZE_FEATURE_GAP_SD.md` §2.4/§2.6,测试见 `tests/test_tx_splits.py`
++ `tests/test_refund_stats.py`。mobile 端(本地 SQLite 子表)仍待排期。
 
 ## 架构总览(server 端)
 

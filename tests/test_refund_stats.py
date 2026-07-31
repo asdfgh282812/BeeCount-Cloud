@@ -355,6 +355,95 @@ def test_workspace_analytics_nets_refund_against_expense():
         app.dependency_overrides.clear()
 
 
+def test_workspace_analytics_nets_refund_of_split_transaction():
+    """2026-07-31 起,拆帳(§2.4)交易也能整笔退款 —— 退款只冲抵全局 expense
+    净额,不会拆回原交易「餐饮/交通」两个分类明细各自的金额(跟普通退款
+    "不追溯回被退那笔交易原本的分类"是同一套简化口径,见 workspace.py
+    is_income_refund 那段注释)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "ref9@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_REF9"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "ref9@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/categories",
+            headers=hdr,
+            json={"base_change_id": base, "name": "餐饮", "kind": "expense", "level": 1},
+        )
+        assert res.status_code == 200, res.text
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/categories",
+            headers=hdr,
+            json={"base_change_id": base, "name": "交通", "kind": "expense", "level": 1},
+        )
+        assert res.status_code == 200, res.text
+        cats = client.get(f"/api/v1/read/ledgers/{ledger_id}/categories", headers=hdr).json()
+        cat_food = next(c["id"] for c in cats if c["name"] == "餐饮")
+        cat_transport = next(c["id"] for c in cats if c["name"] == "交通")
+
+        now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 200.0,
+                "happened_at": now.isoformat(),
+                "splits": [
+                    {"category_id": cat_food, "category_name": "餐饮", "amount": 150.0},
+                    {"category_id": cat_transport, "category_name": "交通", "amount": 50.0},
+                ],
+            },
+        )
+        assert res.status_code == 200, res.text
+        split_tx_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "income",
+                "amount": 80.0,
+                "happened_at": (now + timedelta(hours=2)).isoformat(),
+                "category_name": "退款",
+                "refund_of_id": split_tx_id,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        res = client.get(
+            "/api/v1/read/workspace/analytics",
+            headers=hdr,
+            params={"scope": "month", "metric": "expense"},
+        )
+        assert res.status_code == 200, res.text
+        summary = res.json()["summary"]
+        # 200(拆帳原交易) - 80(退款) = 120
+        assert summary["expense_total"] == 120.0
+
+        ranks = {r["category_name"]: r["total"] for r in res.json()["category_ranks"]}
+        # 拆帳明细金额本身不受退款影响 —— 退款净额只冲抵全局 expense_total,
+        # 不会按比例拆回「餐饮」「交通」两个分类各自扣减。
+        assert ranks.get("餐饮") == 150.0
+        assert ranks.get("交通") == 50.0
+        # 退款自己那个分类("退款")因为是净负值,不会出现在 expense 排行里。
+        assert "退款" not in ranks
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # Phase 1.5:禁止重复退款(一笔交易只能被退一次)
 # ---------------------------------------------------------------------------
