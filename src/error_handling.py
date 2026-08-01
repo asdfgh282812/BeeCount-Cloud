@@ -31,6 +31,8 @@ _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("transaction has already been refunded", "TX_ALREADY_REFUNDED"),
     ("cannot create a refund of a refund transaction", "TX_REFUND_CHAIN_FORBIDDEN"),
     ("belongs to an installment plan", "TX_DELETE_INSTALLMENT_LINKED"),
+    ("cannot delete a debt that already has repayment transactions", "DEBT_HAS_REPAYMENTS"),
+    ("debt not found", "DEBT_NOT_FOUND"),
     ("idempotency key reused with different payload", "IDEMPOTENCY_KEY_REUSED"),
     ("backup file is empty", "BACKUP_FILE_EMPTY"),
     ("backup upload too large", "BACKUP_UPLOAD_TOO_LARGE"),

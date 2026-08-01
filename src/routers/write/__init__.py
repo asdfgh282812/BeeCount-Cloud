@@ -17,6 +17,7 @@ from . import (
     accounts,
     budgets,
     categories,
+    debts,
     exchange_rate_overrides,
     installment_plans,
     ledgers,
@@ -25,6 +26,7 @@ from . import (
     transactions,
     transactions_batch,
     transactions_batch_delete,
+    tx_templates,
 )
 
 router = APIRouter()
@@ -39,3 +41,5 @@ router.include_router(tags.router)
 router.include_router(exchange_rate_overrides.router)
 router.include_router(recurring_rules.router)
 router.include_router(installment_plans.router)
+router.include_router(debts.router)
+router.include_router(tx_templates.router)

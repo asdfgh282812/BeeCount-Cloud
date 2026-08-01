@@ -315,6 +315,25 @@ def list_transactions(
                 )
             )
 
+    # 借還款追蹤(§2.5 體驗補強):批次查這一頁交易關聯到的欠款,建
+    # sync_id -> (counterparty_name, direction) 字典,讓前端不用額外查表
+    # 就能直接顯示欠款資訊(跟上面 refund 的批次 join 同一套模式)。
+    debt_sync_ids = {row.debt_sync_id for row in rows if row.debt_sync_id}
+    debt_info_by_id: dict[str, tuple[str | None, str | None]] = {}
+    if debt_sync_ids:
+        debt_info_rows = db.execute(
+            select(
+                ReadDebtProjection.sync_id,
+                ReadDebtProjection.counterparty_name,
+                ReadDebtProjection.direction,
+            ).where(
+                ReadDebtProjection.ledger_id == ledger.id,
+                ReadDebtProjection.sync_id.in_(debt_sync_ids),
+            )
+        ).all()
+        for debt_sid, debt_counterparty_name, debt_direction in debt_info_rows:
+            debt_info_by_id[debt_sid] = (debt_counterparty_name, debt_direction)
+
     results: list[ReadTransactionOut] = []
     for row in rows:
         tag_ids: list[str] = []
@@ -333,6 +352,7 @@ def list_transactions(
                     attachments = maybe_att
             except json.JSONDecodeError:
                 attachments = None
+        debt_info = debt_info_by_id.get(row.debt_sync_id) if row.debt_sync_id else None
         results.append(
             ReadTransactionOut(
                 id=row.sync_id,
@@ -365,6 +385,9 @@ def list_transactions(
                 refunds=refunds_by_target.get(row.sync_id, []),
                 has_splits=bool(row.has_splits),
                 splits=_tx_splits_list(row.splits_json),
+                debt_id=row.debt_sync_id,
+                debt_counterparty_name=debt_info[0] if debt_info else None,
+                debt_direction=cast("Any", debt_info[1]) if debt_info else None,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -881,6 +904,156 @@ def list_installment_periods(
                 refund_tx_id=refund_info[0] if refund_info else None,
                 refund_amount=refund_info[1] if refund_info else None,
                 refunded_at=refund_info[2] if refund_info else None,
+            )
+        )
+    return out
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/debts",
+    response_model=list[ReadDebtOut],
+)
+def list_debts(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadDebtOut]:
+    """借還款追蹤只读列表(§2.5)。`remaining_amount`/`status` 不落库,这里
+    从 `read_tx_projection.debt_sync_id` 反查交易即时汇总算出(见
+    `ReadDebtProjection` docstring)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadDebtProjection).where(
+            ReadDebtProjection.ledger_id == ledger.id,
+        ).order_by(ReadDebtProjection.due_at.asc().nulls_last())
+    ).all()
+    if not rows:
+        return []
+
+    debt_ids = [row.sync_id for row in rows]
+    repayment_rows = db.execute(
+        select(
+            ReadTxProjection.debt_sync_id,
+            ReadTxProjection.sync_id,
+            ReadTxProjection.amount,
+            ReadTxProjection.happened_at,
+        ).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.debt_sync_id.in_(debt_ids),
+        ).order_by(ReadTxProjection.happened_at.desc())
+    ).all()
+    repayments_by_debt: dict[str, list[ReadDebtRepaymentOut]] = {}
+    repaid_by_debt: dict[str, float] = {}
+    for debt_sid, tx_sid, amount, happened_at in repayment_rows:
+        repayments_by_debt.setdefault(debt_sid, []).append(
+            ReadDebtRepaymentOut(id=tx_sid, amount=float(amount or 0), happened_at=happened_at)
+        )
+        repaid_by_debt[debt_sid] = repaid_by_debt.get(debt_sid, 0.0) + abs(float(amount or 0))
+
+    out: list[ReadDebtOut] = []
+    for row in rows:
+        principal = float(row.principal_amount or 0)
+        repaid = repaid_by_debt.get(row.sync_id, 0.0)
+        remaining = max(principal - repaid, 0.0)
+        if row.closed_at is not None:
+            debt_status = "closed"
+        elif remaining <= 0.01:
+            debt_status = "settled"
+        elif repaid > 0:
+            debt_status = "partial"
+        else:
+            debt_status = "open"
+        out.append(
+            ReadDebtOut(
+                id=row.sync_id,
+                direction=cast("Any", row.direction or "payable"),
+                counterparty_name=row.counterparty_name or "",
+                principal_amount=principal,
+                remaining_amount=remaining,
+                status=cast("Any", debt_status),
+                due_at=row.due_at,
+                note=row.note,
+                repayments=repayments_by_debt.get(row.sync_id, []),
+                closed_at=row.closed_at,
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return out
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/tx-templates",
+    response_model=list[ReadTxTemplateOut],
+)
+def list_tx_templates(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadTxTemplateOut]:
+    """交易範本只读列表(§2.7)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    cat_rows = db.execute(
+        select(UserCategoryProjection.sync_id, UserCategoryProjection.name)
+        .where(UserCategoryProjection.user_id == current_user.id)
+    ).all()
+    cat_name_by_sync = {r.sync_id: (r.name or "").strip() for r in cat_rows}
+    acc_rows = db.execute(
+        select(UserAccountProjection.sync_id, UserAccountProjection.name)
+        .where(UserAccountProjection.user_id == current_user.id)
+    ).all()
+    acc_name_by_sync = {r.sync_id: (r.name or "").strip() for r in acc_rows}
+
+    rows = db.scalars(
+        select(ReadTxTemplateProjection).where(
+            ReadTxTemplateProjection.ledger_id == ledger.id,
+        ).order_by(ReadTxTemplateProjection.sort_order.asc(), ReadTxTemplateProjection.name.asc())
+    ).all()
+    out: list[ReadTxTemplateOut] = []
+    for row in rows:
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                parsed = json.loads(row.tag_sync_ids_json)
+                if isinstance(parsed, list):
+                    tag_ids = [str(v) for v in parsed]
+            except json.JSONDecodeError:
+                pass
+        out.append(
+            ReadTxTemplateOut(
+                id=row.sync_id,
+                name=row.name or "",
+                tx_type=row.tx_type or "expense",
+                amount=float(row.amount or 0),
+                note=row.note,
+                category_id=row.category_sync_id,
+                category_name=cat_name_by_sync.get(row.category_sync_id) if row.category_sync_id else None,
+                account_id=row.account_sync_id,
+                account_name=acc_name_by_sync.get(row.account_sync_id) if row.account_sync_id else None,
+                from_account_id=row.from_account_sync_id,
+                from_account_name=acc_name_by_sync.get(row.from_account_sync_id) if row.from_account_sync_id else None,
+                to_account_id=row.to_account_sync_id,
+                to_account_name=acc_name_by_sync.get(row.to_account_sync_id) if row.to_account_sync_id else None,
+                tag_ids=tag_ids,
+                sort_order=int(row.sort_order or 0),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
             )
         )
     return out

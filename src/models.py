@@ -568,6 +568,14 @@ class ReadTxProjection(Base):
         Boolean, nullable=False, server_default=false(), default=False
     )
     splits_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 借還款追蹤(§2.5 MOZE_FEATURE_GAP_SD.md Phase 3):有值 = 这笔交易是对
+    # 某笔欠款的一次还款/收款,反查 read_debt_projection.sync_id。None = 普通
+    # 交易。欠款的 remaining_amount/status 不落库,读路径实时从这个反查字段
+    # 汇总算出(跟 installment_plan 的 paid_periods 同一惯例,见该 projection
+    # 类的 docstring),所以这里**不**需要任何 upsert/delete 时的联动重算 ——
+    # 纯粹是个跟 installment_plan_sync_id/recurring_rule_sync_id 同款的
+    # denormalized 反查列。
+    debt_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 Index(
@@ -919,6 +927,91 @@ Index(
     "ix_read_tx_split_ledger_category",
     ReadTxSplitProjection.ledger_id,
     ReadTxSplitProjection.category_sync_id,
+)
+
+
+class ReadDebtProjection(Base):
+    """借還款追蹤(§2.5 MOZE_FEATURE_GAP_SD.md Phase 3)。ledger-scoped,跟
+    budget/recurring_rule 同款 PK=(ledger_id, sync_id)。`principal_amount`
+    创建后不可改(跟 installment_plan 的 total_amount 同一取舍 —— 改了语义
+    等同删了重建)。**不**存 `remaining_amount`/`status`:每次还款/收款是一笔
+    普通交易,带 `read_tx_projection.debt_sync_id` 反查这笔债务,读路径
+    (`read/ledgers.py::list_debts`)从这些反查交易的 amount 加总即时算出
+    remaining/status,不做任何跨表联动重算 —— 跟 `ReadInstallmentPlanProjection`
+    的 `paid_periods` 从 period 明细 derive 是同一个理由:避免在 mobile push
+    / web write 两条独立路径上都要挂一段"改交易时联动重算债务余额"的逻辑,
+    省掉一整类潜在的漂移 bug。"""
+
+    __tablename__ = "read_debt_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # 'payable'(我欠别人) / 'receivable'(别人欠我)
+    direction: Mapped[str] = mapped_column(String(16), default="payable")
+    counterparty_name: Mapped[str] = mapped_column(Text, default="")
+    principal_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 結案(體驗補強,非 Phase 3 原始欄位):非空 = 已手動標記結束,不一定
+    # 代表已還清全額(可能少還一點就結案)。读路径(list_debts)优先用它
+    # 决定 status,盖过 remaining_amount 算出来的 open/partial/settled。
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_debt_user_id",
+    ReadDebtProjection.user_id,
+)
+Index(
+    "ix_read_debt_ledger_due",
+    ReadDebtProjection.ledger_id,
+    ReadDebtProjection.due_at,
+)
+
+
+class ReadTxTemplateProjection(Base):
+    """交易範本(§2.7 MOZE_FEATURE_GAP_SD.md Phase 3)。ledger-scoped,跟
+    budget 同款 PK=(ledger_id, sync_id)。存一组常用的
+    tx_type/amount/category/account 组合,`POST .../apply` 端点直接把内容
+    套进一笔新交易(复用 `snapshot_mutator.create_transaction`),範本本身
+    不生成任何交易、不带任何排程逻辑,是六步 checklist 里最简单的一种。"""
+
+    __tablename__ = "read_tx_template_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, default="")
+    tx_type: Mapped[str] = mapped_column(String(16), default="expense")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    from_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_tx_template_user_id",
+    ReadTxTemplateProjection.user_id,
+)
+Index(
+    "ix_read_tx_template_ledger_sort",
+    ReadTxTemplateProjection.ledger_id,
+    ReadTxTemplateProjection.sort_order,
 )
 
 

@@ -19,6 +19,8 @@ export const APP_SECTIONS: AppSection[] = [
   'budgets',
   'recurring-rules',
   'installment-plans',
+  'debts',
+  'tx-templates',
   'ledgers',
   'overview',
   'settings-profile',
@@ -91,6 +93,10 @@ function parseRootSection(parts: string[]): AppSection {
       return 'recurring-rules'
     case 'installment-plans':
       return 'installment-plans'
+    case 'debts':
+      return 'debts'
+    case 'tx-templates':
+      return 'tx-templates'
     case 'ledgers':
       return 'ledgers'
     case 'overview':
@@ -185,6 +191,8 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'budgets' ||
     parts[1] === 'recurring-rules' ||
     parts[1] === 'installment-plans' ||
+    parts[1] === 'debts' ||
+    parts[1] === 'tx-templates' ||
     parts[1] === 'overview'
   ) {
     return { kind: 'app', ledgerId: '', section: parseRootSection(parts.slice(1)) }
@@ -222,6 +230,10 @@ export function routePath(route: AppRoute): string {
       return '/app/recurring-rules'
     case 'installment-plans':
       return '/app/installment-plans'
+    case 'debts':
+      return '/app/debts'
+    case 'tx-templates':
+      return '/app/tx-templates'
     case 'ledgers':
       return '/app/ledgers'
     case 'overview':

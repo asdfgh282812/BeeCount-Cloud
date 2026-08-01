@@ -158,6 +158,25 @@ def list_workspace_transactions(
                 )
             )
 
+    # 借還款追蹤(§2.5 體驗補強):批次查這一頁交易關聯到的欠款,建
+    # sync_id -> (counterparty_name, direction) 字典,同 refund 批次 join
+    # 同一套模式,scope 到本次可见的多个账本内。
+    debt_sync_ids = {r.debt_sync_id for r in rows if r.debt_sync_id}
+    debt_info_by_id: dict[str, tuple[str | None, str | None]] = {}
+    if debt_sync_ids:
+        debt_info_rows = db.execute(
+            select(
+                ReadDebtProjection.sync_id,
+                ReadDebtProjection.counterparty_name,
+                ReadDebtProjection.direction,
+            ).where(
+                ReadDebtProjection.ledger_id.in_(ledger_internal_ids),
+                ReadDebtProjection.sync_id.in_(debt_sync_ids),
+            )
+        ).all()
+        for debt_sid, debt_counterparty_name, debt_direction in debt_info_rows:
+            debt_info_by_id[debt_sid] = (debt_counterparty_name, debt_direction)
+
     # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
     # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
     # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
@@ -208,6 +227,7 @@ def list_workspace_transactions(
         editor_uid = row.last_edited_by_user_id or creator_uid
         creator_info = user_info_map.get(creator_uid or '', (None, None, None, 0))
         editor_info = user_info_map.get(editor_uid or '', creator_info)
+        debt_info = debt_info_by_id.get(row.debt_sync_id) if row.debt_sync_id else None
         out_items.append(
             WorkspaceTransactionOut(
                 id=row.sync_id,
@@ -240,6 +260,9 @@ def list_workspace_transactions(
                 refunds=refunds_by_target.get(row.sync_id, []),
                 has_splits=bool(row.has_splits),
                 splits=_tx_splits_list(row.splits_json),
+                debt_id=row.debt_sync_id,
+                debt_counterparty_name=debt_info[0] if debt_info else None,
+                debt_direction=cast("Any", debt_info[1]) if debt_info else None,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,

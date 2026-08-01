@@ -45,7 +45,9 @@ from ...models import (
     AuditLog,
     Ledger,
     LedgerMember,
+    ReadDebtProjection,
     ReadTxProjection,
+    ReadTxTemplateProjection,
     SyncChange,
     SyncPushIdempotency,
     User,
@@ -60,6 +62,8 @@ from ...schemas import (
     WriteCategoryCreateRequest,
     WriteCategoryUpdateRequest,
     WriteCommitMeta,
+    WriteDebtCreateRequest,
+    WriteDebtUpdateRequest,
     WriteEntityDeleteRequest,
     WriteInstallmentEarlyRepayRequest,
     WriteInstallmentPayoffRequest,
@@ -78,6 +82,9 @@ from ...schemas import (
     WriteTagUpdateRequest,
     WriteTransactionCreateRequest,
     WriteTransactionUpdateRequest,
+    WriteTxTemplateApplyRequest,
+    WriteTxTemplateCreateRequest,
+    WriteTxTemplateUpdateRequest,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 from ... import projection, snapshot_builder, snapshot_cache
@@ -86,28 +93,34 @@ from ...snapshot_mutator import (
     create_account,
     create_budget,
     create_category,
+    create_debt,
     create_installment_period,
     create_installment_plan,
     create_recurring_rule,
     create_tag,
     create_transaction,
+    create_tx_template,
     delete_account,
     delete_budget,
     delete_category,
+    delete_debt,
     delete_installment_period,
     delete_installment_plan,
     delete_recurring_rule,
     delete_tag,
     delete_transaction,
+    delete_tx_template,
     ensure_snapshot_v2,
     update_account,
     update_budget,
     update_category,
+    update_debt,
     update_installment_period,
     update_installment_plan,
     update_recurring_rule,
     update_tag,
     update_transaction,
+    update_tx_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -173,6 +186,8 @@ _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "recurring_rule": projection.upsert_recurring_rule,
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
+    "debt": projection.upsert_debt,
+    "tx_template": projection.upsert_tx_template,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "transaction": projection.delete_tx,
@@ -180,6 +195,8 @@ _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "recurring_rule": projection.delete_recurring_rule,
     "installment_plan": projection.delete_installment_plan,
     "installment_period": projection.delete_installment_period,
+    "debt": projection.delete_debt,
+    "tx_template": projection.delete_tx_template,
 }
 
 # tx 里的 denormalized 字段 —— 当 account/category/tag rename 时,
@@ -455,6 +472,12 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("installmentPeriods") or [], next_snapshot.get("installmentPeriods") or [],
                       "installment_period", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("debts") or [], next_snapshot.get("debts") or [],
+                      "debt", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("txTemplates") or [], next_snapshot.get("txTemplates") or [],
+                      "tx_template", emitted_ids)
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", len(emitted_ids), ledger.external_id)
     return emitted_ids
 
@@ -615,6 +638,24 @@ def _assert_refund_target_not_already_refunded(
         )
 
 
+def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> None:
+    """借還款追蹤(§2.5 Phase 3):`debt_id` 必须指向该账本下真实存在的一笔
+    欠款,否则一笔"还款交易"会挂一个查无对应债务的孤儿反查字段,读路径
+    `list_debts` 反查 sum 永远算不到它。不像退款那样查重(债务允许多笔部分
+    还款,不是"只能被引用一次"),这里只做存在性检查。"""
+    exists = db.scalar(
+        select(ReadDebtProjection.sync_id).where(
+            ReadDebtProjection.ledger_id == ledger_id,
+            ReadDebtProjection.sync_id == debt_id,
+        ).limit(1)
+    )
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="debt not found",
+        )
+
+
 # 拆帳(§2.4 MOZE_FEATURE_GAP_SD.md Phase 2)。
 _SPLIT_MIN_COUNT = 2
 _SPLIT_AMOUNT_EPSILON = 0.01
@@ -708,6 +749,9 @@ async def _commit_create_tx_fast(
             _assert_refund_target_not_already_refunded(
                 db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
             )
+        debt_id = mutate_payload.get("debt_id")
+        if debt_id:
+            _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
         _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
         new_item = _snap["items"][0]
@@ -909,6 +953,11 @@ async def _commit_write_fast_tx(
                     db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
                     exclude_tx_id=tx_id,
                 )
+            # 借還款追蹤(§2.5 Phase 3):同款语义,显式改 debt_id(非空)时才
+            # 校验存在性 —— exclude_unset 没传该 key 代表这次 PATCH 不动它。
+            debt_id = mutate_payload.get("debt_id")
+            if debt_id:
+                _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
@@ -1111,6 +1160,10 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 静默清空(merge 逻辑只保留 prev_item 里已有的 key)。
     if row.installment_plan_sync_id is not None:
         item["installmentPlanId"] = row.installment_plan_sync_id
+    # 借還款追蹤(§2.5 Phase 3):同理,fast path 编辑一笔还款交易的其它字段
+    # 时,不带上这个会让 debtId 反查在这次 upsert 后被静默清空。
+    if row.debt_sync_id is not None:
+        item["debtId"] = row.debt_sync_id
     # 拆帳(§2.4):同理,fast path 编辑一笔拆帳交易的其它字段(备注/金额)时,
     # 不带上旧 splits 会让 update_transaction 因为 payload 没传 "splits" key
     # 而保留 prev_item 里的值 —— 前提是这里真的把它塞进 prev_item。
@@ -1166,6 +1219,7 @@ async def _commit_write(
         for _k in (
             "items", "accounts", "categories", "tags", "budgets",
             "recurringRules", "installmentPlans", "installmentPeriods",
+            "debts", "txTemplates",
         ):
             arr = snapshot.get(_k)
             if isinstance(arr, list):
@@ -1528,7 +1582,9 @@ __all__ = [
     'AuditLog',
     'Ledger',
     'LedgerMember',
+    'ReadDebtProjection',
     'ReadTxProjection',
+    'ReadTxTemplateProjection',
     'SyncChange',
     'SyncPushIdempotency',
     'User',
@@ -1539,6 +1595,8 @@ __all__ = [
     'WriteCategoryCreateRequest',
     'WriteCategoryUpdateRequest',
     'WriteCommitMeta',
+    'WriteDebtCreateRequest',
+    'WriteDebtUpdateRequest',
     'WriteEntityDeleteRequest',
     'WriteInstallmentEarlyRepayRequest',
     'WriteInstallmentPayoffRequest',
@@ -1557,6 +1615,9 @@ __all__ = [
     'WriteTagUpdateRequest',
     'WriteTransactionCreateRequest',
     'WriteTransactionUpdateRequest',
+    'WriteTxTemplateApplyRequest',
+    'WriteTxTemplateCreateRequest',
+    'WriteTxTemplateUpdateRequest',
     'SCOPE_APP_WRITE',
     'SCOPE_WEB_WRITE',
     'projection',
@@ -1565,28 +1626,34 @@ __all__ = [
     'create_account',
     'create_budget',
     'create_category',
+    'create_debt',
     'create_installment_period',
     'create_installment_plan',
     'create_recurring_rule',
     'create_tag',
     'create_transaction',
+    'create_tx_template',
     'delete_account',
     'delete_budget',
     'delete_category',
+    'delete_debt',
     'delete_installment_period',
     'delete_installment_plan',
     'delete_recurring_rule',
     'delete_tag',
     'delete_transaction',
+    'delete_tx_template',
     'ensure_snapshot_v2',
     'update_account',
     'update_budget',
     'update_category',
+    'update_debt',
     'update_installment_period',
     'update_installment_plan',
     'update_recurring_rule',
     'update_tag',
     'update_transaction',
+    'update_tx_template',
     'logger',
     'settings',
     '_WRITE_SCOPE_DEP',
@@ -1594,6 +1661,7 @@ __all__ = [
     '_OWNER_ONLY_ROLES',
     '_WRITE_RESPONSES',
     '_utcnow',
+    '_assert_debt_exists',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',
     '_LEDGER_PROJECTION_UPSERTERS',

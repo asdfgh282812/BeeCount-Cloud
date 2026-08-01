@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import require_admin_user
 from ..models import User
-from ..services import recurring_materializer
+from ..services import debt_reminders, recurring_materializer
 
 router = APIRouter()
 
@@ -27,4 +27,11 @@ def materialize_recurring(
     _admin: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    return recurring_materializer.materialize_all_due(db)
+    result = recurring_materializer.materialize_all_due(db)
+    # 借還款追蹤(§2.5 Phase 3)到期提醒,复用同一个手动触发端点,不需要独立
+    # admin-only endpoint(见 debt_reminders.py 模块说明)。
+    debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
+    if debt_reminder_count:
+        db.commit()
+    result["debt_reminders"] = debt_reminder_count
+    return result

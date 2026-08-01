@@ -23,6 +23,7 @@ import type {
   AttachmentRef,
   ReadAccount,
   ReadCategory,
+  ReadDebt,
   ReadTag,
   ReadTransaction,
   WorkspaceCategory,
@@ -49,6 +50,15 @@ type TransactionsPanelProps = {
   accounts: ReadAccount[]
   categories: ReadCategory[]
   tags: ReadTag[]
+  /** 借還款追蹤(§2.5 體驗補強):主表單掛欠款用,只需要未結案的欠款
+   *  (closed/settled 排除,已经没有继续记还款的意义)。 */
+  debts?: ReadDebt[]
+  /** 借還款追蹤(體驗補強第二輪):是否允許在這個表單直接「建立新欠款」
+   *  (而不是只能挂到既有欠款上還款)。新建欠款走 owner-only 的
+   *  `POST .../debts`,跟一般記交易的寫權限不是同一條線,所以由呼叫方
+   *  按 ledger role === 'owner' 算好再传进来(對齊 DebtsPage.tsx 的
+   *  canManage 判斷),不在這個 panel 內部重新猜權限。 */
+  canCreateDebt?: boolean
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -244,6 +254,8 @@ export function TransactionsPanel({
   accounts,
   categories,
   tags,
+  debts = [],
+  canCreateDebt = false,
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -734,6 +746,84 @@ export function TransactionsPanel({
                 </Select>
               </div>
             )}
+
+            {/* 借還款追蹤(§2.5 體驗補強):expense/income 都能掛欠款(跟退款
+                同样排除 transfer),不強制連動 tx_type,使用者自己判斷要記
+                支出還收入。只列未結案的欠款(closed/settled 已经没有继续
+                记还款的意义)。 */}
+            {!isTransfer ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.debt')}</Label>
+                <Select
+                  value={form.debt_id ? form.debt_id : '__none__'}
+                  disabled={dictionariesLoading}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, debt_id: value === '__none__' ? '' : value })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('transactions.placeholder.debt')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      <span className="text-muted-foreground">
+                        {t('transactions.placeholder.debt')}
+                      </span>
+                    </SelectItem>
+                    {canCreateDebt ? (
+                      <SelectItem value="__new__">
+                        {t('transactions.placeholder.newDebt')}
+                      </SelectItem>
+                    ) : null}
+                    {debts
+                      .filter((d) => d.status !== 'closed' && d.status !== 'settled')
+                      .map((d) => (
+                        <SelectItem key={d.id} value={d.id}>
+                          {d.counterparty_name}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {t(`debts.direction.${d.direction}`)}
+                          </span>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {/* 「建立新欠款」(體驗補強第二輪):这笔交易本身是欠款起点,
+                    不是还款 —— 只补对方名字/到期日,direction 由 tx_type
+                    自动推算并展示提示,不让用户重复选一遍(收入=借入=我欠
+                    对方,支出=借出=对方欠我)。 */}
+                {form.debt_id === '__new__' ? (
+                  <div className="mt-2 space-y-2 rounded-md border border-dashed border-input p-2">
+                    <p className="text-xs text-muted-foreground">
+                      {t(
+                        form.tx_type === 'income'
+                          ? 'transactions.hint.newDebtDirection.payable'
+                          : 'transactions.hint.newDebtDirection.receivable'
+                      )}
+                    </p>
+                    <div className="space-y-1">
+                      <Label>{t('transactions.field.newDebtCounterparty')}</Label>
+                      <Input
+                        value={form.new_debt_counterparty_name}
+                        placeholder={t('transactions.placeholder.newDebtCounterparty')}
+                        onChange={(e) =>
+                          onFormChange({ ...form, new_debt_counterparty_name: e.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('transactions.field.newDebtDueAt')}</Label>
+                      <Input
+                        type="date"
+                        value={form.new_debt_due_at}
+                        onChange={(e) =>
+                          onFormChange({ ...form, new_debt_due_at: e.target.value })
+                        }
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="space-y-1">
               <Label>{t('tags.title')}</Label>

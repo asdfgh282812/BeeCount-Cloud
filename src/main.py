@@ -389,6 +389,55 @@ async def _stop_recurring_materializer() -> None:  # noqa: B008
 
 
 # ============================================================================
+# 借還款追蹤(§2.5 Phase 3)到期提醒 —— 独立低频 loop,不再挂在上面 recurring
+# materializer 的 24 小时 loop 上。之前两者共用同一个 loop(interval 也是 24
+# 小时),这在 recurring rule 上没问题(建规则当下就已经批次生成过窗口,daily
+# 续窗纯粹是长尾兜底),但对 debt 到期提醒是错的:提醒是"这笔债务快到期/已
+# 逾期"这种时效性信息,共用 24 小时 interval 意味着冷启动的服务器要等满 24
+# 小时才会发出第一批提醒(而且 recurring materializer 的 loop 是先 sleep 再
+# 跑,等待时间还会更长)。改成独立 loop:启动时立即跑一次,之后每 15 分钟跑
+# 一次,跟 debt_reminders.py 模块说明里原本设计的"15 分钟"频率对齐。
+# ============================================================================
+
+
+_DEBT_REMINDER_INTERVAL_SECONDS = 15 * 60
+
+
+@app.on_event("startup")
+async def _start_debt_reminder_loop() -> None:  # noqa: B008
+    import asyncio
+
+    async def _loop() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(_run_debt_reminders_once)
+            except Exception:
+                logging.getLogger(__name__).exception("debt reminder loop failed")
+            await asyncio.sleep(_DEBT_REMINDER_INTERVAL_SECONDS)
+
+    app.state.debt_reminder_task = asyncio.create_task(_loop())
+
+
+def _run_debt_reminders_once() -> None:
+    from .services import debt_reminders
+
+    with SessionLocal() as db:
+        debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
+        if debt_reminder_count:
+            db.commit()
+            logging.getLogger(__name__).info(
+                "debt reminders: sent=%d", debt_reminder_count,
+            )
+
+
+@app.on_event("shutdown")
+async def _stop_debt_reminder_loop() -> None:  # noqa: B008
+    task = getattr(app.state, "debt_reminder_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# ============================================================================
 # sync_changes 表规模观测 —— 启动时打印行数 + payload 总字节,运维肉眼
 # 跟踪增长趋势。sync_changes 是 append-only log(append 不 compact),长期
 # 会膨胀;详见 .docs/dashboard-anomaly-budget/plan.md 关于 compaction 的讨论。

@@ -8,6 +8,8 @@ export type AppSection =
   | 'budgets'
   | 'recurring-rules'
   | 'installment-plans'
+  | 'debts'
+  | 'tx-templates'
   | 'ledgers'
   | 'settings-profile'
   | 'settings-appearance'

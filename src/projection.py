@@ -24,11 +24,13 @@ from .models import (
     AttachmentFile,
     Ledger,
     ReadBudgetProjection,
+    ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
     ReadTxSplitProjection,
+    ReadTxTemplateProjection,
     UserAccountProjection,
     UserCategoryProjection,
     UserExchangeRateProjection,
@@ -330,6 +332,9 @@ def upsert_tx(
         "recurring_occurrence_overridden": _as_bool(
             payload.get("recurringOccurrenceOverridden"), default=False
         ),
+        # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义:None = 普通交易,缺键
+        # 保留由上游 merge_with_existing 负责。
+        "debt_sync_id": _as_str(payload.get("debtId")),
         "source_change_id": source_change_id,
     }
 
@@ -626,6 +631,73 @@ def upsert_installment_plan(
 
 def delete_installment_plan(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadInstallmentPlanProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_debt(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """借還款追蹤(§2.5 Phase 3)。remaining_amount/status 不落库,见
+    ReadDebtProjection docstring —— 这里只落 principal_amount 等静态字段。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "direction": _as_str(payload.get("direction")) or "payable",
+        "counterparty_name": _as_str(payload.get("counterpartyName")) or "",
+        "principal_amount": _as_float(payload.get("principalAmount")),
+        "due_at": _parse_happened_at(payload.get("dueAt")) if payload.get("dueAt") else None,
+        "note": _as_str(payload.get("note")),
+        "closed_at": _parse_happened_at(payload.get("closedAt")) if payload.get("closedAt") else None,
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadDebtProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_debt(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadDebtProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_tx_template(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    tag_ids = payload.get("tagIds")
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "name": _as_str(payload.get("name")) or "",
+        "tx_type": _as_str(payload.get("txType")) or "expense",
+        "amount": _as_float(payload.get("amount")),
+        "note": _as_str(payload.get("note")),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "from_account_sync_id": _as_str(payload.get("fromAccountId")),
+        "to_account_sync_id": _as_str(payload.get("toAccountId")),
+        "tag_sync_ids_json": json.dumps(tag_ids) if isinstance(tag_ids, list) else None,
+        "sort_order": _as_int(payload.get("sortOrder"), default=0),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadTxTemplateProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_tx_template(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadTxTemplateProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def upsert_installment_period(

@@ -415,6 +415,16 @@ export function GlobalEntityDialogs() {
     [],
   )
 
+  // 借還款雙向勾稽(體驗補強):關掉交易詳情,跳去借還款頁並帶 highlight
+  // query param 定位到對應卡片(跟 handleJumpToTransactions 同款 navigate 写法)。
+  const handleJumpToDebt = useCallback(
+    (debtId: string) => {
+      setTx(null)
+      navigate(`/app/debts?highlight=${encodeURIComponent(debtId)}`)
+    },
+    [navigate],
+  )
+
   const handleJumpToTransactions = useCallback(
     (cat: WorkspaceCategory) => {
       const scopeAtJump = categoryScope
@@ -441,6 +451,7 @@ export function GlobalEntityDialogs() {
         onEdit={handleEditTx}
         onRefund={handleRefundTx}
         onJumpToTx={(txId) => void handleJumpToTx(txId)}
+        onJumpToDebt={handleJumpToDebt}
       />
       <InstallmentRefundChoiceDialog
         open={installmentRefund?.step === 'choice'}

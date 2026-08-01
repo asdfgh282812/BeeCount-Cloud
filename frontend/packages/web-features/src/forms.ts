@@ -36,6 +36,18 @@ export type TxForm = {
   exclude_from_budget: boolean
   /** 退款(§2.6):这笔交易是对哪笔支出的退款,存目标交易 syncId。''=普通交易。 */
   refund_of_id: string
+  /** 借還款追蹤(§2.5 體驗補強):这笔交易关联的欠款 syncId。''=不掛欠款,
+   *  '__new__' = 用这笔交易顺便建一笔新欠款(见下面 new_debt_* 两个字段)。
+   *  跟 refund_of_id 同款语意,expense/income 都可选,transfer 不适用。 */
+  debt_id: string
+  /** debt_id === '__new__' 时用:新欠款的对方名字(必填)/到期日(可选,
+   *  纯日期字符串 yyyy-mm-dd)。direction 不在表单里存 —— 由 tx_type 在
+   *  提交时推算(income=payable 我欠对方,expense=receivable 对方欠我),
+   *  这笔交易本身是欠款的起点、不是还款,所以不会把它的 debt_id 设成
+   *  这笔新欠款(设了的话 remaining_amount 会被这笔交易的金额立刻冲抵掉,
+   *  见 read/ledgers.py::list_debts 的 repaid 累加逻辑)。 */
+  new_debt_counterparty_name: string
+  new_debt_due_at: string
   /** Phase 1.5(§2.12.2):建交易当下顺便設為週期性收支起点。只在新建
    *  (editingId=null)时可开启,跟 installment_enabled 互斥。 */
   recurring_enabled: boolean
@@ -198,6 +210,36 @@ export type InstallmentPlanForm = {
   grace_period_months: string
 }
 
+export type DebtForm = {
+  /** 编辑模式 = debt syncId,新建 = null。`direction`/`principal_amount`
+   *  建立后不可改(server 约束)。 */
+  editingId: string | null
+  direction: 'payable' | 'receivable'
+  counterparty_name: string
+  principal_amount: string
+  /** datetime-local 输入用的本地时间字符串,空字符串 = 不设到期日。 */
+  due_at: string
+  note: string
+}
+
+export type TxTemplateForm = {
+  /** 编辑模式 = template syncId,新建 = null。 */
+  editingId: string | null
+  name: string
+  tx_type: 'expense' | 'income' | 'transfer'
+  amount: string
+  note: string
+  category_id: string
+  category_name: string
+  account_id: string
+  account_name: string
+  from_account_id: string
+  from_account_name: string
+  to_account_id: string
+  to_account_name: string
+  sort_order: string
+}
+
 export const txDefaults = (): TxForm => ({
   editingId: null,
   editingOwnerUserId: '',
@@ -217,6 +259,9 @@ export const txDefaults = (): TxForm => ({
   exclude_from_stats: false,
   exclude_from_budget: false,
   refund_of_id: '',
+  debt_id: '',
+  new_debt_counterparty_name: '',
+  new_debt_due_at: '',
   recurring_enabled: false,
   recurring_frequency: 'monthly',
   recurring_interval: '1',
@@ -337,6 +382,32 @@ export const installmentPlanDefaults = (): InstallmentPlanForm => ({
   round_amounts: true,
   remainder_position: 'last',
   grace_period_months: '0',
+})
+
+export const debtDefaults = (): DebtForm => ({
+  editingId: null,
+  direction: 'payable',
+  counterparty_name: '',
+  principal_amount: '',
+  due_at: '',
+  note: '',
+})
+
+export const txTemplateDefaults = (): TxTemplateForm => ({
+  editingId: null,
+  name: '',
+  tx_type: 'expense',
+  amount: '',
+  note: '',
+  category_id: '',
+  category_name: '',
+  account_id: '',
+  account_name: '',
+  from_account_id: '',
+  from_account_name: '',
+  to_account_id: '',
+  to_account_name: '',
+  sort_order: '0',
 })
 
 /**

@@ -48,10 +48,12 @@ from . import projection
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
+    ReadTxTemplateProjection,
     SyncChange,
     UserAccountProjection,
     UserCategoryProjection,
@@ -66,7 +68,7 @@ from .services.category_icon import resolve_icon_by_name
 INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
-    "installment_period",
+    "installment_period", "debt", "tx_template",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -233,6 +235,28 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("status", "status"),
         ("txId", "tx_sync_id"),
     ]),
+    "debt": _MergeSpec(ReadDebtProjection, [
+        ("syncId", "sync_id"),
+        ("direction", "direction"),
+        ("counterpartyName", "counterparty_name"),
+        ("principalAmount", "principal_amount"),
+        ("dueAt", "due_at", _isoformat_or_none),
+        ("note", "note"),
+        ("closedAt", "closed_at", _isoformat_or_none),
+    ]),
+    "tx_template": _MergeSpec(ReadTxTemplateProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("txType", "tx_type"),
+        ("amount", "amount"),
+        ("note", "note"),
+        ("categoryId", "category_sync_id"),
+        ("accountId", "account_sync_id"),
+        ("fromAccountId", "from_account_sync_id"),
+        ("toAccountId", "to_account_sync_id"),
+        ("tagIds", "tag_sync_ids_json", _json_loads_safe),
+        ("sortOrder", "sort_order"),
+    ]),
     "transaction": _MergeSpec(ReadTxProjection, [
         ("syncId", "sync_id"),
         ("type", "tx_type"),
@@ -270,6 +294,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记。
         ("recurringRuleId", "recurring_rule_sync_id"),
         ("recurringOccurrenceOverridden", "recurring_occurrence_overridden"),
+        # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义。
+        ("debtId", "debt_sync_id"),
         # 拆帳(§2.4):缺键保留既有 splits(跟 attachments 同一套惯例)——
         # payload 没带 "splits" key(旧客户端 / 只改其它字段的 push)时,merge
         # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批
@@ -295,6 +321,8 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "recurring_rule": projection.upsert_recurring_rule,
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
+    "debt": projection.upsert_debt,
+    "tx_template": projection.upsert_tx_template,
 }
 
 
@@ -407,6 +435,20 @@ def _delete_installment_period(db: Session, ledger_id: str, sync_id: str, user_i
     )
 
 
+def _delete_debt(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_debt(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="debt", entity_sync_id=sync_id,
+    )
+
+
+def _delete_tx_template(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_tx_template(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="tx_template", entity_sync_id=sync_id,
+    )
+
+
 def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
     projection.delete_account(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -434,6 +476,8 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "recurring_rule": _delete_recurring_rule,
     "installment_plan": _delete_installment_plan,
     "installment_period": _delete_installment_period,
+    "debt": _delete_debt,
+    "tx_template": _delete_tx_template,
 }
 
 

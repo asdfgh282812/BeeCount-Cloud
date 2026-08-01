@@ -73,6 +73,12 @@ const InstallmentPlansPage = lazy(() =>
     default: m.InstallmentPlansPage,
   })),
 )
+const DebtsPage = lazy(() =>
+  import('./pages/sections/DebtsPage').then((m) => ({ default: m.DebtsPage })),
+)
+const TxTemplatesPage = lazy(() =>
+  import('./pages/sections/TxTemplatesPage').then((m) => ({ default: m.TxTemplatesPage })),
+)
 const ShareIncomingPage = lazy(() =>
   import('./pages/sections/ShareIncomingPage').then((m) => ({ default: m.ShareIncomingPage })),
 )
@@ -249,6 +255,22 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <InstallmentPlansPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="debts"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <DebtsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tx-templates"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <TxTemplatesPage />
             </Suspense>
           }
         />

@@ -7,6 +7,7 @@ import type {
   ReadAccount,
   ReadBudget,
   ReadCategory,
+  ReadDebt,
   ReadInstallmentPeriod,
   ReadInstallmentPlan,
   ReadLedger,
@@ -14,6 +15,7 @@ import type {
   ReadRecurringRule,
   ReadTag,
   ReadTransaction,
+  ReadTxTemplate,
   SharedResourcesBundle,
   WorkspaceAccount,
   WorkspaceAnalytics,
@@ -156,6 +158,28 @@ export async function fetchInstallmentPeriods(
 ): Promise<ReadInstallmentPeriod[]> {
   return authedGet<ReadInstallmentPeriod[]>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/periods`,
+    token,
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.5 Phase 3 —— 借還款追蹤列表,按 due_at 升序(无到期日排最后)。 */
+export async function fetchReadDebts(
+  token: string,
+  ledgerId: string,
+): Promise<ReadDebt[]> {
+  return authedGet<ReadDebt[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/debts`,
+    token,
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.7 Phase 3 —— 交易範本列表,按 sort_order/name 排序。 */
+export async function fetchReadTxTemplates(
+  token: string,
+  ledgerId: string,
+): Promise<ReadTxTemplate[]> {
+  return authedGet<ReadTxTemplate[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/tx-templates`,
     token,
   )
 }

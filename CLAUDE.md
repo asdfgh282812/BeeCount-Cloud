@@ -113,6 +113,74 @@ delete-then-insert 重建);`has_splits=True` 时父行
 `TransactionDetailDialog.tsx`「退款」按钮不再对拆帳交易灰掉。详见
 `docs/MOZE_FEATURE_GAP_SD.md` §2.4/§2.6,测试见 `tests/test_tx_splits.py`
 + `tests/test_refund_stats.py`。mobile 端(本地 SQLite 子表)仍待排期。
+**§2.5 借還款追蹤 / §2.7 範本(Phase 3,server + web UI,2026-08-01)已
+落地**:借還款新表 `read_debt_projection`(`direction`/`counterparty_
+name`/`principal_amount`/`due_at`/`note`)+ `read_tx_projection.
+debt_sync_id` 反查字段(同 `refund_of_sync_id`/`installment_plan_sync_
+id` 模式)——**`remaining_amount`/`status` 不落库**,读路径
+(`read/ledgers.py::list_debts`)从反查交易即时加总算出,跟
+`read_installment_plan_projection.paid_periods` 是同一取舍(避免两条
+独立写路径都要挂欠款余额联动重算逻辑);还款/收款走一般交易新增的
+`debt_id` 字段(`WriteTransactionCreateRequest/UpdateRequest.debt_id`,
+容许多笔部分还款,`write/_shared.py::_assert_debt_exists` 校验存在性);
+DELETE 仅在尚未收到任何还款交易时允许(`_assert_debt_has_no_
+repayments`,命中回 400 `DEBT_HAS_REPAYMENTS`);到期提醒
+(`src/services/debt_reminders.py`)复用 §2.2/§2.3 的低频 asyncio loop,
+去重靠查 `notifications` 表历史(不额外加 `reminder_sent_at` 落库)。
+範本新表 `read_tx_template_projection` + `src/routers/write/
+tx_templates.py`(POST/PATCH/DELETE + `POST .../apply` 把范本内容套成
+一笔新交易,`amount`/`note` 可在套用时临时覆盖)。web 入口都在头像下拉
+「工具」组:`/app/debts`(`DebtsPage`/`DebtsPanel`)、`/app/tx-templates`
+(`TxTemplatesPage`/`TxTemplatesPanel`)。新建/编辑/删除仅账本 owner 可写,
+还款/套用走一般交易写权限。详见 `docs/MOZE_FEATURE_GAP_SD.md` §2.5/§2.7,
+测试见 `tests/test_debts.py` + `tests/test_tx_templates.py`,手动测试
+清单见 `docs/PH3_DEBTS_TEMPLATES_WEB_UI_MANUAL_TEST_PLAN.md`。mobile 端
+仍待排期。**借還款體驗補強(2026-08-01 第二輪)**:①主交易表單
+(`TransactionsPanel.tsx`)也能直接選欠款(`TxForm.debt_id`,
+expense/income 显示,transfer 不适用),`GlobalEditDialogs.tsx`(全局编辑
+弹窗)同步补上;②交易 ↔ 借還款雙向勾稽:`ReadTransactionOut` 补
+`debt_counterparty_name`/`debt_direction`(读端点原本漏填 `debt_id` 本身
+是个既有 bug,这次一起修了,`read/ledgers.py::list_transactions` +
+`read/workspace.py` 都改),`TransactionDetailDialog.tsx` 显示可点击的
+「關聯欠款」行跳去 `/app/debts?highlight=<id>`
+(`GlobalEntityDialogs.tsx::handleJumpToDebt`);`DebtsPanel.tsx` 的還款
+記錄改成可點擊,呼叫全域 `dispatchOpenDetailTx` 開交易詳情;③新增
+`closed_at` 欄位(`read_debt_projection.closed_at`,migration
+`0026_debt_closed_at`)—— 不一定要還清全額才算結束,PATCH 帶
+`closed_at` 走既有的 owner-only debt update endpoint(不是新 endpoint),
+`list_debts` 的 status 判斷優先看 `closed_at`(蓋過 remaining_amount 算
+出來的 open/partial/settled),`debt_reminders.py` 結案的欠款跳過不提醒;
+④到期日只存日期不存時分,`src/snapshot_mutator.py::_date_only_iso8601`
+在 create/update_debt 寫入時 truncate 到當天 UTC 零點(欄位型別仍是
+DateTime,沒有改 schema,伺服器端兜底不完全依賴前端),前端
+`DebtsPanel.tsx` 對應改用 `<input type="date">` + **UTC** getter
+(`isoToDateInput`/`formatDateOnlyUTC`)取值/顯示,避免本地時區換算出現
+「少一天」的 bug。**借還款體驗補強(2026-08-01 第三輪,純前端)**:第二
+輪的「關聯欠款」下拉只能選既有欠款當還款用,這輪加「+ 建立新欠款」
+——記交易時順便新建一筆欠款,`direction` 由 `tx_type` 自動推算(收入=
+`payable` 我欠對方,支出=`receivable` 對方欠我,跟還款方向的映射對稱)。
+**這筆交易不會把自己的 `debt_id` 指向新建的欠款**(它是起點不是還
+款,指了會被 `list_debts` 的 `repaid_by_debt` 累加邏輯誤判成立刻結
+清),新欠款走獨立一次 `POST .../debts` 呼叫,`principal_amount` 帶交
+易金額;owner-only(前端按 `role === 'owner'` 決定顯不顯示這個選項),
+失敗只提示不回滾已保存的交易。改動:`TxForm` 加
+`new_debt_counterparty_name`/`new_debt_due_at`(`forms.ts`),
+`TransactionsPanel.tsx` 的欠款 Select 加 `__new__` sentinel + 內嵌欄
+位,`TransactionsPage.tsx`/`GlobalEditDialogs.tsx` 兩處提交邏輯都補上
+(對齊既有的雙表單維護慣例)。詳見
+`docs/PH3_DEBTS_TEMPLATES_WEB_UI_MANUAL_TEST_PLAN.md` §五。**到期提醒沒發
+出的 bug 修復(2026-08-01,server 端)**:`debt_reminders.send_due_debt_
+reminders` 原本掛在 `recurring_materializer` 共用的 loop 上——那個 loop
+在「ph1.5 fix」時特意從 15 分鐘改成 24 小時(因為週期性收支規則建立當下
+就已經批次生成過視窗,daily 續窗只是長尾兜底,降頻沒問題),但債務到期
+提醒是後來 Phase 3 才接上去的,沒人重新評估這個降頻對它合不合適——加上
+那個 loop 是先 `sleep` 再跑,冷啟動的服務器要等滿 24 小時才會發第一次
+提醒,體感就是「設了過期時間但完全不通知」。修法:`src/main.py` 拆成獨立
+的 `_start_debt_reminder_loop`,啟動時立即跑一次、之後每 15 分鐘一次,
+不再跟 recurring materializer 共用 24 小時 loop;`recurring_materializer`
+自己的 loop/interval 不變。手動立即觸發仍是
+`POST /internal/tasks/materialize-recurring`(admin scope,回傳體裡
+`debt_reminders` 計數)。
 
 ## 架构总览(server 端)
 

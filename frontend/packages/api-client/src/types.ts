@@ -203,6 +203,12 @@ export type ReadTransaction = {
   has_splits?: boolean
   /** 拆帳(§2.4):has_splits=true 时的分类明细,空数组 = 没有拆帳。 */
   splits?: ReadTxSplit[]
+  /** 借還款追蹤(§2.5 Phase 3):这笔交易关联的欠款 id。null = 普通交易。
+   *  debt_counterparty_name/debt_direction 是反查这笔欠款拿到的展示字段
+   *  (体验补强,对齐 category_id+category_name 的既有惯例)。 */
+  debt_id?: string | null
+  debt_counterparty_name?: string | null
+  debt_direction?: DebtDirection | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -610,6 +616,12 @@ export type TxPayload = {
    * update 传空数组 [] = 清空 splits,交易变回单一 category。
    */
   splits?: TxSplitPayload[] | null
+  /**
+   * 借還款追蹤(§2.5 Phase 3):这笔交易是对 debt_id 那笔欠款的一次还款/
+   * 收款。必须指向该账本下已存在的欠款,允许多笔部分还款。null = 普通
+   * 交易/不改。
+   */
+  debt_id?: string | null
 }
 
 /** 拆帳(§2.4):挂在 `TxPayload.splits` 上的单个分类明细。 */
@@ -1019,4 +1031,113 @@ export type InstallmentEarlyRepayPayload = {
 export type InstallmentPayoffPayload = {
   account_id?: string | null
   happened_at?: string
+}
+
+// ────────── 借還款追蹤 (Debts，MOZE_FEATURE_GAP_SD.md §2.5 Phase 3）──────────
+
+export type DebtDirection = 'payable' | 'receivable'
+/** 'closed' = 手動結案(體驗補強),優先權蓋過其它三種從 remaining_amount
+ *  算出來的狀態 —— 不代表已還清全額。 */
+export type DebtStatus = 'open' | 'partial' | 'settled' | 'closed'
+
+/** 某笔欠款收到的一笔还款/收款摘要,给詳情頁「還款記錄」清單用。 */
+export type ReadDebtRepayment = {
+  id: string
+  amount: number
+  happened_at: string
+}
+
+/**
+ * `remaining_amount`/`status` 不落库,是 server 读路径从反查交易即时算出
+ * 的 derived 字段(见 server `ReadDebtProjection` docstring)。
+ */
+export type ReadDebt = {
+  id: string
+  direction: DebtDirection
+  counterparty_name: string
+  principal_amount: number
+  remaining_amount: number
+  status: DebtStatus
+  due_at?: string | null
+  note?: string | null
+  repayments: ReadDebtRepayment[]
+  /** 結案(體驗補強):非空 = 已手動標記結束。 */
+  closed_at?: string | null
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type DebtCreatePayload = {
+  direction: DebtDirection
+  counterparty_name: string
+  principal_amount: number
+  due_at?: string | null
+  note?: string | null
+}
+
+/** `principal_amount`/`direction` 建立后不可改,只暴露
+ *  counterparty_name/due_at/note/closed_at。closed_at 傳 ISO 時間 = 結案,
+ *  傳 `null` = 重新開啟,不傳這個 key = 不變。 */
+export type DebtUpdatePayload = {
+  counterparty_name?: string
+  due_at?: string | null
+  note?: string | null
+  closed_at?: string | null
+}
+
+// ────────── 交易範本 (Templates，MOZE_FEATURE_GAP_SD.md §2.7 Phase 3）──────────
+
+export type ReadTxTemplate = {
+  id: string
+  name: string
+  tx_type: 'expense' | 'income' | 'transfer' | string
+  amount: number
+  note?: string | null
+  category_id?: string | null
+  category_name?: string | null
+  account_id?: string | null
+  account_name?: string | null
+  from_account_id?: string | null
+  from_account_name?: string | null
+  to_account_id?: string | null
+  to_account_name?: string | null
+  tag_ids: string[]
+  sort_order: number
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type TxTemplateCreatePayload = {
+  name: string
+  tx_type: 'expense' | 'income' | 'transfer'
+  amount: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  tag_ids?: string[] | null
+  sort_order?: number | null
+}
+
+export type TxTemplateUpdatePayload = {
+  name?: string
+  tx_type?: 'expense' | 'income' | 'transfer'
+  amount?: number
+  note?: string | null
+  category_id?: string | null
+  account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  tag_ids?: string[] | null
+  sort_order?: number | null
+}
+
+/** 把範本內容套成一筆新交易;`amount`/`note` 可選擇性覆蓋範本预设值。 */
+export type TxTemplateApplyPayload = {
+  happened_at: string
+  amount?: number | null
+  note?: string | null
 }

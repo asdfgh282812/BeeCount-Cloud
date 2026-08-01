@@ -515,6 +515,12 @@ class ReadTxSplitOut(BaseModel):
     sort_order: int = 0
 
 
+DebtDirection = Literal["payable", "receivable"]
+# "closed" = 手動結案(closed_at 非空),優先權蓋過其它三種從 remaining_amount
+# 算出來的狀態 —— 不代表已還清全額,可能少還一點就結案。
+DebtStatus = Literal["open", "partial", "settled", "closed"]
+
+
 class ReadTransactionOut(BaseModel):
     id: str
     tx_index: int
@@ -554,6 +560,13 @@ class ReadTransactionOut(BaseModel):
     recurring_occurrence_overridden: bool = False
     # 退款反查(§2.12.3):这笔支出收到过哪些退款,空列表 = 没有退款。
     refunds: list["ReadTxRefundSummaryOut"] = Field(default_factory=list)
+    # 借還款追蹤(§2.5 Phase 3):指向这笔交易关联的欠款 sync_id;None = 普通
+    # 交易。debt_counterparty_name/debt_direction 是反查这笔欠款拿到的展示
+    # 字段(对齐 category_id+category_name 的既有惯例),讓前端不用額外查表
+    # 就能直接顯示欠款資訊。
+    debt_id: str | None = None
+    debt_counterparty_name: str | None = None
+    debt_direction: DebtDirection | None = None
     # 拆帳(§2.4):has_splits=True 时 category_id/category_name 为 None(前端
     # 显示"多分类"),明细在 splits;False 时 splits 是空列表,走原本单分类显示。
     has_splits: bool = False
@@ -735,6 +748,56 @@ class ReadInstallmentPeriodOut(BaseModel):
     refund_tx_id: str | None = None
     refund_amount: float | None = None
     refunded_at: datetime | None = None
+
+
+class ReadDebtRepaymentOut(BaseModel):
+    """借還款追蹤(§2.5 Phase 3):某笔欠款收到的一笔还款/收款摘要,给詳情頁
+    「還款記錄」清單用,跟 §2.12.3 的 ReadTxRefundSummaryOut 是同一种模式。"""
+    id: str
+    amount: float
+    happened_at: datetime
+
+
+class ReadDebtOut(BaseModel):
+    """借還款追蹤只读视图(§2.5)。`remaining_amount`/`status` 不落库,是
+    读路径从反查交易即时算出的 derived 字段(见
+    `ReadDebtProjection`/`upsert_debt` docstring)。"""
+    id: str
+    direction: DebtDirection
+    counterparty_name: str
+    principal_amount: float
+    remaining_amount: float
+    status: DebtStatus
+    due_at: datetime | None = None
+    note: str | None = None
+    repayments: list["ReadDebtRepaymentOut"] = Field(default_factory=list)
+    # 結案(體驗補強):非空 = 已手動標記結束。
+    closed_at: datetime | None = None
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadTxTemplateOut(BaseModel):
+    """交易範本只读视图(§2.7)。"""
+    id: str
+    name: str
+    tx_type: str
+    amount: float
+    note: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    from_account_id: str | None = None
+    from_account_name: str | None = None
+    to_account_id: str | None = None
+    to_account_name: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
+    sort_order: int = 0
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
 
 
 class WorkspaceTransactionOut(ReadTransactionOut):
@@ -949,6 +1012,10 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 至少 2 笔、tx_type 只能是 expense/income、金额加总须等于 amount ——
     # 校验见 write/_shared.py `_validate_tx_splits`。
     splits: list["WriteTxSplitItem"] | None = None
+    # 借還款追蹤(§2.5 Phase 3):这笔交易是对 debt_id 那笔欠款的一次还款/
+    # 收款。None = 普通交易。debt_id 必须指向该账本下已存在的欠款
+    # (write/_shared.py `_assert_debt_exists`),允许多笔部分还款。
+    debt_id: str | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -980,6 +1047,8 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 传空列表 [] = 清空 splits,交易变回单一 category。传非空列表 = 整批替换
     # (delete-then-insert),同样要满足 create 的校验规则。
     splits: list["WriteTxSplitItem"] | None = None
+    # 借還款追蹤(§2.5 Phase 3):None = 不变。传空字符串清空关联。
+    debt_id: str | None = None
 
 
 
@@ -1163,6 +1232,59 @@ class WriteInstallmentPeriodRefundRequest(WriteBaseRequest):
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     happened_at: datetime | None = None
+
+
+class WriteDebtCreateRequest(WriteBaseRequest):
+    direction: DebtDirection
+    counterparty_name: str = Field(min_length=1, max_length=255)
+    principal_amount: float = Field(gt=0)
+    due_at: datetime | None = None
+    note: str | None = None
+
+
+class WriteDebtUpdateRequest(WriteBaseRequest):
+    """`principal_amount`/`direction` 建立后不可改(语义混乱,等同删了重建,
+    跟 installment_plan 的 total_amount 同一取舍)。"""
+    counterparty_name: str | None = Field(default=None, min_length=1, max_length=255)
+    due_at: datetime | None = None
+    note: str | None = None
+    # 結案(體驗補強):key 不出現 = 不變;傳 ISO 時間 = 結案;傳 null = 重新
+    # 開啟。跟 due_at/refund_of_id 同款「以 key 是否出現判斷是否要改」語意。
+    closed_at: datetime | None = None
+
+
+class WriteTxTemplateCreateRequest(WriteBaseRequest):
+    name: str = Field(min_length=1, max_length=255)
+    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    amount: float = Field(gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    tag_ids: list[str] | None = None
+    sort_order: int | None = None
+
+
+class WriteTxTemplateUpdateRequest(WriteBaseRequest):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    tx_type: Literal["expense", "income", "transfer"] | None = None
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    category_id: str | None = None
+    account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    tag_ids: list[str] | None = None
+    sort_order: int | None = None
+
+
+class WriteTxTemplateApplyRequest(WriteBaseRequest):
+    """§2.7:把範本內容套成一筆新交易。`amount`/`note` 可選擇性覆蓋範本预设值
+    (部分場景金額每次略有出入,比如「加油」範本但每次公升數不同)。"""
+    happened_at: datetime
+    amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):

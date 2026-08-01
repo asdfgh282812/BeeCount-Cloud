@@ -25,7 +25,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 帳戶設置 | ✅ 已支援(`accounts`：type/currency/初始餘額/note/信用額度/帳單日/繳款日/末四碼/隱藏) |
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
-| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)已完成，週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)仍待開始；拆帳(§2.4)Phase 2 已完成(server+web)**；範本/語音記帳/記帳模式缺) |
+| 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)、週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)、拆帳(§2.4)Phase 2、借還款追蹤(§2.5)/範本(§2.7)Phase 3 均已完成(server+web)**；語音記帳/記帳模式缺) |
 | 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期(分期本身已做通用版)/折抵/紅利/免息期建議全缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
@@ -197,22 +197,37 @@ Moze: [record/split-categories.md](https://doc.moze.app/record/split-categories.
 
 ### 2.5 借還款追蹤 (Payables / Receivables)
 
+**✅ Phase 3 已實作(2026-08-01）**：`read_debt_projection`
+(`direction`/`counterparty_name`/`principal_amount`/`due_at`/`note`)+
+`read_tx_projection.debt_sync_id` 反查欄位 +
+`src/routers/write/debts.py`(POST/PATCH/DELETE)+
+`GET /ledgers/{id}/debts`。**跟下方原始設計的一個關鍵差異**：
+`remaining_amount`/`status` 沒有落庫，是讀路徑
+(`read/ledgers.py::list_debts`)從反查交易即時加總算出的 derived
+欄位——跟 `read_installment_plan_projection.paid_periods` 改成 derived
+欄位是同一個理由(見 `ReadDebtProjection` docstring)，避免在 mobile
+push / web write 兩條獨立路徑上都要掛一段「改交易時聯動重算債務餘額」
+的邏輯。還款/收款走一般交易的 `debt_id` 欄位(`WriteTransactionCreate
+Request/UpdateRequest.debt_id`，同 `refund_of_id` 模式，容許多筆部分
+還款)，`debt_id` 必須指向該帳本下已存在的欠款(`write/_shared.py::
+_assert_debt_exists`)。DELETE 僅允許在尚未收到任何還款交易時執行
+(`_assert_debt_has_no_repayments`，命中回 400 `DEBT_HAS_REPAYMENTS`)。
+到期提醒(`src/services/debt_reminders.py`)複用 §2.2/§2.3 同一個低頻
+asyncio loop(`main.py`)+ `POST /internal/tasks/materialize-recurring`
+手動觸發，去重靠查 `notifications` 表歷史記錄(不額外加
+`reminder_sent_at` 落庫，避免繞開 sync_changes 直接改 projection)。
+測試見 `tests/test_debts.py`(9 例)。**web UI 已完成**：
+`/app/debts`(`DebtsPage` + `DebtsPanel`)，入口在頭像下拉「工具」組，
+新建/編輯/刪除僅帳本 owner 可寫，還款/收款走獨立小彈窗(內部呼叫一般
+建交易 API 帶 `debt_id`)，不接入主交易表單(`TransactionsPanel.tsx`
+已經很複雜，見 `docs/PH3_DEBTS_TEMPLATES_WEB_UI_MANUAL_TEST_PLAN.md`
+已知限制)。mobile 端仍待排期。
+
 Moze: [record/payables-receivables.md](https://doc.moze.app/record/payables-receivables.md)
 
-**現況**：有 `transfer` tx_type(帳戶互轉)，但沒有「欠某人 / 某人欠我」
-這種跟**第三方(非自己帳戶)**的往來追蹤，也沒有「部分還款」狀態機。
-
-**修改內容**：
-1. 新表 `read_debt_projection`：`sync_id, ledger_id, direction
-   (payable/receivable), counterparty_name, principal_amount,
-   remaining_amount, due_at, status(open/partial/settled), note`
-2. 每次還款/收款是一筆交易，帶反查欄位 `debt_sync_id`（同 §2.3/2.4
-   的「反查欄位」模式），寫入時同步更新對應 debt 行的
-   `remaining_amount`/`status`（跟 rename cascade 類似，需要在
-   `apply_change_to_projection` 裡加一段 debt 餘額重算邏輯）
-3. `src/routers/write/debts.py`：POST(建立欠款)/PATCH(改到期日/備註)/
-   DELETE(僅允許 `remaining_amount == principal_amount` 時，即尚未還款)
-4. 到期前提醒走 §2.1 notification
+**原始 gap 分析(建置前)，予以保留供對照**：有 `transfer` tx_type(帳戶
+互轉)，但沒有「欠某人 / 某人欠我」這種跟**第三方(非自己帳戶)**的往來
+追蹤，也沒有「部分還款」狀態機。
 
 ---
 
@@ -279,21 +294,24 @@ Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
 
 ### 2.7 範本 (Templates) / 範本記帳
 
+**✅ Phase 3 已實作(2026-08-01）**：`read_tx_template_projection`
+(`name`/`tx_type`/`amount`/`category_sync_id`/`account_sync_id`/
+`from_account_sync_id`/`to_account_sync_id`/`note`/`tag_sync_ids_json`/
+`sort_order`)+ `src/routers/write/tx_templates.py`(POST/PATCH/DELETE +
+`POST .../tx-templates/{id}/apply`，套用時複用
+`_commit_create_tx_fast` 建交易 fast path，`amount`/`note` 可在套用時
+臨時覆蓋，其餘欄位固定沿用範本)+ `GET /ledgers/{id}/tx-templates`。
+測試見 `tests/test_tx_templates.py`(9 例)。**web UI 已完成**：
+`/app/tx-templates`(`TxTemplatesPage` + `TxTemplatesPanel`)，入口在
+頭像下拉「工具」組，新建/編輯/刪除僅帳本 owner 可寫，套用走一般交易
+寫權限。範本排序(`sort_order`)API/DB 層已就緒但 web UI 沒做拖拽排序
+UI。mobile 端仍待排期。
+
 Moze: [record/template.md](https://doc.moze.app/record/template.md)、
 [shortcuts/template-entry.md](https://doc.moze.app/shortcuts/template-entry.md)
 
-**現況**：沒有「存一組常用的 tx_type+amount+category+account 組合，
-下次一鍵套用」的機制。
-
-**修改內容**：
-1. 新表 `read_tx_template_projection`：`sync_id, ledger_id, name,
-   tx_type, amount, category_sync_id, account_sync_id, note, tag_sync_ids_json,
-   sort_order`
-2. `src/routers/write/tx_templates.py`：POST/PATCH/DELETE + 一個
-   `POST /ledgers/{id}/tx-templates/{template_id}/apply` 端點，直接把
-   範本內容套進一筆新交易(複用現有 `_commit_write` 交易建立邏輯)
-3. 是新 entity 但寫入頻率低、無跨帳本共享/rename cascade 需求，是六步
-   checklist 裡最簡單的一種
+**原始 gap 分析(建置前)，予以保留供對照**：沒有「存一組常用的
+tx_type+amount+category+account 組合，下次一鍵套用」的機制。
 
 ---
 
@@ -332,12 +350,27 @@ Moze 分類：[credit-card/*](https://doc.moze.app/credit-card/statement-combine
 | 信用卡繳款 | 部分(可用 transfer 手動記) | 加一個「繳款」語意化端點 `POST /accounts/{id}/card-payment`，本質是產生一筆 transfer，但額外做「衝抵當期應繳金額」的計算與標記 |
 | 自動扣繳 | 缺 | 依賴 §2.2 recurring 機制：一條 `frequency=monthly` 的 recurring rule，`next_run_at` 算法要對齊 `payment_due_day` |
 | 帳單分期 | 缺 | 就是 §2.3 installment，`account_sync_id` 指向信用卡即可，不需要獨立資料結構 |
-| 帳單折抵 | 缺 | 需要「折抵券/回饋金餘額」概念，見下一行紅利回饋，折抵是紅利餘額的一種消費 |
 | 免息期推薦 | 缺，但資料都在(billing_day/payment_due_day) | 純計算端點，不需新表：`GET /accounts/{id}/interest-free-suggestion`，用 `billing_day`+`payment_due_day` 算「這個月哪天前買，下次繳款日最遠」 |
-| 紅利回饋 | 缺 | 新表 `read_card_rewards_projection`：`account_sync_id, balance, rule_note`；每筆信用卡交易產生時按規則(可先手動輸入回饋比例)累加，這塊業務規則因發卡行而異，建議先做「手動記錄回饋金額」的簡化版，不做自動比例計算 |
 
 信用卡這組建議整體排在 §2.2~§2.7 之後，因為「免息期建議」「自動扣繳」
-都依賴 recurring/installment 先落地。
+都依賴 recurring/installment 先落地。以上五項全部複用既有的
+`accounts`/recurring/installment 機制，**不需要新表**，列為 Phase 4。
+
+紅利回饋／帳單折抵業務規則因發卡行而異、範圍最不確定，且需要新表，
+拆到獨立的 §2.9.5(Phase 4.5)，避免卡住 Phase 4 核心信用卡帳務流程。
+
+---
+
+### 2.9.5 信用卡紅利回饋與帳單折抵 (Phase 4.5)
+
+Moze 分類：同屬 [credit-card/*](https://doc.moze.app/credit-card/statement-combined.md)，
+但業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成
+Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。
+
+| 子功能 | 現況 | 修改內容 |
+|---|---|---|
+| 紅利回饋 | 缺 | 新表 `read_card_rewards_projection`：`account_sync_id, balance, rule_note`；每筆信用卡交易產生時按規則(可先手動輸入回饋比例)累加，這塊業務規則因發卡行而異，建議先做「手動記錄回饋金額」的簡化版，不做自動比例計算 |
+| 帳單折抵 | 缺 | 需要「折抵券/回饋金餘額」概念，即上一行紅利回饋，折抵是紅利餘額的一種消費；依賴紅利回饋先落地 |
 
 ---
 
@@ -716,18 +749,37 @@ Phase 1(核心記帳擴充）: §2.2 週期性收支 → §2.3 分期付款 → 
 Phase 1.5(設計修正，對照 Moze 原文重新對齊）: §2.12 週期性收支/分期付款
                         建立時機改成「建立當下直接生成」、編輯語意加上
                         單筆/連同未來區分、退款發起入口搬到原交易明細
-                        §2.12.3 退款部分 ✅ 已完成(2026-07-30/31)；
-                        §2.12.1 分期付款、§2.12.2 週期性收支的建立時機/
-                        差異化編輯修正 🔴 仍未開始
+                        §2.12.1/§2.12.2/§2.12.3 均 ✅ 已完成(2026-07-30/31，
+                        commit 32e6163/158ff47)——本文件先前在這裡誤留了
+                        「§2.12.1/§2.12.2 🔴 仍未開始」的過時描述(實作當時
+                        沒有回填這份文件，2026-08-01 對照程式碼校正)，實際
+                        `read_installment_period_projection`/攤還演算法
+                        (`services/installment_amortization.py`)/差異化
+                        編輯端點(rebalance-from/payoff/terminate-future/
+                        occurrences/update-from)、`services/
+                        recurring_schedule.py` 視窗生成都已落地，測試見
+                        `tests/test_installment_amortization.py` +
+                        `tests/test_recurring_schedule.py` + 對應
+                        `test_installment_plans.py`/`test_recurring_rules.py`
+                        的差異化編輯用例
 Phase 2(統計口徑動刀，建議獨立 PR）: §2.4 拆帳
                         ✅ server + web UI 已完成(2026-07-31)；先於
                         Phase 1.5 剩餘部分(§2.12.1/§2.12.2)落地，因為
                         使用者這次直接指定先做 §2.4；跟拆帳互動的邊界
                         (splits + recurring/installment 組合)已在
-                        write 層跟前端 UI 擋住，等 §2.12.1/§2.12.2 真的
-                        落地時要重新檢視這個互斥要不要放開
+                        write 層跟前端 UI 擋住，§2.12.1/§2.12.2 落地後
+                        這個互斥還沒有重新檢視要不要放開(仍是待辦)
 Phase 3(往來/範本，彼此獨立可並行）: §2.5 借還款追蹤、§2.7 範本
-Phase 4(信用卡整組，依賴 Phase 1 的 recurring/installment）: §2.9
+                        ✅ server + web UI 已完成(2026-08-01);mobile UI
+                        待排期
+Phase 4(信用卡核心，依賴 Phase 1 的 recurring/installment）: §2.9
+                        主帳戶合併帳單/信用卡繳款/自動扣繳/帳單分期/
+                        免息期推薦，全部複用既有 accounts/recurring/
+                        installment 機制，不需新表
+Phase 4.5(信用卡紅利回饋/帳單折抵，業務規則因發卡行而異，複雜度獨立
+                        於 Phase 4)：§2.9.5，需要新表
+                        `read_card_rewards_projection`，建議先做手動
+                        記錄簡化版
 Phase 5(分析對帳，必做）: 延後入帳(必做前置) → §2.10 對帳模式/餘額調整 → 比較報表(輕)
 Phase 6(AI 擴充，跟前面無依賴，可隨時插入）: §2.8 語音記帳
 Phase 7(依賴專案 entity 決策，排期最晚）: §2.11 記帳模式

@@ -567,7 +567,11 @@ async def early_repay_installment_principal_ep(
                     category="reminder",
                     title="分期付款已结清",
                     body=(plan.get("note") or "") or "一个分期付款计划已透过部分还本提前结清",
-                    payload={"ledgerId": ledger.external_id, "installmentPlanId": plan_id},
+                    payload={
+                        "ledgerId": ledger.external_id,
+                        "installmentPlanId": plan_id,
+                        "txId": repay_tx_id,
+                    },
                 )
         else:
             first_due = datetime.fromisoformat(rebalance_targets[0]["dueAt"])
@@ -662,6 +666,7 @@ async def payoff_installment_plan_ep(
         settle_amount = round(remaining_principal + accrued_interest, 2)
         actor_fields = _actor_fields(mutate_payload)
         next_snapshot = snapshot
+        settle_tx_id: str | None = None
 
         if settle_amount > 0:
             settle_tx_payload = {
@@ -693,7 +698,11 @@ async def payoff_installment_plan_ep(
             category="reminder",
             title="分期付款已结清",
             body=(plan.get("note") or "") or "一个分期付款计划已提前结清",
-            payload={"ledgerId": ledger.external_id, "installmentPlanId": plan_id},
+            payload={
+                "ledgerId": ledger.external_id,
+                "installmentPlanId": plan_id,
+                **({"txId": settle_tx_id} if settle_tx_id else {}),
+            },
         )
         return next_snapshot, plan_id
 

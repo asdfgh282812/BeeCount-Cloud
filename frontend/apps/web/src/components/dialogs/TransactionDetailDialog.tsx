@@ -11,7 +11,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, HandCoins, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -30,6 +30,8 @@ interface Props {
   /** 退款双向勾稽(ph1.5+):点击「退款」徽章跳原交易,或点反查清单里的某笔
    *  退款跳去那笔退款交易 —— 用同一个 detail 弹窗原地切换展示对象。 */
   onJumpToTx?: (txId: string) => void
+  /** 借還款雙向勾稽(體驗補強):點「關聯欠款」跳去借還款頁對應卡片。 */
+  onJumpToDebt?: (debtId: string) => void
 }
 
 /**
@@ -51,6 +53,7 @@ export function TransactionDetailDialog({
   onEdit,
   onRefund,
   onJumpToTx,
+  onJumpToDebt,
 }: Props) {
   const t = useT()
 
@@ -193,6 +196,37 @@ export function TransactionDetailDialog({
                 }
                 value={accountText}
               />
+              {/* 借還款雙向勾稽(體驗補強):tx.debt_id 存在時顯示欠款方 + 應
+                  付/應收,可點擊跳去借還款頁對應卡片(對齐 refund 徽章的
+                  jump 写法)。 */}
+              {tx.debt_id ? (
+                <DetailRow
+                  icon={<HandCoins className="h-4 w-4" />}
+                  label={t('detail.transaction.debt')}
+                  value={
+                    onJumpToDebt ? (
+                      <button
+                        type="button"
+                        onClick={() => onJumpToDebt(tx.debt_id!)}
+                        className="underline-offset-2 hover:text-primary hover:underline"
+                        title={t('transactions.badge.debt.jumpHint')}
+                      >
+                        {tx.debt_counterparty_name || '—'}
+                        {tx.debt_direction
+                          ? ` · ${t(`debts.direction.${tx.debt_direction}`)}`
+                          : ''}
+                      </button>
+                    ) : (
+                      <span>
+                        {tx.debt_counterparty_name || '—'}
+                        {tx.debt_direction
+                          ? ` · ${t(`debts.direction.${tx.debt_direction}`)}`
+                          : ''}
+                      </span>
+                    )
+                  }
+                />
+              ) : null}
               {tx.note ? (
                 <DetailRow
                   icon={<Edit3 className="h-4 w-4" />}

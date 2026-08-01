@@ -6,6 +6,8 @@ import {
   Brush,
   CalendarClock,
   CreditCard,
+  FileStack,
+  HandCoins,
   Info,
   Key,
   Languages,
@@ -150,6 +152,20 @@ export function AvatarDropdown({
             onClick={() => onNavigate('installment-plans')}
           >
             {t('nav.installmentPlans')}
+          </MenuButton>
+          <MenuButton
+            icon={HandCoins}
+            active={currentSection === 'debts'}
+            onClick={() => onNavigate('debts')}
+          >
+            {t('nav.debts')}
+          </MenuButton>
+          <MenuButton
+            icon={FileStack}
+            active={currentSection === 'tx-templates'}
+            onClick={() => onNavigate('tx-templates')}
+          >
+            {t('nav.txTemplates')}
           </MenuButton>
           <MenuButton
             icon={BookOpen}

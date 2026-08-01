@@ -55,16 +55,19 @@ import {
   type AttachmentRef,
   type ReadAccount,
   type ReadCategory,
+  type ReadDebt,
   type ReadLedger,
   type ReadTag,
   type ReadTransaction,
   type WorkspaceTag,
   type ProfileMe,
   deleteLedger,
+  createDebt,
   createTransaction,
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
   fetchAdminUsers,
+  fetchReadDebts,
   fetchReadLedgerDetail,
   fetchReadLedgers,
   type WorkspaceAccount,
@@ -352,6 +355,10 @@ export function TransactionsPage() {
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
+  // 借還款追蹤(§2.5 體驗補強):跟 account/category/tag 不同,debt 是
+  // ledger-scoped 实体,按「当前写入账本」单独拉,不进 loadTxDictionaries
+  // 那套 user-global 字典逻辑。
+  const [txDictionaryDebts, setTxDictionaryDebts] = useState<ReadDebt[]>([])
   // 标签详情弹窗：点击标签卡片时打开，内部用 TransactionList 无限滚动加载
   // 该标签关联的交易。
   // tagDetail * state + TAG_DETAIL_PAGE_SIZE 已迁到 TagsPage。
@@ -513,6 +520,10 @@ export function TransactionsPage() {
   const txIsSharedEditor = Boolean(
     txContextLedger?.is_shared && txContextLedger.role !== 'owner',
   )
+  // 借還款追蹤(體驗補強第二輪):「建立新欠款」走 owner-only 的
+  // POST .../debts(跟 DebtsPage.tsx::canManage 同一权限判断),不是一般
+  // 记交易的写权限,所以单独算好传给 TransactionsPanel。
+  const txCanCreateDebt = txContextLedger?.role === 'owner'
   const { bundle: sharedBundle } = useSharedLedgerResources(
     txIsSharedEditor ? txContextLedgerId : null,
   )
@@ -520,6 +531,28 @@ export function TransactionsPage() {
     () => bundleToReadResources(sharedBundle),
     [sharedBundle],
   )
+
+  // 借還款追蹤(§2.5 體驗補強):主表單掛欠款的下拉選項,按目前寫入的
+  // 账本单独拉(debt 是 ledger-scoped,不像 account/category/tag 是
+  // user-global,不能复用 loadTxDictionaries 那套逻辑)。read 端点对共享
+  // 账本的 editor 角色也开放(不是 owner-only),不需要走 sharedBundle 分支。
+  useEffect(() => {
+    if (route.section !== 'transactions' || !txContextLedgerId) {
+      setTxDictionaryDebts([])
+      return
+    }
+    let cancelled = false
+    fetchReadDebts(token, txContextLedgerId)
+      .then((rows) => {
+        if (!cancelled) setTxDictionaryDebts(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxDictionaryDebts([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [route.section, token, txContextLedgerId])
 
   // v30 多币种(币种优先联动):账户下拉按表单所选币种过滤(默认=账本本位币,
   // 与旧行为一致;选了 JPY → 只显示 JPY 账户)。
@@ -1516,6 +1549,15 @@ export function TransactionsPage() {
         // 只有 transfer 没有退款语意;切到 transfer 时发 null 显式清掉关联
         // (server:值为 null/'' 时 pop 掉 refundOfId)。
         refund_of_id: txForm.tx_type !== 'transfer' ? txForm.refund_of_id.trim() || null : null,
+        // 借還款追蹤(§2.5 體驗補強):跟 refund_of_id 同款语意,expense/income
+        // 都能掛欠款,transfer 没有语意,切到 transfer 时发 null 显式清掉关联。
+        // '__new__'(體驗補強第二輪:順便建新欠款)不是真的 debt syncId,
+        // 这笔交易是欠款起点、不是还款,不设 debt_id(新欠款单独在下面
+        // createDebt 建,见 shouldCreateNewDebt)。
+        debt_id:
+          txForm.tx_type !== 'transfer' && txForm.debt_id !== '__new__'
+            ? txForm.debt_id.trim() || null
+            : null,
         // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
         // 时生效(server 也只认 create 路径的这个字段)。
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
@@ -1547,6 +1589,32 @@ export function TransactionsPage() {
       })
       if (activeLedgerId === ledgerId) {
         setBaseChangeId(res.new_change_id)
+      }
+      // 借還款追蹤(體驗補強第二輪):这笔交易顺便建一笔新欠款。是这笔交易
+      // 的旁支效果,不是它本身的一个字段,所以交易保存成功后单独发一次
+      // createDebt;失败只提示、不影响已经保存成功的交易(没有整体回滚)。
+      if (!isTransfer && !installmentPayload && txForm.debt_id === '__new__') {
+        const newDebtCounterparty = txForm.new_debt_counterparty_name.trim()
+        if (newDebtCounterparty) {
+          try {
+            await retryOnConflict(ledgerId, (base) =>
+              createDebt(token, ledgerId, base, {
+                direction: txForm.tx_type === 'income' ? 'payable' : 'receivable',
+                counterparty_name: newDebtCounterparty,
+                principal_amount: submitAmount,
+                due_at: txForm.new_debt_due_at
+                  ? new Date(`${txForm.new_debt_due_at}T00:00:00Z`).toISOString()
+                  : null,
+                note: null
+              })
+            )
+            fetchReadDebts(token, ledgerId)
+              .then(setTxDictionaryDebts)
+              .catch(() => undefined)
+          } catch {
+            setErrorNotice(t('transactions.error.debtCreateFailed'))
+          }
+        }
       }
       const editingTxId = txForm.editingId
       setTxForm(txDefaults())
@@ -1995,6 +2063,8 @@ export function TransactionsPage() {
                 categories={txWriteCategories}
                 iconPreviewUrlByFileId={categoryIconPreviewByFileId}
                 tags={txWriteTags}
+                debts={txDictionaryDebts}
+                canCreateDebt={txCanCreateDebt}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}
@@ -2062,6 +2132,7 @@ export function TransactionsPage() {
                     exclude_from_stats: Boolean(tx.exclude_from_stats),
                     exclude_from_budget: Boolean(tx.exclude_from_budget),
                     refund_of_id: tx.refund_of_id || '',
+                    debt_id: tx.debt_id || '',
                     // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
                     split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
                     splits: Boolean(tx.has_splits)

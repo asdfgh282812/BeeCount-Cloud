@@ -1,9 +1,11 @@
 import { Bell } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import {
   ApiError,
   fetchNotifications,
+  fetchWorkspaceTransactions,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationItem,
@@ -17,6 +19,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
+import { dispatchOpenDetailTx } from '../lib/txDialogEvents'
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -30,6 +33,7 @@ const POLL_INTERVAL_MS = 60_000
 export function NotificationBell() {
   const t = useT()
   const { token, logout } = useAuth()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
@@ -72,6 +76,47 @@ export function NotificationBell() {
       await markNotificationRead(token, item.id)
     } catch {
       void refresh()
+    }
+  }
+
+  // 通知联动跳转:欠款到期/逾期提醒 → 欠款页(高亮该笔);带 txId 的通知
+  // (目前是分期付款结清 —— 结清当下必然新增/关联一笔交易)→ 直接开那笔
+  // 交易的详情弹窗,跟 DebtsPanel 还款记录跳转、退款双向勾稽同一招
+  // (`dispatchOpenDetailTx`);週期性收支续期通知没有单一交易可指,退回
+  // 对应列表页。找不到目标时静默不跳转,只标记已读。
+  const handleItemClick = async (item: NotificationItem) => {
+    void handleMarkRead(item)
+    setOpen(false)
+    const payload = item.payload
+    if (!payload) return
+    const debtId = typeof payload.debtId === 'string' ? payload.debtId : null
+    const txId = typeof payload.txId === 'string' ? payload.txId : null
+    const installmentPlanId =
+      typeof payload.installmentPlanId === 'string' ? payload.installmentPlanId : null
+    const recurringRuleId = typeof payload.recurringRuleId === 'string' ? payload.recurringRuleId : null
+
+    if (debtId) {
+      navigate(`/app/debts?highlight=${encodeURIComponent(debtId)}`)
+      return
+    }
+    if (txId) {
+      try {
+        const page = await fetchWorkspaceTransactions(token, { txSyncId: txId, limit: 1 })
+        const found = page.items[0]
+        if (found) {
+          dispatchOpenDetailTx(found)
+          return
+        }
+      } catch {
+        // 查不到就往下 fallback 到对应列表页,不打断使用者
+      }
+    }
+    if (installmentPlanId) {
+      navigate('/app/installment-plans')
+      return
+    }
+    if (recurringRuleId) {
+      navigate('/app/recurring-rules')
     }
   }
 
@@ -129,7 +174,7 @@ export function NotificationBell() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => void handleMarkRead(item)}
+                onClick={() => void handleItemClick(item)}
                 className={`flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent/40 ${
                   item.read_at ? '' : 'bg-primary/5'
                 }`}

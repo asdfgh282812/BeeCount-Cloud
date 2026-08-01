@@ -4,6 +4,8 @@ import type {
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CategoryPayload,
+  DebtCreatePayload,
+  DebtUpdatePayload,
   InstallmentEarlyRepayPayload,
   InstallmentPayoffPayload,
   InstallmentPeriodRefundPayload,
@@ -22,6 +24,9 @@ import type {
   RecurringUpdateFromPayload,
   TagPayload,
   TxPayload,
+  TxTemplateApplyPayload,
+  TxTemplateCreatePayload,
+  TxTemplateUpdatePayload,
   WriteCommitMeta
 } from './types'
 
@@ -468,6 +473,111 @@ export async function refundInstallmentPeriod(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/installment-plans/${encodeURIComponent(planId)}/refund-period`,
     token,
     { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.5 Phase 3 —— 借還款追蹤。`principal_amount`/
+ * `direction` 建立后不可改,还款/收款走一般交易的 `debt_id` 字段。 */
+export async function createDebt(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: DebtCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+export async function updateDebt(
+  token: string,
+  ledgerId: string,
+  debtId: string,
+  baseChangeId: number,
+  payload: DebtUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** 只允许在这笔欠款还没收到任何还款交易时删除,否则 400。 */
+export async function deleteDebt(
+  token: string,
+  ledgerId: string,
+  debtId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.7 Phase 3 —— 交易範本。 */
+export async function createTxTemplate(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: TxTemplateCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/tx-templates`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+export async function updateTxTemplate(
+  token: string,
+  ledgerId: string,
+  templateId: string,
+  baseChangeId: number,
+  payload: TxTemplateUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/tx-templates/${encodeURIComponent(templateId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function deleteTxTemplate(
+  token: string,
+  ledgerId: string,
+  templateId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/tx-templates/${encodeURIComponent(templateId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** 把範本內容套成一筆新交易,回傳 `entity_id` 是新交易的 id。 */
+export async function applyTxTemplate(
+  token: string,
+  ledgerId: string,
+  templateId: string,
+  baseChangeId: number,
+  payload: TxTemplateApplyPayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/tx-templates/${encodeURIComponent(templateId)}/apply`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
   )
 }
 

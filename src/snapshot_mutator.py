@@ -35,6 +35,14 @@ def _to_iso8601(raw: object) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _date_only_iso8601(raw: object) -> str:
+    """借還款到期日(due_at)只存日期,不存時分 —— 先借 `_to_iso8601` 做完整
+    的寬鬆時間解析(接受 datetime / 帶時分的字串 / 純日期字串),轉成 UTC
+    後 truncate 到當天零點。伺服器端兜底,不完全依賴前端只送日期。"""
+    parsed = datetime.fromisoformat(_to_iso8601(raw))
+    return datetime(parsed.year, parsed.month, parsed.day, tzinfo=timezone.utc).isoformat()
+
+
 def _to_float(raw: object) -> float:
     if isinstance(raw, (int, float)):
         return float(raw)
@@ -367,6 +375,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["refundOfId"] = str(payload.get("refund_of_id"))
     if payload.get("recurring_rule_id") is not None:
         item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
+    if payload.get("debt_id") is not None:
+        item["debtId"] = str(payload.get("debt_id"))
     splits = _normalize_tx_splits(payload.get("splits"))
     if splits is not None:
         item["splits"] = splits
@@ -508,6 +518,12 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
         item["recurringOccurrenceOverridden"] = bool(
             payload.get("recurring_occurrence_overridden")
         )
+    if "debt_id" in payload:
+        value = payload.get("debt_id")
+        if value is None or str(value).strip() == "":
+            item.pop("debtId", None)
+        else:
+            item["debtId"] = str(value)
     if "splits" in payload:
         splits = _normalize_tx_splits(payload.get("splits"))
         if splits is None:
@@ -1309,4 +1325,177 @@ def delete_installment_period(snapshot: dict, period_id: str, payload: dict | No
     idx, period = _find_by_sync_id(periods_list, period_id, expected_prefix="insp")
     _assert_actor_can_modify(period, payload or {})
     periods_list.pop(idx)
+    return target
+
+
+# ============================================================================
+# 借還款追蹤(§2.5 MOZE_FEATURE_GAP_SD.md Phase 3)—— 跟 budget 同款
+# boilerplate。`principalAmount` 建立后不可改(见 ReadDebtProjection
+# docstring),PATCH 只暴露 counterpartyName/dueAt/note。remaining_amount/
+# status 不是这个实体的字段,读路径从反查交易 derive。
+# ============================================================================
+
+
+def create_debt(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    debts = _ensure_list(target, "debts")
+    direction = str(payload.get("direction") or "")
+    if direction not in {"payable", "receivable"}:
+        raise ValueError("write validation failed: invalid direction")
+    counterparty_name = _normalize_name(payload.get("counterparty_name"))
+    principal_amount = _to_optional_float(payload.get("principal_amount"))
+    if principal_amount is None or principal_amount <= 0:
+        raise ValueError("write validation failed: principal_amount must be > 0")
+    sync_id = _new_sync_id("debt")
+    debt: dict[str, object] = {
+        "syncId": sync_id,
+        "direction": direction,
+        "counterpartyName": counterparty_name,
+        "principalAmount": principal_amount,
+    }
+    if payload.get("due_at") is not None:
+        debt["dueAt"] = _date_only_iso8601(payload.get("due_at"))
+    if payload.get("note") is not None:
+        debt["note"] = str(payload.get("note"))
+    _mark_entity_actor(debt, payload, create=True)
+    debts.append(debt)
+    return target, sync_id
+
+
+def update_debt(snapshot: dict, debt_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    debts = _ensure_list(target, "debts")
+    _, debt = _find_by_sync_id(debts, debt_id, expected_prefix="debt")
+    _assert_actor_can_modify(debt, payload)
+    if "counterparty_name" in payload:
+        debt["counterpartyName"] = _normalize_name(payload.get("counterparty_name"))
+    if "due_at" in payload:
+        value = payload.get("due_at")
+        if value is None:
+            debt.pop("dueAt", None)
+        else:
+            debt["dueAt"] = _date_only_iso8601(value)
+    if "note" in payload:
+        value = payload.get("note")
+        if value is None or str(value).strip() == "":
+            debt.pop("note", None)
+        else:
+            debt["note"] = str(value)
+    if "closed_at" in payload:
+        value = payload.get("closed_at")
+        if value is None:
+            debt.pop("closedAt", None)
+        else:
+            debt["closedAt"] = _to_iso8601(value)
+    _mark_entity_actor(debt, payload, create=False)
+    return target
+
+
+def delete_debt(snapshot: dict, debt_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    debts = _ensure_list(target, "debts")
+    idx, debt = _find_by_sync_id(debts, debt_id, expected_prefix="debt")
+    _assert_actor_can_modify(debt, payload or {})
+    debts.pop(idx)
+    return target
+
+
+# ============================================================================
+# 交易範本(§2.7 MOZE_FEATURE_GAP_SD.md Phase 3)—— 跟 budget/tag 同款
+# boilerplate,唯一多一步是 `POST .../apply` 端点(routers/write/
+# tx_templates.py)另外调 `create_transaction` 把範本内容套成一笔新交易,
+# 不在这个模块处理。
+# ============================================================================
+
+
+def create_tx_template(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    templates = _ensure_list(target, "txTemplates")
+    name = _normalize_name(payload.get("name"))
+    tx_type = str(payload.get("tx_type") or "expense")
+    if tx_type not in {"expense", "income", "transfer"}:
+        raise ValueError("write validation failed: invalid transaction type")
+    amount = _to_optional_float(payload.get("amount"))
+    if amount is None or amount <= 0:
+        raise ValueError("write validation failed: amount must be > 0")
+    sync_id = _new_sync_id("tpl")
+    template: dict[str, object] = {
+        "syncId": sync_id,
+        "name": name,
+        "txType": tx_type,
+        "amount": amount,
+        "sortOrder": _to_optional_int(payload.get("sort_order")) or 0,
+    }
+    if payload.get("note") is not None:
+        template["note"] = str(payload.get("note"))
+    if payload.get("category_id") is not None:
+        template["categoryId"] = str(payload.get("category_id"))
+    if payload.get("account_id") is not None:
+        template["accountId"] = str(payload.get("account_id"))
+    if payload.get("from_account_id") is not None:
+        template["fromAccountId"] = str(payload.get("from_account_id"))
+    if payload.get("to_account_id") is not None:
+        template["toAccountId"] = str(payload.get("to_account_id"))
+    tag_ids_raw = payload.get("tag_ids")
+    if isinstance(tag_ids_raw, list):
+        tag_ids = [str(v).strip() for v in tag_ids_raw if str(v).strip()]
+        if tag_ids:
+            template["tagIds"] = tag_ids
+    _mark_entity_actor(template, payload, create=True)
+    templates.append(template)
+    return target, sync_id
+
+
+def update_tx_template(snapshot: dict, template_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    templates = _ensure_list(target, "txTemplates")
+    _, template = _find_by_sync_id(templates, template_id, expected_prefix="tpl")
+    _assert_actor_can_modify(template, payload)
+    if "name" in payload:
+        template["name"] = _normalize_name(payload.get("name"))
+    if "tx_type" in payload:
+        tx_type = str(payload.get("tx_type") or "")
+        if tx_type not in {"expense", "income", "transfer"}:
+            raise ValueError("write validation failed: invalid transaction type")
+        template["txType"] = tx_type
+    if "amount" in payload:
+        amount = _to_optional_float(payload.get("amount"))
+        if amount is None or amount <= 0:
+            raise ValueError("write validation failed: amount must be > 0")
+        template["amount"] = amount
+    if "sort_order" in payload and payload.get("sort_order") is not None:
+        template["sortOrder"] = _to_optional_int(payload.get("sort_order")) or 0
+    for req_key, snapshot_key in (
+        ("note", "note"),
+        ("category_id", "categoryId"),
+        ("account_id", "accountId"),
+        ("from_account_id", "fromAccountId"),
+        ("to_account_id", "toAccountId"),
+    ):
+        if req_key in payload:
+            value = payload.get(req_key)
+            if value is None or str(value).strip() == "":
+                template.pop(snapshot_key, None)
+            else:
+                template[snapshot_key] = str(value)
+    if "tag_ids" in payload:
+        raw = payload.get("tag_ids")
+        if isinstance(raw, list):
+            tag_ids = [str(v).strip() for v in raw if str(v).strip()]
+            if tag_ids:
+                template["tagIds"] = tag_ids
+            else:
+                template.pop("tagIds", None)
+        elif raw is None:
+            template.pop("tagIds", None)
+    _mark_entity_actor(template, payload, create=False)
+    return target
+
+
+def delete_tx_template(snapshot: dict, template_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    templates = _ensure_list(target, "txTemplates")
+    idx, template = _find_by_sync_id(templates, template_id, expected_prefix="tpl")
+    _assert_actor_can_modify(template, payload or {})
+    templates.pop(idx)
     return target

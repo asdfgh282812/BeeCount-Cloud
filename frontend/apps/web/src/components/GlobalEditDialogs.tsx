@@ -2,14 +2,17 @@ import { useCallback, useEffect, useState } from 'react'
 
 import {
   createCategory,
+  createDebt,
   createInstallmentPlan,
   createTransaction,
+  fetchReadDebts,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
   updateCategory,
   updateTransaction,
   uploadAttachment,
+  type ReadDebt,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -66,6 +69,9 @@ export function GlobalEditDialogs() {
   const [editTxAccounts, setEditTxAccounts] = useState<WorkspaceAccount[]>([])
   const [editTxCategories, setEditTxCategories] = useState<WorkspaceCategory[]>([])
   const [editTxTags, setEditTxTags] = useState<WorkspaceTag[]>([])
+  // 借還款追蹤(§2.5 體驗補強):ledger-scoped,跟 account/category/tag
+  // 一起按 ledgerId 拉,同 TransactionsPage 的 txDictionaryDebts 逻辑。
+  const [editTxDebts, setEditTxDebts] = useState<ReadDebt[]>([])
   const [refsLoading, setRefsLoading] = useState(false)
   // v30 多币种:编辑交易时币种弹窗展示各币种对账本主币种的汇率。
   const editTxBase = (
@@ -110,20 +116,26 @@ export function GlobalEditDialogs() {
     ledger_id: l.ledger_id,
     ledger_name: l.ledger_name,
   }))
+  // 借還款追蹤(體驗補強第二輪):「建立新欠款」owner-only,跟
+  // TransactionsPage.tsx::txCanCreateDebt 同一判断口径。
+  const editTxCanCreateDebt =
+    ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
 
   const loadRefsForLedger = useCallback(
     async (ledgerId: string) => {
       if (!ledgerId) return
       setRefsLoading(true)
       try {
-        const [accts, cats, tagsList] = await Promise.all([
+        const [accts, cats, tagsList, debtsList] = await Promise.all([
           fetchWorkspaceAccounts(token, { ledgerId, limit: 500 }),
           fetchWorkspaceCategories(token, { ledgerId, limit: 500 }),
           fetchWorkspaceTags(token, { ledgerId, limit: 500 }),
+          fetchReadDebts(token, ledgerId).catch(() => []),
         ])
         setEditTxAccounts(accts)
         setEditTxCategories(cats)
         setEditTxTags(tagsList)
+        setEditTxDebts(debtsList)
       } catch (err) {
         notifyError(err)
       } finally {
@@ -168,6 +180,7 @@ export function GlobalEditDialogs() {
         exclude_from_stats: Boolean(tx.exclude_from_stats),
         exclude_from_budget: Boolean(tx.exclude_from_budget),
         refund_of_id: tx.refund_of_id || '',
+        debt_id: tx.debt_id || '',
         // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
         split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
         splits: Boolean(tx.has_splits)
@@ -391,6 +404,10 @@ export function GlobalEditDialogs() {
       // transfer 没有退款语意。
       refund_of_id:
         editTxForm.tx_type !== 'transfer' ? editTxForm.refund_of_id.trim() || null : null,
+      debt_id:
+        editTxForm.tx_type !== 'transfer' && editTxForm.debt_id !== '__new__'
+          ? editTxForm.debt_id.trim() || null
+          : null,
       // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建生效。
       recurring: !editTxForm.editingId ? buildRecurringInlinePayload(editTxForm) : null,
       // 拆帳(§2.4):disabled → 空数组(create 场景等同"没有 splits";update
@@ -416,6 +433,33 @@ export function GlobalEditDialogs() {
         )
         notifySuccess(t('notice.txCreated'))
       }
+      // 借還款追蹤(體驗補強第二輪):同 TransactionsPage.tsx 的 onSaveTransaction
+      // —— 这笔交易顺便建一笔新欠款,是旁支效果,交易已保存成功后单独发一次
+      // createDebt,失败只提示、不影响已保存的交易。
+      if (
+        !installmentPayload &&
+        editTxForm.tx_type !== 'transfer' &&
+        editTxForm.debt_id === '__new__'
+      ) {
+        const newDebtCounterparty = editTxForm.new_debt_counterparty_name.trim()
+        if (newDebtCounterparty) {
+          try {
+            await retryOnConflict(ledgerId, (base) =>
+              createDebt(token, ledgerId, base, {
+                direction: editTxForm.tx_type === 'income' ? 'payable' : 'receivable',
+                counterparty_name: newDebtCounterparty,
+                principal_amount: amountNum,
+                due_at: editTxForm.new_debt_due_at
+                  ? new Date(`${editTxForm.new_debt_due_at}T00:00:00Z`).toISOString()
+                  : null,
+                note: null,
+              }),
+            )
+          } catch {
+            toast.error(t('transactions.error.debtCreateFailed'), t('notice.error'))
+          }
+        }
+      }
       return true
     } catch (err) {
       if (isWriteConflict(err)) {
@@ -431,6 +475,7 @@ export function GlobalEditDialogs() {
     retryOnConflict,
     isWriteConflict,
     t,
+    toast,
     notifyError,
     notifySuccess,
   ])
@@ -533,6 +578,8 @@ export function GlobalEditDialogs() {
       })}
       categories={editTxCategories}
       tags={editTxTags}
+      debts={editTxDebts}
+      canCreateDebt={editTxCanCreateDebt}
       ledgerOptions={ledgerOptions}
       writeLedgerId={editTxLedgerId}
       onWriteLedgerIdChange={handleLedgerChange}

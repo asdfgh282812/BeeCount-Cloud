@@ -18,10 +18,12 @@ from sqlalchemy.orm import Session
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
+    ReadTxTemplateProjection,
     SyncChange,
     UserAccountProjection,
     UserCategoryProjection,
@@ -86,6 +88,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 必须带上,否则新设备首次同步 / _commit_write 的下一次 diff 会把
         # 已有 splits 当成"这笔交易本来就没有 splits"而静默清空。
         ReadTxProjection.splits_json,
+        # 借還款追蹤(§2.5 Phase 3)反查字段,同样必须进 full snapshot,原因
+        # 同 refund_of_sync_id/installment_plan_sync_id。
+        ReadTxProjection.debt_sync_id,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -101,7 +106,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          currency_code, native_amount,
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
-         splits_json) = row
+         splits_json, debt_id) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -168,6 +173,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                     item["splits"] = splits
             except json.JSONDecodeError:
                 pass
+        if debt_id:
+            item["debtId"] = debt_id
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
@@ -467,6 +474,77 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             p["note"] = note
         installment_plans.append(p)
 
+    # 借還款追蹤(§2.5 Phase 3)
+    debts: list[dict[str, Any]] = []
+    debt_stmt = select(
+        ReadDebtProjection.sync_id,
+        ReadDebtProjection.direction,
+        ReadDebtProjection.counterparty_name,
+        ReadDebtProjection.principal_amount,
+        ReadDebtProjection.due_at,
+        ReadDebtProjection.note,
+        ReadDebtProjection.closed_at,
+    ).where(ReadDebtProjection.ledger_id == ledger_id)
+    for (sid, direction, counterparty_name, principal_amount, due_at, note, closed_at) in db.execute(debt_stmt).all():
+        d: dict[str, Any] = {
+            "syncId": sid,
+            "direction": direction,
+            "counterpartyName": counterparty_name,
+            "principalAmount": principal_amount,
+        }
+        if due_at is not None:
+            d["dueAt"] = _to_iso_utc(due_at)
+        if note is not None:
+            d["note"] = note
+        if closed_at is not None:
+            d["closedAt"] = _to_iso_utc(closed_at)
+        debts.append(d)
+
+    # 交易範本(§2.7 Phase 3)
+    tx_templates: list[dict[str, Any]] = []
+    tpl_stmt = select(
+        ReadTxTemplateProjection.sync_id,
+        ReadTxTemplateProjection.name,
+        ReadTxTemplateProjection.tx_type,
+        ReadTxTemplateProjection.amount,
+        ReadTxTemplateProjection.note,
+        ReadTxTemplateProjection.category_sync_id,
+        ReadTxTemplateProjection.account_sync_id,
+        ReadTxTemplateProjection.from_account_sync_id,
+        ReadTxTemplateProjection.to_account_sync_id,
+        ReadTxTemplateProjection.tag_sync_ids_json,
+        ReadTxTemplateProjection.sort_order,
+    ).where(ReadTxTemplateProjection.ledger_id == ledger_id).order_by(
+        ReadTxTemplateProjection.sort_order.asc(),
+    )
+    for (sid, name, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
+         tag_ids_json, sort_order) in db.execute(tpl_stmt).all():
+        tpl: dict[str, Any] = {
+            "syncId": sid,
+            "name": name,
+            "txType": tx_type,
+            "amount": amount,
+            "sortOrder": sort_order,
+        }
+        if note is not None:
+            tpl["note"] = note
+        if cat_sid:
+            tpl["categoryId"] = cat_sid
+        if acc_sid:
+            tpl["accountId"] = acc_sid
+        if from_sid:
+            tpl["fromAccountId"] = from_sid
+        if to_sid:
+            tpl["toAccountId"] = to_sid
+        if tag_ids_json:
+            try:
+                tag_ids = json.loads(tag_ids_json)
+                if isinstance(tag_ids, list) and tag_ids:
+                    tpl["tagIds"] = tag_ids
+            except json.JSONDecodeError:
+                pass
+        tx_templates.append(tpl)
+
     return {
         # ledgerSyncId 给 mutator 用 —— 新建预算时要把它写进 budget payload,
         # 让 mobile sync_engine._applyBudgetChange 能解析本地 ledger int id。
@@ -483,6 +561,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "recurringRules": recurring_rules,
         "installmentPlans": installment_plans,
         "installmentPeriods": installment_periods,
+        "debts": debts,
+        "txTemplates": tx_templates,
     }
 
 

@@ -29,6 +29,16 @@ expect(parseRoute('/app/workspace/transactions')).toEqual({
       ledgerId: '',
       section: 'settings-health'
     })
+    expect(parseRoute('/app/debts')).toEqual({
+      kind: 'app',
+      ledgerId: '',
+      section: 'debts'
+    })
+    expect(parseRoute('/app/tx-templates')).toEqual({
+      kind: 'app',
+      ledgerId: '',
+      section: 'tx-templates'
+    })
   })
 
   it('falls back to overview for unknown section', () => {
@@ -54,5 +64,19 @@ expect(parseRoute('/app/workspace/transactions')).toEqual({
         section: 'settings-health'
       })
     ).toBe('/app/settings/health')
+    expect(
+      routePath({
+        kind: 'app',
+        ledgerId: 'ledger a',
+        section: 'debts'
+      })
+    ).toBe('/app/debts')
+    expect(
+      routePath({
+        kind: 'app',
+        ledgerId: 'ledger a',
+        section: 'tx-templates'
+      })
+    ).toBe('/app/tx-templates')
   })
 })
