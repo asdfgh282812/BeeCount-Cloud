@@ -101,6 +101,9 @@ export function RecurringRulesPanel({
   const [pendingDelete, setPendingDelete] = useState<ReadRecurringRule | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
+  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
+  // 週期性收支掛账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
+  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
 
   const isTransfer = form.tx_type === 'transfer'
   const categoryKind = form.tx_type === 'income' ? 'income' : 'expense'
@@ -301,7 +304,7 @@ export function RecurringRulesPanel({
                       <SelectValue placeholder={t('transactions.placeholder.accountName')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>
@@ -322,7 +325,7 @@ export function RecurringRulesPanel({
                       <SelectValue placeholder={t('transactions.placeholder.accountName')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>
@@ -368,7 +371,7 @@ export function RecurringRulesPanel({
                           {t('transactions.placeholder.noAccount')}
                         </span>
                       </SelectItem>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>

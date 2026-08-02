@@ -15,17 +15,31 @@
   续产生下一段视窗,`refill_recurring_windows` 取代原来的
   `materialize_due_recurring_rules`。
 
+**自動扣繳(tx_type=="transfer",2026-08-02 补)是上面这条规则的例外**:
+使用者反馈"自動扣繳应该是到期时才检查来源帐户余额够不够,不够就跳过",
+但"批次提前生成"这个设计本身就跟"到期才检查余额"矛盾——提前好几个月
+生成时,来源帐户到时候的余额根本无从得知。所以 `tx_type=="transfer"` 的
+规则完全不吃上面的批次视窗逻辑(`refill_recurring_windows` 的查询显式排除
+它们),改用 `materialize_due_transfer_rules`:到期当下才逐笔生成 + 检查
+`from_account_id` 当下的记账余额,不够就跳过 + 发通知(去重,同一期不会
+重复通知),下次 15 分钟 loop 再重试同一笔;一般收支类规则(expense/
+income)不受影响,因为"余额"这个概念对它们本来就不适用。
+
 到期交易怎么写,还是跟 mobile push / web write 生成交易走同一份
 `projection.upsert_tx`,只是 SyncChange 的 `updated_by_device_id` 固定成
 `_MATERIALIZER_DEVICE_ID`,方便 admin 日志/debug 时区分"这笔交易是排程自动
 生成的,不是某台设备推的"。
 
 调用入口:
-  - `materialize_all_due(db)`:一次性跑完当前所有需要续产生的规则并自己
-    commit。给 `POST /internal/tasks/materialize-recurring`(见
-    src/routers/internal_tasks.py)和 main.py 的周期性 asyncio loop 用。
-  - `refill_recurring_windows` 单独暴露给测试直接调用,不 commit(方便测试
-    自己控制事务边界 + 断言)。
+  - `materialize_all_due(db)`:一次性跑完当前所有需要续产生的规则(含
+    `materialize_due_transfer_rules`)并自己 commit。给
+    `POST /internal/tasks/materialize-recurring`(见
+    src/routers/internal_tasks.py)用;main.py 的周期性 asyncio loop 里,
+    `refill_recurring_windows`(非 transfer)走 24 小时低频 loop,
+    `materialize_due_transfer_rules`(transfer)另外挂在 debt/card reminder
+    同一个 15 分钟 loop 上(时效性要求跟提醒类似,不能等 24 小时)。
+  - `refill_recurring_windows` / `materialize_due_transfer_rules` 单独暴露
+    给测试直接调用,不 commit(方便测试自己控制事务边界 + 断言)。
 
 **不**做 WS 广播:这是背景任务,不挂在任何 HTTP request / websocket 连接
 上,没有天然的"打给谁"的上下文。跟 SYNC_ARCHITECTURE.md §5 描述一致,
@@ -40,22 +54,28 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from . import notifications as notification_service
-from . import recurring_schedule
 from .. import projection
 from ..concurrency import lock_ledger_for_materialize
-from ..models import ReadRecurringRuleProjection, SyncChange
+from ..models import (
+    Notification,
+    ReadRecurringRuleProjection,
+    ReadTxProjection,
+    SyncChange,
+    UserAccountProjection,
+)
 from ..snapshot_mutator import add_months
+from . import notifications as notification_service
+from . import recurring_schedule
 
 logger = logging.getLogger(__name__)
 
 _MATERIALIZER_DEVICE_ID = "server-recurring-materializer"
 
 
-def _new_sync_id(prefix: str) -> str:
+def new_sync_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
@@ -67,7 +87,7 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt
 
 
-def _emit_tx(
+def emit_tx(
     db: Session,
     *,
     ledger_id: str,
@@ -155,6 +175,10 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
     rules = db.scalars(
         select(ReadRecurringRuleProjection).where(
             ReadRecurringRuleProjection.enabled.is_(True),
+            # 自動扣繳(tx_type=="transfer",2026-08-02 补):这类规则改成
+            # materialize_due_transfer_rules 到期才逐笔生成 + 查余额,不再
+            # 走这里的"提前批次续窗"——排除掉,避免被两边重复生成。
+            ReadRecurringRuleProjection.tx_type != "transfer",
             or_(
                 ReadRecurringRuleProjection.generated_until_at.is_(None),
                 ReadRecurringRuleProjection.generated_until_at <= threshold,
@@ -207,7 +231,7 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
             max_count=recurring_schedule.MAX_OCCURRENCES_PER_GENERATION,
         )
         for occurrence_at in occurrences:
-            tx_sync_id = _new_sync_id("tx")
+            tx_sync_id = new_sync_id("tx")
             item: dict[str, Any] = {
                 "syncId": tx_sync_id,
                 "type": rule.tx_type,
@@ -227,7 +251,7 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
                 item["fromAccountId"] = rule.from_account_sync_id
             if rule.to_account_sync_id:
                 item["toAccountId"] = rule.to_account_sync_id
-            _emit_tx(db, ledger_id=rule.ledger_id, user_id=rule.user_id, now=now, item=item)
+            emit_tx(db, ledger_id=rule.ledger_id, user_id=rule.user_id, now=now, item=item)
             generated += 1
 
         if occurrences:
@@ -242,7 +266,10 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
                 category="reminder",
                 title="週期性收支已续期",
                 body=(rule.note or "") or f"一条週期性收支规则已自动续产生 {len(occurrences)} 笔未来交易",
-                payload={"ledgerId": rule.ledger_id, "recurringRuleId": rule.sync_id},
+                payload={
+                    "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
+                    "recurringRuleId": rule.sync_id,
+                },
             )
         _emit_recurring_rule_update(db, rule=rule, now=now)
 
@@ -251,11 +278,190 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
     return generated
 
 
+def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) -> float:
+    """当下记账余额 = initial_balance + income - expense - transfer_out +
+    transfer_in,跟 `routers/read/workspace.py::list_workspace_accounts` 算
+    单个帐户余额的公式完全一致(那边是批量算全部帐户,这里只算一个)。用来
+    给 `materialize_due_transfer_rules` 判断"来源帐户当下够不够扣"。"""
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == account_sync_id,
+        )
+    )
+    init_bal = float(account.initial_balance or 0.0) if account else 0.0
+    income = float(db.scalar(
+        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "income",
+        )
+    ) or 0.0)
+    expense = float(db.scalar(
+        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "expense",
+        )
+    ) or 0.0)
+    transfer_out = float(db.scalar(
+        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.from_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
+        )
+    ) or 0.0)
+    transfer_in = float(db.scalar(
+        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.to_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
+        )
+    ) or 0.0)
+    return init_bal + income - expense - transfer_out + transfer_in
+
+
+def _already_notified_insufficient(
+    db: Session, *, user_id: str, rule_id: str, occurrence_iso: str,
+) -> bool:
+    """同一条規則的同一期(occurrence_iso)只通知一次,不然每 15 分鐘 loop
+    重試一次就會重複發通知——跟 `credit_card_reminders._already_sent` 同款
+    去重模式。"""
+    rows = db.scalars(
+        select(Notification.payload_json).where(
+            Notification.user_id == user_id,
+            Notification.category == "reminder",
+        )
+    ).all()
+    for payload in rows:
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("recurringRuleId") == rule_id
+            and payload.get("occurrenceAt") == occurrence_iso
+            and payload.get("kind") == "insufficient_funds"
+        ):
+            return True
+    return False
+
+
+def materialize_due_transfer_rules(db: Session, *, now: datetime | None = None) -> dict[str, int]:
+    """自動扣繳(tx_type=="transfer")規則:到期當下才逐筆生成,生成前先查
+    `from_account_id` 當下的記帳餘額——不夠就跳過(不推進
+    `generated_until_at`,下次 loop 重試同一筆並通知使用者),夠就正常生成
+    並推進。跟 `refill_recurring_windows` 分工:那個函式的查詢已經排除
+    `tx_type=="transfer"`,兩者不會重複處理同一條規則。
+
+    每條規則每次呼叫最多追上到 `now` 為止的所有到期筆數(理論上多數情況下
+    只有 0~1 筆,除非 15 分鐘 loop 曾經中斷很久)。碰到餘額不足就停止繼續
+    往後追(不追未來筆,避免"這期沒過、下一期直接跳過去生成"的錯亂)。
+    不 commit —— 調用方決定事務邊界。返回 {"materialized": N,
+    "skipped_insufficient": M}。"""
+    now = now or datetime.now(timezone.utc)
+    rules = db.scalars(
+        select(ReadRecurringRuleProjection).where(
+            ReadRecurringRuleProjection.enabled.is_(True),
+            ReadRecurringRuleProjection.tx_type == "transfer",
+        )
+    ).all()
+
+    materialized = 0
+    skipped = 0
+    for rule in rules:
+        if not rule.from_account_sync_id:
+            continue  # 資料異常防禦:transfer 規則理論上一定有來源帳戶
+        lock_ledger_for_materialize(db, rule.ledger_id)
+        rule.next_run_at = _ensure_aware(rule.next_run_at)
+        if rule.end_at is not None:
+            rule.end_at = _ensure_aware(rule.end_at)
+
+        advanced_rule: dict[str, Any] | None = None
+        if rule.advanced_rule_json:
+            try:
+                advanced_rule = json.loads(rule.advanced_rule_json)
+            except json.JSONDecodeError:
+                advanced_rule = None
+
+        rule_changed = False
+        while True:
+            generated_until = _ensure_aware(rule.generated_until_at) if rule.generated_until_at else None
+            if generated_until is None:
+                next_occurrence: datetime | None = rule.next_run_at
+            else:
+                following = recurring_schedule.enumerate_occurrences(
+                    start=generated_until, end=None, frequency=rule.frequency,
+                    interval=rule.interval, advanced_rule=advanced_rule, max_count=2,
+                )
+                next_occurrence = following[1] if len(following) > 1 else None
+            if next_occurrence is None or next_occurrence > now:
+                break  # 还没到期(或没有下一期),下次 loop 再看
+
+            if rule.end_at is not None and next_occurrence > rule.end_at:
+                rule.generated_until_at = rule.end_at
+                rule.enabled = False
+                rule_changed = True
+                break
+
+            balance = compute_account_balance(
+                db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id,
+            )
+            if balance < rule.amount - 1e-9:
+                occurrence_iso = next_occurrence.isoformat()
+                if not _already_notified_insufficient(
+                    db, user_id=rule.user_id, rule_id=rule.sync_id, occurrence_iso=occurrence_iso,
+                ):
+                    notification_service.create_notification(
+                        db,
+                        user_id=rule.user_id,
+                        category="reminder",
+                        title=f"自動扣繳未執行：{rule.note or '週期性轉帳'}",
+                        body=(
+                            f"帳戶餘額不足(需要 {rule.amount:.2f},目前餘額 {balance:.2f}),"
+                            f"本期自動扣繳未執行,系統會持續每 15 分鐘重試一次。"
+                        ),
+                        payload={
+                            "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
+                            "recurringRuleId": rule.sync_id,
+                            "occurrenceAt": occurrence_iso,
+                            "kind": "insufficient_funds",
+                        },
+                    )
+                    skipped += 1
+                break  # 这期没过就先停在这里,不追后面的期数
+
+            tx_sync_id = new_sync_id("tx")
+            item: dict[str, Any] = {
+                "syncId": tx_sync_id,
+                "type": rule.tx_type,
+                "amount": rule.amount,
+                "happenedAt": next_occurrence.isoformat(),
+                "recurringRuleId": rule.sync_id,
+                "createdByUserId": rule.user_id,
+                "updatedByUserId": rule.user_id,
+                "fromAccountId": rule.from_account_sync_id,
+            }
+            if rule.note:
+                item["note"] = rule.note
+            if rule.to_account_sync_id:
+                item["toAccountId"] = rule.to_account_sync_id
+            emit_tx(db, ledger_id=rule.ledger_id, user_id=rule.user_id, now=now, item=item)
+            materialized += 1
+            rule.generated_until_at = next_occurrence
+            rule_changed = True
+            if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                rule.enabled = False
+                break
+
+        if rule_changed:
+            _emit_recurring_rule_update(db, rule=rule, now=now)
+
+    if materialized or skipped:
+        logger.info(
+            "recurring_materializer: transfer rules materialized=%d skipped_insufficient=%d",
+            materialized, skipped,
+        )
+    return {"materialized": materialized, "skipped_insufficient": skipped}
+
+
 def materialize_all_due(db: Session, *, now: datetime | None = None) -> dict[str, int]:
-    """一次性跑完週期性收支的視窗續產生并 commit。给 internal endpoint /
-    周期性 asyncio loop 用 —— 自成一个事务,失败整体回滚不留半截数据。
-    分期付款不再需要排程(建计画/rebalance/payoff 等写入口当下就算完全部
-    期数),这里不再调用任何 installment 相关函式。"""
+    """一次性跑完週期性收支的視窗續產生并 commit。给 internal endpoint 用
+    —— 自成一个事务,失败整体回滚不留半截数据。分期付款不再需要排程(建
+    计画/rebalance/payoff 等写入口当下就算完全部期数),这里不再调用任何
+    installment 相关函式。main.py 的周期性 asyncio loop 里
+    `materialize_due_transfer_rules` 是挂在另一个更高频的 loop 上单独跑的
+    (见 main.py 顶部说明),不在这里重复调用。"""
     now = now or datetime.now(timezone.utc)
     recurring_count = refill_recurring_windows(db, now=now)
     db.commit()

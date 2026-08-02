@@ -26,7 +26,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
 | 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)、週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)、拆帳(§2.4)Phase 2、借還款追蹤(§2.5)/範本(§2.7)Phase 3 均已完成(server+web)**；語音記帳/記帳模式缺) |
-| 信用卡管理 | 🟡 部分(帳戶已有信用卡欄位，**繳款/分期(分期本身已做通用版)/折抵/紅利/免息期建議全缺**) |
+| 信用卡管理 | 🟡 部分(**主帳戶合併帳單(群組模型)/信用卡繳款(分攤)/免息期推薦/到期提醒(Phase 4)已完成**，分期複用既有 installment 機制，**自動扣繳(2026-08-04 改版)已是帳戶級開關+來源帳戶，不再借用 recurring 機制**，**紅利回饋/帳單折抵仍缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
 | 捷徑功能 | ⚪ Client-only，server 不需改動 |
@@ -336,11 +336,195 @@ Moze: [record/speech-entry.md](https://doc.moze.app/record/speech-entry.md)、
 
 ### 2.9 信用卡管理整組功能
 
+**✅ Phase 4 已實作(2026-08-01 初版,2026-08-02 依使用者反饋改版為「群組」
+模型,server + web UI)**：主帳戶(合併帳單)/信用卡繳款/免息期推薦/到期
+提醒四項落地新代碼；帳單分期(§2.3 既有 installment 機制直接可用)/自動
+扣繳(§2.2 既有 recurring 機制直接可用)兩項確認**不需要任何新代碼**。
+
+**2026-08-02 改版的核心動機**：初版把「主帳戶」實作成一張普通的
+`credit_card` 帳戶(可以自己被記交易/被單獨繳款),使用者反饋這不對 ——
+現實情境是「在同一家銀行辦了好幾張卡,銀行本身變成主帳戶」,主帳戶是純
+管理容器,不該是一個能自己刷卡/收付款的獨立帳戶;且這個「群組」概念
+未來也會用在銀行帳戶(不限信用卡),所以獨立成一個新帳戶類型比較合適。
+
+1. **主帳戶(合併帳單)——群組模型**：新增 `account_type = "account_group"`
+   帳戶類型,純管理容器,`credit_limit`/`billing_day`/`payment_due_day`
+   都設在群組自己身上(不是子卡各自設定)。`parent_account_id`(自我參照,
+   alembic `0027_account_parent_id`)只能指向 `account_group` 類型的帳戶
+   (`src/snapshot_mutator.py::_assert_valid_account_parent` 校驗:目標必須
+   是 account_group、不能指向自己、group 不能巢狀掛靠另一個 group、不能
+   形成循環);`account_group` 本身**不能被一般交易/週期性收支/分期付款
+   拿來當帳戶用**(`src/routers/write/_shared.py::_assert_account_not_group`,
+   在 `transactions.py`/`recurring_rules.py`/`installment_plans.py`/
+   `tx_templates.py` 的寫入路徑都擋),也不能在還有子帳戶掛靠時被刪除
+   (`snapshot_mutator.py::delete_account`)。讀端點
+   `GET /ledgers/{id}/accounts/{account_id}/billing-summary`(`account_id`
+   必須是 account_group)把 `parent_account_id == account_id` 的子帳戶合併
+   計算帳單,金額不落庫,即時從 `read_tx_projection` 加總(同 §2.5 借還款
+   `remaining_amount` 的取捨),`src/services/credit_card_billing.py` 集中
+   放這段 DB 聚合邏輯(避免 billing-summary/card-payment/到期提醒三處各自
+   重算一份)。`remaining_due` 用**終身跑動餘額**計算(子帳戶終身消費減
+   終身已繳,不分期別窗口),溢繳會自動結轉到未來各期,不會在下一期結帳日
+   一過就從計算窗口裡消失(這是初版按「結帳日之後」窗口查 paid_amount 的
+   潛在 bug,這次一併修掉);`statement_amount` 維持「僅本期」窗口純資訊性
+   顯示。額外回傳 `credit_limit`/`available_credit`(= credit_limit -
+   remaining_due,純顯示計算不落庫,溢繳時可用額度自然超過額度本身,不需要
+   另外調整 credit_limit 欄位)。web:`AccountsPanel.tsx` 新增
+   「account_group」帳戶類型(信用額度/帳單日/還款日欄位搬到這裡);
+   `credit_card` 類型改成「掛靠主帳戶」下拉(僅列 account_group 類型帳戶);
+   `AccountDetailDialog.tsx` 的「信用卡帳單」卡片改對 account_group 渲染,
+   顯示可用額度。
+2. **信用卡繳款——群組分攤**：`POST /ledgers/{id}/accounts/{account_id}/
+   card-payment`(`account_id` 必須是 account_group)語意化端點
+   (`src/routers/write/accounts.py`),使用者在群組頁面輸入一次性繳款
+   總額,後端依規則分攤成多筆 `tx_type=transfer` 交易:①算出每個子帳戶
+   自己截至本期結帳日為止的應繳金額(終身消費減終身已繳,下限 0);
+   ②繳款總額 ≥ 全部子帳戶應繳總和時,每個子帳戶各自拿到「完整付清」的
+   金額,剩餘的溢繳部分另外產生一筆 transfer 記在群組自己身上(群組是
+   唯一的例外,可以被這個內部流程當 transfer 目標,一般交易寫入路徑仍然
+   擋它);③繳款總額 < 應繳總和時,按各子帳戶應繳金額比例分攤,不製造
+   「群組層級溢繳」假象。`from_account_id` 不能是任何 account_group(群組
+   沒有自己的資金,不能拿來當繳費來源)也不能是這個群組自己。沒帶 `note`
+   時自動帶入這筆繳款對應的帳單週期區間當備註。走一般交易寫權限
+   (`_TRANSACTION_WRITE_ROLES`,不是 owner-only)。web:帳戶詳情彈窗
+   「信用卡帳單」卡片內的「繳款」按鈕開小彈窗(金額預填目前應繳金額,可改;
+   付款帳戶選擇器排除這個群組自己 + 所有 account_group)。
+3. **免息期推薦**：`GET /ledgers/{id}/accounts/{account_id}/interest-free-suggestion`
+   (`account_id` 必須是 account_group)純計算端點(`src/services/
+   credit_card.py`,無 DB 依賴,月底夾斷/繳款日跨月都有專門處理並鎖了
+   單元測試),用 `billing_day`+`payment_due_day` 算出「今天消費」跟
+   「等到下一期結帳日之後消費」兩種情境的繳款截止日 + 免息天數。web:
+   同一張「信用卡帳單」卡片底部顯示建議文案。
+4. **到期提醒(2026-08-02 補)**：`src/services/credit_card_reminders.py`,
+   仿 §2.5 `debt_reminders.py` 的模式,掛在 `main.py` 同一個 15 分鐘 loop
+   上。§2.1 通知中心設計時就預留了 `category="card_due"`,但 Phase 4 一開始
+   沒接上,這次補齊。三種提醒時機:結帳日當天(帳單剛結算)、到期前 7 天、
+   到期當天;去重 key 是 `accountId + cycleEnd + kind`(不是「這張卡提醒過
+   沒有」,是「這一期的這種提醒發過沒有」,因為信用卡帳單每月循環,跟
+   debt 提醒「這筆債務只提醒一次」不同)。`remaining_due <= 0`(已繳清/
+   溢繳)時跳過。手動立即觸發同樣走 `POST /internal/tasks/
+   materialize-recurring`(回傳體裡 `card_reminders` 計數)。
+5. **帳單分期**：確認不需要任何改動 —— `POST /ledgers/{id}/installment-plans`
+   的 `account_id` 本來就能指向任何帳戶,填一張 `account_type=credit_card`
+   的子帳戶即可,§2.3/§2.12.1 的分期機制原樣適用(account_group 本身被擋,
+   不能是分期的帳戶)。
+6. **自動扣繳**：2026-08-02 初版確認「建一條 `tx_type=transfer` 的週期規則
+   即可」不需要新代碼,但使用者接著問「到期時真的會檢查餘額夠不夠才扣嗎」
+   ——答案原本是不會,`recurring_materializer` 到期一律無條件生成轉帳,
+   2026-08-03 補上「餘額不足就跳過+通知」，見下方單獨一段。**2026-08-04
+   改版**：使用者反饋自動扣繳不該借用週期性收支規則，應該是掛在信用卡/
+   主帳戶自己身上的一個開關 + 一個來源帳戶選擇，新增
+   `UserAccountProjection.auto_pay_enabled`/`auto_pay_from_account_id`
+   欄位 + `src/services/credit_card_autopay.py`，見下方
+   2026-08-04 段落。原本借用 `tx_type=="transfer"` 週期性收支規則做自動
+   扣繳的做法保留（一般排程轉帳的通用機制不受影響），但不再是自動扣繳
+   本身的實作路徑。
+
+web 這輪(2026-08-02)額外補了「信用卡帳單」卡片底部兩顆捷徑按鈕
+(`AccountDetailDialog.tsx::CreditCardBillingSection`):「設定自動扣繳」/
+「新增帳單分期」導去 `/app/recurring-rules`/`/app/installment-plans`,群組
+恰好只有一張子卡時帶 `?account=<childId>`(+ 自動扣繳額外帶
+`due_day=<payment_due_day>`)預填表單,`RecurringRulesPage.tsx`/
+`InstallmentPlansPage.tsx` 讀這個 query param 預填(多張子卡時不知道該選
+哪一張,不帶預填,交給使用者自己選)。
+
+測試見 `tests/test_credit_card.py`(帳單週期純函式邊界值 + 月底夾斷陷阱 +
+group 模型的 parent 校驗 + account_group 不可交易校驗 + 群組刪除保護 +
+合併帳單終身餘額 carry-forward + 免息期建議 + 繳款分攤三種情境)+
+`tests/test_credit_card_reminders.py`(三種提醒時機 + 去重 + 已繳清跳過)。
+手動測試清單見 `docs/PH4_CREDIT_CARD_WEB_UI_MANUAL_TEST_PLAN.md`。mobile
+端仍待排期。
+
+**2026-08-03 web UI 手測踩出的四個問題修復**（使用者實際操作後回報，前
+兩輪都只驗證了 pytest + build,沒有走完整瀏覽器手測）：
+1. **account_group 不該在交易表單被選到**——交易/週期性收支/分期付款/
+   範本/還款五處帳戶下拉選單全部過濾掉 `account_group`；順帶挖到
+   `GlobalEditDialogs.tsx`（全局編輯彈窗）提交時只送 `account_name` 沒送
+   `account_id` 的既有 bug（導致靠 `account_id` 判斷的後端校驗被繞過，且
+   不限 account_group——任何經這個入口改帳戶都只改了顯示名字、沒真的
+   換外鍵），已補上 name→id 解析。
+2. **account_group 卡片在帳戶列表/詳情頁一直顯示 0**——群組自己永遠沒有
+   交易，`list_workspace_accounts` 改成把子帳戶的 income/expense/balance/
+   tx_count 加總回填到群組自己身上。
+3. **沒有掛靠任何群組的獨立信用卡，也該有群組的全部功能**（繳費/分期/
+   免息期建議）——新增 `credit_card_billing.is_billing_root`/
+   `resolve_billing_children`：獨立信用卡（無 `parent_account_id`）自己
+   既是「群組」也是唯一「成員」；順便修掉這個放寬過程中發現的兩個帳務
+   計算 bug（`compute_group_billing` 的溢繳結轉查詢在 group 等於唯一子
+   帳戶時會重複計算；`card_payment_ep` 分攤時「溢繳結轉」跟「該子帳戶
+   應繳金額」共用同一個 dict key，覆蓋賦值會冲掉應繳金額，改累加）。
+4. **自動扣繳到期是否真的檢查餘額**——原本無條件生成，使用者確認要
+   「不夠就跳過+通知」。跟批次視窗預生成（§2.2/§2.12.2 的既有設計）有
+   架構衝突，收斂成：只有 `tx_type=="transfer"` 的規則（自動扣繳本身）
+   改成到期當下才逐筆生成 + 查 `from_account_id` 當下記帳餘額，不夠就
+   跳過（不推進進度，下次重試同一筆）+ 發通知（去重，同一期不重複發）；
+   一般收支類規則不受影響。新函式
+   `recurring_materializer.materialize_due_transfer_rules`，掛在
+   `main.py` 15 分鐘 reminder loop（不是 recurring_materializer 自己
+   24 小時的長尾續窗 loop）。
+
+測試見 `tests/test_credit_card.py`（update 路徑 account_group 校驗 + 
+workspace 帳戶加總 + 獨立信用卡繳款/溢繳）+ `tests/test_recurring_rules.py`
+（transfer 規則不預生成 + 到期生成 + 餘額不足跳過與去重 + 補足餘額後重試
+成功 + inline recurring transfer 只生成起點）。這輪同樣尚未走完整瀏覽器
+手測。
+
+**2026-08-04 五項後續修復**（使用者實際操作 + 一句提問回報，前三輪都只
+驗證了 pytest + build）：
+1. **已逾期帳單完全沒收到提醒**——使用者建了一筆帳單日/還款日都已經是
+   過去式的信用卡帳單，問「是否有出現提醒」，查 `notifications` 表確認
+   沒有。根因：`credit_card_reminders.send_due_card_reminders` 只精確比對
+   三個時機（`today == cycle_end`/`due_date`/`due_date-7天`），一旦這三個
+   精確的日子都被錯過（比如設定當下就已經逾期），永遠不會再提醒。補了
+   第四種時機 `overdue`（`today > due_date` 且 `remaining_due > 0`，同一期
+   只發一次）。測試見 `tests/test_credit_card_reminders.py::
+   test_overdue_reminder_fires_when_due_date_already_passed`。
+2. **主帳戶詳情彈窗永遠是空的**——`account_group` 自己從不擁有交易，
+   `read/workspace.py::list_workspace_transactions` 原本按 `account_
+   sync_id` 精確比對，偵測到目標帳戶是 `account_group` 時展開成
+   `credit_card_billing.resolve_billing_children` 解析出的子帳戶一起查；
+   前端 `GlobalEntityDialogs.tsx` 同步從傳 `accountName`（模糊 ilike）改傳
+   `accountSyncId`（精確比對才吃得到這個展開）。測試見
+   `tests/test_credit_card.py::
+   test_workspace_transactions_account_sync_id_expands_group_children`。
+3. **主帳戶卡片一律顯示餘額/收入/支出，即使底下都是信用卡**——
+   `account_group` 未來也會用在銀行帳戶群組，不能靠 `account_type` 本身
+   判斷樣式；`AccountsPanel.tsx::BankCardTile` 改成看群組自己身上有沒有
+   設 `credit_limit`/`billing_day`/`payment_due_day`（有 = 信用卡樣式的
+   額度/已用/可用，沒有 = 一般餘額樣式）。
+4. **帳戶詳情裡的交易點了沒反應**——`TransactionList` 組件本來就有
+   `onSelect` prop，`AccountDetailDialog.tsx` 只是沒接，補上
+   `dispatchOpenDetailTx`（跟 `TransactionsPage.tsx` 同款接法），現在可以
+   直接開交易詳情編輯/退款。
+5. **自動扣繳重新設計**——見上方第 6 點；新增 `UserAccountProjection.
+   auto_pay_enabled`/`auto_pay_from_account_id`（migration
+   `0028_account_auto_pay`），新服務 `src/services/credit_card_autopay.py
+   ::materialize_due_card_autopay`：到了繳款截止日（`today >= due_date`）
+   才開始嘗試，查來源帳戶當下餘額（`recurring_materializer.compute_
+   account_balance`，此函式順便從 `_compute_account_balance` 改成公開
+   名字給這裡共用）不夠就跳過+通知（去重 key `accountId+cycleEnd+kind`，
+   同一期只通知一次，之後靜默持續重試），夠的話用新抽出的
+   `credit_card_billing.compute_card_payment_allocations`（`card_payment_
+   ep` 的分攤邏輯搬出來共用，不重複維護兩份）照實際應繳金額整筆繳清；
+   去重同時擋掉「截止日後又有新消費導致 remaining_due 回正」被誤判成
+   要重繳一次的情況。掛在 `main.py` 同一個 15 分鐘 loop，手動觸發端點
+   回傳體新增 `card_autopay_executed`/`card_autopay_skipped_insufficient`。
+   web 側：帳戶編輯表單（`AccountsPanel.tsx`）在額度/帳單日/還款日區塊
+   下面加開關 + 來源帳戶下拉（只在 billing-root 帳戶顯示）；
+   `AccountDetailDialog.tsx` 原本導去週期性收支頁面的「設定自動扣繳」
+   按鈕拿掉，改顯示目前開關狀態 + 指去帳戶列表頁編輯。測試見新增
+   `tests/test_credit_card_autopay.py`（5 例：到期前不觸發、餘額足夠整筆
+   繳清+同期不重繳、餘額不足跳過+去重+補足重試成功、來源帳戶不能是
+   account_group、不能是自己）。
+
+這輪同樣只跑了 pytest + build，沒有走完整瀏覽器手測。
+
 Moze 分類：[credit-card/*](https://doc.moze.app/credit-card/statement-combined.md)
 
-**現況**：`accounts` 表已經有 `credit_limit`/`billing_day`/
-`payment_due_day`/`bank_name`/`card_last_four`，但這些欄位目前只是
-「存起來顯示」，沒有任何計算或工作流程邏輯掛在上面。
+**原始 gap 分析(建置前)，予以保留供對照**：`accounts` 表已經有
+`credit_limit`/`billing_day`/`payment_due_day`/`bank_name`/
+`card_last_four`，但這些欄位目前只是「存起來顯示」，沒有任何計算或工作
+流程邏輯掛在上面。
 
 逐項：
 
@@ -356,21 +540,76 @@ Moze 分類：[credit-card/*](https://doc.moze.app/credit-card/statement-combine
 都依賴 recurring/installment 先落地。以上五項全部複用既有的
 `accounts`/recurring/installment 機制，**不需要新表**，列為 Phase 4。
 
-紅利回饋／帳單折抵業務規則因發卡行而異、範圍最不確定，且需要新表，
-拆到獨立的 §2.9.5(Phase 4.5)，避免卡住 Phase 4 核心信用卡帳務流程。
+紅利回饋業務規則因發卡行而異、範圍最不確定，拆到獨立的 §2.9.5
+(Phase 4.5)，避免卡住 Phase 4 核心信用卡帳務流程。**不做帳單折抵**：
+Moze 原文把「回饋金折抵帳單」也算進同一組功能，但台灣主要銀行的紅利
+回饋多半是兌換商品/現金/哩程，不是直接折抵帳單金額，這塊另外要定義
+「折抵券餘額可以拿來抵哪些消費」的規則，複雜度不成比例，先不做。
 
 ---
 
-### 2.9.5 信用卡紅利回饋與帳單折抵 (Phase 4.5)
+### 2.9.5 信用卡紅利回饋 (Phase 4.5)
 
-Moze 分類：同屬 [credit-card/*](https://doc.moze.app/credit-card/statement-combined.md)，
-但業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成
-Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。
+Moze 分類：[credit-card/rewards](https://doc.moze.app/credit-card/rewards.md)。
+業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成
+Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。目標是做到「使用者設定
+規則後系統自動判斷、按期彙總計算」，不是純手動記帳的簡化版。
 
-| 子功能 | 現況 | 修改內容 |
-|---|---|---|
-| 紅利回饋 | 缺 | 新表 `read_card_rewards_projection`：`account_sync_id, balance, rule_note`；每筆信用卡交易產生時按規則(可先手動輸入回饋比例)累加，這塊業務規則因發卡行而異，建議先做「手動記錄回饋金額」的簡化版，不做自動比例計算 |
-| 帳單折抵 | 缺 | 需要「折抵券/回饋金餘額」概念，即上一行紅利回饋，折抵是紅利餘額的一種消費；依賴紅利回饋先落地 |
+**現況**：缺，`accounts`/交易目前沒有任何回饋計算邏輯。
+
+新表 `read_card_reward_rule_projection`（回饋規則設定，使用者手動建立，
+一張卡可以掛多條規則，例如「網購 2%」「一般消費 1%」同時存在）：
+
+| 欄位 | 說明 |
+|---|---|
+| `account_sync_id` | 綁定的信用卡帳戶 |
+| `label` | 規則名稱，例如「網購 2%」 |
+| `category_sync_ids` | nullable JSON array，限定分類才適用；空值＝所有消費都適用 |
+| `rate_type` | `percentage` \| `fixed_amount` |
+| `rate_value` | 百分比或固定金額數值 |
+| `rounding` | 單筆計算取整方式：`floor` \| `round` \| `ceil` |
+| `calc_basis` | `transaction_date` \| `settlement_date`，以消費日還是入帳日計算所屬期別，跟 §2.10 延後入帳的 `COALESCE(deferred_posting_at, happened_at)` helper 共用同一套邏輯 |
+| `interval` | `billing_cycle`（對齊 `billing_day`）\| `calendar_month` |
+| `min_spend_threshold` | nullable，該期累積消費達門檻才生效（常見「單月刷滿 $3000 送 2%」門檻式回饋） |
+| `min_tx_amount` | nullable，單筆消費低於此金額不計入 |
+| `cap_amount` | nullable，該期回饋上限 |
+| `cap_shared_key` | nullable，多條規則共用同一上限時填相同字串（例如「網購」「一般消費」合併上限 $150，玉山 U Bear 那種設計） |
+| `starts_at` / `ends_at` | nullable，活動起訖日；規則過期後不再套用，但歷史回饋計算結果不受影響（因為結果本來就不落表，是即時算的） |
+| `note` | 備註 |
+
+**回饋金額不落表**，比照 §2.5 借還款 `remaining_amount`／§2.3 分期
+`paid_periods` 的既有取捨——那兩個都是讀路徑即時加總算出，不是寫路徑
+維護一個累加欄位，理由一樣：交易增刪改都要連動重算，落表等於多一條
+要保持一致的寫路徑，不落表換成讀路徑稍微多算一點。新讀端點
+`GET /accounts/{id}/card-rewards?period=...` 即時計算：
+
+1. 依 `account_sync_id` 撈出所有生效中的規則(`starts_at`/`ends_at` 涵蓋
+   查詢區間)
+2. 依各規則的 `interval` 切出當期(或查詢指定期)區間，`billing_cycle`
+   對齊該帳戶 `billing_day`，`calendar_month` 對齊自然月
+3. 撈該帳戶當期交易，歸屬期別用 `calc_basis` 決定要不要套用
+   §2.10 延後入帳的 `COALESCE` helper(這樣延後入帳的消費才會被算進
+   正確一期，三處 `COALESCE` 呼叫變四處，仍共用同一函式，不要各自
+   重寫)
+4. 依 `category_sync_ids`/`min_tx_amount` 篩選交易、依
+   `min_spend_threshold` 判斷該期是否達標
+5. 套 `rate_type`/`rate_value`/`rounding` 算出各規則回饋金額，
+   `cap_amount`/`cap_shared_key` 做上限截斷(同 `cap_shared_key` 的規則
+   要先加總再一起套上限)
+6. 回傳每條規則當期回饋明細 + 加總，可選擇性回傳歷史期別供對照
+
+**修改內容**：
+1. `read_card_reward_rule_projection` 新表 + alembic migration，走一般
+   sync entity 套路(`_MERGE_SPECS`/`_UPSERT_DISPATCH`/`_DELETE_DISPATCH`
+   三張表 + `src/projection.py` upsert/delete)
+2. `src/routers/write/card_reward_rules.py`：規則 CRUD(owner-only，比照
+   `recurring_rules.py` 模式)
+3. `src/routers/read/` 加 `GET /accounts/{id}/card-rewards`：上面第
+   1~6 步的純計算端點，不寫 `sync_changes`/projection(規則本身才是
+   sync entity，計算結果是衍生值)
+4. web：信用卡管理頁掛回饋規則管理入口(CRUD 表單) + 當期回饋預覽卡片
+   (顯示各規則進度、距門檻/上限還差多少)
+5. mobile 端仍待排期
 
 ---
 
@@ -774,12 +1013,18 @@ Phase 3(往來/範本，彼此獨立可並行）: §2.5 借還款追蹤、§2.7 
                         待排期
 Phase 4(信用卡核心，依賴 Phase 1 的 recurring/installment）: §2.9
                         主帳戶合併帳單/信用卡繳款/自動扣繳/帳單分期/
-                        免息期推薦，全部複用既有 accounts/recurring/
-                        installment 機制，不需新表
-Phase 4.5(信用卡紅利回饋/帳單折抵，業務規則因發卡行而異，複雜度獨立
-                        於 Phase 4)：§2.9.5，需要新表
-                        `read_card_rewards_projection`，建議先做手動
-                        記錄簡化版
+                        免息期推薦/到期提醒
+                        ✅ server + web UI 已完成(2026-08-01 初版，
+                        2026-08-02 依使用者反饋改版為 account_group 群組
+                        模型 + 補到期提醒)；帳單分期/自動扣繳確認複用既有
+                        機制不需改動，其餘四項落地新代碼，測試見
+                        `tests/test_credit_card.py` +
+                        `tests/test_credit_card_reminders.py`；mobile UI
+                        待排期
+Phase 4.5(信用卡紅利回饋，業務規則因發卡行而異，複雜度獨立於
+                        Phase 4)：§2.9.5，需要新表
+                        `read_card_reward_rule_projection`，規則化自動
+                        計算(非手動記帳簡化版)，不含帳單折抵
 Phase 5(分析對帳，必做）: 延後入帳(必做前置) → §2.10 對帳模式/餘額調整 → 比較報表(輕)
 Phase 6(AI 擴充，跟前面無依賴，可隨時插入）: §2.8 語音記帳
 Phase 7(依賴專案 entity 決策，排期最晚）: §2.11 記帳模式

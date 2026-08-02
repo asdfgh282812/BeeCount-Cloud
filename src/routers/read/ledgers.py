@@ -4,6 +4,8 @@
 都是以账本为主键的 projection 查询,不做跨账本聚合。"""
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
@@ -450,10 +452,195 @@ def list_accounts(
             payment_due_day=row.payment_due_day,
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
+            parent_account_id=row.parent_account_id,
             hidden=row.hidden,
+            auto_pay_enabled=row.auto_pay_enabled,
+            auto_pay_from_account_id=row.auto_pay_from_account_id,
+            avatar_cloud_file_id=row.avatar_cloud_file_id,
+            avatar_cloud_sha256=row.avatar_cloud_sha256,
         )
         for row in rows
     ]
+
+
+def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
+    if end_of_day:
+        return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
+def _require_credit_card_schedule(account: UserAccountProjection) -> tuple[int, int]:
+    if account.billing_day is None or account.payment_due_day is None:
+        raise HTTPException(
+            status_code=400,
+            detail="account has no billing_day/payment_due_day configured",
+        )
+    return account.billing_day, account.payment_due_day
+
+
+def _require_billing_root(account: UserAccountProjection) -> None:
+    """主帳戶(§2.9 Phase 4,2026-08-02 改版 + 2026-08-02 第二輪單卡放寬)。
+    合併帳單只能對「群組」或「沒有掛靠任何群組的獨立信用卡」查詢 ——
+    見 `credit_card_billing.is_billing_root` 的完整說明。已經掛靠某個群組
+    的子卡不能被直接查(要透過它的群組)。"""
+    if not credit_card_billing.is_billing_root(account):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "account is not billable directly; use an account_group, or a "
+                "credit_card with no parent_account_id"
+            ),
+        )
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/billing-summary",
+    response_model=ReadAccountBillingSummaryOut,
+)
+def get_account_billing_summary(
+    ledger_external_id: str,
+    account_id: str,
+    cycle_offset: int = Query(default=0, ge=-60, le=1),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadAccountBillingSummaryOut:
+    """信用卡合併帳單(§2.9 Phase 4 MOZE_FEATURE_GAP_SD.md,2026-08-02 改版
+    為群組模型,同日第二輪放寬到單卡)。`account_id` 必須通過
+    `credit_card_billing.is_billing_root` 檢查:要嘛是 `account_type ==
+    "account_group"` 的純管理容器帳戶(`billing_day`/`payment_due_day`/
+    `credit_limit` 設在群組自己身上,代表發卡行給這個群組共用的額度/結帳
+    週期,實際刷卡消費/收付款的是掛在它底下的子帳戶,群組自己不是成員、
+    不計入消費),要嘛是一張**沒有掛靠任何群組**的獨立信用卡(這時它自己
+    就是唯一成員,`billing_day` 等設定直接設在它自己身上)。
+
+    `remaining_due` 用「終身跑動餘額」計算(累計至最近一次已結束帳單週期
+    為止的所有子帳戶消費,減掉所有子帳戶+群組自己收到的還款轉帳,不分
+    週期窗口):這樣任何一期的溢繳都會自動結轉到未來各期,不會在下一期
+    結帳日一過就從計算窗口裡消失(原本按「結帳日之後」窗口查 paid_amount
+    的寫法有這個 carry-forward 遺失問題,這次順便修掉)。`statement_amount`
+    維持「僅本期」窗口,單純做資訊性顯示用。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    _require_billing_root(account)
+    billing_day, payment_due_day = _require_credit_card_schedule(account)
+
+    children = credit_card_billing.resolve_billing_children(db, account=account)
+    member_ids = [row.sync_id for row in children]
+
+    now = datetime.now(timezone.utc)
+    billing = credit_card_billing.compute_group_billing(
+        db, ledger_id=ledger.id, group=account, children=children, now=now,
+    )
+
+    members_out = [
+        ReadAccountBillingMemberOut(
+            account_id=row.sync_id,
+            account_name=row.name or "",
+            cycle_spend=round(billing["per_child_cycle_spend"].get(row.sync_id, 0.0), 2),
+        )
+        for row in children
+    ]
+
+    remaining_due = billing["remaining_due"]
+    # 2026-08-03 使用者反饋 #2:轉分期不算已繳,額度不該恢復 —— 用不扣分期
+    # 沖銷的 credit_used 算可用額度,remaining_due(當期應繳)維持扣沖銷後
+    # 的數字不變。
+    credit_used = billing["credit_used"]
+    available_credit = (account.credit_limit - credit_used) if account.credit_limit is not None else None
+
+    period = credit_card_billing.compute_cycle_period_billing(
+        db, ledger_id=ledger.id, group=account, children=children, now=now, cycle_offset=cycle_offset,
+    )
+
+    return ReadAccountBillingSummaryOut(
+        account_id=account.sync_id,
+        account_name=account.name or "",
+        billing_day=billing_day,
+        payment_due_day=payment_due_day,
+        member_account_ids=member_ids,
+        members=members_out,
+        cycle_start=_date_to_utc_dt(billing["cycle_start"]),
+        cycle_end=_date_to_utc_dt(billing["cycle_end"]),
+        due_date=_date_to_utc_dt(billing["due_date"]),
+        statement_amount=round(billing["statement_amount"], 2),
+        paid_amount=round(billing["paid_amount"], 2),
+        remaining_due=round(remaining_due, 2),
+        open_cycle_start=_date_to_utc_dt(billing["open_cycle_start"]),
+        open_cycle_end=_date_to_utc_dt(billing["open_cycle_end"]),
+        open_cycle_due_date=_date_to_utc_dt(billing["open_cycle_due_date"]),
+        open_cycle_spend=round(billing["open_cycle_spend"], 2),
+        credit_limit=account.credit_limit,
+        available_credit=round(available_credit, 2) if available_credit is not None else None,
+        period_cycle_start=_date_to_utc_dt(period["cycle_start"]),
+        period_cycle_end=_date_to_utc_dt(period["cycle_end"]),
+        period_due_date=_date_to_utc_dt(period["due_date"]),
+        period_new_spend=period["new_spend"],
+        period_carryover_due=period["carryover_due"],
+        period_total_due=period["total_due"],
+        period_paid_in_cycle=period["paid_in_cycle"],
+        period_remaining_due=period["remaining_due"],
+        period_has_older=period["has_older"],
+        period_has_newer=period["has_newer"],
+    )
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/interest-free-suggestion",
+    response_model=ReadInterestFreeSuggestionOut,
+)
+def get_account_interest_free_suggestion(
+    ledger_external_id: str,
+    account_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadInterestFreeSuggestionOut:
+    """信用卡免息期推薦(§2.9 Phase 4,2026-08-02 改版)。純計算,不查交易,
+    只依賴群組帳戶自己的 `billing_day`/`payment_due_day`(跟 billing-summary
+    同一個群組模型:結帳週期設在 `account_type == "account_group"` 上)。"""
+    is_admin = _is_admin(current_user)
+    _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    _require_billing_root(account)
+    billing_day, payment_due_day = _require_credit_card_schedule(account)
+
+    now = datetime.now(timezone.utc)
+    suggestion = credit_card.interest_free_suggestion(now.date(), billing_day, payment_due_day)
+    return ReadInterestFreeSuggestionOut(
+        account_id=account.sync_id,
+        as_of=now,
+        billing_day=suggestion["billing_day"],
+        payment_due_day=suggestion["payment_due_day"],
+        current_cycle_start=_date_to_utc_dt(suggestion["current_cycle_start"]),
+        current_cycle_end=_date_to_utc_dt(suggestion["current_cycle_end"]),
+        current_cycle_due_date=_date_to_utc_dt(suggestion["current_cycle_due_date"]),
+        next_cycle_start=_date_to_utc_dt(suggestion["next_cycle_start"]),
+        next_cycle_end=_date_to_utc_dt(suggestion["next_cycle_end"]),
+        next_cycle_due_date=_date_to_utc_dt(suggestion["next_cycle_due_date"]),
+        recommended_purchase_after=_date_to_utc_dt(suggestion["recommended_purchase_after"]),
+        min_interest_free_days=suggestion["min_interest_free_days"],
+        max_interest_free_days=suggestion["max_interest_free_days"],
+    )
 
 
 @router.get("/ledgers/{ledger_external_id}/categories", response_model=list[ReadCategoryOut])

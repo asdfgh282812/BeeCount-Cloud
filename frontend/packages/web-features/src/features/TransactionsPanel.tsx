@@ -307,7 +307,16 @@ export function TransactionsPanel({
   const hiddenAccountNames = new Set(
     accounts.filter((row) => row.hidden).map((row) => row.name.trim())
   )
-  const accountOptions = dedupSortNames(accounts.map((row) => row.name.trim()).filter((name) => !hiddenAccountNames.has(name)))
+  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
+  // 一般交易挂账(后端 _assert_account_not_group 会拒),选择器不该让它出现。
+  const groupAccountNames = new Set(
+    accounts.filter((row) => row.account_type === 'account_group').map((row) => row.name.trim())
+  )
+  const accountOptions = dedupSortNames(
+    accounts
+      .map((row) => row.name.trim())
+      .filter((name) => !hiddenAccountNames.has(name) && !groupAccountNames.has(name))
+  )
   // E1 唯一例外:编辑一笔本就挂在某隐藏账户上的历史交易时,选择器钉住显示该
   // 隐藏账户(带「已隐藏」灰标),让用户可原样保存;其它隐藏账户仍不出现。
   // 一旦改选走其它选项,该隐藏名字就不会再被钉回来(下次渲染 currentValue 已变)。

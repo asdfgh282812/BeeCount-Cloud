@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import {
   Button,
@@ -63,6 +63,19 @@ type InstallmentPlansPanelProps = {
   onTerminateFuture: (plan: ReadInstallmentPlan) => Promise<void> | void
   /** 账本 owner 才能写(server _OWNER_ONLY_ROLES),非 owner 时按钮禁用。 */
   canManage: boolean
+  /** 從交易詳情的編輯選擇彈窗跳轉過來時(2026-08-03 使用者反饋 #4),要
+   *  高亮 + 捲動到的分期計畫 id。 */
+  highlightPlanId?: string | null
+  /** 同上跳轉來源,附帶「要自動打開哪一種差異化操作表單」——editThis/
+   *  editFuture 需要先展開期數明細、按 txId 定位到具體那一期。 */
+  autoOpenAction?: {
+    planId: string
+    action: 'editThis' | 'editFuture' | 'earlyRepay' | 'payoff'
+    txId?: string
+  } | null
+  /** 自動打開的表單已經開好(或確定開不了)之後回呼一次,讓呼叫端清掉
+   *  query 參數,避免使用者手動關掉表單後又被重新打開。 */
+  onAutoOpenConsumed?: () => void
 }
 
 /**
@@ -93,6 +106,9 @@ export function InstallmentPlansPanel({
   onPayoff,
   onTerminateFuture,
   canManage,
+  highlightPlanId,
+  autoOpenAction,
+  onAutoOpenConsumed,
 }: InstallmentPlansPanelProps) {
   const t = useT()
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -101,6 +117,9 @@ export function InstallmentPlansPanel({
   const [pendingDelete, setPendingDelete] = useState<ReadInstallmentPlan | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null)
+  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
+  // 分期付款掛账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
+  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
 
   const handleOpenCreate = () => {
     onFormChange(installmentPlanDefaults())
@@ -136,6 +155,19 @@ export function InstallmentPlansPanel({
     setExpandedPlanId(plan.id)
     if (!periodsByPlanId[plan.id]) onLoadPeriods(plan)
   }
+
+  // 2026-08-03 使用者反饋 #4:editThis/editFuture 需要先展開目標計畫的期數
+  // 明細,才能按 txId 找到具體要編輯的那一期(見下面 InstallmentPlanCard
+  // 的 autoOpen 处理)。earlyRepay/payoff 不需要期数,不用展开。
+  useEffect(() => {
+    if (!autoOpenAction) return
+    if (autoOpenAction.action !== 'editThis' && autoOpenAction.action !== 'editFuture') return
+    const plan = plans.find((p) => p.id === autoOpenAction.planId)
+    if (!plan) return
+    setExpandedPlanId(plan.id)
+    if (!periodsByPlanId[plan.id]) onLoadPeriods(plan)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenAction, plans])
 
   const categoryPickerRows = useMemo(
     () => categories.filter((c) => c.kind === 'expense'),
@@ -199,6 +231,9 @@ export function InstallmentPlansPanel({
                 onEarlyRepay={(payload) => onEarlyRepay(plan, payload)}
                 onPayoff={() => onPayoff(plan)}
                 onTerminateFuture={() => onTerminateFuture(plan)}
+                highlighted={Boolean(highlightPlanId) && plan.id === highlightPlanId}
+                autoOpen={autoOpenAction && autoOpenAction.planId === plan.id ? autoOpenAction : null}
+                onAutoOpenConsumed={onAutoOpenConsumed}
               />
             )
           })}
@@ -398,7 +433,7 @@ export function InstallmentPlansPanel({
                       {t('transactions.placeholder.noAccount')}
                     </span>
                   </SelectItem>
-                  {accounts.map((a) => (
+                  {tradableAccounts.map((a) => (
                     <SelectItem key={a.id} value={a.id}>
                       {a.name}
                     </SelectItem>
@@ -472,6 +507,9 @@ function InstallmentPlanCard({
   onEarlyRepay,
   onPayoff,
   onTerminateFuture,
+  highlighted,
+  autoOpen,
+  onAutoOpenConsumed,
 }: {
   plan: ReadInstallmentPlan
   category: WorkspaceCategory | null
@@ -487,6 +525,13 @@ function InstallmentPlanCard({
   onEarlyRepay: (payload: InstallmentEarlyRepayPayload) => void
   onPayoff: () => void
   onTerminateFuture: () => void
+  highlighted?: boolean
+  autoOpen?: {
+    planId: string
+    action: 'editThis' | 'editFuture' | 'earlyRepay' | 'payoff'
+    txId?: string
+  } | null
+  onAutoOpenConsumed?: () => void
 }) {
   const t = useT()
   const title = category?.name || plan.category_id || t('budgets.label.unknownCategory')
@@ -495,13 +540,50 @@ function InstallmentPlanCard({
 
   const [editingPeriod, setEditingPeriod] = useState<ReadInstallmentPeriod | null>(null)
   const [rebalanceOpen, setRebalanceOpen] = useState(false)
+  const [rebalanceDefaultPeriodNo, setRebalanceDefaultPeriodNo] = useState<number | undefined>(undefined)
   const [earlyRepayOpen, setEarlyRepayOpen] = useState(false)
   const [pendingPayoff, setPendingPayoff] = useState(false)
   const [pendingTerminate, setPendingTerminate] = useState(false)
   const [busy, setBusy] = useState(false)
 
+  // 2026-08-03 使用者反饋 #4:從交易詳情的編輯選擇彈窗跳轉過來,自動打開
+  // 對應的差異化操作表單,不需要使用者自己在一堆按鈕裡再找一次。
+  // editThis/editFuture 要等 periods 載入後按 txId 找到具體那一期才能開。
+  useEffect(() => {
+    if (!autoOpen || isDone) return
+    if (autoOpen.action === 'earlyRepay') {
+      setEarlyRepayOpen(true)
+      onAutoOpenConsumed?.()
+      return
+    }
+    if (autoOpen.action === 'payoff') {
+      setPendingPayoff(true)
+      onAutoOpenConsumed?.()
+      return
+    }
+    if (!periods) return // 期数明细还没载入,等下一次 effect 重跑
+    const target = periods.find((p) => p.tx_id === autoOpen.txId)
+    if (!target) {
+      onAutoOpenConsumed?.()
+      return
+    }
+    if (autoOpen.action === 'editThis') {
+      setEditingPeriod(target)
+    } else {
+      setRebalanceDefaultPeriodNo(target.period_no)
+      setRebalanceOpen(true)
+    }
+    onAutoOpenConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen, periods, isDone])
+
   return (
-    <div className="rounded-xl border border-border/60 bg-card p-4 transition hover:border-primary/40 hover:shadow-sm">
+    <div
+      id={`installment-plan-${plan.id}`}
+      className={`rounded-xl border bg-card p-4 transition hover:border-primary/40 hover:shadow-sm ${
+        highlighted ? 'border-primary ring-2 ring-primary/40' : 'border-border/60'
+      }`}
+    >
       <div className="flex items-start gap-3">
         <span
           aria-hidden
@@ -658,6 +740,7 @@ function InstallmentPlanCard({
       {rebalanceOpen ? (
         <RebalanceDialog
           maxPeriodNo={plan.periods}
+          defaultPeriodNo={rebalanceDefaultPeriodNo}
           busy={busy}
           onClose={() => setRebalanceOpen(false)}
           onConfirm={async (periodNo, payload) => {
@@ -785,17 +868,21 @@ function EditPeriodDialog({
 
 function RebalanceDialog({
   maxPeriodNo,
+  defaultPeriodNo,
   busy,
   onClose,
   onConfirm,
 }: {
   maxPeriodNo: number
+  /** 從交易詳情「修改連同未來分期」跳轉過來時,預填該筆交易對應的期数
+   *  (2026-08-03 使用者反饋 #4)。 */
+  defaultPeriodNo?: number
   busy: boolean
   onClose: () => void
   onConfirm: (periodNo: number, payload: InstallmentRebalancePayload) => void
 }) {
   const t = useT()
-  const [periodNo, setPeriodNo] = useState('1')
+  const [periodNo, setPeriodNo] = useState(defaultPeriodNo ? String(defaultPeriodNo) : '1')
   const [rate, setRate] = useState('0')
 
   return (

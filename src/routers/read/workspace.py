@@ -94,10 +94,25 @@ def list_workspace_transactions(
     if category_sync_id:
         query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
     if account_sync_id:
+        # 主帳戶(account_group)自己從不擁有交易(`_assert_account_not_group`
+        # 擋住了),原本這裡只精確比對這一個 sync_id,導致打開群組的帳戶
+        # 詳情永遠是空的(2026-08-04 使用者實測回報)。這裡展開成群組底下
+        # 全部子帳戶一起查,跟 billing-summary 讀端點用同一個
+        # `credit_card_billing.resolve_billing_children` 解析。
+        account_sync_ids = {account_sync_id}
+        lookup_account = db.scalar(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == current_user.id,
+                UserAccountProjection.sync_id == account_sync_id,
+            )
+        )
+        if lookup_account is not None and lookup_account.account_type == "account_group":
+            children = credit_card_billing.resolve_billing_children(db, account=lookup_account)
+            account_sync_ids.update(c.sync_id for c in children)
         query = query.where(or_(
-            ReadTxProjection.account_sync_id == account_sync_id,
-            ReadTxProjection.from_account_sync_id == account_sync_id,
-            ReadTxProjection.to_account_sync_id == account_sync_id,
+            ReadTxProjection.account_sync_id.in_(account_sync_ids),
+            ReadTxProjection.from_account_sync_id.in_(account_sync_ids),
+            ReadTxProjection.to_account_sync_id.in_(account_sync_ids),
         ))
     if q:
         pattern = f"%{q}%"
@@ -701,11 +716,13 @@ def list_workspace_accounts(
         account_query = account_query.where(UserAccountProjection.name.ilike(f"%{q}%"))
 
     all_accounts: list[WorkspaceAccountOut] = []
+    raw_by_sync_id: dict[str, UserAccountProjection] = {}
     for acct in db.scalars(account_query).all():
         name = (acct.name or "").strip()
         if not name:
             continue
         sync_id = acct.sync_id
+        raw_by_sync_id[sync_id] = acct
         init_bal = float(acct.initial_balance or 0.0)
         bucket = stats.get(sync_id)
         income_total = float(bucket.get("income", 0.0)) if bucket else 0.0
@@ -730,13 +747,73 @@ def list_workspace_accounts(
                 payment_due_day=acct.payment_due_day,
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
+                parent_account_id=acct.parent_account_id,
                 hidden=acct.hidden,
+                auto_pay_enabled=acct.auto_pay_enabled,
+                auto_pay_from_account_id=acct.auto_pay_from_account_id,
+                avatar_cloud_file_id=acct.avatar_cloud_file_id,
+                avatar_cloud_sha256=acct.avatar_cloud_sha256,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,
                 balance=init_bal + movement,
             )
         )
+
+    # 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,底下
+    # 子帳戶(可能不只信用卡,以後銀行帳戶群組也走這條路)的統計要加總回填到
+    # 群組自己身上,不然看起來像壞掉的 0(2026-08-02 web UI 手測發現)。
+    # 2026-08-03 補強:帳單分期改成直接掛在 group 自己身上(§2.3 第四輪,
+    # 對齊使用者反饋「分期金額應該附屬主帳戶」)之後,group 自己也可能有
+    # 真實交易了——這裡改成在群組自己已經按 account_sync_id 算出來的統計
+    # 上「疊加」子帳戶加總,而不是整段覆蓋掉,否則 group 自己持有的分期
+    # 期數交易會被子帳戶加總結果蓋掉,金額對不上。
+    children_by_parent: dict[str, list[WorkspaceAccountOut]] = {}
+    for acc in all_accounts:
+        if acc.parent_account_id:
+            children_by_parent.setdefault(acc.parent_account_id, []).append(acc)
+    for acc in all_accounts:
+        if acc.account_type == "account_group":
+            kids = children_by_parent.get(acc.id, [])
+            acc.tx_count = (acc.tx_count or 0) + sum(k.tx_count or 0 for k in kids)
+            acc.income_total = (acc.income_total or 0.0) + sum(k.income_total or 0.0 for k in kids)
+            acc.expense_total = (acc.expense_total or 0.0) + sum(k.expense_total or 0.0 for k in kids)
+            acc.balance = (acc.balance or 0.0) + sum(k.balance or 0.0 for k in kids)
+
+    # 「可繳款」提醒(§2.9 補強,2026-08-02):只對 billing-root(account_group,
+    # 或沒有掛靠任何群組的獨立信用卡)且已設定 billing_day/payment_due_day 的
+    # 帳戶算,數量通常是個位數,列表頁多算這幾次可接受。ledger_id 找法跟
+    # `credit_card_reminders.py` 一样 —— 用任一笔子帳戶交易所在的 ledger
+    # (account 是 user-global 实体,没有自己的 ledger_id)。
+    now = datetime.now(timezone.utc)
+    for acc in all_accounts:
+        raw = raw_by_sync_id.get(acc.id)
+        if raw is None or raw.billing_day is None or raw.payment_due_day is None:
+            continue
+        if not credit_card_billing.is_billing_root(raw):
+            continue
+        children = credit_card_billing.resolve_billing_children(db, account=raw)
+        # 2026-08-03:group 自己現在也可能直接持有分期期數交易(§2.3 第四輪),
+        # 這裡找 ledger 時併入 group 自己的 sync_id,不然一個還沒有任何子帳戶
+        # 交易、只有 group 自己持有分期交易的群組會找不到 ledger 而被跳過。
+        child_ids = credit_card_billing.billing_member_ids(raw, children)
+        if not child_ids:
+            continue
+        billing_ledger_id = db.scalar(
+            select(ReadTxProjection.ledger_id).where(
+                ReadTxProjection.user_id == target_user_id,
+                ReadTxProjection.account_sync_id.in_(child_ids),
+            ).limit(1)
+        )
+        if billing_ledger_id is None:
+            continue
+        billing = credit_card_billing.compute_group_billing(
+            db, ledger_id=billing_ledger_id, group=raw, children=children, now=now,
+        )
+        if billing["remaining_due"] > 0.01:
+            due = billing["due_date"]
+            acc.billing_due_date = datetime(due.year, due.month, due.day, tzinfo=timezone.utc)
+            acc.billing_remaining_due = round(billing["remaining_due"], 2)
 
     # Sort by name, then paginate
     all_accounts.sort(key=lambda a: (a.name or "").lower())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from copy import deepcopy
@@ -109,11 +110,76 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     ("payment_due_day", "paymentDueDay", "int"),
     ("bank_name", "bankName", "str"),
     ("card_last_four", "cardLastFour", "str"),
+    # 主帳戶(合併帳單,§2.9 Phase 4):子卡指向主卡 syncId;空字串/None=解除掛靠。
+    ("parent_account_id", "parentAccountId", "str"),
     # 账户隐藏(issue #240):Web create/update 请求体带 hidden(bool)时才写;
     # 不带 key → 保留原值(不冲掉已有隐藏标记,契约对齐 mobile push 的 merge
     # 缺键保留语义)。
     ("hidden", "hidden", "bool"),
+    # 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶 syncId。
+    ("auto_pay_enabled", "autoPayEnabled", "bool"),
+    ("auto_pay_from_account_id", "autoPayFromAccountId", "str"),
+    # 帳戶頭像(2026-08-02 補強):空字串/None=移除頭像。
+    ("avatar_cloud_file_id", "avatarCloudFileId", "str"),
+    ("avatar_cloud_sha256", "avatarCloudSha256", "str"),
 )
+
+
+def _assert_valid_account_parent(
+    accounts: list[dict], account_id: str, parent_id: str | None, *, own_type: str | None = None,
+) -> None:
+    """主帳戶(合併帳單,§2.9 Phase 4,2026-08-02 改版):主帳戶是純管理概念
+    (`type == "account_group"`),不是可以自己記交易的獨立帳戶 —— 使用者
+    反饋原本設計把「隨便一張信用卡」拿來當主卡不對,銀行/機構本身才是
+    「主帳戶」,子帳戶(不限信用卡,銀行帳戶未來也適用)掛靠的目標必須是
+    這種群組類型。規則:不能指向自己;目標必須是同一使用者底下真實存在、
+    且 `type == "account_group"` 的帳戶;群組帳戶自己不能再掛靠別的群組
+    (不支援巢狀);不能形成循環。"""
+    if parent_id is None:
+        return
+    if parent_id == account_id:
+        raise ValueError("write validation failed: account cannot be its own parent")
+    by_id = {str(row.get("syncId")): row for row in accounts}
+    if parent_id not in by_id:
+        raise ValueError("write validation failed: parent account not found")
+    if by_id[parent_id].get("type") != "account_group":
+        raise ValueError("write validation failed: parent account must be an account_group")
+    resolved_own_type = own_type if own_type is not None else by_id.get(account_id, {}).get("type")
+    if resolved_own_type == "account_group":
+        raise ValueError("write validation failed: an account_group cannot itself have a parent (no nested groups)")
+    seen = {account_id}
+    cursor = parent_id
+    for _ in range(len(accounts) + 1):
+        if cursor in seen:
+            raise ValueError("write validation failed: parent account chain forms a cycle")
+        seen.add(cursor)
+        next_parent = by_id.get(cursor, {}).get("parentAccountId")
+        if not next_parent:
+            break
+        cursor = str(next_parent)
+
+
+def _assert_valid_auto_pay_source(
+    accounts: list[dict], account_id: str, source_id: str | None,
+) -> None:
+    """自動扣繳來源帳戶(§2.9,2026-08-04 改版):必須是同一使用者底下真實
+    存在的帳戶,不能是這張卡自己(自己扣自己沒有意義),也不能是任何
+    account_group(群組沒有自己的資金,不能拿來當扣款來源——跟
+    `_assert_account_not_group` 校驗一般交易的 from_account_id 同一個
+    道理)。"""
+    if not source_id:
+        return
+    if source_id == account_id:
+        raise ValueError(
+            "write validation failed: auto_pay_from_account_id must differ from the card itself"
+        )
+    by_id = {str(row.get("syncId")): row for row in accounts}
+    if source_id not in by_id:
+        raise ValueError("write validation failed: auto_pay_from_account_id not found")
+    if by_id[source_id].get("type") == "account_group":
+        raise ValueError(
+            "write validation failed: auto_pay_from_account_id cannot be an account_group"
+        )
 
 
 def _apply_account_optional_fields(account: dict, payload: dict) -> None:
@@ -575,6 +641,15 @@ def create_account(snapshot: dict, payload: dict) -> tuple[dict, str]:
     # creditLimit / billingDay / paymentDueDay / bankName / cardLastFour /
     # note)。前端 web 字段是 snake_case,这里转 camelCase 写入 snapshot。
     _apply_account_optional_fields(account, payload)
+    if "parent_account_id" in payload:
+        _assert_valid_account_parent(
+            accounts, sync_id, _to_optional_str(account.get("parentAccountId")),
+            own_type=account.get("type"),
+        )
+    if "auto_pay_from_account_id" in payload:
+        _assert_valid_auto_pay_source(
+            accounts, sync_id, _to_optional_str(account.get("autoPayFromAccountId")),
+        )
     _mark_entity_actor(account, payload, create=True)
     accounts.append(account)
     return target, sync_id
@@ -605,6 +680,15 @@ def update_account(snapshot: dict, account_id: str, payload: dict) -> dict:
     if "initial_balance" in payload:
         account["initialBalance"] = _to_float(payload.get("initial_balance"))
     _apply_account_optional_fields(account, payload)
+    if "parent_account_id" in payload:
+        _assert_valid_account_parent(
+            accounts, account_id, _to_optional_str(account.get("parentAccountId")),
+            own_type=account.get("type"),
+        )
+    if "auto_pay_from_account_id" in payload:
+        _assert_valid_auto_pay_source(
+            accounts, account_id, _to_optional_str(account.get("autoPayFromAccountId")),
+        )
 
     new_name = str(account.get("name") or "").strip()
     if old_name and new_name and old_name != new_name:
@@ -625,6 +709,15 @@ def delete_account(snapshot: dict, account_id: str, payload: dict | None = None)
     idx, account = _find_by_sync_id(accounts, account_id, expected_prefix="acc")
     _assert_actor_can_modify(account, payload or {})
     old_name = str(account.get("name") or "").strip()
+    # 主帳戶(§2.9 Phase 4):群組帳戶還有子帳戶掛靠時拒絕刪除,避免子帳戶
+    # parent_account_id 變成查無此帳戶的孤儿引用(billing-summary 之類的讀
+    # 路径会直接 404)。跟下面"有关联交易拒绝删除"同一个"不要 orphan"原则。
+    children = sum(1 for row in accounts if str(row.get("parentAccountId") or "") == account_id)
+    if children > 0:
+        raise ValueError(
+            "write validation failed: account_group has linked child accounts; "
+            f"unlink or delete the {children} child accounts first"
+        )
     # 安全检查:任何关联交易都拒绝删除(用户决定:不要 warn-and-orphan 模式)。
     # 客户端必须先把交易改/删/迁走,账户的 tx_count 回到 0 才允许删。
     # mobile 自己走 sync_applier 路径不经过 snapshot_mutator,这条 guard 只对
@@ -1207,6 +1300,8 @@ def create_installment_plan(snapshot: dict, payload: dict) -> tuple[dict, str]:
         plan["categoryId"] = str(payload.get("category_id"))
     if payload.get("note") is not None:
         plan["note"] = str(payload.get("note"))
+    if payload.get("offset_breakdown"):
+        plan["offsetBreakdownJson"] = json.dumps(payload.get("offset_breakdown"))
     _mark_entity_actor(plan, payload, create=True)
     plans.append(plan)
     return target, sync_id

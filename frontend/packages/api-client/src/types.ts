@@ -265,10 +265,24 @@ export type ReadAccount = {
   bank_name?: string | null
   /** 卡号后四位,bank_card / credit_card。 */
   card_last_four?: string | null
+  /** 主帳戶(合併帳單,§2.9 Phase 4):子卡的 sync_id 指向主卡,null=沒有掛靠。 */
+  parent_account_id?: string | null
   /** 账户隐藏(issue #240):true = 已隐藏 —— 记账/转账选择器不再出现,主列表
    *  退场收进「已隐藏」分区;但仍计入净资产/资产/收支(D1,服务端不做统计过滤)。
    *  缺省 false(旧接口未提供该字段时视为未隐藏)。 */
   hidden?: boolean
+  /** 自動扣繳(§2.9,2026-08-04 改版):開關。只在 account_group,或沒有
+   *  掛靠任何群組的獨立信用卡上生效。 */
+  auto_pay_enabled?: boolean
+  /** 自動扣繳來源帳戶 sync_id,null = 未設定。 */
+  auto_pay_from_account_id?: string | null
+  /** 「可繳款」提醒(§2.9 補強,2026-08-02):只在 billing-root(account_group
+   *  或沒有掛靠任何群組的獨立信用卡)且真的欠款(> 0)時才有值。 */
+  billing_due_date?: string | null
+  billing_remaining_due?: number | null
+  /** 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,null = 沒有自訂頭像。 */
+  avatar_cloud_file_id?: string | null
+  avatar_cloud_sha256?: string | null
 }
 
 export type ReadCategory = {
@@ -661,9 +675,79 @@ export type AccountPayload = {
   payment_due_day?: number | null
   bank_name?: string | null
   card_last_four?: string | null
+  /** 主帳戶(合併帳單,§2.9 Phase 4):子卡挂靠的主卡 id。update 传空字串
+   *  解除掛靠;不传 = 不改。 */
+  parent_account_id?: string | null
   /** 账户隐藏(issue #240)。create 缺省 false;update 不传 = 不改(服务端
    *  merge 缺键保留,见 snapshot_mutator._apply_account_optional_fields)。 */
   hidden?: boolean | null
+  /** 自動扣繳(§2.9,2026-08-04 改版):開關,不传 = 不改。 */
+  auto_pay_enabled?: boolean | null
+  /** 自動扣繳來源帳戶 sync_id;update 传空字串解除;不传 = 不改。 */
+  auto_pay_from_account_id?: string | null
+  /** 帳戶頭像(2026-08-02 補強):update 传空字串移除頭像;不传 = 不改。 */
+  avatar_cloud_file_id?: string | null
+  avatar_cloud_sha256?: string | null
+}
+
+export type AccountBillingMember = {
+  account_id: string
+  account_name: string
+  cycle_spend: number
+}
+
+export type AccountBillingSummary = {
+  account_id: string
+  account_name: string
+  billing_day: number
+  payment_due_day: number
+  member_account_ids: string[]
+  members: AccountBillingMember[]
+  cycle_start: string
+  cycle_end: string
+  due_date: string
+  statement_amount: number
+  paid_amount: number
+  remaining_due: number
+  open_cycle_start: string
+  open_cycle_end: string
+  open_cycle_due_date: string
+  open_cycle_spend: number
+  credit_limit: number | null
+  available_credit: number | null
+  period_cycle_start: string
+  period_cycle_end: string
+  period_due_date: string
+  period_new_spend: number
+  period_carryover_due: number
+  period_total_due: number
+  period_paid_in_cycle: number
+  period_remaining_due: number
+  period_has_older: boolean
+  period_has_newer: boolean
+}
+
+export type AccountInterestFreeSuggestion = {
+  account_id: string
+  as_of: string
+  billing_day: number
+  payment_due_day: number
+  current_cycle_start: string
+  current_cycle_end: string
+  current_cycle_due_date: string
+  next_cycle_start: string
+  next_cycle_end: string
+  next_cycle_due_date: string
+  recommended_purchase_after: string
+  min_interest_free_days: number
+  max_interest_free_days: number
+}
+
+export type CardPaymentPayload = {
+  amount: number
+  from_account_id: string
+  happened_at?: string | null
+  note?: string | null
 }
 
 export type CategoryPayload = {
@@ -973,6 +1057,10 @@ export type InstallmentPlanCreatePayload = {
   round_amounts?: boolean
   remainder_position?: InstallmentRemainderPosition
   grace_period_months?: number
+  /** 帳單分期沖銷(§2.9,2026-08-02):把信用卡已欠下的帳單轉成分期時,額外
+   *  生成一筆 income 沖銷交易清空原本的應繳金額,避免同一筆錢被算兩次
+   *  (原消費 + 分期各期新 expense)。要求 account_id 已設定。 */
+  offset_existing_balance?: boolean
 }
 
 /** 只支持提前结清(status='settled')/改备注，攤還参数/期数/金额不可改

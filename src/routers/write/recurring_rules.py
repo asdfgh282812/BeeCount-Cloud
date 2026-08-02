@@ -68,9 +68,26 @@ async def create_recurring_rule_ep(
     )
     if replay:
         return replay
+    # 主帳戶(§2.9 Phase 4):account_group 不能被週期性收支拿來當帳戶用。
+    for field in ("account_id", "from_account_id", "to_account_id"):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=getattr(req, field, None), field_name=field)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:
+        # 自動扣繳(tx_type=="transfer",2026-08-02 补):这类规则代表"到期
+        # 时从指定帐户真的要扣一笔钱",提前批次生成没有意义——生成时离到期
+        # 还有几个月,来源帐户到时候余额是多少现在根本不知道,没法检查够
+        # 不够。改成完全不预生成,交给 credit_card_reminders 同一个 15 分钟
+        # loop 里的 recurring_materializer.materialize_due_transfer_rules
+        # 逐笔到期才生成 + 检查来源帐户当下余额,不够就跳过并通知(见该函式
+        # docstring)。一般收支类规则(expense/income)维持原本的批次预生成,
+        # 不受影响——"余额够不够"这个概念对它们本来就不适用。
+        if req.tx_type == "transfer":
+            rule_payload = dict(mutate_payload)
+            rule_payload["generated_until_at"] = None
+            next_snapshot, rule_id = create_recurring_rule(snapshot, rule_payload)
+            return next_snapshot, rule_id
+
         occurrences, generated_until_at, fully_generated = recurring_schedule.plan_initial_generation(
             start=req.next_run_at,
             end=req.end_at,
@@ -162,6 +179,8 @@ async def update_recurring_rule_ep(
     )
     if replay:
         return replay
+    for field in ("account_id", "from_account_id", "to_account_id"):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,

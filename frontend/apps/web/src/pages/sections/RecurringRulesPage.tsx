@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   createRecurringRule,
@@ -47,6 +48,7 @@ export function RecurringRulesPage() {
   const { activeLedgerId, currency, currentLedger } = useLedgers()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
+  const [searchParams] = useSearchParams()
 
   const bucket = activeLedgerId || '__none__'
   const [rules, setRules] = usePageCache<ReadRecurringRule[]>(`recurringRules:${bucket}:rows`, [])
@@ -105,6 +107,33 @@ export function RecurringRulesPage() {
       .filter((v) => v.trim().length > 0)
     if (ids.length > 0) ensureLoadedMany(ids)
   }, [categories, ensureLoadedMany])
+
+  // 从信用卡帳單卡片的「設定自動扣繳」入口跳转过来时(?account=<id>&due_day=<n>,
+  // §2.9 Phase 4),预填一条 transfer + monthly_day 规则的草稿,使用者只需要
+  // 确认金额跟起始日期。用 `to_account_id === accountId` 挡重复触发,避免
+  // 使用者手动改掉之后又被这个 effect 打回去。
+  useEffect(() => {
+    const accountId = searchParams.get('account')
+    if (!accountId || accounts.length === 0) return
+    const matched = accounts.find((a) => a.id === accountId)
+    if (!matched) return
+    setForm((prev) => {
+      if (prev.editingId || prev.to_account_id === accountId) return prev
+      const dueDay = Math.round(Number(searchParams.get('due_day') || ''))
+      const next: RecurringRuleForm = {
+        ...prev,
+        tx_type: 'transfer',
+        to_account_id: accountId,
+        to_account_name: matched.name,
+      }
+      if (Number.isFinite(dueDay) && dueDay >= 1 && dueDay <= 31) {
+        next.advanced_mode = 'monthly_day'
+        next.monthly_day = String(dueDay)
+        next.frequency = 'monthly'
+      }
+      return next
+    })
+  }, [searchParams, accounts])
 
   const canManage = Boolean(activeLedgerId) && currentLedger?.role === 'owner'
 

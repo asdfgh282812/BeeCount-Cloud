@@ -387,6 +387,19 @@ def upsert_account(
     if sync_id is None:
         return
 
+    # 取 prev avatar_cloud_file_id —— upsert 后跟 new 比对,若变更则 GC 旧
+    # attachment,跟 upsert_category 的 icon_cloud_file_id 同款套路,防止
+    # 用户换头像/移除头像后旧 cloud blob 永远成孤儿。
+    prev_avatar_file_id: str | None = None
+    prev_avatar_row = db.scalar(
+        select(UserAccountProjection.avatar_cloud_file_id).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == sync_id,
+        )
+    )
+    if prev_avatar_row:
+        prev_avatar_file_id = prev_avatar_row.strip() if isinstance(prev_avatar_row, str) else None
+
     # 扩展字段读 snapshot 的 camelCase key,空 / NaN 转 None。这些字段是
     # nullable 的(老 snapshot 没这些 key 时落 None,前端展示空)。
     def _opt_float(raw: Any) -> float | None:
@@ -418,13 +431,28 @@ def upsert_account(
         "payment_due_day": _opt_int(payload.get("paymentDueDay")),
         "bank_name": _as_str(payload.get("bankName")),
         "card_last_four": _as_str(payload.get("cardLastFour")),
+        # 主帳戶(合併帳單,§2.9 Phase 4):子卡指向主卡的 sync_id。
+        "parent_account_id": _as_str(payload.get("parentAccountId")),
+        # 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶 sync_id。
+        "auto_pay_enabled": _as_bool(payload.get("autoPayEnabled"), default=False),
+        "auto_pay_from_account_id": _as_str(payload.get("autoPayFromAccountId")),
         # 账户隐藏(issue #240)。merge_with_existing_user 已把缺键的 hidden
         # 从旧行补齐,这里直接取 merged payload 的值;全新 insert 首次缺失时给
         # False(未隐藏)。
         "hidden": _as_bool(payload.get("hidden"), default=False),
+        # 帳戶頭像(2026-08-02 補強)。
+        "avatar_cloud_file_id": _as_str(payload.get("avatarCloudFileId")),
+        "avatar_cloud_sha256": _as_str(payload.get("avatarCloudSha256")),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)
+
+    # 如果 prev_avatar_file_id 跟新值不一样(包括清空、换图),且 prev 不是空,
+    # 把旧 fileId 交给 gc_orphan_attachments —— 真孤儿才删 AttachmentFile +
+    # 物理文件,被共用的会留着。
+    new_avatar_file_id = _as_str(payload.get("avatarCloudFileId")) or None
+    if prev_avatar_file_id and prev_avatar_file_id != new_avatar_file_id:
+        gc_orphan_attachments(db, user_id=user_id, file_ids=[prev_avatar_file_id])
 
 
 def upsert_category(
@@ -624,6 +652,7 @@ def upsert_installment_plan(
         "round_amounts": _as_bool(payload.get("roundAmounts"), default=True),
         "remainder_position": _as_str(payload.get("remainderPosition")) or "last",
         "grace_period_months": _as_int(payload.get("gracePeriodMonths"), default=0),
+        "offset_breakdown_json": _as_str(payload.get("offsetBreakdownJson")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadInstallmentPlanProjection, ("ledger_id", "sync_id"), values)
@@ -1067,6 +1096,7 @@ def rebuild_all(db: Session) -> int:
 # 反向引用只存在于:
 #   - read_tx_projection.attachments_json  (JSON list,每项含 cloudFileId)
 #   - read_category_projection.icon_cloud_file_id  (单列)
+#   - user_account_projection.avatar_cloud_file_id  (单列,2026-08-02 補強)
 # 0 引用就 DELETE 行 + unlink 物理文件(best-effort,磁盘 IO 失败只 warn)。
 
 
@@ -1126,7 +1156,19 @@ def _fileid_still_referenced(db: Session, *, user_id: str, file_id: str) -> bool
             UserCategoryProjection.icon_cloud_file_id == file_id,
         )
     )
-    return bool(cat_hit)
+    if cat_hit:
+        return True
+
+    # 帳戶頭像(2026-08-02 補強):跟 category icon 同款 user-scope 单列引用。
+    acc_hit = db.scalar(
+        select(func.count())
+        .select_from(UserAccountProjection)
+        .where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.avatar_cloud_file_id == file_id,
+        )
+    )
+    return bool(acc_hit)
 
 
 def _fileid_still_referenced_in_ledger(

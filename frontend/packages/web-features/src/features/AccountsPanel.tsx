@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   Button,
@@ -55,6 +55,10 @@ type MobileStyleAssetsProps = {
   /** 账户隐藏(issue #240):底部「已隐藏」分区里,每张隐藏卡的快捷「恢复」
    *  按钮回调(不经编辑弹窗,直接 PATCH hidden=false)。不传则不渲染该按钮。 */
   onRestore?: (row: ReadAccount) => void
+  /** 帳戶頭像(2026-08-02 補強):`avatar_cloud_file_id` → 已加载好的 blob URL。
+   *  跟 CategoryIcon 同款模式 —— 调用方(AccountsPage)负责从
+   *  AttachmentCacheContext 拉取,这里只读不拉取。 */
+  avatarPreviewUrlByFileId?: Record<string, string>
 }
 
 /**
@@ -73,7 +77,8 @@ function MobileStyleAssets({
   onClickAccount,
   onCreate,
   hideCurrencyCards = false,
-  onRestore
+  onRestore,
+  avatarPreviewUrlByFileId
 }: MobileStyleAssetsProps) {
   const t = useT()
   // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
@@ -200,6 +205,7 @@ function MobileStyleAssets({
                       onEdit={() => onEdit(row)}
                       onDelete={onDelete ? () => onDelete(row) : undefined}
                       onClick={onClickAccount ? () => onClickAccount(row) : undefined}
+                      avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
                     />
                   ))}
                 </div>
@@ -560,7 +566,8 @@ function BankCardTile({
   canManage,
   onEdit,
   onDelete,
-  onClick
+  onClick,
+  avatarPreviewUrlByFileId
 }: {
   row: ReadAccount & AccountStats
   color: string
@@ -569,6 +576,7 @@ function BankCardTile({
   onEdit: () => void
   onDelete?: () => void
   onClick?: () => void
+  avatarPreviewUrlByFileId?: Record<string, string>
 }) {
   const t = useT()
   const currency = row.currency || 'CNY'
@@ -583,10 +591,28 @@ function BankCardTile({
   // 估值账户：负债显示绝对值欠款，资产显示当前估值。
   const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
   // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
-  const isCreditCard = accountType === 'credit_card'
+  // account_group(主帳戶)未来也会挂靠银行帐户群组，不是天生就该走信用卡样式——
+  // 用「自己身上是否设了额度/帳單日/還款日」这个既有的 credit-billing-root 信号
+  // 来分辨这个群组具体是信用卡群组还是别的，不看 account_type 本身。
+  const isCreditStyleGroup =
+    accountType === 'account_group' &&
+    (typeof row.credit_limit === 'number' || Boolean(row.billing_day) || Boolean(row.payment_due_day))
+  const isCreditCard = accountType === 'credit_card' || isCreditStyleGroup
   const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
   const ccOwed = Math.max(0, -displayBalance)
   const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
+  // 「可繳款」提醒(§2.9 補強,2026-08-02):server 只在 billing-root 且真的
+  // 欠款(> 0)時才回這两个字段,不用在这里重新判断是不是信用卡/群组。
+  const dueBadgeDate =
+    typeof row.billing_remaining_due === 'number' && row.billing_remaining_due > 0 && row.billing_due_date
+      ? row.billing_due_date.slice(5, 10).replace('-', '/')
+      : null
+
+  // 帳戶頭像(2026-08-02 補強):使用者反饋光靠文字看不出是哪張卡 —— 有自訂
+  // 頭像時整張卡改用照片當背景(貼近真實卡面/Moze 的做法),疊一層深色漸層
+  // 保证文字可读;没有头像时维持原本的纯色渐变卡面(零影响)。
+  const avatarFileId = row.avatar_cloud_file_id?.trim() || ''
+  const avatarUrl = avatarFileId ? avatarPreviewUrlByFileId?.[avatarFileId] : undefined
 
   return (
     <div
@@ -596,7 +622,9 @@ function BankCardTile({
       style={{
         // 比 16:10 稍高一点，正文能放三列 stats 不挤。
         aspectRatio: '16 / 11',
-        background: `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
+        background: avatarUrl
+          ? `linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.55) 100%), url(${avatarUrl}) center/cover no-repeat`
+          : `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
         boxShadow: `0 4px 12px -4px ${color}66, 0 1px 2px rgba(0,0,0,0.06)`
       }}
       onClick={onClick}
@@ -665,6 +693,14 @@ function BankCardTile({
             {currency}
           </span>
         </div>
+
+        {/* 「可繳款」提醒(§2.9 補強,2026-08-02):不用點開詳情就能看到快到
+            期/已到期的帳單,對齊 Moze 參考截圖的信用卡卡片互動。 */}
+        {dueBadgeDate ? (
+          <div className="mt-1 self-start rounded-full bg-amber-400/90 px-2 py-[1px] text-[9px] font-semibold text-amber-950 shadow-sm">
+            {t('cardBilling.dueBadge', { date: dueBadgeDate })}
+          </div>
+        ) : null}
 
         {/* 正文：按类型切换布局 */}
         {isValuation ? (
@@ -814,6 +850,7 @@ const TRADABLE_TYPES: { value: string }[] = [
   { value: 'cash' },
   { value: 'bank_card' },
   { value: 'credit_card' },
+  { value: 'account_group' },
   { value: 'alipay' },
   { value: 'wechat' },
   { value: 'other' }
@@ -834,6 +871,9 @@ const TYPE_ICON_URL: Record<string, string> = {
   cash: '/icons/account/cash.svg',
   bank_card: '/icons/account/bank_card.svg',
   credit_card: '/icons/account/credit_card.svg',
+  // 主帳戶(合併帳單,§2.9 Phase 4)是純管理容器,沒有专属图标素材,借用
+  // bank_card 的图标(视觉上都是"机构/账户群组"的意象)。
+  account_group: '/icons/account/bank_card.svg',
   alipay: '/icons/account/alipay.svg',
   wechat: '/icons/account/wechat.svg',
   other: '/icons/account/other_account.svg',
@@ -865,6 +905,7 @@ const TYPE_COLORS: Record<string, string> = {
   cash: '#10b981',
   bank_card: '#3b82f6',
   credit_card: '#ef4444',
+  account_group: '#6366f1',
   alipay: '#06b6d4',
   wechat: '#22c55e',
   other: '#64748b',
@@ -1021,6 +1062,20 @@ type AccountsPanelProps = {
   /** 账户隐藏(issue #240):底部「已隐藏」分区每张卡的快捷「恢复」按钮回调。
    *  不传则该按钮不渲染(调用方尚未接线时零影响)。 */
   onRestore?: (row: ReadAccount) => void
+  /** 编辑弹窗的 open 状态本来完全是本组件内部 state(点行内「编辑」才会
+   *  setOpen(true))。跨页面场景(比如信用卡帐单卡片的「前往帳戶設定」,
+   *  经全局事件把 form 灌进 onFormChange 后)没有「点行」这个动作可以顺手
+   *  setOpen —— 每次这个数字变化(不是数值本身,是"变了没有")就强制打开
+   *  一次弹窗。不传則完全不影响现有行為(2026-08-02 用户反馈"前往帳戶設定"
+   *  点了没反应,根因就是这条路径漏了 setOpen)。 */
+  openSignal?: number
+  /** 帳戶頭像(2026-08-02 補強):`avatar_cloud_file_id` → 已加载好的 blob
+   *  URL,透传给 BankCardTile 渲染卡面照片。 */
+  avatarPreviewUrlByFileId?: Record<string, string>
+  /** 帳戶頭像上传回调 —— 编辑弹窗里选文件后调用,返回 {fileId, sha256} 写进
+   *  form;不传则不渲染上传 UI(调用方尚未接线时零影响,同 CategoriesPanel
+   *  的 onUploadIcon 模式)。 */
+  onUploadAvatar?: (file: File) => Promise<{ fileId: string; sha256: string } | null>
 }
 
 export function AccountsPanel({
@@ -1035,10 +1090,20 @@ export function AccountsPanel({
   onDelete,
   onClickAccount,
   hideCurrencyCards = false,
-  onRestore
+  onRestore,
+  openSignal,
+  avatarPreviewUrlByFileId,
+  onUploadAvatar
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  const prevOpenSignalRef = useRef(openSignal)
+  useEffect(() => {
+    if (openSignal !== undefined && openSignal !== prevOpenSignalRef.current) {
+      setOpen(true)
+    }
+    prevOpenSignalRef.current = openSignal
+  }, [openSignal])
 
   // 账户隐藏(issue #240):净资产 hero / 资产构成饼图按 D1 用全量 rows 计算
   // (隐藏不改「钱在哪」);只有「底部分组列表」拆成在用/已隐藏两部分展示。
@@ -1117,6 +1182,7 @@ export function AccountsPanel({
           onCreate={handleOpenCreate}
           hideCurrencyCards={hideCurrencyCards}
           onRestore={onRestore}
+          avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
         />
       )}
 
@@ -1147,16 +1213,33 @@ export function AccountsPanel({
                       const isValuation = VALUATION_TYPES.some((x) => x.value === value)
                       if (wasTradable && isValuation) return
                     }
-                    // 离开 credit_card → 清空信用卡专属字段
+                    // 额度/帳單日/還款日:account_group 自己身上,或沒有掛靠
+                    // 任何群組的獨立信用卡(§2.9 2026-08-02 第二輪放寬——單卡
+                    // 也該有群組的全部功能)才會顯示這組欄位;切到不符合的
+                    // 类型时清空,避免留着不会显示又不会被清掉的死值。
+                    const showsBilling = (ty: string, parentId: string) =>
+                      ty === 'account_group' || (ty === 'credit_card' && !parentId)
                     const next: AccountForm = { ...form, account_type: value }
-                    if (form.account_type === 'credit_card' && value !== 'credit_card') {
+                    if (
+                      showsBilling(form.account_type, form.parent_account_id) &&
+                      !showsBilling(value, form.parent_account_id)
+                    ) {
                       next.credit_limit = ''
                       next.billing_day = ''
                       next.payment_due_day = ''
                     }
-                    // 离开 bank_card / credit_card → 清空银行卡元信息
-                    const wasBankOrCredit = form.account_type === 'bank_card' || form.account_type === 'credit_card'
-                    const isBankOrCredit = value === 'bank_card' || value === 'credit_card'
+                    // 离开 credit_card → 清空「掛靠主帳戶」选择(只有信用卡
+                    // 会掛靠群組)。
+                    if (form.account_type === 'credit_card' && value !== 'credit_card') {
+                      next.parent_account_id = ''
+                    }
+                    // 离开 bank_card / credit_card / account_group → 清空银行卡元信息
+                    const wasBankOrCredit =
+                      form.account_type === 'bank_card' ||
+                      form.account_type === 'credit_card' ||
+                      form.account_type === 'account_group'
+                    const isBankOrCredit =
+                      value === 'bank_card' || value === 'credit_card' || value === 'account_group'
                     if (wasBankOrCredit && !isBankOrCredit) {
                       next.bank_name = ''
                       next.card_last_four = ''
@@ -1207,13 +1290,19 @@ export function AccountsPanel({
               />
             </div>
 
-            {/* 信用卡专属:信用额度 + 账单日 + 还款日(对齐 mobile credit_card
-                section)。还款提醒是 mobile 本地 SharedPreferences 不走 server,
-                web 暂不支持。 */}
-            {form.account_type === 'credit_card' ? (
+            {/* 額度/帳單日/還款日(§2.9 Phase 4,2026-08-02 改版為群組模型,
+                同日第二輪放寬到單卡):account_group 是純管理容器,這些欄位
+                設在群組自己身上,子帳戶(實體信用卡)沿用群組的結帳週期,
+                不再各自設定;沒有掛靠任何群組的獨立信用卡則直接設在自己
+                身上(自己既是「群組」也是唯一「成員」)。一旦選了掛靠某個
+                群組,這組欄位就不再顯示(改用群組共用的)。 */}
+            {form.account_type === 'account_group' ||
+            (form.account_type === 'credit_card' && !form.parent_account_id) ? (
               <div className="rounded-md border border-border/50 bg-muted/20 p-3 space-y-3">
                 <div className="text-xs font-semibold text-muted-foreground">
-                  {t('accounts.section.creditCard')}
+                  {form.account_type === 'account_group'
+                    ? t('accounts.section.accountGroup')
+                    : t('accounts.section.standaloneCardBilling')}
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <div className="space-y-1">
@@ -1251,11 +1340,126 @@ export function AccountsPanel({
                     />
                   </div>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  {form.account_type === 'account_group'
+                    ? t('accounts.section.accountGroupHint')
+                    : t('accounts.section.standaloneCardBillingHint')}
+                </p>
+
+                {/* 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶,不再是
+                    一條完整的週期性收支規則。到了繳款截止日,系統會直接從
+                    這裡選的帳戶轉帳繳清應繳金額(帳戶有錢的前提下)。 */}
+                <div className="space-y-2 border-t border-border/50 pt-3">
+                  <div className="flex items-center justify-between">
+                    <div className="min-w-0 pr-3">
+                      <p className="text-sm font-medium">{t('accounts.autoPay.toggleLabel')}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t('accounts.autoPay.toggleHint')}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={form.auto_pay_enabled}
+                      aria-label={t('accounts.autoPay.toggleLabel') as string}
+                      onClick={() =>
+                        onFormChange({ ...form, auto_pay_enabled: !form.auto_pay_enabled })
+                      }
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                        form.auto_pay_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          form.auto_pay_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  {form.auto_pay_enabled ? (
+                    <div className="space-y-1">
+                      <Label>{t('accounts.autoPay.sourceAccount')}</Label>
+                      <Select
+                        value={form.auto_pay_from_account_id || '__none__'}
+                        onValueChange={(value) =>
+                          onFormChange({
+                            ...form,
+                            auto_pay_from_account_id: value === '__none__' ? '' : value,
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={t('accounts.autoPay.sourceAccountPlaceholder')} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">
+                            {t('accounts.autoPay.sourceAccountPlaceholder')}
+                          </SelectItem>
+                          {rows
+                            .filter(
+                              (r) =>
+                                r.account_type !== 'account_group' && r.id !== form.editingId,
+                            )
+                            .map((r) => (
+                              <SelectItem key={r.id} value={r.id}>
+                                {r.name}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
-            {/* 银行卡 / 信用卡 元信息:开户行 + 卡号后四位。 */}
-            {form.account_type === 'bank_card' || form.account_type === 'credit_card' ? (
+            {/* 信用卡:掛靠主帳戶(§2.9 Phase 4 群組模型)——只能選
+                account_group 类型的帳戶,信用卡自己不能再被拿来当主帳戶。 */}
+            {form.account_type === 'credit_card' ? (
+              <div className="space-y-1">
+                <Label>{t('accounts.field.parentAccount')}</Label>
+                <Select
+                  value={form.parent_account_id || '__none__'}
+                  onValueChange={(value) => {
+                    const parentId = value === '__none__' ? '' : value
+                    // 掛上群組後,這張卡不再是「獨立信用卡」,自己的額度/
+                    // 帳單日/還款日欄位不會再顯示(改用群組共用的),清空
+                    // 避免留死值。
+                    if (parentId) {
+                      onFormChange({
+                        ...form,
+                        parent_account_id: parentId,
+                        credit_limit: '',
+                        billing_day: '',
+                        payment_due_day: '',
+                      })
+                    } else {
+                      onFormChange({ ...form, parent_account_id: parentId })
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('accounts.field.parentAccountNone')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">{t('accounts.field.parentAccountNone')}</SelectItem>
+                    {rows
+                      .filter((r) => r.account_type === 'account_group')
+                      .map((r) => (
+                        <SelectItem key={r.id} value={r.id}>
+                          {r.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{t('accounts.field.parentAccountHint')}</p>
+              </div>
+            ) : null}
+
+            {/* 银行卡 / 信用卡 / 主帳戶 元信息:开户行 + 卡号后四位。 */}
+            {form.account_type === 'bank_card' ||
+            form.account_type === 'credit_card' ||
+            form.account_type === 'account_group' ? (
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1">
                   <Label>{t('accounts.field.bankName')}</Label>
@@ -1278,6 +1482,52 @@ export function AccountsPanel({
                       onFormChange({ ...form, card_last_four: next })
                     }}
                   />
+                </div>
+              </div>
+            ) : null}
+
+            {/* 帳戶頭像(2026-08-02 補強):所有帳戶類型都可以設,使用者反饋光靠
+                bank_name 文字看不出是哪張卡。 */}
+            {onUploadAvatar ? (
+              <div className="space-y-1">
+                <Label>{t('accounts.field.avatar')}</Label>
+                <div className="flex items-center gap-3">
+                  {form.avatar_cloud_file_id && avatarPreviewUrlByFileId?.[form.avatar_cloud_file_id] ? (
+                    <img
+                      alt=""
+                      src={avatarPreviewUrlByFileId[form.avatar_cloud_file_id]}
+                      className="h-12 w-16 shrink-0 rounded-md object-cover ring-1 ring-border"
+                    />
+                  ) : null}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="text-sm"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      e.currentTarget.value = ''
+                      if (!file) return
+                      const res = await onUploadAvatar(file)
+                      if (res) {
+                        onFormChange({
+                          ...form,
+                          avatar_cloud_file_id: res.fileId,
+                          avatar_cloud_sha256: res.sha256
+                        })
+                      }
+                    }}
+                  />
+                  {form.avatar_cloud_file_id ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        onFormChange({ ...form, avatar_cloud_file_id: '', avatar_cloud_sha256: '' })
+                      }
+                    >
+                      {t('common.remove')}
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             ) : null}

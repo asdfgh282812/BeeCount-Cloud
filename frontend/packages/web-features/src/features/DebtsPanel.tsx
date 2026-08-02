@@ -91,6 +91,9 @@ export function DebtsPanel({
   const [repaymentAt, setRepaymentAt] = useState('')
   const [repaymentNote, setRepaymentNote] = useState('')
   const [recordingRepayment, setRecordingRepayment] = useState(false)
+  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
+  // 還款交易挂账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
+  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
 
   const handleOpenCreate = () => {
     onFormChange(debtDefaults())
@@ -359,7 +362,7 @@ export function DebtsPanel({
                       {t('transactions.placeholder.noAccount')}
                     </span>
                   </SelectItem>
-                  {accounts.map((a) => (
+                  {tradableAccounts.map((a) => (
                     <SelectItem key={a.id} value={a.id}>
                       {a.name}
                     </SelectItem>

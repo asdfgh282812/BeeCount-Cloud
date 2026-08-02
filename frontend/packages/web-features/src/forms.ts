@@ -103,19 +103,31 @@ export type AccountForm = {
   initial_balance: string
   /** 备注,所有类型可填。 */
   note: string
-  /** 信用额度,仅 credit_card 类型有意义。空字符串 = 未填。 */
+  /** 信用额度(§2.9 Phase 4 2026-08-02 改版),仅 account_group 类型有意义,
+   *  整组共用一个额度。空字符串 = 未填。 */
   credit_limit: string
-  /** 账单日(1-31),仅 credit_card。空字符串 / NaN = 未填。 */
+  /** 账单日(1-31),仅 account_group。空字符串 / NaN = 未填。 */
   billing_day: string
-  /** 还款日(1-31),仅 credit_card。 */
+  /** 还款日(1-31),仅 account_group。 */
   payment_due_day: string
-  /** 开户行,bank_card / credit_card 元信息。 */
+  /** 开户行,bank_card / credit_card / account_group 元信息。 */
   bank_name: string
-  /** 卡号后四位,bank_card / credit_card 元信息。 */
+  /** 卡号后四位,bank_card / credit_card / account_group 元信息。 */
   card_last_four: string
+  /** 掛靠的主帳戶(account_group)account id,仅 credit_card。
+   *  空字符串 = 沒有掛靠。 */
+  parent_account_id: string
   /** 账户隐藏(issue #240)。只在编辑已有账户时通过「隐藏/恢复」切换修改;
    *  新建默认 false。 */
   hidden: boolean
+  /** 自動扣繳(§2.9,2026-08-04 改版):開關,只在 account_group,或沒有
+   *  掛靠任何群組的獨立信用卡上生效。 */
+  auto_pay_enabled: boolean
+  /** 自動扣繳來源帳戶 id。空字符串 = 未設定。 */
+  auto_pay_from_account_id: string
+  /** 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,空字符串 = 沒有頭像。 */
+  avatar_cloud_file_id: string
+  avatar_cloud_sha256: string
 }
 
 export type CategoryForm = {
@@ -294,7 +306,12 @@ export const accountDefaults = (): AccountForm => ({
   payment_due_day: '',
   bank_name: '',
   card_last_four: '',
+  parent_account_id: '',
   hidden: false,
+  auto_pay_enabled: false,
+  auto_pay_from_account_id: '',
+  avatar_cloud_file_id: '',
+  avatar_cloud_sha256: '',
 })
 
 export const categoryDefaults = (): CategoryForm => ({

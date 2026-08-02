@@ -182,6 +182,194 @@ reminders` 原本掛在 `recurring_materializer` 共用的 loop 上——那個 
 `POST /internal/tasks/materialize-recurring`(admin scope,回傳體裡
 `debt_reminders` 計數)。
 
+**§2.9 信用卡管理整組功能(Phase 4,server + web UI,2026-08-01)已落地**:
+主帳戶(合併帳單)/信用卡繳款/免息期推薦三項落地新代碼,帳單分期(複用既有
+`installment_plans`,`account_id` 指向信用卡即可)/自動扣繳(複用既有
+`recurring_rules`,`RecurringRulesPanel.tsx` 本來就支援
+`advanced_mode=monthly_day` 對齊 `payment_due_day`)兩項確認**不需要任何
+新代碼**。主帳戶合併帳單:`user_account_projection` 加自我參照
+`parent_account_id`(migration `0027_account_parent_id`),`snapshot_
+mutator.py::_assert_valid_account_parent` 擋自我參照/未知帳戶/循環;新讀
+端點 `GET /ledgers/{id}/accounts/{account_id}/billing-summary` 把
+`parent_account_id == account_id` 的子卡跟主卡一起,用主卡自己的
+`billing_day`/`payment_due_day` 合併算「最近一次已結束的帳單週期」應繳/
+已繳/剩餘應繳,金額不落庫即時從 `read_tx_projection` 加總(同 §2.5 借還款
+`remaining_amount` 的取捨)。信用卡繳款:`POST .../accounts/{account_id}/
+card-payment` 語意化端點,本質建一筆 `tx_type=transfer`,走一般交易寫權限
+(不是 owner-only);沒帶 `note` 時自動帶入帳單週期區間當備註,是「衝抵當期
+應繳金額」標記的唯一落點,不需要額外欄位。免息期推薦:`GET .../accounts/
+{account_id}/interest-free-suggestion` 純計算端點,`src/services/
+credit_card.py` 無 DB 依賴,**月底夾斷是這塊最容易踩的坑**——往前/後平移
+月份必須用原始 `billing_day`/`payment_due_day` 重新夾斷,不能拿已經夾斷
+過的 `date.day` 反推(比如 `billing_day=31` 在二月夾斷成 28,28 往前推一
+個月會錯算成 1 月 28 號而不是 31 號),寫單元測試時當場踩到並修掉,測試
+鎖了這個邊界。web:`AccountsPanel.tsx` 信用卡欄位區加「主帳戶(合併帳單)」
+下拉(**這裡也踩了一個坑**:新建帳戶時 `form.editingId` 是 `null`,過濾條件
+如果寫成 `r.parent_account_id !== form.editingId` 會在新建模式下把所有
+"本來就沒掛靠"的信用卡帳戶全部誤濾掉,只有編輯模式才需要排除"自己的子卡"
+避免一步形成循環,這個 bug 是瀏覽器端到端測試抓到的,純 pytest 測不出來
+因為後端測試直接打 API、不經過這段前端下拉過濾邏輯);`AccountDetailDialog.
+tsx` 新增「信用卡帳單」卡片(合併摘要 + 繳款按鈕 + 免息期建議文案)。測試見
+`tests/test_credit_card.py`(20 例),手動測試清單 + 瀏覽器端到端驗證記錄見
+`docs/PH4_CREDIT_CARD_WEB_UI_MANUAL_TEST_PLAN.md`。mobile 端仍待排期。
+
+**§2.9 信用卡管理改版為「群組」模型(2026-08-02,server + web UI)**:上面
+2026-08-01 那版把主帳戶做成一張普通的 `credit_card` 帳戶(可以自己被記
+交易/被單獨繳款),使用者反馈这不對——現實情境是「同一家銀行辦了好幾張
+卡,銀行本身變成主帳戶」,主帳戶該是純管理容器,不該是能自己刷卡/收款的
+獨立帳戶,而且這個「群組」概念以後也會用在銀行帳戶(不限信用卡)。改動:
+①新增 `account_type = "account_group"`,`credit_limit`/`billing_day`/
+`payment_due_day` 搬到群組自己身上(子帳戶不再各自帶這些欄位);
+②`parent_account_id` 只能指向 `account_group`(`snapshot_mutator.py::
+_assert_valid_account_parent` 校驗,group 不能巢狀掛靠、不能自我掛靠、
+不能循環);③新 helper `_assert_account_not_group`(`routers/write/
+_shared.py`)擋 account_group 被一般交易/週期性收支/分期付款/範本套用
+拿來當帳戶用,在 `transactions.py`/`recurring_rules.py`/
+`installment_plans.py`/`tx_templates.py` 四個寫入路徑都掛了這個檢查;
+④group 還有子帳戶掛靠時不能刪除(同一個「不要 orphan」原則,`snapshot_
+mutator.py::delete_account`)。**billing-summary 的 `remaining_due` 順便
+改成「終身跑動餘額」計算**(子帳戶終身消費減終身已繳,不分期別窗口)——
+原本按「結帳日之後」窗口查 paid_amount 的寫法,溢繳只在當下那次查詢有效,
+下一期結帳日一過、查詢窗口往前移,溢繳就從計算裡消失了,這是 2026-08-01
+版本埋的一個潛在 bug,這次一起修掉;順便加 `available_credit`(=
+credit_limit - remaining_due,純顯示計算,不落庫,溢繳時自然超過原始
+額度,不用另外調整 credit_limit 欄位)。**信用卡繳款改成群組分攤**:
+使用者在群組頁面繳一筆總額,後端依「每個子帳戶自己的應繳金額」分攤 ——
+足額或溢繳時每個子帳戶都拿到剛好付清的金額,剩下的溢繳打一筆 transfer
+記在群組自己身上(這是 `account_group` 唯一可以當 transfer 目標的例外,
+只在這個內部流程走,一般交易寫入路徑仍然擋它);金額不夠付清全部時按
+應繳金額比例分攤,不會讓群組出現假的「溢繳」。**新增到期提醒**
+(`src/services/credit_card_reminders.py`,仿 §2.5 `debt_reminders.py`
+的模式,掛 `main.py` 同一個 15 分鐘 loop):結帳日當天/到期前 7 天/到期
+當天三種時機各發一次通知(`category="card_due"`,§2.1 通知中心設計時就
+預留了這個分類,一直沒接上,這次補齊),去重 key 是 `accountId + cycleEnd
++ kind`(每期都要各自提醒一次,不是「這張卡提醒過沒有」)。**共用計算邏輯
+抽到 `src/services/credit_card_billing.py`**:billing-summary 讀端點/
+card-payment 分攤端點/到期提醒都要算「這個群組現在該繳多少」,三處各自算
+一份容易漏改,抽成 `compute_group_billing()` 集中維護。測試見
+`tests/test_credit_card.py`(rewrite 後涵蓋 group 模型校驗 + 終身餘額
+carry-forward + 分攤三種情境)+ 新增
+`tests/test_credit_card_reminders.py`。web 側額外在信用卡帳單卡片加了
+「設定自動扣繳」/「新增帳單分期」捷徑按鈕(帶 `?account=<id>` 預填目標
+頁面表單,群組只有一張子卡時才能明確預填)。
+
+**§2.9 群組模型 web UI 手測踩出的四個問題修復(2026-08-03)**:上面
+2026-08-02 兩輪都只驗證了 pytest + build,沒有走完整瀏覽器手測,使用者
+自己測完回報四個問題,逐一修復:①**account_group 不該在交易表單被選到**
+——`TransactionsPanel.tsx`(以及 `RecurringRulesPanel.tsx`/
+`InstallmentPlansPanel.tsx`/`TxTemplatesPanel.tsx`/`DebtsPanel.tsx`)的帳戶
+下拉選單過濾掉 `account_type === 'account_group'`;順帶挖到一個更深的既有
+bug——`GlobalEditDialogs.tsx`(全局編輯彈窗,跟 `TransactionsPage.tsx` 是
+維護慣例上的兩份獨立提交邏輯之一)的提交 payload 一直只送 `account_name`/
+`from_account_name`/`to_account_name`,沒送對應的 `*_id`,導致
+`_assert_account_not_group` 這種靠 `account_id` 判斷的後端校驗在這個入口
+完全被繞過(create 因為走另一個表單有送 id 所以會擋、update 走這個彈窗
+就悄悄放行,且不只是 account_group 這個 case——任何透過這個彈窗改帳戶
+名字的操作,底層 accountId 外鍵其實都沒有真的跟著改,只是顯示字串變了,
+是本次意外挖到的既有 bug,不限 account_group);修法是幫這三個 id 欄位
+補上跟 `TransactionsPage.tsx` 一致的 name→id 解析。②**account_group 卡片
+在帳戶列表/詳情頁一直顯示 0**——`read/workspace.py::list_workspace_accounts`
+按 `account_sync_id` 聚合統計時,group 自己永遠没有交易(`_assert_account_
+not_group` 擋住了),所以 income/expense/balance 恆為 0;改成群組行的這四
+個欄位由 `parent_account_id` 指向它的子帳戶們加總回填,子帳戶自己的統計
+不受影響。③**沒有掛靠任何群組的獨立信用卡,也該有群組的全部功能**(繳費/
+分期/免息期建議)——`credit_card_billing.py` 新增 `is_billing_root`/
+`resolve_billing_children`:一張帳戶要嘛是 `account_group`,要嘛是沒有
+`parent_account_id` 的獨立 `credit_card`(這時自己既是「群組」也是唯一
+「成員」),才能被 billing-summary/card-payment/interest-free-suggestion
+直接查;已經掛靠群組的子卡不能被直接查(要透過群組)。這個放寬順便暴露
+兩個帳务計算 bug 一起修了:`compute_group_billing` 原本無條件另外查一次
+「轉入 group.sync_id 的錢」當溢繳結轉,獨立信用卡場景下 group 和唯一子
+帳戶是同一個 sync_id,會跟子帳戶自己的已還款金額重複計算兩次(改成
+`group.sync_id in member_ids` 時跳過這次額外查詢);`card_payment_ep` 的
+分攤算法在「足額付清」分支對 `allocations[account_id]`(溢繳結轉)用的是
+覆蓋賦值,獨立信用卡場景下這個 key 會跟同一輪迴圈裡「該子帳戶自己的應繳
+金額」的 key 衝突,覆蓋會把應繳金額直接冲掉,改成累加。web 側:
+`AccountsPanel.tsx` 額度/帳單日/還款日欄位改成 `account_group` 或「沒有
+掛靠的 credit_card」都會顯示,選了掛靠群組後這組欄位清空(改用群組共用
+設定);`AccountDetailDialog.tsx` 的統計卡片 + 信用卡合併帳單卡片同樣放寬
+到這兩種情形。④**自動扣繳到底會不會真的到期扣款**——原本
+`recurring_materializer` 到期是「無條件」生成轉帳交易,完全不看來源帳戶
+餘額夠不夠,使用者確認想要「不夠就跳過+通知」。落地時發現一個架構衝突:
+一般週期性收支規則在建立當下就把未來最多 12 個月(`DEFAULT_WINDOW_
+MONTHS`)或 200 筆(`MAX_OCCURRENCES_PER_GENERATION`)全部批次生成好(Phase
+1.5 特意這樣設計,為了減少排程掃描),但檢查餘額只有在交易「實際到期日」
+當下才有意義——提前好幾個月生成時,餘額根本無從得知。跟使用者確認後,
+把這個矛盾侷限在 `tx_type == "transfer"` 的規則(也就是自動扣繳本身)上:
+`write/recurring_rules.py::create_recurring_rule_ep` 和
+`write/transactions.py` 的 inline `recurring` 分支,transfer 規則不再呼叫
+`plan_initial_generation` 批次生成(`generated_until_at` 直接設成起點,不
+生成任何未來 occurrence;inline 分支裡"這筆交易本身"照常立刻建立,因為
+那是使用者當下的真實操作,不需要查餘額),`refill_recurring_windows` 的
+查詢也排除 `tx_type == "transfer"`。新函式 `recurring_materializer.
+materialize_due_transfer_rules`:到期當下才逐筆生成,生成前用
+`compute_account_balance`(公式跟 `list_workspace_accounts` 算單一帳戶
+餘額完全一致;2026-08-04 從 `_compute_account_balance` 改成公開名字,
+因為 `credit_card_autopay.py` 也要共用同一份)查 `from_account_id` 當下
+餘額,不夠就跳過(不推進
+`generated_until_at`,下次重試同一筆)+ 發通知(`category="reminder"`,
+`payload.kind="insufficient_funds"`,去重 key 是 `recurringRuleId +
+occurrenceAt`,同一期不會重複通知)。這個函式挂在 `main.py` 的
+15 分鐘 debt/card reminder loop 上(時效性要求跟提醒類似,不是
+`recurring_materializer` 自己那個 24 小時長尾續窗 loop),手動觸發走既有
+`POST /internal/tasks/materialize-recurring`(回傳體新增
+`transfer_rules_materialized`/`transfer_rules_skipped_insufficient`)。
+一般收支類規則(expense/income)完全不受影響——"餘額"這個概念對它們本來
+就不適用。測試見 `tests/test_credit_card.py`(update 路徑的 account_group
+校驗、workspace 帳戶加總、獨立信用卡繳款+溢繳)+
+`tests/test_recurring_rules.py`(transfer 規則不預生成、到期生成、餘額
+不足跳過+去重、補足餘額後重試成功、inline recurring transfer 只生成起點)。
+這輪同樣是先 pytest + build 過,尚未走完整瀏覽器手測。
+
+**§2.9 五項後續修復(2026-08-04)**:使用者實測建了一筆已逾期的信用卡帳單,
+問「是否有出現提醒」——查 `notifications` 表確認**沒有**,根因是
+`credit_card_reminders.send_due_card_reminders` 原本只精確比對三個時機
+(`today == cycle_end`/`due_date`/`due_date-7天`),一旦錯過那個精確的一天
+(比如帳單日/還款日是後補設定的,設定當下就已經逾期)就永遠不會再提醒——
+補了第四種時機 `overdue`(`today > due_date` 且 `remaining_due > 0`,同一期
+只發一次),補完後這個真實的逾期帳單立刻收到了通知(dev server 有
+autoreload,不用重啟)。另外一次處理四個問題:①**主帳戶詳情彈窗打開是空
+的**——`account_group` 自己從不擁有交易,`read/workspace.py::
+list_workspace_transactions` 原本只精確比對 `account_sync_id`,現在偵測到
+目標是 `account_group` 時展開成 `credit_card_billing.
+resolve_billing_children` 解析出的子帳戶一起查(前端
+`GlobalEntityDialogs.tsx` 也從傳 `accountName`(模糊 ilike)改傳
+`accountSyncId`(精確,才能吃到這個展開邏輯));②**主帳戶卡片一律顯示
+餘額/收入/支出,即使是信用卡群組**——因為 `account_group` 未來也會用在
+銀行帳戶群組,不能只看 `account_type` 判斷樣式,`AccountsPanel.tsx` 的
+`BankCardTile` 改成看群組自己身上有没有設 `credit_limit`/`billing_day`/
+`payment_due_day`(有 = 信用卡樣式的額度/已用/可用,沒有 = 一般餘額樣式,
+面向未來的銀行群組);③**帳戶詳情裡的交易點了沒反應**——`TransactionList`
+組件本來就有 `onSelect` prop,`AccountDetailDialog.tsx` 只是沒接,補上
+`dispatchOpenDetailTx`(跟 `TransactionsPage.tsx` 同款接法);④**自動扣繳
+整個重新設計**——使用者反饋不該是借用週期性收支規則(2026-08-02 那版),
+應該是掛在信用卡/主帳戶自己身上的一個開關 + 一個來源帳戶。新增
+`UserAccountProjection.auto_pay_enabled`/`auto_pay_from_account_id`
+(migration `0028_account_auto_pay`,自我參照同 `parent_account_id`
+模式),新服務 `src/services/credit_card_autopay.py::
+materialize_due_card_autopay`:到了繳款截止日(`today >= due_date`)才開始
+嘗試,查來源帳戶當下餘額(`recurring_materializer.compute_account_balance`)
+不夠就跳過 + 通知(去重 key `accountId+cycleEnd+kind`,同一期只通知一次,
+之後靜默持續重試),夠的話用 `credit_card_billing.
+compute_card_payment_allocations`(這個分攤函式是從 `card_payment_ep` 抽出來
+的,兩處共用同一份,不重複維護)照實際應繳金額整筆繳清;去重也擋掉「截止
+日後又有新消費導致 remaining_due 回正」被誤判成要重繳一次的情況。掛在同一
+個 15 分鐘 loop(`main.py::_run_debt_reminders_once`)+ 手動觸發端點
+(`POST /internal/tasks/materialize-recurring` 回傳體新增
+`card_autopay_executed`/`card_autopay_skipped_insufficient`)。舊的
+transfer 週期性收支規則(§2.2 通用機制,前一版被借用來做自動扣繳)完全
+不變,兩者是獨立功能不是取代關係——一般排程轉帳(比如固定房租轉帳)還是
+用回原本的週期性收支規則。web 側:帳戶編輯表單(`AccountsPanel.tsx`)在
+額度/帳單日/還款日那個區塊下面加了開關 + 來源帳戶下拉(只在 billing-root
+帳戶上顯示);`AccountDetailDialog.tsx` 原本「設定自動扣繳」按鈕(導去
+週期性收支頁面預填)拿掉,改顯示目前開關狀態 + 指去帳戶列表頁編輯。測試見
+`tests/test_credit_card_reminders.py::test_overdue_reminder_fires_when_due_
+date_already_passed`、`tests/test_credit_card.py::
+test_workspace_transactions_account_sync_id_expands_group_children`、新增
+`tests/test_credit_card_autopay.py`(5 例:到期前不觸發、餘額足夠整筆繳清+
+同期不重繳、餘額不足跳過+去重+補足重試成功、來源帳戶不能是 account_group、
+不能是自己)。這輪同樣只跑了 pytest + build,沒有走完整瀏覽器手測。
+
 ## 架构总览(server 端)
 
 FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make

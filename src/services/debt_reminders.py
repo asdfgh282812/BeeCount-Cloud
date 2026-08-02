@@ -108,7 +108,10 @@ def send_due_debt_reminders(db: Session, *, now: datetime | None = None) -> int:
                 f"{'已逾期' if overdue else '即将到期'},剩余待{'收' if debt.direction == 'receivable' else '还'}"
                 f" {max(float(debt.principal_amount or 0) - repaid_total, 0.0):.2f}"
             ),
-            payload={"ledgerId": debt.ledger_id, "debtId": debt.sync_id},
+            payload={
+                "ledgerId": notification_service.resolve_ledger_external_id(db, debt.ledger_id),
+                "debtId": debt.sync_id,
+            },
         )
         already.add(debt.sync_id)
         sent += 1

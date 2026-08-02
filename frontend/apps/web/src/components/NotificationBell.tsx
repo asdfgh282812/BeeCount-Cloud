@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ApiError,
   fetchNotifications,
+  fetchWorkspaceAccounts,
   fetchWorkspaceTransactions,
   markAllNotificationsRead,
   markNotificationRead,
@@ -12,6 +13,10 @@ import {
 } from '@beecount/api-client'
 import {
   Badge,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
@@ -19,7 +24,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
-import { dispatchOpenDetailTx } from '../lib/txDialogEvents'
+import { dispatchOpenDetailAccount, dispatchOpenDetailTx } from '../lib/txDialogEvents'
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -38,6 +43,10 @@ export function NotificationBell() {
   const [items, setItems] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [loading, setLoading] = useState(false)
+  // 通知文字在下拉列表里会被截断(`truncate`),点开先看完整标题/内容,
+  // 「查看详情」按钮才真的跳转 —— 不再是点一下列表项就直接跳走。
+  const [detailItem, setDetailItem] = useState<NotificationItem | null>(null)
+  const [jumping, setJumping] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!token) return
@@ -79,14 +88,31 @@ export function NotificationBell() {
     }
   }
 
+  // 点列表项:先标记已读 + 弹出「完整内容」弹窗(列表里文字会被截断,先看
+  // 完整标题/内容),不直接跳转 —— 跳转交给弹窗里的「查看详情」按钮。
+  const handleItemClick = (item: NotificationItem) => {
+    void handleMarkRead(item)
+    setOpen(false)
+    setDetailItem(item)
+  }
+
+  // 是否存在可跳转的目标 —— 决定详情弹窗要不要显示「查看详情」按钮。
+  const hasJumpTarget = (item: NotificationItem): boolean => {
+    const payload = item.payload
+    if (!payload) return false
+    return Boolean(
+      payload.debtId || payload.txId || payload.installmentPlanId ||
+        payload.recurringRuleId || payload.accountId,
+    )
+  }
+
   // 通知联动跳转:欠款到期/逾期提醒 → 欠款页(高亮该笔);带 txId 的通知
   // (目前是分期付款结清 —— 结清当下必然新增/关联一笔交易)→ 直接开那笔
   // 交易的详情弹窗,跟 DebtsPanel 还款记录跳转、退款双向勾稽同一招
-  // (`dispatchOpenDetailTx`);週期性收支续期通知没有单一交易可指,退回
-  // 对应列表页。找不到目标时静默不跳转,只标记已读。
-  const handleItemClick = async (item: NotificationItem) => {
-    void handleMarkRead(item)
-    setOpen(false)
+  // (`dispatchOpenDetailTx`);信用卡帐单到期/逾期/自动扣缴(§2.9 card_due)
+  // 带 accountId → 开该帐户的详情弹窗(合併帳單卡片就在里面);週期性收支
+  // 续期通知没有单一交易可指,退回对应列表页。找不到目标时静默不跳转。
+  const handleJumpToDetail = async (item: NotificationItem) => {
     const payload = item.payload
     if (!payload) return
     const debtId = typeof payload.debtId === 'string' ? payload.debtId : null
@@ -94,9 +120,11 @@ export function NotificationBell() {
     const installmentPlanId =
       typeof payload.installmentPlanId === 'string' ? payload.installmentPlanId : null
     const recurringRuleId = typeof payload.recurringRuleId === 'string' ? payload.recurringRuleId : null
+    const accountId = typeof payload.accountId === 'string' ? payload.accountId : null
 
     if (debtId) {
       navigate(`/app/debts?highlight=${encodeURIComponent(debtId)}`)
+      setDetailItem(null)
       return
     }
     if (txId) {
@@ -105,18 +133,41 @@ export function NotificationBell() {
         const found = page.items[0]
         if (found) {
           dispatchOpenDetailTx(found)
+          setDetailItem(null)
           return
         }
       } catch {
-        // 查不到就往下 fallback 到对应列表页,不打断使用者
+        // 查不到就往下 fallback,不打断使用者
+      }
+    }
+    if (accountId) {
+      setJumping(true)
+      try {
+        // 不带 ledgerId 过滤 —— account 是 user-global 实体,靠 accountId 精确
+        // 匹配已经够用;历史上 `ledgerId` 字段被后端误存成内部 PK 而非
+        // external_id(2026-08-04 修复),带着它过滤反而会让老通知永远查不到。
+        const accounts = await fetchWorkspaceAccounts(token, {})
+        const found = accounts.find((a) => a.id === accountId)
+        if (found) {
+          navigate('/app/accounts')
+          dispatchOpenDetailAccount(found, { defaultScope: 'all' })
+          setDetailItem(null)
+          return
+        }
+      } catch {
+        // 查不到就往下 fallback,不打断使用者
+      } finally {
+        setJumping(false)
       }
     }
     if (installmentPlanId) {
       navigate('/app/installment-plans')
+      setDetailItem(null)
       return
     }
     if (recurringRuleId) {
       navigate('/app/recurring-rules')
+      setDetailItem(null)
     }
   }
 
@@ -174,7 +225,7 @@ export function NotificationBell() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => void handleItemClick(item)}
+                onClick={() => handleItemClick(item)}
                 className={`flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent/40 ${
                   item.read_at ? '' : 'bg-primary/5'
                 }`}
@@ -200,6 +251,46 @@ export function NotificationBell() {
           )}
         </div>
       </DropdownMenuContent>
+
+      {/* 列表里文字截断,点开先看完整标题/内容;有可跳转目标才显示「查看详情」。 */}
+      <Dialog open={detailItem !== null} onOpenChange={(v) => !v && setDetailItem(null)}>
+        <DialogContent className="max-w-sm">
+          {detailItem ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{detailItem.title}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2">
+                {detailItem.body ? (
+                  <p className="whitespace-pre-wrap text-sm text-muted-foreground">{detailItem.body}</p>
+                ) : null}
+                <p className="text-[11px] text-muted-foreground/70">
+                  {formatRelativeTime(detailItem.created_at, t)}
+                </p>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-border px-3 py-1.5 text-sm"
+                  onClick={() => setDetailItem(null)}
+                >
+                  {t('dialog.cancel')}
+                </button>
+                {hasJumpTarget(detailItem) ? (
+                  <button
+                    type="button"
+                    disabled={jumping}
+                    className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                    onClick={() => void handleJumpToDetail(detailItem)}
+                  >
+                    {t('notifications.viewDetail')}
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </DropdownMenu>
   )
 }

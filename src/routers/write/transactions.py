@@ -44,6 +44,9 @@ async def create_tx(
     )
     if replay:
         return replay
+    # 主帳戶(§2.9 Phase 4):account_group 是純管理容器,不能被一般交易挂上。
+    for field in ("account_id", "from_account_id", "to_account_id"):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
     # 旧架构这里要跑 _resolve_tx_dictionary_payload 去 UserAccount/Category/Tag
     # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
@@ -84,13 +87,6 @@ async def create_tx(
     recurring_req = req.recurring
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:
-        occurrences, generated_until_at, fully_generated = recurring_schedule.plan_initial_generation(
-            start=req.happened_at,
-            end=recurring_req.end_at,
-            frequency=recurring_req.frequency,
-            interval=recurring_req.interval,
-            advanced_rule=recurring_req.advanced_rule_json,
-        )
         rule_payload = dict(mutate_payload)
         rule_payload.update({
             "tx_type": req.tx_type,
@@ -105,8 +101,31 @@ async def create_tx(
             "next_run_at": req.happened_at,
             "end_at": recurring_req.end_at,
             "advanced_rule_json": recurring_req.advanced_rule_json,
-            "generated_until_at": generated_until_at,
         })
+
+        # 自動扣繳(tx_type=="transfer",2026-08-02 补):这笔交易本身(现在
+        # 正在记的这笔)照常立刻创建,是使用者当下的真实操作,不需要检查
+        # 余额。但未来各期不再提前批次生成——推 rule_payload 只推进到这一笔
+        # 为止(generated_until_at=req.happened_at),之后每一期都交给
+        # recurring_materializer.materialize_due_transfer_rules 到期当下才
+        # 生成 + 检查来源帐户余额(见该函式 docstring;架构原因跟
+        # write/recurring_rules.py::create_recurring_rule_ep 同一段说明)。
+        if req.tx_type == "transfer":
+            rule_payload["generated_until_at"] = req.happened_at
+            next_snapshot, rule_id = create_recurring_rule(snapshot, rule_payload)
+            first_tx_payload = dict(mutate_payload)
+            first_tx_payload["recurring_rule_id"] = rule_id
+            next_snapshot, first_tx_id = _mutate_create_tx(next_snapshot, first_tx_payload)
+            return next_snapshot, first_tx_id
+
+        occurrences, generated_until_at, fully_generated = recurring_schedule.plan_initial_generation(
+            start=req.happened_at,
+            end=recurring_req.end_at,
+            frequency=recurring_req.frequency,
+            interval=recurring_req.interval,
+            advanced_rule=recurring_req.advanced_rule_json,
+        )
+        rule_payload["generated_until_at"] = generated_until_at
         if fully_generated:
             rule_payload["enabled"] = False
         next_snapshot, rule_id = create_recurring_rule(snapshot, rule_payload)
@@ -191,6 +210,8 @@ async def update_tx(
         current_user=current_user,
         entity_sync_id=tx_id,
     )
+    for field in ("account_id", "from_account_id", "to_account_id"):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
     # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,
     # 不再经 UserAccount 投影表。
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)

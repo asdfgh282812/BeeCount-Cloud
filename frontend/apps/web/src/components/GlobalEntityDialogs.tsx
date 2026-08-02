@@ -31,6 +31,7 @@ import {
 } from '../lib/txDialogEvents'
 import { AccountDetailDialog } from './dialogs/AccountDetailDialog'
 import { CategoryDetailDialog } from './dialogs/CategoryDetailDialog'
+import { InstallmentEditChoiceDialog } from './dialogs/InstallmentEditChoiceDialog'
 import { InstallmentRefundChoiceDialog } from './dialogs/InstallmentRefundChoiceDialog'
 import { TagDetailDialog } from './dialogs/TagDetailDialog'
 import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
@@ -75,12 +76,22 @@ export function GlobalEntityDialogs() {
   >(null)
   const [installmentRefundBusy, setInstallmentRefundBusy] = useState(false)
 
+  // 2026-08-03 使用者反饋 #4:分期產生的交易編輯發起點 —— 先問要做哪一種
+  // 差異化操作,見 InstallmentEditChoiceDialog 說明。
+  const [installmentEdit, setInstallmentEdit] = useState<WorkspaceTransaction | null>(null)
+
   const [account, setAccount] = useState<WorkspaceAccount | null>(null)
   const [accountScope, setAccountScope] = useState<DetailScope>('current')
   const [accountTxs, setAccountTxs] = useState<WorkspaceTransaction[]>([])
   const [accountTotal, setAccountTotal] = useState(0)
   const [accountOffset, setAccountOffset] = useState(0)
   const [accountLoading, setAccountLoading] = useState(false)
+  // 信用卡帳戶瀏覽帳單週期時(AccountDetailDialog::CreditCardBillingSection),
+  // 下面交易列表要跟著过滤到该週期日期区间——2026-08-02 用户反馈"切期数,
+  // 下面明细却不动"。null = 不过滤(非信用卡帳戶 / 週期還沒算出來)。
+  const [accountPeriodRange, setAccountPeriodRange] = useState<{ start: string; end: string } | null>(
+    null,
+  )
 
   const [category, setCategory] = useState<WorkspaceCategory | null>(null)
   const [categoryScope, setCategoryScope] = useState<DetailScope>('current')
@@ -118,12 +129,22 @@ export function GlobalEntityDialogs() {
   }, [token])
 
   const loadAccountTxs = useCallback(
-    async (accountName: string, scope: DetailScope, offset: number) => {
+    async (accountId: string, scope: DetailScope, offset: number) => {
       setAccountLoading(true)
       try {
         const page = await fetchWorkspaceTransactions(token, {
-          accountName,
+          // 用 accountSyncId(精确匹配)取代原本的 accountName(模糊 ilike)——
+          // 主帳戶(account_group)自己没有任何交易,后端在这个参数上会展开
+          // 群组底下的子帳戶一起查(见 read/workspace.py),accountName 做不到
+          // 这件事,2026-08-04 修复群组详情永远是空的问题。
+          accountSyncId: accountId,
           ledgerId: scope === 'current' ? activeLedgerId || undefined : undefined,
+          // 帳單週期日期区间过滤(2026-08-02 补强)。cycle_start 当天不算进这
+          // 期(帳單週期是 (cycle_start, cycle_end] 左开右闭),dateFrom 因此
+          // 要往后推一天;dateTo 同理往后推一天才能包住 cycle_end 当天整天
+          // (server 端 dateTo 是 exclusive `<`)。
+          dateFrom: accountPeriodRange ? addIsoDays(accountPeriodRange.start, 1) : undefined,
+          dateTo: accountPeriodRange ? addIsoDays(accountPeriodRange.end, 1) : undefined,
           limit: DETAIL_PAGE_SIZE,
           offset,
         })
@@ -136,7 +157,7 @@ export function GlobalEntityDialogs() {
         setAccountLoading(false)
       }
     },
-    [token, activeLedgerId],
+    [token, activeLedgerId, accountPeriodRange],
   )
 
   // 监听 account detail
@@ -147,7 +168,8 @@ export function GlobalEntityDialogs() {
       setAccountTxs([])
       setAccountTotal(0)
       setAccountOffset(0)
-      void loadAccountTxs(acc.name, defaultScope, 0)
+      setAccountPeriodRange(null)
+      void loadAccountTxs(acc.id, defaultScope, 0)
       // 同时拉一份 tags 字典(如还没拉)
       if (tagsDict.length === 0) {
         void fetchWorkspaceTags(token, { limit: 500 }).then(setTagsDict).catch(() => undefined)
@@ -162,10 +184,32 @@ export function GlobalEntityDialogs() {
       setAccountTxs([])
       setAccountTotal(0)
       setAccountOffset(0)
-      void loadAccountTxs(account.name, next, 0)
+      void loadAccountTxs(account.id, next, 0)
     },
     [account, accountScope, loadAccountTxs],
   )
+
+  // CreditCardBillingSection 每次選中週期的日期區間變化都會呼叫一次(見
+  // AccountDetailDialog 的 onPeriodRangeChange prop),这里存下来 + 重新拉
+  // 第一页交易(旧页码作废,跟切 scope 同款处理)。
+  const handleAccountPeriodRangeChange = useCallback(
+    (range: { start: string; end: string } | null) => {
+      setAccountPeriodRange((prev) => {
+        if (prev?.start === range?.start && prev?.end === range?.end) return prev
+        return range
+      })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!account) return
+    setAccountTxs([])
+    setAccountTotal(0)
+    setAccountOffset(0)
+    void loadAccountTxs(account.id, accountScope, 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountPeriodRange])
 
   const loadCategoryTxs = useCallback(
     async (categorySyncId: string, scope: DetailScope, offset: number) => {
@@ -301,9 +345,36 @@ export function GlobalEntityDialogs() {
   const handleEditTx = useCallback(
     (target: WorkspaceTransaction) => {
       setTx(null)
+      // §2.12.1 补强(2026-08-03 使用者反饋 #4):分期產生的交易不能直接
+      // 自由編輯(後端也擋了 amount/happened_at/account_id,見
+      // `TX_UPDATE_INSTALLMENT_LINKED`)——先問要做哪一種差異化操作,而不是
+      // 打開一般編輯表單。
+      if (target.installment_plan_id) {
+        setInstallmentEdit(target)
+        return
+      }
       dispatchOpenEditTx(target)
     },
     [],
+  )
+
+  // 四选一之后关掉选择弹窗,导去分期总览页并带上 highlight + action(+txId)
+  // query——该页的 InstallmentPlansPanel 自动展开对应的既有差异化编辑表单,
+  // 不在这里重复实作一份。
+  const handleInstallmentEditChoice = useCallback(
+    (action: 'editThis' | 'editFuture' | 'earlyRepay' | 'payoff') => {
+      if (!installmentEdit) return
+      const planId = installmentEdit.installment_plan_id
+      if (!planId) return
+      const txId = installmentEdit.id
+      setInstallmentEdit(null)
+      const params = new URLSearchParams({ highlight: planId, action })
+      if (action === 'editThis' || action === 'editFuture') {
+        params.set('txId', txId)
+      }
+      navigate(`/app/installment-plans?${params.toString()}`)
+    },
+    [installmentEdit, navigate],
   )
 
   // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原交易的
@@ -472,6 +543,14 @@ export function GlobalEntityDialogs() {
         onCancel={() => setInstallmentRefund(null)}
         onConfirm={() => void handleConfirmWholeInstallmentPlanRefund()}
       />
+      <InstallmentEditChoiceDialog
+        open={installmentEdit !== null}
+        onCancel={() => setInstallmentEdit(null)}
+        onChooseEditThis={() => handleInstallmentEditChoice('editThis')}
+        onChooseEditFuture={() => handleInstallmentEditChoice('editFuture')}
+        onChooseEarlyRepay={() => handleInstallmentEditChoice('earlyRepay')}
+        onChoosePayoff={() => handleInstallmentEditChoice('payoff')}
+      />
       <AccountDetailDialog
         account={account}
         scope={accountScope}
@@ -482,7 +561,8 @@ export function GlobalEntityDialogs() {
         loading={accountLoading}
         tags={tagsDict}
         onClose={() => setAccount(null)}
-        onLoadMore={(name, off) => void loadAccountTxs(name, accountScope, off)}
+        onLoadMore={(id, off) => void loadAccountTxs(id, accountScope, off)}
+        onPeriodRangeChange={handleAccountPeriodRangeChange}
       />
       <CategoryDetailDialog
         category={category}
@@ -519,4 +599,13 @@ export function GlobalEntityDialogs() {
       />
     </>
   )
+}
+
+/** ISO 日期字符串 + N 天(UTC,不受本地时区影响)。帳單週期日期过滤专用 ——
+ *  週期是 (cycle_start, cycle_end] 左开右闭,server 端 dateFrom/dateTo 语义
+ *  分别是 `>=`/`<`(exclusive),所以两端都要往后推一天才能精确对齐。 */
+function addIsoDays(iso: string, days: number): string {
+  const d = new Date(iso)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString()
 }

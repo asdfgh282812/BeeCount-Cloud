@@ -1,6 +1,8 @@
 import { API_BASE, authedGet, resolveApiUrl } from './http'
 import { extractApiError } from './errors'
 import type {
+  AccountBillingSummary,
+  AccountInterestFreeSuggestion,
   AnalyticsMetric,
   AnalyticsScope,
   NetWorthHistory,
@@ -60,6 +62,33 @@ export async function fetchReadSummary(token: string, ledgerId: string): Promise
 
 export async function fetchReadAccounts(token: string, ledgerId: string): Promise<ReadAccount[]> {
   return authedGet<ReadAccount[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/accounts`, token)
+}
+
+/** 信用卡合併帳單摘要(§2.9 Phase 4)。帳戶未設定 billing_day/payment_due_day
+ *  时后端回 400,调用方需自行 catch(通常表示不显示帳單卡片)。 */
+export async function fetchAccountBillingSummary(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  cycleOffset?: number
+): Promise<AccountBillingSummary> {
+  const qs = cycleOffset ? `?cycle_offset=${encodeURIComponent(String(cycleOffset))}` : ''
+  return authedGet<AccountBillingSummary>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/billing-summary${qs}`,
+    token
+  )
+}
+
+/** 信用卡免息期推薦(§2.9 Phase 4),纯计算,不含交易明细。 */
+export async function fetchAccountInterestFreeSuggestion(
+  token: string,
+  ledgerId: string,
+  accountId: string
+): Promise<AccountInterestFreeSuggestion> {
+  return authedGet<AccountInterestFreeSuggestion>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/interest-free-suggestion`,
+    token
+  )
 }
 
 export async function fetchReadCategories(token: string, ledgerId: string): Promise<ReadCategory[]> {

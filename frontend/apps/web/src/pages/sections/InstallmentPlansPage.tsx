@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   createInstallmentPlan,
@@ -50,6 +51,34 @@ export function InstallmentPlansPage() {
   const { activeLedgerId, currency, currentLedger } = useLedgers()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // 2026-08-03 使用者反饋 #4:從交易詳情的編輯選擇彈窗跳轉過來時
+  // (?highlight=<planId>&action=editThis|editFuture|earlyRepay|payoff
+  // &txId=<txId>),高亮 + 自動打開對應的差異化操作表單,見
+  // InstallmentPlansPanel 的 autoOpenAction 處理。
+  const highlightPlanId = searchParams.get('highlight')
+  const actionParam = searchParams.get('action') as
+    | 'editThis'
+    | 'editFuture'
+    | 'earlyRepay'
+    | 'payoff'
+    | null
+  const txIdParam = searchParams.get('txId')
+  const autoOpenAction =
+    highlightPlanId && actionParam
+      ? { planId: highlightPlanId, action: actionParam, txId: txIdParam || undefined }
+      : null
+  const handleAutoOpenConsumed = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('action')
+        next.delete('txId')
+        return next
+      },
+      { replace: true },
+    )
+  }, [setSearchParams])
 
   const bucket = activeLedgerId || '__none__'
   const [plans, setPlans] = usePageCache<ReadInstallmentPlan[]>(
@@ -117,6 +146,28 @@ export function InstallmentPlansPage() {
       .filter((v) => v.trim().length > 0)
     if (ids.length > 0) ensureLoadedMany(ids)
   }, [categories, ensureLoadedMany])
+
+  // 從交易詳情跳轉過來時(?highlight=<planId>),定位並高亮對應卡片一次
+  // (跟 DebtsPage 同款寫法)。
+  useEffect(() => {
+    if (!highlightPlanId || plans.length === 0) return
+    const el = document.getElementById(`installment-plan-${highlightPlanId}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightPlanId, plans.length])
+
+  // 从信用卡帳單卡片的「新增帳單分期」入口跳转过来时(?account=<id>,
+  // §2.9 Phase 4)预填帳戶,使用者只需要填總額/期數/起始日。
+  useEffect(() => {
+    const accountId = searchParams.get('account')
+    if (!accountId || accounts.length === 0) return
+    const matched = accounts.find((a) => a.id === accountId)
+    if (!matched) return
+    setForm((prev) => {
+      if (prev.editingId || prev.account_id === accountId) return prev
+      return { ...prev, account_id: accountId, account_name: matched.name }
+    })
+  }, [searchParams, accounts])
 
   const canManage = Boolean(activeLedgerId) && currentLedger?.role === 'owner'
 
@@ -313,6 +364,9 @@ export function InstallmentPlansPage() {
             onPayoff={onPayoff}
             onTerminateFuture={onTerminateFuture}
             canManage={canManage}
+            highlightPlanId={highlightPlanId}
+            autoOpenAction={autoOpenAction}
+            onAutoOpenConsumed={handleAutoOpenConsumed}
           />
         )}
       </CardContent>

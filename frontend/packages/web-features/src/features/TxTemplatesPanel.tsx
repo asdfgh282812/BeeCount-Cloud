@@ -68,6 +68,9 @@ export function TxTemplatesPanel({
   const [pendingDelete, setPendingDelete] = useState<ReadTxTemplate | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [applyTarget, setApplyTarget] = useState<ReadTxTemplate | null>(null)
+  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
+  // 範本套用挂账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
+  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
   const [applyAt, setApplyAt] = useState('')
   const [applyAmount, setApplyAmount] = useState('')
   const [applyNote, setApplyNote] = useState('')
@@ -333,7 +336,7 @@ export function TxTemplatesPanel({
                           {t('transactions.placeholder.noAccount')}
                         </span>
                       </SelectItem>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>
@@ -363,7 +366,7 @@ export function TxTemplatesPanel({
                           {t('transactions.placeholder.noAccount')}
                         </span>
                       </SelectItem>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>
@@ -409,7 +412,7 @@ export function TxTemplatesPanel({
                           {t('transactions.placeholder.noAccount')}
                         </span>
                       </SelectItem>
-                      {accounts.map((a) => (
+                      {tradableAccounts.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
                           {a.name}
                         </SelectItem>

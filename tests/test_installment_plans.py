@@ -227,6 +227,257 @@ def test_create_installment_plan_generates_all_periods():
         app.dependency_overrides.clear()
 
 
+def test_create_installment_plan_with_offset_existing_balance_zeroes_out_card_debt():
+    """§2.3 補強(2026-08-02 第三輪,對齊 Moze「Bill Installment」設計 +
+    使用者反饋 #4):把信用卡已經欠下的帳單轉成分期時,`offset_existing_
+    balance=true` 應該把原本那筆消費算進去的應繳金額「清空」——但**不**
+    產生任何真實交易(沖銷款不該出現在交易明細,是純內部記帳調整),透過
+    billing-summary 的 `remaining_due` 驗證沖銷生效。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insoffset1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSOFFSET1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insoffset1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+
+        # 先建一张信用卡 + 一笔既有消费(模拟已经欠下的帳單,日期特意选在
+        # 40 天前,确保不管测试跑在当月哪一天,都稳稳落在"已结束的帐单周期"
+        # 里,不受 billing_day 对齐影响)—— sync push 走 app scope。
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "billingDay": 25, "paymentDueDay": 10}, device_id=device)
+        old_charge_at = datetime.now(timezone.utc) - timedelta(days=40)
+        _push(client, hdr_app, ledger_id, "transaction", "tx-existing",
+              {"syncId": "tx-existing", "type": "expense", "amount": 1200.0,
+               "happenedAt": _iso(old_charge_at), "accountId": "acc-card", "accountName": "卡"},
+              device_id=device)
+
+        summary_before = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/accounts/acc-card/billing-summary",
+            headers=hdr,
+        )
+        assert summary_before.status_code == 200, summary_before.text
+        assert summary_before.json()["remaining_due"] == 1200.0
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=30)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+                "account_id": "acc-card",
+                "offset_existing_balance": True,
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        txs = _transactions(client, hdr, ledger_id)
+        # 既有消费 1 笔 + 分期 3 期 expense = 4 笔 —— 沖銷不落地成交易。
+        assert len(txs) == 4
+        assert all(t["tx_type"] != "income" for t in txs)
+        expense_txs = [t for t in txs if t["tx_type"] == "expense"]
+        assert len(expense_txs) == 4
+        installment_expense_txs = [t for t in expense_txs if t["installment_plan_id"] == plan_id]
+        assert len(installment_expense_txs) == 3
+
+        # 沖銷生效:原本 1200 應繳,建完分期後應繳归零(分期各期都排到未来,
+        # 还没到期不计入"已发生"金额)。
+        summary_after = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/accounts/acc-card/billing-summary",
+            headers=hdr,
+        )
+        assert summary_after.status_code == 200, summary_after.text
+        assert summary_after.json()["remaining_due"] == 0.0
+
+        # 需求 #3(2026-08-02):删除整个分期计画后,沖銷連带失效,帳單变回
+        # 原本尚未缴费的状态。
+        base2 = _latest_change_id(client, token, ledger_id)
+        del_res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans/{plan_id}",
+            headers=hdr,
+            json={"base_change_id": base2},
+        )
+        assert del_res.status_code == 200, del_res.text
+        summary_after_delete = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/accounts/acc-card/billing-summary",
+            headers=hdr,
+        )
+        assert summary_after_delete.status_code == 200, summary_after_delete.text
+        assert summary_after_delete.json()["remaining_due"] == 1200.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_installment_plan_rejects_when_no_outstanding_balance():
+    """需求 #1(2026-08-02 使用者反饋):已經繳清、沒有欠款的信用卡帳單不能
+    再轉成分期,沒有東西可以沖銷。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insoffset3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSOFFSET3"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insoffset3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "billingDay": 25, "paymentDueDay": 10}, device_id=device)
+        # 没有任何消费,remaining_due 恒为 0。
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=30)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 500.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+                "account_id": "acc-card",
+                "offset_existing_balance": True,
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert res.json()["error"]["code"] == "INSTALLMENT_NO_OUTSTANDING_BALANCE"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_installment_plan_on_account_group_distributes_offset_to_children():
+    """需求 #2(2026-08-02 使用者反饋):如果信用卡掛靠了主帳戶(群組),分期
+    應該以主帳戶為單位建立,而不是要求使用者手動選一張子卡 —— `account_id`
+    直接傳群組自己的 id,server 端自動把沖銷金額分攤到各個子帳戶身上。子卡
+    直接被拿来当 `account_id` 应该被拒绝(必须透過群组)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insoffset4@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSOFFSET4"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insoffset4@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+
+        _push(client, hdr_app, ledger_id, "account", "acc-group",
+              {"syncId": "acc-group", "name": "X 銀行", "type": "account_group", "currency": "CNY",
+               "billingDay": 25, "paymentDueDay": 10}, device_id=device)
+        _push(client, hdr_app, ledger_id, "account", "acc-cube",
+              {"syncId": "acc-cube", "name": "cube卡", "type": "credit_card", "currency": "CNY",
+               "parentAccountId": "acc-group"}, device_id=device)
+        _push(client, hdr_app, ledger_id, "account", "acc-shopee",
+              {"syncId": "acc-shopee", "name": "蝦皮聯名卡", "type": "credit_card", "currency": "CNY",
+               "parentAccountId": "acc-group"}, device_id=device)
+        old_charge_at = datetime.now(timezone.utc) - timedelta(days=40)
+        _push(client, hdr_app, ledger_id, "transaction", "tx-cube",
+              {"syncId": "tx-cube", "type": "expense", "amount": 800.0,
+               "happenedAt": _iso(old_charge_at), "accountId": "acc-cube", "accountName": "cube卡"},
+              device_id=device)
+        _push(client, hdr_app, ledger_id, "transaction", "tx-shopee",
+              {"syncId": "tx-shopee", "type": "expense", "amount": 400.0,
+               "happenedAt": _iso(old_charge_at), "accountId": "acc-shopee", "accountName": "蝦皮聯名卡"},
+              device_id=device)
+
+        # 直接選子卡应该被拒绝——必须透過群组。
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=30)
+        base = _latest_change_id(client, token, ledger_id)
+        rejected = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 800.0,
+                "periods": 2,
+                "first_period_at": first_period_at.isoformat(),
+                "account_id": "acc-cube",
+                "offset_existing_balance": True,
+            },
+        )
+        assert rejected.status_code == 400, rejected.text
+        assert rejected.json()["error"]["code"] == "INSTALLMENT_ACCOUNT_IS_GROUP_MEMBER"
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+                "account_id": "acc-group",
+                "offset_existing_balance": True,
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+
+        # 分期各期的交易应该挂在主帳戶(群组)自己身上(2026-08-03 第四轮改版,
+        # 对齐使用者反馈「每期分期金额应该附属主帳戶,而非个别卡片」),不再
+        # 任选一张子卡。
+        txs = _transactions(client, hdr, ledger_id)
+        installment_txs = [t for t in txs if t.get("installment_plan_id") == plan_id]
+        assert len(installment_txs) == 3
+        assert all(t["account_id"] == "acc-group" for t in installment_txs)
+
+        summary = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/accounts/acc-group/billing-summary",
+            headers=hdr,
+        )
+        assert summary.status_code == 200, summary.text
+        # 两张子卡的欠款都被沖銷:800 + 400 = 1200 应繳归零。
+        assert summary.json()["remaining_due"] == 0.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_installment_plan_offset_requires_account_id():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insoffset2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSOFFSET2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insoffset2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+                "offset_existing_balance": True,
+            },
+        )
+        assert res.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_installment_plan_plain_patch_can_settle():
     client, _TS = _make_client()
     try:
@@ -831,5 +1082,66 @@ def test_installment_plan_delete_cascades_periods_and_transactions_after_partial
         txs = _transactions(client, hdr, ledger_id)
         assert len(txs) == 1, "3 期 expense + 退款生成的 income 都要被删,只剩退款交易本身"
         assert txs[0]["id"] == refund_tx_id
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_installment_period_tx_amount_date_account_cannot_be_edited_directly():
+    """2026-08-03 使用者反饋 #4:分期產生的交易雖然可以編輯,但不能單獨改
+    金額/日期/帳戶(會讓 read_installment_period_projection 跟這筆 tx 脫鉤),
+    要走專門的 installment 端點(單期編輯/rebalance-from/提前還本/提前結清)。
+    note 不影響 period 排程,不受此限制。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "insedit1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSEDIT1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "insedit1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 300.0,
+                "periods": 3,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        plan_id = res.json()["entity_id"]
+        period = _periods(client, hdr, ledger_id, plan_id)[0]
+        tx_id = period["tx_id"]
+
+        for field, value in (
+            ("amount", 999.0),
+            ("happened_at", (first_period_at + timedelta(days=5)).isoformat()),
+        ):
+            base = _latest_change_id(client, token, ledger_id)
+            res = client.patch(
+                f"/api/v1/write/ledgers/{ledger_id}/transactions/{tx_id}",
+                headers=hdr,
+                json={"base_change_id": base, field: value},
+            )
+            assert res.status_code == 400, res.text
+            assert res.json()["error"]["code"] == "TX_UPDATE_INSTALLMENT_LINKED"
+
+        # note 不受影响,可以直接编辑。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{tx_id}",
+            headers=hdr,
+            json={"base_change_id": base, "note": "第一期备注"},
+        )
+        assert res.status_code == 200, res.text
+        txs = {t["id"]: t for t in _transactions(client, hdr, ledger_id)}
+        assert txs[tx_id]["note"] == "第一期备注"
+        assert txs[tx_id]["amount"] == 100.0, "上面两次被拒绝的 amount/happened_at 编辑不应该生效"
     finally:
         app.dependency_overrides.clear()

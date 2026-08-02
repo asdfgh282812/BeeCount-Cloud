@@ -201,6 +201,10 @@ async def apply_tx_template_api(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     (tx_type, tpl_amount, tpl_note, category_id, account_id,
      from_account_id, to_account_id) = template
+    for field, value in (
+        ("account_id", account_id), ("from_account_id", from_account_id), ("to_account_id", to_account_id),
+    ):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=value, field_name=field)
 
     category_name, category_kind = _resolve_category_display(
         db, user_id=current_user.id, category_id=category_id,

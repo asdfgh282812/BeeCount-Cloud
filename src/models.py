@@ -658,6 +658,25 @@ class UserAccountProjection(Base):
     payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # 主帳戶(合併帳單,§2.9 Phase 4 MOZE_FEATURE_GAP_SD.md):自我參照,附卡/
+    # 子卡的 sync_id 指向主卡的 sync_id;None = 沒有掛在任何主卡下。
+    parent_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶,不再是一條完整的
+    # 週期性收支規則。掛在信用卡群組(或沒有掛靠任何群組的獨立信用卡)自己
+    # 身上,`auto_pay_from_account_id` 是同一個 user 底下另一個帳戶的
+    # sync_id 自我參照,見 `services.credit_card_autopay`。
+    auto_pay_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    auto_pay_from_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 帳戶頭像(2026-08-02 補強):使用者反饋光靠 bank_name 文字看不出是哪張
+    # 卡,加一張自訂圖片。走跟 category icon 一樣的共用 attachment 池(見
+    # `AttachmentFile`/`attachment_kind="account_avatar"`),`avatar_cloud_
+    # file_id` 是唯一權威值,沒有 mobile 端"本地路徑"這種舊制概念要相容,
+    # 所以只有這一個欄位 + sha256(dedup 用),不像 category 有 icon_type/
+    # custom_icon_path 那麼多歷史包袱。
+    avatar_cloud_file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    avatar_cloud_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
     # 账户隐藏(issue #240)。default false:既有行升级后不隐藏,旧 App 不发该
     # 字段时保持 false。只影响前端选择器/列表呈现,服务端不做任何统计过滤(D1)。
@@ -847,6 +866,12 @@ class ReadInstallmentPlanProjection(Base):
     # 取整后的尾差塞进哪一期:'first' / 'last'。
     remainder_position: Mapped[str] = mapped_column(String(16), default="last")
     grace_period_months: Mapped[int] = mapped_column(Integer, default=0)
+    # 帳單分期沖銷(§2.3,2026-08-02 第三輪):`{child_account_sync_id: amount}`
+    # 的 JSON,server 端算好直接寫入,不接受 client 傳入。純虛擬記帳調整,
+    # 不對應任何 read_tx_projection 交易(2026-08-02 使用者反饋:沖銷款不該
+    # 出現在交易明細)——`services.credit_card_billing` 算應繳金額時直接扣掉
+    # 這個值,刪除這個計畫這一行就自動失效,帳單恢復成「尚未沖銷」狀態。
+    offset_breakdown_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

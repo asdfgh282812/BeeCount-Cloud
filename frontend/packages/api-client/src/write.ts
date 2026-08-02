@@ -3,6 +3,7 @@ import type {
   AccountPayload,
   BudgetCreatePayload,
   BudgetUpdatePayload,
+  CardPaymentPayload,
   CategoryPayload,
   DebtCreatePayload,
   DebtUpdatePayload,
@@ -183,6 +184,23 @@ export async function deleteAccount(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}`,
     token,
     { base_change_id: baseChangeId },
+  )
+}
+
+/** §2.9 Phase 4:信用卡繳款,语意化端点,建立一笔 transfer 交易。 */
+export async function cardPayment(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  baseChangeId: number,
+  payload: CardPaymentPayload,
+  idempotencyKey?: string
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-payment`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey
   )
 }
 

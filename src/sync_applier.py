@@ -139,11 +139,20 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("paymentDueDay", "payment_due_day"),
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
+        # 主帳戶(合併帳單,§2.9 Phase 4 MOZE_FEATURE_GAP_SD.md):子卡指向主卡
+        # 的 sync_id,None = 沒有掛靠。
+        ("parentAccountId", "parent_account_id"),
+        # 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶 sync_id。
+        ("autoPayEnabled", "auto_pay_enabled"),
+        ("autoPayFromAccountId", "auto_pay_from_account_id"),
         # 账户隐藏(issue #240):payload 键 hidden(camelCase 同名,跟 App
         # serializeAccount 对齐)。缺键时 _merge_from_spec 从 existing 行补齐,
         # 不被 partial-update 冲成 False(merge 契约测试见
         # tests/test_account_hidden_sync.py::test_mobile_push_account_partial_update_keeps_hidden)。
         ("hidden", "hidden"),
+        # 帳戶頭像(2026-08-02 補強):None/空字串 = 沒有自訂頭像。
+        ("avatarCloudFileId", "avatar_cloud_file_id"),
+        ("avatarCloudSha256", "avatar_cloud_sha256"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),
@@ -223,6 +232,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("roundAmounts", "round_amounts"),
         ("remainderPosition", "remainder_position"),
         ("gracePeriodMonths", "grace_period_months"),
+        ("offsetBreakdownJson", "offset_breakdown_json"),
     ]),
     "installment_period": _MergeSpec(ReadInstallmentPeriodProjection, [
         ("syncId", "sync_id"),

@@ -25,9 +25,10 @@ from src.models import (
     Ledger,
     ReadTxProjection,
     User,
+    UserAccountProjection,
     UserCategoryProjection,
 )
-from src.projection import gc_orphan_attachments, upsert_tx
+from src.projection import gc_orphan_attachments, upsert_account, upsert_tx
 
 
 def _make_db():
@@ -144,6 +145,72 @@ def test_gc_preserves_category_icon_referenced_file(tmp_path):
 
         assert n == 0
         assert path.exists()
+
+
+def test_gc_preserves_account_avatar_referenced_file(tmp_path):
+    """account.avatar_cloud_file_id 还指向 → 不删(2026-08-02 補強,同款
+    user-scope 单列引用,跟 category icon 同一个套路)。"""
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        att, path = _make_attachment(tmp_path, "f-avatarshared")
+        db.add(att)
+        db.add(
+            UserAccountProjection(
+                user_id="U1",
+                sync_id="acc-other",
+                name="other-account",
+                account_type="credit_card",
+                avatar_cloud_file_id="f-avatarshared",
+                source_change_id=1,
+            )
+        )
+        db.commit()
+
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-avatarshared"})
+        db.commit()
+
+        assert n == 0
+        assert path.exists()
+
+
+def test_upsert_account_gc_removes_old_avatar_on_change(tmp_path):
+    """换头像(或清空)后,旧 avatar_cloud_file_id 应该走 GC —— 没有其它引用
+    时物理文件被清掉,跟 upsert_category 换图标的既有行为一致。"""
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        old_att, old_path = _make_attachment(tmp_path, "f-old-avatar")
+        db.add(old_att)
+        db.commit()
+
+        upsert_account(
+            db, user_id="U1", source_change_id=1,
+            payload={
+                "syncId": "acc-1", "name": "卡", "type": "credit_card",
+                "avatarCloudFileId": "f-old-avatar",
+            },
+        )
+        db.commit()
+        assert old_path.exists()
+
+        # 换成新头像 —— 旧的没有其它引用,应该被 GC 掉。
+        new_att, new_path = _make_attachment(tmp_path, "f-new-avatar")
+        db.add(new_att)
+        db.commit()
+        upsert_account(
+            db, user_id="U1", source_change_id=2,
+            payload={
+                "syncId": "acc-1", "name": "卡", "type": "credit_card",
+                "avatarCloudFileId": "f-new-avatar",
+            },
+        )
+        db.commit()
+
+        assert not old_path.exists(), "旧头像应已被 GC 清掉"
+        assert db.get(AttachmentFile, "f-old-avatar") is None
+        assert new_path.exists()
+        assert db.get(AttachmentFile, "f-new-avatar") is not None
 
 
 def test_gc_skips_missing_attachment_file(tmp_path):

@@ -397,6 +397,12 @@ async def _stop_recurring_materializer() -> None:  # noqa: B008
 # 小时才会发出第一批提醒(而且 recurring materializer 的 loop 是先 sleep 再
 # 跑,等待时间还会更长)。改成独立 loop:启动时立即跑一次,之后每 15 分钟跑
 # 一次,跟 debt_reminders.py 模块说明里原本设计的"15 分钟"频率对齐。
+# 2026-08-02 補:信用卡繳款到期提醒、自動扣繳(transfer 週期性收支)到期
+# 生成 + 餘額檢查,同样是时效性操作,也都併到这个 loop(理由同上——不能等
+# 24 小时)。2026-08-04 補:信用卡「自動扣繳」改版成帳戶級開關(不再借用
+# 週期性收支規則,見 `services.credit_card_autopay` 模块说明),同样挂在
+# 这个 loop 上;上面那条 transfer 週期性收支的餘額檢查是給"一般排程轉帳"
+# 用的通用機制,两者是各自独立的功能,不是取代关系。
 # ============================================================================
 
 
@@ -419,7 +425,7 @@ async def _start_debt_reminder_loop() -> None:  # noqa: B008
 
 
 def _run_debt_reminders_once() -> None:
-    from .services import debt_reminders
+    from .services import credit_card_autopay, credit_card_reminders, debt_reminders
 
     with SessionLocal() as db:
         debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
@@ -427,6 +433,39 @@ def _run_debt_reminders_once() -> None:
             db.commit()
             logging.getLogger(__name__).info(
                 "debt reminders: sent=%d", debt_reminder_count,
+            )
+        # 信用卡繳款到期提醒(§2.9 Phase 4,2026-08-02 補):挂在同一个 15
+        # 分钟 loop 上,跟 debt reminders 同样的"时效性提醒不能等 24 小时"
+        # 理由(见上方 loop 说明)。
+        card_reminder_count = credit_card_reminders.send_due_card_reminders(db)
+        if card_reminder_count:
+            db.commit()
+            logging.getLogger(__name__).info(
+                "card reminders: sent=%d", card_reminder_count,
+            )
+        # 自動扣繳(tx_type=="transfer" 的週期性收支规则,2026-08-02 補):
+        # 到期才逐笔生成 + 查来源帐户当下余额,同样是时效性操作,挂在这个
+        # 15 分钟 loop 上(不是 recurring_materializer 自己那个 24 小时 loop
+        # ——那个 loop 处理的是"没设 end_at 的长期规则提前续窗",跟这里
+        # "到期当下才检查余额"是两回事,见 recurring_materializer.py 模块
+        # 说明)。
+        from .services import recurring_materializer
+
+        transfer_result = recurring_materializer.materialize_due_transfer_rules(db)
+        if transfer_result["materialized"] or transfer_result["skipped_insufficient"]:
+            db.commit()
+            logging.getLogger(__name__).info(
+                "recurring transfer rules: materialized=%d skipped_insufficient=%d",
+                transfer_result["materialized"], transfer_result["skipped_insufficient"],
+            )
+        # 信用卡自動扣繳(§2.9,2026-08-04 改版:帳戶級開關,見
+        # services.credit_card_autopay 模块说明),同样挂在这个 15 分钟 loop。
+        autopay_result = credit_card_autopay.materialize_due_card_autopay(db)
+        if autopay_result["executed"] or autopay_result["skipped_insufficient"]:
+            db.commit()
+            logging.getLogger(__name__).info(
+                "credit card autopay: executed=%d skipped_insufficient=%d",
+                autopay_result["executed"], autopay_result["skipped_insufficient"],
             )
 
 

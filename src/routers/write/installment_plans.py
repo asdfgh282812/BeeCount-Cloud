@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, Header, Request
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 from ...snapshot_mutator import create_transaction as _mutate_create_tx
+from ...services import credit_card_billing
 from ...services import installment_amortization
 from ...services import notifications as notification_service
 
@@ -83,7 +84,99 @@ async def create_installment_plan_ep(
     )
     if replay:
         return replay
+    if req.offset_existing_balance and not req.account_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="offset_existing_balance requires account_id",
+        )
+
+    # §2.3 補強(2026-08-02 第三輪,對齊使用者需求「以主帳戶為單位分期,而
+    # 不是選擇信用卡」):`account_id` 現在可以是 account_group(主帳戶)
+    # 本身,或沒有掛靠任何群組的獨立信用卡(見 `credit_card_billing.
+    # is_billing_root`)。已經掛靠某個群組的子卡不能被直接選——要嘛透過
+    # 群組,前端這輪也已經不再露出單選子卡的介面。
+    #
+    # `periods_account_id`(2026-08-03 第四輪改版,對齊使用者反饋「每期
+    # 分期金額應該附屬在主帳戶,而非個別卡片」):group 場景下直接就是
+    # group 自己的 sync_id,不再任選底下第一張子卡——`credit_card_
+    # billing.billing_member_ids` 已經把 group.sync_id 併入帳單聚合查詢
+    # 範圍,group 自己持有這些真實的分期期數交易時,`compute_group_
+    # billing`/`compute_cycle_period_billing` 都能正確算進「應繳」,不需要
+    # 再借用某張子卡當交易掛靠點。獨立信用卡場景下 group 本來就是
+    # `account_row` 自己,行為不變。
+    account_row: UserAccountProjection | None = None
+    billing_children: list[UserAccountProjection] = []
+    periods_account_id = req.account_id
+    offset_breakdown: dict[str, float] | None = None
+    if req.account_id:
+        account_row = db.scalar(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == current_user.id,
+                UserAccountProjection.sync_id == req.account_id,
+            )
+        )
+        if account_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
+        if account_row.account_type == "account_group":
+            billing_children = list(
+                credit_card_billing.resolve_billing_children(db, account=account_row)
+            )
+            if not billing_children:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="account group has no member accounts",
+                )
+            periods_account_id = account_row.sync_id
+        else:
+            if account_row.parent_account_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="account belongs to a billing group; use the group's account_id instead",
+                )
+            _assert_account_not_group(
+                db, user_id=current_user.id, account_id=req.account_id, field_name="account_id",
+            )
+            billing_children = [account_row]
+
+    if req.offset_existing_balance:
+        assert account_row is not None  # 上面已檢查 offset_existing_balance 必須帶 account_id
+        if account_row.billing_day is None or account_row.payment_due_day is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="account has no billing_day/payment_due_day configured",
+            )
+        billing = credit_card_billing.compute_group_billing(
+            db, ledger_id=ledger.id, group=account_row, children=billing_children, now=_utcnow(),
+        )
+        remaining_due_by_child = billing["per_child_remaining_due"]
+        total_due = sum(remaining_due_by_child.values())
+        # 需求 #1(2026-08-02 使用者反饋):已經沒有欠款的帳單不能再轉分期,
+        # 沒有東西可以沖銷。
+        if total_due <= 0.005:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="no outstanding balance to convert to installment",
+            )
+        if req.total_amount > total_due + 0.01:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="total_amount exceeds outstanding balance",
+            )
+        allocations = credit_card_billing.compute_card_payment_allocations(
+            group_sync_id=account_row.sync_id,
+            remaining_due_by_child=remaining_due_by_child,
+            amount=req.total_amount,
+        )
+        child_ids = {c.sync_id for c in billing_children}
+        offset_breakdown = {
+            cid: amt for cid, amt in allocations.items() if amt > 0 and cid in child_ids
+        }
+
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    if periods_account_id != req.account_id:
+        mutate_payload["account_id"] = periods_account_id
+    if offset_breakdown:
+        mutate_payload["offset_breakdown"] = offset_breakdown
 
     # 攤還算法是纯函式,建 endpoint 时就能算好,不用等进 _mutate closure
     # (validation 错误在这里抛也会被 _commit_write 的 except ValueError 接住,
@@ -107,8 +200,13 @@ async def create_installment_plan_ep(
         category_name, category_kind = _resolve_category_display(
             db, user_id=current_user.id, category_id=req.category_id,
         )
+        # 帳單分期沖銷(2026-08-02 第三輪改版):不再產生任何 `income` 交易
+        # ——沖銷金額已在上面算好存成 `mutate_payload["offset_breakdown"]`,
+        # 純虛擬記帳調整(見 credit_card_billing.compute_offset_totals
+        # docstring),不出現在交易明細,刪除計畫時自動失效。這裡的
+        # `periods_account_id` 是真正掛各期分期交易的那張真實帳戶。
         account_name = _resolve_account_display(
-            db, user_id=current_user.id, account_id=req.account_id,
+            db, user_id=current_user.id, account_id=periods_account_id,
         )
         for p in schedule:
             tx_payload = {
@@ -119,7 +217,7 @@ async def create_installment_plan_ep(
                 "category_id": req.category_id,
                 "category_name": category_name,
                 "category_kind": category_kind,
-                "account_id": req.account_id,
+                "account_id": periods_account_id,
                 "account_name": account_name,
                 **actor_fields,
             }

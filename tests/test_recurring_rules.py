@@ -630,3 +630,328 @@ def test_refill_recurring_windows_extends_generated_until_at():
             assert generated_again == 0
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 自動扣繳(tx_type=="transfer"):到期才逐筆生成 + 檢查來源帳戶餘額
+# (2026-08-02 補,MOZE_FEATURE_GAP_SD.md §2.2 / 使用者反饋)
+# ---------------------------------------------------------------------------
+
+
+def test_transfer_recurring_rule_not_bulk_generated_at_creation():
+    """跟 expense/income 規則不同:建立時只有原始那一筆(inline recurring
+    起點,或這裡走独立 POST /recurring-rules 沒有起點交易),不會像批次視窗
+    那樣一次生出未來好幾個月的 occurrence——因為到時候來源帳戶餘額夠不夠
+    現在根本不知道。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR1"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 1000.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "rectr1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=5)
+        end_at = next_run + timedelta(days=180)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 200.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert txs == [], "transfer 規則不该在建立当下就预生成任何 occurrence"
+
+        with TS() as db:
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id)
+            )
+            assert rule_row.generated_until_at is None
+            assert rule_row.enabled is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_transfer_recurring_rule_materializes_when_due_and_balance_sufficient():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR2"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 1000.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "rectr2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)  # 已到期
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 200.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+            result = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result["materialized"] == 1
+            assert result["skipped_insufficient"] == 0
+
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id)
+            )
+            assert rule_row.generated_until_at is not None
+
+            txs = db.scalars(
+                select(ReadTxProjection).where(ReadTxProjection.recurring_rule_sync_id == rule_id)
+            ).all()
+            assert len(txs) == 1
+            assert txs[0].amount == 200.0
+            assert txs[0].from_account_sync_id == "acc-bank"
+            assert txs[0].to_account_sync_id == "acc-card"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_transfer_recurring_rule_skips_and_notifies_when_balance_insufficient():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR3"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        # 只有 50 元,規則要扣 200 元 —— 餘額不足。
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 50.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "rectr3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 200.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            from src.models import Notification
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+
+            result = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result["materialized"] == 0
+            assert result["skipped_insufficient"] == 1
+
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id)
+            )
+            assert rule_row.generated_until_at is None, "不足額不推進,下次重試同一筆"
+
+            txs = db.scalars(
+                select(ReadTxProjection).where(ReadTxProjection.recurring_rule_sync_id == rule_id)
+            ).all()
+            assert txs == []
+
+            notifications = db.scalars(
+                select(Notification).where(Notification.category == "reminder")
+            ).all()
+            insufficient = [n for n in notifications if (n.payload_json or {}).get("kind") == "insufficient_funds"]
+            assert len(insufficient) == 1
+
+            # 重跑一次:同一期不该重复通知。
+            result2 = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result2["skipped_insufficient"] == 0
+            notifications_again = db.scalars(
+                select(Notification).where(Notification.category == "reminder")
+            ).all()
+            insufficient_again = [
+                n for n in notifications_again if (n.payload_json or {}).get("kind") == "insufficient_funds"
+            ]
+            assert len(insufficient_again) == 1, "去重:同一期不该发第二次通知"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_transfer_recurring_rule_retries_successfully_after_balance_topped_up():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr4@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR4"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 50.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "rectr4@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 200.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+            result = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result["skipped_insufficient"] == 1
+
+        # 帳戶入帳到夠付了。
+        _push(client, hdr_app, ledger_id, "transaction", "tx-topup",
+              {"syncId": "tx-topup", "type": "income", "amount": 500.0,
+               "happenedAt": _iso(), "accountId": "acc-bank", "accountName": "銀行"})
+
+        with TS() as db:
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+            result2 = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result2["materialized"] == 1
+            assert result2["skipped_insufficient"] == 0
+
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id)
+            )
+            assert rule_row.generated_until_at is not None
+
+            txs = db.scalars(
+                select(ReadTxProjection).where(ReadTxProjection.recurring_rule_sync_id == rule_id)
+            ).all()
+            assert len(txs) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_inline_recurring_transfer_creates_origin_only_not_bulk():
+    """`transactions.py` 的 inline `recurring` 分支(建交易當下順便設成
+    週期起點):tx_type=="transfer" 時,這筆交易本身(使用者當下的真實操作)
+    照常立刻建立,但不會像 expense/income 那樣連未來好幾期都一起批次生成。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr5@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR5"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 1000.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "rectr5@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        happened_at = datetime.now(timezone.utc)
+        end_at = happened_at + timedelta(days=180)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 150.0,
+                "happened_at": happened_at.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+                "recurring": {
+                    "frequency": "monthly",
+                    "interval": 1,
+                    "end_at": end_at.isoformat(),
+                },
+            },
+        )
+        assert res.status_code == 200, res.text
+        origin_tx_id = res.json()["entity_id"]
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 1, "只有这笔起点交易,不该预生成未来的期数"
+        assert txs[0]["id"] == origin_tx_id
+
+        with TS() as db:
+            tx_row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == origin_tx_id))
+            rule_id = tx_row.recurring_rule_sync_id
+            assert rule_id
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id)
+            )
+            assert rule_row.generated_until_at is not None
+            assert rule_row.enabled is True
+    finally:
+        app.dependency_overrides.clear()

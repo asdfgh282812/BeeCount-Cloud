@@ -193,7 +193,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.payment_due_day,
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
+        UserAccountProjection.parent_account_id,
         UserAccountProjection.hidden,
+        UserAccountProjection.auto_pay_enabled,
+        UserAccountProjection.auto_pay_from_account_id,
+        UserAccountProjection.avatar_cloud_file_id,
+        UserAccountProjection.avatar_cloud_sha256,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -207,7 +212,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         payment_due_day,
         bank_name,
         card_last_four,
+        parent_account_id,
         hidden,
+        auto_pay_enabled,
+        auto_pay_from_account_id,
+        avatar_cloud_file_id,
+        avatar_cloud_sha256,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -228,10 +238,26 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["bankName"] = bank_name
         if card_last_four:
             acc["cardLastFour"] = card_last_four
+        if parent_account_id:
+            acc["parentAccountId"] = parent_account_id
         # 账户隐藏(issue #240):无条件输出(不像其它扩展字段那样"有值才带
         # key"),与 App serializeAccount 无条件发 hidden 对齐,保 /sync/full
         # 重装 / 新设备首次同步时隐藏标记不丢(03-tech-design-cloud.md §二 (B))。
         acc["hidden"] = bool(hidden)
+        # 自動扣繳(§2.9,2026-08-04 改版):NOT NULL 布尔列,同 hidden 无条件
+        # 输出。2026-08-02 补强发现这两个字段(连同下面头像字段)原本完全没
+        # 进这个 SELECT——写路径的 diff-emit 用这个函数重建"prev"基线,任何
+        # 跟 autopay/avatar 无关的账户编辑(改名/备注等)都会因为这里漏选,
+        # 导致 diff 出的 entity dict 里这些 key 整个缺失,被 upsert_account
+        # 当成"没传"写成 null/False,静默清空用户已设置的自動扣繳。
+        acc["autoPayEnabled"] = bool(auto_pay_enabled)
+        if auto_pay_from_account_id:
+            acc["autoPayFromAccountId"] = auto_pay_from_account_id
+        # 帳戶頭像(2026-08-02 補強)。
+        if avatar_cloud_file_id:
+            acc["avatarCloudFileId"] = avatar_cloud_file_id
+        if avatar_cloud_sha256:
+            acc["avatarCloudSha256"] = avatar_cloud_sha256
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。
@@ -426,12 +452,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadInstallmentPlanProjection.round_amounts,
         ReadInstallmentPlanProjection.remainder_position,
         ReadInstallmentPlanProjection.grace_period_months,
+        ReadInstallmentPlanProjection.offset_breakdown_json,
     ).where(ReadInstallmentPlanProjection.ledger_id == ledger_id)
     now = datetime.now(timezone.utc)
     for (sid, total_amount, periods, period_amount, first_period_at,
          acc_sid, cat_sid, note, status, repayment_method, interest_period,
          interest_rate, round_amounts, remainder_position,
-         grace_period_months) in db.execute(ins_stmt).all():
+         grace_period_months, offset_breakdown_json) in db.execute(ins_stmt).all():
         plan_periods = periods_by_plan.get(sid) or []
         # paidPeriods/nextPeriodAt/periodAmount 不再由排程写入,这里从 period
         # 明细即时算出(见 ReadInstallmentPlanProjection docstring)。没有
@@ -472,6 +499,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             p["categoryId"] = cat_sid
         if note is not None:
             p["note"] = note
+        if offset_breakdown_json:
+            p["offsetBreakdownJson"] = offset_breakdown_json
         installment_plans.append(p)
 
     # 借還款追蹤(§2.5 Phase 3)

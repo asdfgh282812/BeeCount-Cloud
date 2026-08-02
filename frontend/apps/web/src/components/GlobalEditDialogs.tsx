@@ -349,12 +349,30 @@ export function GlobalEditDialogs() {
       }
     }
 
+    // 同 TransactionsPage.onSaveTransaction:account_id 必须跟 account_name
+    // 一起送,否则后端只更新 accountName 显示字符串、不动真正的 accountId
+    // 外键,造成名字/外键悄悄脱钩(这个 dialog 之前一直漏了这段,2026-08-02
+    // 被使用者选中"主帳戶(account_group)"当帐户改这条时才暴露出来——create
+    // 时后端 _assert_account_not_group 靠 account_id 才拦得住,update 若没
+    // 送 account_id 就完全绕过校验)。
     const resolvedAccountId =
       editTxForm.tx_type === 'transfer'
         ? null
         : editTxAccounts.find(
             (a) => (a.name || '').trim().toLowerCase() === editTxForm.account_name.trim().toLowerCase(),
           )?.id || null
+    const resolvedFromAccountId =
+      editTxForm.tx_type === 'transfer'
+        ? editTxAccounts.find(
+            (a) => (a.name || '').trim().toLowerCase() === editTxForm.from_account_name.trim().toLowerCase(),
+          )?.id || null
+        : null
+    const resolvedToAccountId =
+      editTxForm.tx_type === 'transfer'
+        ? editTxAccounts.find(
+            (a) => (a.name || '').trim().toLowerCase() === editTxForm.to_account_name.trim().toLowerCase(),
+          )?.id || null
+        : null
     const resolvedCategoryId =
       editTxForm.tx_type === 'transfer'
         ? null
@@ -384,14 +402,17 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type === 'transfer'
           ? null
           : editTxForm.account_name.trim() || null,
+      account_id: editTxForm.tx_type === 'transfer' ? null : resolvedAccountId,
       from_account_name:
         editTxForm.tx_type === 'transfer'
           ? editTxForm.from_account_name.trim()
           : null,
+      from_account_id: editTxForm.tx_type === 'transfer' ? resolvedFromAccountId : null,
       to_account_name:
         editTxForm.tx_type === 'transfer'
           ? editTxForm.to_account_name.trim()
           : null,
+      to_account_id: editTxForm.tx_type === 'transfer' ? resolvedToAccountId : null,
       tags: editTxForm.tags.filter((s) => s.length > 0),
       attachments: editTxForm.attachments,
       // §三 标记按 type 条件落库:转账两者都置 false;收入只允许 stats;支出两者都允许。

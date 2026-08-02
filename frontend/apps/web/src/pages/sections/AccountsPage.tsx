@@ -11,6 +11,7 @@ import {
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   updateAccount,
+  uploadAccountAvatar,
   type ExchangeRateOverride,
   type ExchangeRatesResponse,
   type NetWorthHistory,
@@ -49,7 +50,8 @@ import {
 import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
 import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { routePath } from '../../state/router'
-import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
+import { dispatchOpenDetailAccount, onOpenEditAccount } from '../../lib/txDialogEvents'
+import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
@@ -86,6 +88,7 @@ export function AccountsPage() {
   const { token, profileMe } = useAuth()
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
+  const { previewMap: avatarPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
   const base = profileMe?.primary_currency || ''
 
@@ -192,6 +195,56 @@ export function AccountsPage() {
     void refresh()
   })
 
+  // 帳戶頭像(2026-08-02 補強):通过共享 AttachmentCache 惰性加载,对齐
+  // CategoriesPage 的既有模式 —— rows 更新时把所有 avatar_cloud_file_id
+  // push 给 context,context 内部自己去重 + dedupe inflight。
+  useEffect(() => {
+    const ids = rows
+      .map((row) => row.avatar_cloud_file_id || '')
+      .filter((value) => value.trim().length > 0)
+    if (ids.length > 0) ensureLoadedMany(ids)
+  }, [rows, ensureLoadedMany])
+
+  // AccountsPanel 的编辑弹窗 open 状态本来只在点行内「编辑」时才会被
+  // 内部逻辑 setOpen(true);全局事件触发时(见 openSignal prop 注释)靠这个
+  // 计数器的变化强制弹窗打开一次。
+  const [editOpenSignal, setEditOpenSignal] = useState(0)
+
+  // 把某个账户装进编辑表单 —— 行内「编辑」按钮 + 全局 openEditAccount 事件
+  // (信用卡帐单卡片的「前往帳戶設定」)共用同一份逻辑,后者不在本页时先
+  // navigate 过来再 dispatch,这里只管把 row 转成表单字段 + 强制打开弹窗。
+  const handleEditAccount = useCallback((row: ReadAccount) => {
+    setEditOpenSignal((s) => s + 1)
+    setForm({
+      editingId: row.id,
+      editingOwnerUserId: row.created_by_user_id || '',
+      name: row.name,
+      account_type: row.account_type || '',
+      currency: row.currency || '',
+      initial_balance: String(row.initial_balance ?? 0),
+      note: row.note ?? '',
+      credit_limit: row.credit_limit !== null && row.credit_limit !== undefined
+        ? String(row.credit_limit)
+        : '',
+      billing_day: row.billing_day !== null && row.billing_day !== undefined
+        ? String(row.billing_day)
+        : '',
+      payment_due_day: row.payment_due_day !== null && row.payment_due_day !== undefined
+        ? String(row.payment_due_day)
+        : '',
+      bank_name: row.bank_name ?? '',
+      card_last_four: row.card_last_four ?? '',
+      parent_account_id: row.parent_account_id ?? '',
+      hidden: row.hidden ?? false,
+      auto_pay_enabled: row.auto_pay_enabled ?? false,
+      auto_pay_from_account_id: row.auto_pay_from_account_id ?? '',
+      avatar_cloud_file_id: row.avatar_cloud_file_id ?? '',
+      avatar_cloud_sha256: row.avatar_cloud_sha256 ?? '',
+    })
+  }, [])
+
+  useEffect(() => onOpenEditAccount(handleEditAccount), [handleEditAccount])
+
   const onSave = async (): Promise<boolean> => {
     if (!activeLedgerId) {
       toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
@@ -217,49 +270,72 @@ export function AccountsPage() {
       toast.error(t('accounts.error.balanceInvalid'), t('notice.error'))
       return false
     }
-    // 信用卡日期校验:1-31,空字符串视作未填(null)。其他类型不要这两个字段,
-    // 走 onFormChange 切换类型时已经清空,这里再 guard 一次。
+    // 主帳戶(§2.9 Phase 4,2026-08-02 改版,同日第二輪放寬到單卡):信用
+    // 額度/帳單日/還款日設在 account_group 群組自己身上,或沒有掛靠任何
+    // 群組的獨立信用卡自己身上(§2.9 is_billing_root——單卡也該有群組的
+    // 全部功能)。1-31,空字符串视作未填(null)。其他情形不要这些字段,
+    // 走 onFormChange 切换类型/掛靠时已经清空,这里再 guard 一次。
+    const isAccountGroup = form.account_type === 'account_group'
+    const isStandaloneCreditCard =
+      form.account_type === 'credit_card' && !form.parent_account_id.trim()
+    const hasBillingFields = isAccountGroup || isStandaloneCreditCard
     const billingDayNum =
-      form.account_type === 'credit_card' && form.billing_day.trim()
-        ? Math.round(Number(form.billing_day))
-        : null
+      hasBillingFields && form.billing_day.trim() ? Math.round(Number(form.billing_day)) : null
     if (billingDayNum !== null && (!Number.isFinite(billingDayNum) || billingDayNum < 1 || billingDayNum > 31)) {
       toast.error(t('accounts.error.billingDayInvalid'), t('notice.error'))
       return false
     }
     const paymentDueDayNum =
-      form.account_type === 'credit_card' && form.payment_due_day.trim()
-        ? Math.round(Number(form.payment_due_day))
-        : null
+      hasBillingFields && form.payment_due_day.trim() ? Math.round(Number(form.payment_due_day)) : null
     if (paymentDueDayNum !== null && (!Number.isFinite(paymentDueDayNum) || paymentDueDayNum < 1 || paymentDueDayNum > 31)) {
       toast.error(t('accounts.error.paymentDueDayInvalid'), t('notice.error'))
       return false
     }
     const creditLimitRaw = form.credit_limit.trim()
-    const creditLimitNum =
-      form.account_type === 'credit_card' && creditLimitRaw ? Number(creditLimitRaw) : null
+    const creditLimitNum = hasBillingFields && creditLimitRaw ? Number(creditLimitRaw) : null
     if (creditLimitNum !== null && (!Number.isFinite(creditLimitNum) || creditLimitNum < 0)) {
       toast.error(t('accounts.error.creditLimitInvalid'), t('notice.error'))
       return false
     }
+    // 自動扣繳(§2.9,2026-08-04 改版):只在 billing-root 帳戶上生效,開啟時
+    // 必須選一個來源帳戶。
+    const autoPayEnabled = hasBillingFields && form.auto_pay_enabled
+    if (autoPayEnabled && !form.auto_pay_from_account_id.trim()) {
+      toast.error(t('accounts.error.autoPaySourceRequired'), t('notice.error'))
+      return false
+    }
     try {
       const isCreditCard = form.account_type === 'credit_card'
-      const isBankOrCredit = isCreditCard || form.account_type === 'bank_card'
+      const isBankOrCredit = isCreditCard || form.account_type === 'bank_card' || isAccountGroup
       const payload = {
         name: trimmedName,
         account_type: form.account_type || null,
         currency: form.currency || null,
         initial_balance: initialBalanceNum,
-        // 扩展字段:non-credit_card 类型显式传 null 清空 server 上残留的值;
-        // bank_card / credit_card 才有 bank_name / card_last_four。
+        // 扩展字段:非群组/非独立信用卡类型显式传 null 清空 server 上残留的
+        // 值;bank_card / credit_card / account_group 才有 bank_name /
+        // card_last_four。
         note: form.note.trim() || null,
-        credit_limit: isCreditCard ? creditLimitNum : null,
-        billing_day: isCreditCard ? billingDayNum : null,
-        payment_due_day: isCreditCard ? paymentDueDayNum : null,
+        credit_limit: hasBillingFields ? creditLimitNum : null,
+        billing_day: hasBillingFields ? billingDayNum : null,
+        payment_due_day: hasBillingFields ? paymentDueDayNum : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
+        // 掛靠主帳戶(§2.9 Phase 4):仅 credit_card 类型有意义,离开
+        // credit_card 时(onFormChange 已清空 form.parent_account_id)显式传
+        // null 解除掛靠。
+        parent_account_id: isCreditCard ? form.parent_account_id.trim() || null : null,
         // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
         hidden: form.hidden,
+        // 自動扣繳(§2.9,2026-08-04 改版):非 billing-root 类型显式传
+        // false/null 清空 server 上残留的值(对齐上面 credit_limit 等字段
+        // 同款处理:切换类型/掛靠后不留死值)。
+        auto_pay_enabled: autoPayEnabled,
+        auto_pay_from_account_id: autoPayEnabled ? form.auto_pay_from_account_id.trim() || null : null,
+        // 帳戶頭像(2026-08-02 補強):任何帳戶類型都可以設,不像
+        // credit_limit 等只对 billing-root 生效那样要清空。
+        avatar_cloud_file_id: form.avatar_cloud_file_id.trim() || null,
+        avatar_cloud_sha256: form.avatar_cloud_sha256.trim() || null,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -548,28 +624,17 @@ export function AccountsPage() {
         onFormChange={setForm}
         onSave={onSave}
         onReset={() => setForm(accountDefaults())}
-        onEdit={(row) => {
-          setForm({
-            editingId: row.id,
-            editingOwnerUserId: row.created_by_user_id || '',
-            name: row.name,
-            account_type: row.account_type || '',
-            currency: row.currency || '',
-            initial_balance: String(row.initial_balance ?? 0),
-            note: row.note ?? '',
-            credit_limit: row.credit_limit !== null && row.credit_limit !== undefined
-              ? String(row.credit_limit)
-              : '',
-            billing_day: row.billing_day !== null && row.billing_day !== undefined
-              ? String(row.billing_day)
-              : '',
-            payment_due_day: row.payment_due_day !== null && row.payment_due_day !== undefined
-              ? String(row.payment_due_day)
-              : '',
-            bank_name: row.bank_name ?? '',
-            card_last_four: row.card_last_four ?? '',
-            hidden: row.hidden ?? false,
-          })
+        onEdit={handleEditAccount}
+        openSignal={editOpenSignal}
+        avatarPreviewUrlByFileId={avatarPreviewByFileId}
+        onUploadAvatar={async (file) => {
+          try {
+            const out = await uploadAccountAvatar(token, { file })
+            return { fileId: out.file_id, sha256: out.sha256 }
+          } catch (err) {
+            notifyError(err)
+            return null
+          }
         }}
         onRestore={(row) => void onRestore(row)}
         onClickAccount={(row) =>

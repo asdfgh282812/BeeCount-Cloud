@@ -147,6 +147,29 @@ export function onOpenDetailAccount(
   return () => window.removeEventListener(DETAIL_ACCOUNT_EVENT, wrapped)
 }
 
+const EDIT_ACCOUNT_EVENT = 'bee:open-edit-account'
+
+/**
+ * 从账户详情弹窗(可能是从任意页面通过 dispatchOpenDetailAccount 打开的,
+ * 不一定在 /app/accounts)直接跳到"编辑这个账户"—— 比如信用卡帐单卡片的
+ * 「前往帳戶設定」按钮。跟 dispatchOpenEditCategory 同款模式:AccountsPage
+ * 是唯一监听者,自己决定怎么把 WorkspaceAccount 转成编辑表单的字段。
+ */
+export function dispatchOpenEditAccount(account: WorkspaceAccount) {
+  window.dispatchEvent(new CustomEvent(EDIT_ACCOUNT_EVENT, { detail: account }))
+}
+
+export function onOpenEditAccount(
+  handler: (account: WorkspaceAccount) => void,
+): () => void {
+  const wrapped = (e: Event) => {
+    const detail = (e as CustomEvent<WorkspaceAccount>).detail
+    if (detail) handler(detail)
+  }
+  window.addEventListener(EDIT_ACCOUNT_EVENT, wrapped)
+  return () => window.removeEventListener(EDIT_ACCOUNT_EVENT, wrapped)
+}
+
 // ========== Tag ==========
 const DETAIL_TAG_EVENT = 'bee:open-detail-tag'
 

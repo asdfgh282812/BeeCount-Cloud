@@ -257,6 +257,68 @@ async def upload_category_icon(
     return _to_upload_out(row, ledger_external_id="")
 
 
+@router.post("/account-avatars/upload", response_model=AttachmentUploadOut)
+async def upload_account_avatar(
+    file: UploadFile = File(...),
+    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AttachmentUploadOut:
+    """帳戶頭像上傳專用 endpoint(2026-08-02 補強),跟 `upload_category_icon`
+    同一個理由/同一套模式——帳戶是 user-global(跨帳本共享),不走通用
+    `/upload` 的 ledger_id 路径,避免同一張頭像因為在不同帳本各自上傳一次
+    而在 `attachment_files` 裡重複膨脹 N 份。`GET /attachments/{file_id}`
+    的下載授權已經對 `ledger_id IS NULL` 的行做通用處理(category_icon /
+    user-global 共用同一段邏輯),這裡不用額外改。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Attachment file is empty")
+    max_bytes = get_settings().attachment_max_upload_bytes
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail="Attachment upload too large")
+
+    sha256 = hashlib.sha256(data).hexdigest()
+    existing = db.scalar(
+        select(AttachmentFile).where(
+            AttachmentFile.user_id == current_user.id,
+            AttachmentFile.attachment_kind == "account_avatar",
+            AttachmentFile.sha256 == sha256,
+        )
+    )
+    if existing is not None:
+        logger.info(
+            "attachments.account_avatar.dedup sha256=%s size=%d user=%s",
+            sha256, len(data), current_user.id,
+        )
+        return _to_upload_out(existing, ledger_external_id="")
+
+    safe_name = _safe_file_name(file.filename or "account_avatar.png")
+    storage_name = f"{uuid4().hex}_{safe_name}"
+    storage_dir = _attachment_root() / current_user.id / "account-avatars" / sha256[:2]
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage_path = storage_dir / storage_name
+    storage_path.write_bytes(data)
+
+    row = AttachmentFile(
+        ledger_id=None,
+        user_id=current_user.id,
+        sha256=sha256,
+        size_bytes=len(data),
+        mime_type=file.content_type,
+        file_name=safe_name,
+        storage_path=str(storage_path),
+        attachment_kind="account_avatar",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info(
+        "attachments.account_avatar.upload file=%s size=%d sha256=%s user=%s",
+        safe_name, len(data), sha256, current_user.id,
+    )
+    return _to_upload_out(row, ledger_external_id="")
+
+
 @router.get("/{file_id}")
 def download_attachment(
     file_id: str,

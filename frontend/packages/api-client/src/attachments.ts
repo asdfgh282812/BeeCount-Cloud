@@ -44,6 +44,28 @@ export async function uploadAttachment(
   return res.json()
 }
 
+/** 帳戶頭像上傳(2026-08-02 補強)。帳戶是 user-global,跟 category icon
+ *  同款專用 endpoint,不带 ledger_id。 */
+export async function uploadAccountAvatar(
+  token: string,
+  payload: { file: File }
+): Promise<AttachmentUploadOut> {
+  const body = new FormData()
+  body.append('file', payload.file)
+
+  const res = await fetch(`${API_BASE}/attachments/account-avatars/upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body
+  })
+  if (!res.ok) {
+    throw await extractApiError(res)
+  }
+  return res.json()
+}
+
 export async function downloadAttachment(
   token: string,
   fileId: string

@@ -607,9 +607,92 @@ class ReadAccountOut(BaseModel):
     payment_due_day: int | None = None
     bank_name: str | None = None
     card_last_four: str | None = None
+    # 主帳戶(合併帳單,§2.9 Phase 4):子卡的 sync_id 指向主卡,None=沒有主卡。
+    parent_account_id: str | None = None
     # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
     # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
     hidden: bool = False
+    # 自動扣繳(§2.9,2026-08-04 改版):開關 + 來源帳戶 sync_id。只在
+    # is_billing_root(account_group,或沒有掛靠任何群組的獨立信用卡)且已設
+    # billing_day/payment_due_day 時才會被 materializer 實際處理,見
+    # `services.credit_card_autopay`。
+    auto_pay_enabled: bool = False
+    auto_pay_from_account_id: str | None = None
+    # 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,None = 沒有自訂頭像。
+    avatar_cloud_file_id: str | None = None
+    avatar_cloud_sha256: str | None = None
+
+
+class ReadAccountBillingMemberOut(BaseModel):
+    """合併帳單(§2.9 Phase 4)裡單一成員帳戶(主卡自己或某張子卡)在當期
+    帳單裡的貢獻金額。"""
+    account_id: str
+    account_name: str
+    cycle_spend: float
+
+
+class ReadAccountBillingSummaryOut(BaseModel):
+    """信用卡合併帳單摘要(§2.9 Phase 4)。`account_id` 是主卡,`members`
+    包含主卡自己 + 所有 `parent_account_id == account_id` 的子卡。`billing_
+    day`/`payment_due_day` 一律使用主卡自己的設定 —— 子卡沿用主卡的結帳
+    週期,不落庫,每次讀取即時計算(跟 §2.5 借還款 remaining_amount 同一個
+    "不落表、讀路徑即時加總"取捨)。"""
+    account_id: str
+    account_name: str
+    billing_day: int
+    payment_due_day: int
+    member_account_ids: list[str]
+    members: list[ReadAccountBillingMemberOut]
+    # 最近一次已結束的帳單週期(目前應繳金額對應的那一期)。
+    cycle_start: datetime
+    cycle_end: datetime
+    due_date: datetime
+    statement_amount: float
+    paid_amount: float
+    remaining_due: float
+    # 目前還在累積、尚未結束的下一期帳單。
+    open_cycle_start: datetime
+    open_cycle_end: datetime
+    open_cycle_due_date: datetime
+    open_cycle_spend: float
+    # 可用額度(2026-08-02 補):純顯示計算,不落庫。溢繳時 remaining_due 可
+    # 為負,available_credit 會自然超過 credit_limit 本身,不需要另外調整
+    # credit_limit 欄位。credit_limit 未設定時整組為 None。
+    credit_limit: float | None = None
+    available_credit: float | None = None
+    # 帳單週期瀏覽(§2.9 補強,2026-08-02):對應 request 的 `cycle_offset`
+    # query param,`0` 是「最近一次已結束」的週期(跟上面 cycle_start/
+    # cycle_end 是同一期),負數是更早的歷史週期,`+1` 是目前還在累積的那期
+    # (跟 open_cycle_* 是同一期)。跟上面「現在當下」欄位是兩組獨立資訊,
+    # 上面那組永遠反映「此刻」,不受 cycle_offset 影響。
+    period_cycle_start: datetime
+    period_cycle_end: datetime
+    period_due_date: datetime
+    period_new_spend: float
+    period_carryover_due: float
+    period_total_due: float
+    period_paid_in_cycle: float
+    period_remaining_due: float
+    period_has_older: bool
+    period_has_newer: bool
+
+
+class ReadInterestFreeSuggestionOut(BaseModel):
+    """信用卡免息期推薦(§2.9 Phase 4)。純計算,不查交易 —— 只依賴帳戶自己
+    的 `billing_day`/`payment_due_day`。"""
+    account_id: str
+    as_of: datetime
+    billing_day: int
+    payment_due_day: int
+    current_cycle_start: datetime
+    current_cycle_end: datetime
+    current_cycle_due_date: datetime
+    next_cycle_start: datetime
+    next_cycle_end: datetime
+    next_cycle_due_date: datetime
+    recommended_purchase_after: datetime
+    min_interest_free_days: int
+    max_interest_free_days: int
 
 
 class ReadCategoryOut(BaseModel):
@@ -816,6 +899,11 @@ class WorkspaceAccountOut(ReadAccountOut):
     # balance 包含 initialBalance + (income - expense)；income/expense 只统计本
     # 账户作为 accountId 的收支条目（不含 transfer 的对手方）。
     tx_count: int | None = None
+    # 「可繳款」提醒(§2.9 補強,2026-08-02):只在 billing-root(account_group
+    # 或沒有掛靠任何群組的獨立信用卡)且有應繳金額(> 0)時才有值,讓帳戶列表
+    # 卡片不用等使用者點開詳情就能顯示「可繳款 截止日 X/X」。
+    billing_due_date: datetime | None = None
+    billing_remaining_due: float | None = None
     income_total: float | None = None
     expense_total: float | None = None
     balance: float | None = None
@@ -1068,9 +1156,17 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # 主帳戶(合併帳單,§2.9 Phase 4):新建一般不设,子卡后续用 PATCH 挂靠。
+    parent_account_id: str | None = None
     # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
     # (mutator / write handler)是 Task 4,本字段暂不生效。
     hidden: bool = False
+    # 自動扣繳(§2.9,2026-08-04 改版):新建一般不设,建完卡再 PATCH 開啟。
+    auto_pay_enabled: bool = False
+    auto_pay_from_account_id: str | None = None
+    # 帳戶頭像(2026-08-02 補強):新建一般不设,建完卡再 PATCH 上傳。
+    avatar_cloud_file_id: str | None = None
+    avatar_cloud_sha256: str | None = None
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -1084,8 +1180,16 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # 主帳戶(合併帳單,§2.9 Phase 4):None = 不改;空字串 = 解除掛靠。
+    parent_account_id: str | None = None
     # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
     hidden: bool | None = None
+    # 自動扣繳(§2.9,2026-08-04 改版):None = 不改;空字串來源帳戶 = 解除。
+    auto_pay_enabled: bool | None = None
+    auto_pay_from_account_id: str | None = None
+    # 帳戶頭像(2026-08-02 補強):None = 不改;空字串 = 移除頭像。
+    avatar_cloud_file_id: str | None = None
+    avatar_cloud_sha256: str | None = None
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):
@@ -1171,6 +1275,10 @@ class WriteInstallmentPlanCreateRequest(WriteBaseRequest):
     # 的例子(信用卡帐单分期常见到 60,房贷类场景到 360)。
     periods: int = Field(ge=1, le=600)
     first_period_at: datetime
+    # 帳單分期沖銷支援主帳戶(§2.3,2026-08-02 第三輪):可以是一張真實帳戶,
+    # 也可以是 account_group(主帳戶)本身或沒有掛靠任何群組的獨立信用卡
+    # ——見 `credit_card_billing.is_billing_root`。已經掛靠某個群組的子卡
+    # 不能被直接傳(要嘛用它的群組 id),write endpoint 會擋。
     account_id: str | None = None
     category_id: str | None = None
     note: str | None = None
@@ -1182,6 +1290,19 @@ class WriteInstallmentPlanCreateRequest(WriteBaseRequest):
     round_amounts: bool = True
     remainder_position: InstallmentRemainderPosition = "last"
     grace_period_months: int = Field(default=0, ge=0)
+    # 帳單分期沖銷(§2.3,對齊 Moze「Bill Installment」設計,2026-08-02
+    # 第三輪改版):把一張信用卡「已經欠下的當期帳單」轉換成分期付款時,如果
+    # 不做任何處理,原本那筆消費的 expense 交易還留在卡上繼續計入應繳金額,
+    # 而分期計畫又會各期各生成一筆新的 expense —— 同一筆錢在帳單裡被算了
+    # 兩次。設 true 時,write endpoint 會驗證 `account_id` 目前確實有欠款
+    # (沒有欠款 = 沒有東西可以沖銷,回 400)且 `total_amount` 不超過欠款,
+    # 算好每個子帳戶(若是主帳戶/群組)各自的沖銷金額寫進
+    # `read_installment_plan_projection.offset_breakdown_json` ——**不**
+    # 產生任何真實交易(2026-08-02 使用者反饋:沖銷款不該出現在交易明細,
+    # 純內部記帳調整),`services.credit_card_billing` 算應繳金額時直接扣掉
+    # 這個值。刪除整個分期計畫時這個沖銷連帶失效,帳單自動變回「尚未沖銷」
+    # 狀態。只在 `account_id` 有設定時才能用(沒有帳戶就沒有東西可以沖銷)。
+    offset_existing_balance: bool = False
 
 
 class WriteInstallmentPlanUpdateRequest(WriteBaseRequest):
@@ -1205,6 +1326,15 @@ class WriteInstallmentRebalanceRequest(WriteBaseRequest):
     `overridden` 的期数依攤還演算法重算。"""
     interest_rate: float = Field(ge=0)
     repayment_method: InstallmentRepaymentMethod | None = None
+
+
+class WriteCardPaymentRequest(WriteBaseRequest):
+    """§2.9 Phase 4:信用卡繳款 —— 語意化端點,本質是產生一筆
+    `tx_type=transfer`(`from_account_id` → 該信用卡帳戶)。"""
+    amount: float = Field(gt=0)
+    from_account_id: str
+    happened_at: datetime | None = None
+    note: str | None = None
 
 
 class WriteInstallmentEarlyRepayRequest(WriteBaseRequest):
