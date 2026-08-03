@@ -574,6 +574,10 @@ class ReadTransactionOut(BaseModel):
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走哪
     # 幾條回饋規則的 sync_id 列表;空列表 = 没有勾选任何规则。
     reward_rule_ids: list[str] = Field(default_factory=list)
+    # 信用卡紅利回饋自動入帳(§2.9.5.4 補強):有值 = 这笔交易是逐笔结算规则
+    # 自动产生的回饋 income,反查它对应的原始消费交易 sync_id;None = 普通
+    # 交易,或 period_end/manual 這種不對應單一原始交易的回饋。
+    reward_source_tx_id: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None

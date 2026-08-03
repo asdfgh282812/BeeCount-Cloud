@@ -601,11 +601,19 @@ function nowLocalInput(): string {
 /**
  * 到期日只存日期(體驗補強):`due_at` 語意是純日曆日期(UTC 零點落庫),
  * 用 **UTC** getter 取值餵給 `<input type="date">` —— 若沿用本地時區的
- * `Date` 方法,UTC 負時區(例如 UTC-8)使用者在編輯既有欠款時會看到「少
- * 一天」的回填 bug。
+ * `Date` 方法會有少一天的回填 bug。`due_at` 从後端回來時是不帶時區位移的
+ * naive datetime 字串,`new Date("...T00:00:00")` 沒有位移標記時 JS 會當
+ * 「本地時間」解析,UTC+8 使用者反而會多踩一天(本地 2026-08-02 被換成
+ * 2026-08-01T16:00:00Z),不限 UTC 負時區——缺位移標記時補上 "Z" 強制當
+ * UTC 解析,對齊「這串日期本來就是 UTC」的後端語意。
  */
+function forceUtcDate(iso: string): Date {
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  return new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso)
+}
+
 function isoToDateInput(iso: string): string {
-  const d = new Date(iso)
+  const d = forceUtcDate(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }
@@ -613,7 +621,7 @@ function isoToDateInput(iso: string): string {
 /** 同 `isoToDateInput` 的理由,展示到期日文字時同样用 UTC getter,不用
  *  `toLocaleDateString()`(那个走本地时区,会有同款少一天风险)。 */
 function formatDateOnlyUTC(iso: string): string {
-  const d = new Date(iso)
+  const d = forceUtcDate(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }

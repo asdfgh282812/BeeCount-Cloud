@@ -425,7 +425,7 @@ async def _start_debt_reminder_loop() -> None:  # noqa: B008
 
 
 def _run_debt_reminders_once() -> None:
-    from .services import card_reward_payout, credit_card_autopay, credit_card_reminders, debt_reminders
+    from .services import credit_card_autopay, credit_card_reminders, debt_reminders
 
     with SessionLocal() as db:
         debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
@@ -467,8 +467,48 @@ def _run_debt_reminders_once() -> None:
                 "credit card autopay: executed=%d skipped_insufficient=%d",
                 autopay_result["executed"], autopay_result["skipped_insufficient"],
             )
-        # 信用卡紅利回饋自動入帳(§2.9.5.4),同样挂在这个 15 分钟 loop——逐笔
-        # 结算類型要求「到期即入帳」，跟 autopay/reminders 同一个时效性理由。
+
+
+@app.on_event("shutdown")
+async def _stop_debt_reminder_loop() -> None:  # noqa: B008
+    task = getattr(app.state, "debt_reminder_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# ============================================================================
+# 信用卡紅利回饋自動入帳(§2.9.5.4)—— 2026-08-04 使用者反饋:回饋金入帳的
+# 時效性比 debt/card 提醒、autopay 更高(逐筆結算規則的使用者期待「消費後
+# 沒多久就看到回饋入帳」),原本借用上面 debt reminder 的 15 分鐘 loop 太慢,
+# 拆成獨立的 5 分鐘 loop,不再跟 debt/card reminders/autopay 共用同一個
+# interval——這樣之後想再調整回饋入帳的頻率,也不會牽動其它幾個功能的排程。
+# 手動觸發仍沿用既有的 `POST /internal/tasks/materialize-recurring`
+# (admin scope,`internal_tasks.py` 直接呼叫,不經過這個 loop)。
+# ============================================================================
+
+
+_CARD_REWARD_PAYOUT_INTERVAL_SECONDS = 5 * 60
+
+
+@app.on_event("startup")
+async def _start_card_reward_payout_loop() -> None:  # noqa: B008
+    import asyncio
+
+    async def _loop() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(_run_card_reward_payout_once)
+            except Exception:
+                logging.getLogger(__name__).exception("card reward payout loop failed")
+            await asyncio.sleep(_CARD_REWARD_PAYOUT_INTERVAL_SECONDS)
+
+    app.state.card_reward_payout_task = asyncio.create_task(_loop())
+
+
+def _run_card_reward_payout_once() -> None:
+    from .services import card_reward_payout
+
+    with SessionLocal() as db:
         reward_payout_result = card_reward_payout.materialize_due_card_reward_payouts(db)
         if reward_payout_result["tx_payouts"] or reward_payout_result["period_payouts"]:
             db.commit()
@@ -479,8 +519,8 @@ def _run_debt_reminders_once() -> None:
 
 
 @app.on_event("shutdown")
-async def _stop_debt_reminder_loop() -> None:  # noqa: B008
-    task = getattr(app.state, "debt_reminder_task", None)
+async def _stop_card_reward_payout_loop() -> None:  # noqa: B008
+    task = getattr(app.state, "card_reward_payout_task", None)
     if task is not None and not task.done():
         task.cancel()
 

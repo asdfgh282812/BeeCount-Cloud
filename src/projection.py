@@ -355,6 +355,9 @@ def upsert_tx(
         # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)反查字段,同款语义:None =
         # 没勾选任何规则,缺键保留由上游 merge_with_existing 负责。
         "reward_rule_sync_ids_json": reward_rule_sync_ids_json,
+        # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同款语义:None =
+        # 普通交易(或 period_end/manual 這種不對應單一原始交易的回饋)。
+        "reward_source_tx_sync_id": _as_str(payload.get("rewardSourceTxId")),
         "source_change_id": source_change_id,
     }
 

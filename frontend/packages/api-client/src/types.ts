@@ -212,6 +212,10 @@ export type ReadTransaction = {
   /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
    *  哪幾條回饋規則的 id 列表,空数组 = 没有勾选任何规则。 */
   reward_rule_ids?: string[]
+  /** 信用卡紅利回饋自動入帳(§2.9.5.4 補強):有值 = 这笔交易是逐笔结算
+   *  规则自动产生的回饋 income,反查它对应的原始消费交易 id;null = 普通
+   *  交易,或 period_end/manual 這種不對應單一原始交易的回饋。 */
+  reward_source_tx_id?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null

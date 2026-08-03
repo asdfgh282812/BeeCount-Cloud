@@ -583,6 +583,14 @@ class ReadTxProjection(Base):
     # 到該規則的交易,min_tx_amount/min_spend_threshold 這兩個金額門檻仍由
     # 系統在計算時判斷,不受使用者勾選影響。
     reward_rule_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 信用卡紅利回饋自動入帳(§2.9.5.4 補強,2026-08-04 使用者反饋):逐筆結算
+    # (immediate_after_tx/after_posting_date)產生的回饋 income 交易,反查
+    # 它是為了哪一筆原始消費入帳的 —— 跟 refund_of_sync_id/installment_plan_
+    # sync_id 同款「denormalized 反查列」模式,只是方向相反(這裡是「回饋
+    # 交易指向消費交易」,不需要像 refund 那样反向聚合查「誰退了我」,單向
+    # 存就够)。None = 普通交易,或 period_end/manual 這種不對應單一原始
+    # 交易的回饋入帳。
+    reward_source_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 Index(

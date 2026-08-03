@@ -122,6 +122,12 @@ def _login_and_seed(client, ledger_id, email, *, billing_day=None, payment_due_d
     return hdr_app, hdr_web
 
 
+def _latest_change_id(client, token_hdr, ledger_id):
+    r = client.get(f"/api/v1/read/ledgers/{ledger_id}", headers=token_hdr)
+    assert r.status_code == 200, r.text
+    return int(r.json()["source_change_id"])
+
+
 def _create_rule(client, hdr_web, ledger_id, *, base=0, **kwargs):
     payload = {
         "base_change_id": base, "label": "測試規則", "rate_type": "percentage", "rate_value": 10.0,
@@ -181,6 +187,171 @@ def test_immediate_after_tx_pays_only_after_settlement_days_and_dedups():
             db.commit()
         assert result3 == {"tx_payouts": 0, "period_payouts": 0}
         assert len(_income_tx_to(TS, "acc-wallet")) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_immediate_after_tx_reward_tx_gets_category_and_source_link():
+    """§2.9.5.4 補強(2026-08-04 使用者反饋):①回饋 income 交易自動帶固定
+    的「回饋金」分類(不然空白分類很奇怪);②反查 `reward_source_tx_id`
+    指向原始消費(取代舊版把 tx sync_id 原樣寫進備註文字裡的做法),web 端
+    能靠它渲染可點擊的「關聯消費」連結。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-src@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-src", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-src",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgp-src", "transaction", "tx-src-1",
+              {"syncId": "tx-src-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 1
+        reward_tx = incomes[0]
+        assert reward_tx.category_name == "回饋金"
+        assert reward_tx.category_kind == "income"
+        assert reward_tx.category_sync_id is not None
+        assert reward_tx.reward_source_tx_sync_id == "tx-src-1"
+        # 舊版備註直接嵌入 tx sync_id,使用者反饋不友善;改版後不再出現在
+        # 備註文字裡(改走上面的結構化反查欄位)。
+        assert "tx-src-1" not in (reward_tx.note or "")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reward_category_reused_not_duplicated_across_payouts():
+    """同一個使用者名下,「回饋金」分類只會建一次,之後每次入帳都重用同一個
+    sync_id(不管是逐筆結算多次觸發,還是不同規則各自入帳)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-cat@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-cat", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-cat",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        for i in range(2):
+            tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+            _push(client, hdr_app, "lgp-cat", "transaction", f"tx-cat-{i}",
+                  {"syncId": f"tx-cat-{i}", "type": "expense", "amount": 50.0, "happenedAt": _iso(tx_day),
+                   "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+                  device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 2
+        category_ids = {tx.category_sync_id for tx in incomes}
+        assert len(category_ids) == 1
+        assert None not in category_ids
+
+        from src.models import UserCategoryProjection
+
+        with TS() as db:
+            user_id = db.scalar(select(User.id).where(User.email == email))
+            rows = db.scalars(
+                select(UserCategoryProjection).where(
+                    UserCategoryProjection.user_id == user_id,
+                    UserCategoryProjection.name == "回饋金",
+                )
+            ).all()
+        assert len(rows) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_reward_source_tx_id_partial_update_keeps_existing_value():
+    """跟 rewardRuleIds/debtId 同款契约:partial update 只带其它字段时,
+    `rewardSourceTxId` 缺键要保留既有值,不能被静默清空(既有 bug 类型,見
+    `write/_shared.py::_projection_row_to_tx_dict` 跟
+    `snapshot_builder.py` 的漏 SELECT 注释)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-merge@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-merge", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-merge",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgp-merge", "transaction", "tx-merge-1",
+              {"syncId": "tx-merge-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 1
+        reward_tx_id = incomes[0].sync_id
+
+        # partial update:只带 note,不带 rewardSourceTxId。
+        _push(client, hdr_app, "lgp-merge", "transaction", reward_tx_id,
+              {"syncId": reward_tx_id, "note": "改個備注"}, device_id="d-app")
+
+        with TS() as db:
+            row = db.scalar(
+                select(ReadTxProjection).where(ReadTxProjection.sync_id == reward_tx_id)
+            )
+            assert row is not None
+            assert row.note == "改個備注"
+            assert row.reward_source_tx_sync_id == "tx-merge-1"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_patch_other_field_keeps_reward_source_tx_id():
+    """跟上面 mobile push 那條契約測試對應的 web fast path 版本
+    (`_commit_write_fast_tx` → `_projection_row_to_tx_dict`)——PATCH 回饋
+    入帳交易的備註時,不帶 `rewardSourceTxId` 不能把它靜默清空(既有 bug
+    類型,同 §2.9.5.4 之前踩過的 `settlement_type` 漏 SELECT)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-fast@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-fast", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-fast",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgp-fast", "transaction", "tx-fast-1",
+              {"syncId": "tx-fast-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 1
+        reward_tx_id = incomes[0].sync_id
+
+        base = _latest_change_id(client, hdr_web, "lgp-fast")
+        res = client.patch(
+            f"/api/v1/write/ledgers/lgp-fast/transactions/{reward_tx_id}",
+            headers=hdr_web,
+            json={"base_change_id": base, "note": "web 端改備注"},
+        )
+        assert res.status_code == 200, res.text
+
+        with TS() as db:
+            row = db.scalar(
+                select(ReadTxProjection).where(ReadTxProjection.sync_id == reward_tx_id)
+            )
+            assert row is not None
+            assert row.note == "web 端改備注"
+            assert row.reward_source_tx_sync_id == "tx-fast-1"
+            assert row.category_name == "回饋金"
     finally:
         app.dependency_overrides.clear()
 

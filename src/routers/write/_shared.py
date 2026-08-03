@@ -806,7 +806,7 @@ async def _commit_create_tx_fast(
         reward_rule_ids = mutate_payload.get("reward_rule_ids")
         if reward_rule_ids:
             _assert_reward_rules_valid(
-                db, user_id=current_user.id, account_id=mutate_payload.get("account_id"),
+                db, user_id=ledger.user_id, account_id=mutate_payload.get("account_id"),
                 reward_rule_ids=[str(v) for v in reward_rule_ids],
             )
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
@@ -1065,7 +1065,7 @@ async def _commit_write_fast_tx(
             # 时,也要保证既有勾选的规则仍然归属新的 account_id。
             if new_item.get("rewardRuleIds"):
                 _assert_reward_rules_valid(
-                    db, user_id=current_user.id, account_id=new_item.get("accountId"),
+                    db, user_id=ledger.user_id, account_id=new_item.get("accountId"),
                     reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
                 )
 
@@ -1263,6 +1263,21 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
                 item["splits"] = splits
         except json.JSONDecodeError:
             pass
+    # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):同理,fast path 编辑一笔已
+    # 勾选回饋规则的交易的其它字段(金额/备注)时,不带上这个会让
+    # rewardRuleIds 在这次 upsert 后被静默清空(既有 bug,2026-08-04 补上,
+    # 跟 snapshot_builder.py 那处漏 SELECT 是同一类问题)。
+    if row.reward_rule_sync_ids_json:
+        try:
+            reward_rule_ids = json.loads(row.reward_rule_sync_ids_json)
+            if isinstance(reward_rule_ids, list) and reward_rule_ids:
+                item["rewardRuleIds"] = reward_rule_ids
+        except json.JSONDecodeError:
+            pass
+    # 信用卡紅利回饋自動入帳(§2.9.5.4 補強):同理,fast path 编辑一笔回饋
+    # 入帳交易的其它字段时,不带上这个会让 rewardSourceTxId 反查被静默清空。
+    if row.reward_source_tx_sync_id is not None:
+        item["rewardSourceTxId"] = row.reward_source_tx_sync_id
     return item
 
 

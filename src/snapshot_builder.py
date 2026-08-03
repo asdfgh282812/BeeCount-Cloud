@@ -92,6 +92,15 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 借還款追蹤(§2.5 Phase 3)反查字段,同样必须进 full snapshot,原因
         # 同 refund_of_sync_id/installment_plan_sync_id。
         ReadTxProjection.debt_sync_id,
+        # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)使用者勾選字段 —— 之前漏
+        # 加进这个 SELECT(既有 bug,2026-08-04 补上):没有它,`_commit_write`
+        # 下一次拿 snapshot_builder.build() 当 prev_snapshot 时会看不到这笔
+        # 交易已勾选的规则,编辑该交易任何其它字段都可能把 rewardRuleIds
+        # 静默撤销,原因同 splits_json 那条注释。
+        ReadTxProjection.reward_rule_sync_ids_json,
+        # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同样必须进 full
+        # snapshot,原因同上。
+        ReadTxProjection.reward_source_tx_sync_id,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -107,7 +116,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          currency_code, native_amount,
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
-         splits_json, debt_id) = row
+         splits_json, debt_id,
+         reward_rule_ids_json, reward_source_tx_id) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -176,6 +186,15 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 pass
         if debt_id:
             item["debtId"] = debt_id
+        if reward_rule_ids_json:
+            try:
+                reward_rule_ids = json.loads(reward_rule_ids_json)
+                if isinstance(reward_rule_ids, list) and reward_rule_ids:
+                    item["rewardRuleIds"] = reward_rule_ids
+            except json.JSONDecodeError:
+                pass
+        if reward_source_tx_id:
+            item["rewardSourceTxId"] = reward_source_tx_id
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户

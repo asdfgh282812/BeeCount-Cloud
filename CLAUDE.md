@@ -658,6 +658,47 @@ frontend `pnpm build`/`pnpm test:unit`(73 例)都過。**這輪同樣沒有走�
 渲染問題,見上一節記錄),務必請使用者在瀏覽器裡重新走一次交易明細彈窗
 確認訊息文案已經改善、且錯誤(如果還會發生)能被準確分類。
 
+**§2.9.5 真實瀏覽器手測 + 4 個新 bug(2026-08-03 第二輪)**:之前每一輪都
+只跑 `pytest`/`pnpm build`,沒有走完整瀏覽器手測——這輪用瀏覽器自動化
+真的走過六大模組(規則 CRUD、記交易勾選、帳單週期與額度計算、交易明細
+彈窗跨卡共用上限、四種 `settlement_type` 自動入帳、例外情況與權限),過程
+中抓到 4 個之前沒發現的真實 bug,已修復並跑過 `pytest tests/`(630 passed,
+1 個既有 date-sensitive flaky 用例無關)+ `pnpm build`/`pnpm test:unit`
+(73 例)確認無回歸。①`CardRewardRulesSection.tsx`/`DebtsPanel.tsx` 的
+`isoToDateInput` 對「沒帶時區位移的 naive datetime 字串」用 `new Date()`
+解析會被當本地時間,UTC+8 使用者編輯規則活動期間/欠款到期日會少一天——
+補位移標記強制當 UTC 解析。②`AccountDetailDialog.tsx` 的 `periodOffset =
+billingCycleOffset - 1` 換算式假設 billing summary fetch 成功才會自動
+校準,沒設定帳單日的卡 fetch 必定失敗、`billingCycleOffset` 卡在初始值,
+且這種卡沒有週期選擇器 UI 讓使用者自己切——`calendar_month` 規則(文件
+明訂「不受帳單日缺失影响」)因此永遠算錯期,回饋卡片一直顯示 0。③
+`card_reward_payout.py::_materialize_period_end` 的 dedup key 是「這期
+結束日」共用字串,零回饋也會永久記去重(跟 `immediate_after_tx` 用交易
+自己 sync_id 當 dedup key 不同)——背景 loop 若在使用者補記/回溯一筆合格
+交易進已結束週期**之前**先跑過一次,這期就永遠卡在 0,之後補記的交易
+再也結算不到,沒有任何補救路徑;修成零回饋時不記去重,留給下次 tick
+重算,直到這期自然過期。④(**這輪影響最大**)`_assert_reward_rules_valid`
+(`src/routers/write/_shared.py`)校驗交易 `reward_rule_ids` 存在性時,
+錯誤地用 `current_user.id`(當下操作者)查規則,而不是 `ledger.user_id`
+(帳本真正擁有者,也是規則真正歸屬者)——導致共享帳本裡的 editor 完全
+無法勾選 owner 建立的任何回饋規則,一律誤判 400 找不到規則,是這份文件
+之前所有輪次都只用單一使用者(帳本 owner)測試、從未驗證多使用者共享
+帳本場景才漏掉的 bug(對照組 `_assert_debt_exists` 是正確用 `ledger_id`
+查,兩處寫法不一致)。這個是**真的註冊第二個帳號、加成 ledger_members
+的 editor、直接拿它的 token 打交易寫入 API** 才抓到的,不是看程式碼推
+出來的。改法:兩處呼叫都把 `user_id=current_user.id` 改成 `user_id=
+ledger.user_id`。詳見 `docs/PH4_5_CARD_REWARDS_WEB_UI_MANUAL_TEST_PLAN.md`
+「零、2026-08-03 第二輪」章節(含哪些項目沒走到,例如多語言文案巡查/
+深淺色主題視覺檢查/editor 身份下「+ 新增規則」按鈕在真實瀏覽器 UI 裡
+點下去看到的錯誤文案——後端已確認擋下,只是沒有另開一個真的 editor
+登入分頁去看 UI 呈現)。**權限回傳的是 404「Ledger not found」而非字面
+上的 403**(`ledger_access.get_accessible_ledger_by_external_id` 帶
+`roles` 過濾不通過時故意回 None→404,理由是不洩漏帳本存在性,是這個
+codebase 其它 owner-only 端點共用的既有慣例,不是 bug)。測試過程中在
+本機 dev DB 建了一個 `editor-test@example.com` 測試帳號(role=editor)、
+把 `cctest@example.com` 提升為 `is_admin=1` 以便呼叫 admin-only 的
+materialize-recurring 端點,只影響本機 SQLite,如需清理見上述文件。
+
 ## 架构总览(server 端)
 
 FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make

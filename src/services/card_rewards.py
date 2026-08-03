@@ -32,6 +32,7 @@ from __future__ import annotations
 import calendar
 import json
 import math
+import uuid
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
@@ -39,8 +40,58 @@ from typing import TypedDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import ReadCardRewardRuleProjection, ReadTxProjection, UserAccountProjection
+from ..models import ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection, UserCategoryProjection
+from ..sync_applier import apply_user_change_to_projection
 from . import credit_card
+
+REWARD_CATEGORY_NAME = "回饋金"
+_REWARD_CATEGORY_DEVICE_ID = "server-card-reward-payout"
+
+
+def ensure_reward_category(db: Session, *, user_id: str) -> str:
+    """信用卡回饋自動入帳(§2.9.5.4 補強)的交易需要一個分類,不然交易列表
+    顯示空白很奇怪(使用者反饋)。找不到就用跟 `exchange_rate_overrides.py`
+    同款「sync push 等价」旁路建一個 user-global 的 income 分類,名稱固定
+    `"回饋金"`——`category` 已經在 `USER_GLOBAL_ENTITY_TYPES`,直接複用
+    `apply_user_change_to_projection` 的既有 dispatch,不用另外走
+    `snapshot_mutator.create_category` + `_emit_entity_diffs` 那整套需要
+    完整 ledger snapshot 的 HTTP write 引擎。同名同 kind 只會建一次(之後
+    每次呼叫都直接命中既有規則),多個規則/多次入帳共用同一個分類。"""
+    existing = db.scalar(
+        select(UserCategoryProjection.sync_id).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.name == REWARD_CATEGORY_NAME,
+            UserCategoryProjection.kind == "income",
+        )
+    )
+    if existing is not None:
+        return existing
+
+    sync_id = f"cat_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    payload = {
+        "syncId": sync_id,
+        "name": REWARD_CATEGORY_NAME,
+        "kind": "income",
+        "createdByUserId": user_id,
+        "updatedByUserId": user_id,
+    }
+    change = SyncChange(
+        user_id=user_id,
+        ledger_id=None,
+        scope="user",
+        entity_type="category",
+        entity_sync_id=sync_id,
+        action="upsert",
+        payload_json=payload,
+        updated_at=now,
+        updated_by_device_id=_REWARD_CATEGORY_DEVICE_ID,
+        updated_by_user_id=user_id,
+    )
+    db.add(change)
+    db.flush()
+    apply_user_change_to_projection(db, user_id=user_id, change=change)
+    return sync_id
 
 
 def _attribution_date(tx: ReadTxProjection) -> datetime:

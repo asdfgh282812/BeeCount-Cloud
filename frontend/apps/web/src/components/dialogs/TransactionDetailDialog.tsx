@@ -11,7 +11,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, HandCoins, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -223,6 +223,31 @@ export function TransactionDetailDialog({
                           ? ` · ${t(`debts.direction.${tx.debt_direction}`)}`
                           : ''}
                       </span>
+                    )
+                  }
+                />
+              ) : null}
+              {/* 信用卡紅利回饋自動入帳(§2.9.5.4 補強):tx.reward_source_tx_id
+                  存在時(逐筆結算才有單一對應的原始消費),顯示可點擊的
+                  「關聯消費」連結跳去看那筆原始消費 —— 取代舊版把 tx sync_id
+                  原樣寫進備註文字裡的做法(對齐 debt_id/refund_of_id 的既有
+                  jump 写法)。 */}
+              {tx.reward_source_tx_id ? (
+                <DetailRow
+                  icon={<Gift className="h-4 w-4" />}
+                  label={t('detail.transaction.rewardSource')}
+                  value={
+                    onJumpToTx ? (
+                      <button
+                        type="button"
+                        onClick={() => onJumpToTx(tx.reward_source_tx_id!)}
+                        className="underline-offset-2 hover:text-primary hover:underline"
+                        title={t('transactions.badge.rewardSource.jumpHint')}
+                      >
+                        {t('detail.transaction.rewardSourceLink')}
+                      </button>
+                    ) : (
+                      <span>{t('detail.transaction.rewardSourceLink')}</span>
                     )
                   }
                 />

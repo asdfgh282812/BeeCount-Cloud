@@ -46,7 +46,14 @@ import { localizeError } from '../../i18n/errors'
 type RetryOnConflict = <T,>(ledgerId: string, submit: (baseChangeId: number) => Promise<T>) => Promise<T>
 
 function isoToDateInput(iso: string): string {
-  const d = new Date(iso)
+  // 後端部分欄位(card_reward_rule.starts_at/ends_at、qualifying tx 的
+  // happened_at)回傳的是不帶時區位移的 naive datetime 字串(SQLite 讀回來
+  // 沒有 tzinfo)。`new Date("2026-08-02T00:00:00")` 在沒有位移標記時會被
+  // JS 當成「本地時間」解析,UTC+8 使用者會少算一天(2026-08-02 本地
+  // 被換成 2026-08-01T16:00:00Z)。缺位移標記時補上 "Z" 強制當 UTC 解析,
+  // 跟後端「這串日期本來就是 UTC」的語意對齊。
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  const d = new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }
@@ -55,9 +62,33 @@ function dateInputToIso(value: string): string {
   return `${value}T00:00:00+00:00`
 }
 
+/** 跟 `isoToDateInput` 同一個理由:naive datetime 字串缺位移標記時強制當
+ *  UTC 解析,不然 UTC+8 使用者這裡會把 `ends_at` 提早 8 小時判定過期
+ *  (2026-08-07 補上,原本 `isExpired`/`activePeriodText` 都直接用
+ *  `new Date(iso)`,跟 `isoToDateInput` 修過的瑕疵是同一類)。 */
+function forceUtcTimestamp(iso: string): number {
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  return new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso).getTime()
+}
+
 function isExpired(rule: ReadCardRewardRule): boolean {
   if (!rule.ends_at) return false
-  return new Date(rule.ends_at).getTime() < Date.now()
+  return forceUtcTimestamp(rule.ends_at) < Date.now()
+}
+
+/** 規則列表行顯示活動期間(2026-08-07 使用者反饋:設定了活動開始/結束日,
+ *  但規則清單完全沒有顯示,只有點進編輯表單才看得到)——只有 starts_at/
+ *  ends_at 任一有值時才顯示,兩個都沒設就回傳 null 讓呼叫端跳過整行。 */
+function activePeriodText(
+  rule: ReadCardRewardRule,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  if (!rule.starts_at && !rule.ends_at) return null
+  const start = rule.starts_at ? isoToDateInput(rule.starts_at) : null
+  const end = rule.ends_at ? isoToDateInput(rule.ends_at) : null
+  if (start && end) return t('cardRewards.summary.activePeriodRange', { start, end })
+  if (start) return t('cardRewards.summary.activePeriodFrom', { start })
+  return t('cardRewards.summary.activePeriodUntil', { end: end! })
 }
 
 /**
@@ -68,6 +99,16 @@ function isExpired(rule: ReadCardRewardRule): boolean {
  * (不管是獨立卡還是掛靠群組的子卡),不是 `account_group` 本身 —— 群組
  * 純管理容器自己不會被刷卡,見 `write/card_reward_rules.py`
  * `_assert_account_is_credit_card`。
+ *
+ * 2026-08-04 使用者反饋修復:主帳戶(account_group)詳情彈窗打開時這個區塊
+ * 整個不見了——舊版只在 `accountType === 'credit_card'` 才渲染,account_
+ * group 本身不是信用卡帳戶所以直接跳過,連它底下掛靠的子卡各自設定的回饋
+ * 規則都完全看不到。修法:外層 `CardRewardRulesSection` 改成依 accountType
+ * 分派——`credit_card` 沿用單卡渲染;`account_group` 查它底下所有
+ * `account_type === 'credit_card'` 的子帳戶,每張子卡各自渲染一份(標題帶
+ * 卡片名稱區分),沒有任何子卡設過回饋規則時才整塊不渲染;其它帳戶類型
+ * (cash/bank_card 等)維持原樣不渲染。實際的規則 CRUD + 當期回饋計算邏輯
+ * 完全不變,抽進 `SingleCardCardRewards` 內部元件,對單卡場景零行為差異。
  */
 export function CardRewardRulesSection({
   accountId,
@@ -80,13 +121,67 @@ export function CardRewardRulesSection({
    *  非 billing-root 帳戶固定 0(目前還在累積的那期)。 */
   periodOffset?: number
 }) {
+  const { token } = useAuth()
+  const { activeLedgerId } = useLedgers()
+  const [groupChildren, setGroupChildren] = useState<ReadAccount[]>([])
+
+  const isGroup = (accountType || '') === 'account_group'
+
+  useEffect(() => {
+    if (!isGroup || !token || !activeLedgerId) {
+      setGroupChildren([])
+      return
+    }
+    let cancelled = false
+    fetchReadAccounts(token, activeLedgerId)
+      .then((accounts) => {
+        if (cancelled) return
+        setGroupChildren(
+          accounts.filter((a) => a.account_type === 'credit_card' && a.parent_account_id === accountId),
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setGroupChildren([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isGroup, token, activeLedgerId, accountId])
+
+  if ((accountType || '') === 'credit_card') {
+    return <SingleCardCardRewards accountId={accountId} periodOffset={periodOffset} />
+  }
+  if (!isGroup || groupChildren.length === 0) return null
+  return (
+    <div className="space-y-3">
+      {groupChildren.map((child) => (
+        <SingleCardCardRewards
+          key={child.id}
+          accountId={child.id}
+          accountLabel={child.name}
+          periodOffset={periodOffset}
+        />
+      ))}
+    </div>
+  )
+}
+
+function SingleCardCardRewards({
+  accountId,
+  accountLabel,
+  periodOffset = 0,
+}: {
+  accountId: string
+  /** 主帳戶(account_group)展開多張子卡時,各自標題帶卡片名稱區分;單卡
+   *  detail dialog 直接渲染時不傳,標題維持原樣不變。 */
+  accountLabel?: string
+  periodOffset?: number
+}) {
   const t = useT()
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict } = useLedgerWrite()
   const toast = useToast()
-
-  const isCreditCard = (accountType || '') === 'credit_card'
 
   const [rules, setRules] = useState<ReadCardRewardRule[]>([])
   const [rewards, setRewards] = useState<ReadCardRewards | null>(null)
@@ -100,7 +195,7 @@ export function CardRewardRulesSection({
   const [detailRule, setDetailRule] = useState<ReadCardRewardRule | null>(null)
 
   const reload = () => {
-    if (!token || !activeLedgerId || !isCreditCard) return
+    if (!token || !activeLedgerId) return
     setLoading(true)
     Promise.all([
       fetchCardRewardRules(token, activeLedgerId, accountId),
@@ -122,9 +217,9 @@ export function CardRewardRulesSection({
     setShowExpired(false)
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, token, activeLedgerId, isCreditCard, periodOffset])
+  }, [accountId, token, activeLedgerId, periodOffset])
 
-  if (!isCreditCard || !activeLedgerId) return null
+  if (!activeLedgerId) return null
 
   const usageByRuleId = new Map((rewards?.items || []).map((item) => [item.rule_id, item]))
   const fmt = (v: number) =>
@@ -160,6 +255,9 @@ export function CardRewardRulesSection({
         >
           <Gift className="h-3.5 w-3.5" />
           {t('cardRewards.title')}
+          {accountLabel ? (
+            <span className="font-normal text-[10px] text-muted-foreground/80">· {accountLabel}</span>
+          ) : null}
           {periodOffset !== 0 && rewards ? (
             <span className="font-normal text-[10px] text-muted-foreground/80">
               ({isoToDateInput(rewards.as_of)})
@@ -262,6 +360,11 @@ export function CardRewardRulesSection({
                       </button>
                     </div>
                   </div>
+                  {activePeriodText(rule, t) ? (
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      {activePeriodText(rule, t)}
+                    </div>
+                  ) : null}
                   {usage ? (
                     usage.status === 'no_billing_schedule' ? (
                       <div className="mt-1 text-[11px] text-muted-foreground">

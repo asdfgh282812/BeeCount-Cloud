@@ -99,9 +99,17 @@ def _record_payout(
 def _emit_reward_tx(
     db: Session, *, ledger_id: str, user_id: str, now: datetime,
     reward_account_id: str, amount: float, note: str,
+    source_tx_id: str | None = None,
 ) -> str:
+    """§2.9.5.4 補強(2026-08-04 使用者反饋):①自動帶入固定的「回饋金」
+    income 分類(`card_rewards.ensure_reward_category`,找不到就建一個,
+    user-global 只會建一次),不然交易列表顯示空白分類很奇怪;②
+    `source_tx_id` 非空時(逐筆結算才有單一對應的原始消費)寫入
+    `rewardSourceTxId`,web 交易詳情弹窗會渲染一個可點擊的「關聯消費」連結
+    跳去看那筆原始消費(取代舊版把 tx sync_id 原樣寫進備註文字裡的做法)。"""
     to_name = _account_name(db, user_id=user_id, sync_id=reward_account_id)
-    item = {
+    category_id = card_rewards.ensure_reward_category(db, user_id=user_id)
+    item: dict[str, object] = {
         "syncId": new_sync_id("tx"),
         "type": "income",
         "amount": amount,
@@ -109,9 +117,14 @@ def _emit_reward_tx(
         "note": note,
         "accountId": reward_account_id,
         "accountName": to_name,
+        "categoryId": category_id,
+        "categoryName": card_rewards.REWARD_CATEGORY_NAME,
+        "categoryKind": "income",
         "createdByUserId": user_id,
         "updatedByUserId": user_id,
     }
+    if source_tx_id is not None:
+        item["rewardSourceTxId"] = source_tx_id
     return emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item)
 
 
@@ -184,7 +197,8 @@ def _materialize_per_tx(
             payout_tx_sync_id = _emit_reward_tx(
                 db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
-                note=f"信用卡回饋入帳：{rule.label}（原交易 {tx.sync_id}）",
+                note=f"信用卡回饋入帳：{rule.label}",
+                source_tx_id=tx.sync_id,
             )
         # 不管金額是否被 cap 夾到 0,都要記一筆去重,這筆交易才不會被重複評估。
         _record_payout(
@@ -218,17 +232,23 @@ def _materialize_period_end(
         return False
 
     reward_amount = this_result["capped_reward"]
-    payout_tx_sync_id = None
-    if reward_amount > 0:
-        assert rule.reward_account_id is not None
-        payout_tx_sync_id = _emit_reward_tx(
-            db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
-            reward_account_id=rule.reward_account_id, amount=reward_amount,
-            note=(
-                f"信用卡回饋入帳：{rule.label}"
-                f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
-            ),
-        )
+    if reward_amount <= 0:
+        # 不記去重:跟逐筆結算(per-tx dedup_key = 交易自己的 sync_id)不同,
+        # 這裡的 dedup_key 是整期共用的日期字串——如果在使用者於這期結束後
+        # 才補記/回溯一筆合格交易之前,剛好有一次 tick 先以 0 元跑過這期,
+        # 提前記下去重會讓這期永遠卡在 0,之後補的交易再也不會被結算。留到
+        # 下次 tick 重新算,直到这期不再是 period_offset=-1(自然過期,跟
+        # 既有的「長時間離線=錯過一次自動化」限制一致)。
+        return False
+    assert rule.reward_account_id is not None
+    payout_tx_sync_id = _emit_reward_tx(
+        db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
+        reward_account_id=rule.reward_account_id, amount=reward_amount,
+        note=(
+            f"信用卡回饋入帳：{rule.label}"
+            f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
+        ),
+    )
     _record_payout(
         db, user_id=rule.user_id, rule_sync_id=rule.sync_id, dedup_key=dedup_key,
         amount=reward_amount, payout_tx_sync_id=payout_tx_sync_id, now=now,

@@ -1170,6 +1170,11 @@ def test_manual_payout_creates_income_tx_and_dedup_row():
             assert tx.amount == 30.0
             assert tx.account_sync_id == "acc-cash1"
             assert tx.note == "手動入帳測試"
+            # §2.9.5.4 補強(2026-08-04 使用者反饋):自動帶固定的「回饋金」
+            # income 分類,不然交易列表顯示空白分類很奇怪。
+            assert tx.category_name == "回饋金"
+            assert tx.category_kind == "income"
+            assert tx.category_sync_id is not None
 
             payout = db.scalar(
                 select(CardRewardPayout).where(

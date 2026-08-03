@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 from ...models import CardRewardPayout
+from ...services import card_rewards
 from ...snapshot_mutator import create_transaction as _mutate_create_tx
 
 router = APIRouter()
@@ -262,6 +263,9 @@ async def manual_card_reward_payout_ep(
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     note = req.note or f"信用卡回饋入帳（手動）：{rule.label}"
+    # §2.9.5.4 補強(2026-08-04 使用者反饋):跟自動入帳引擎一致,自動帶固定
+    # 的「回饋金」income 分類,不然交易列表顯示空白分類很奇怪。
+    reward_category_id = card_rewards.ensure_reward_category(db, user_id=current_user.id)
 
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     actor_fields = {
@@ -278,6 +282,9 @@ async def manual_card_reward_payout_ep(
             "note": note,
             "account_id": req.reward_account_id,
             "account_name": to_name,
+            "category_id": reward_category_id,
+            "category_name": card_rewards.REWARD_CATEGORY_NAME,
+            "category_kind": "income",
             **actor_fields,
         }
         next_snapshot, tx_id = _mutate_create_tx(snapshot, tx_payload)

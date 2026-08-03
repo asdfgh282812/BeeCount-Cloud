@@ -496,9 +496,20 @@ function CreditCardBillingSection({
   }, [account.id])
 
   useEffect(() => {
-    onCycleOffsetChange?.(isBillingRoot ? cycleOffset : 0)
+    if (!isBillingRoot) {
+      onCycleOffsetChange?.(0)
+      return
+    }
+    // 沒設定帳單日/繳款日的卡,billing summary fetch 必定失敗
+    // (`available` 恆為 false),下面「已繳清自動跳到累積期」那段邏輯
+    // 只在 fetch 成功時才跑,cycleOffset 永遠停在初始值 0——但這種卡本來
+    // 就沒有「上一期/這一期」的帳單週期概念,紅利回饋(`periodOffset =
+    // cycleOffset - 1`)應該直接對齊「目前這期」(periodOffset=0),回報
+    // 1 換算後才會是 0,不然沒設定帳單日的 calendar_month 規則預設會整組
+    // 對錯一期,且沒有周期選擇器 UI 能讓使用者自己切回來。
+    onCycleOffsetChange?.(available ? cycleOffset : 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBillingRoot, cycleOffset])
+  }, [isBillingRoot, cycleOffset, available])
 
   useEffect(() => {
     if (!isBillingRoot || !token || !activeLedgerId) {
