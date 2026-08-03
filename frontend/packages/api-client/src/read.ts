@@ -8,6 +8,9 @@ import type {
   NetWorthHistory,
   ReadAccount,
   ReadBudget,
+  ReadCardRewardRule,
+  ReadCardRewardRuleTransactions,
+  ReadCardRewards,
   ReadCategory,
   ReadDebt,
   ReadInstallmentPeriod,
@@ -87,6 +90,60 @@ export async function fetchAccountInterestFreeSuggestion(
 ): Promise<AccountInterestFreeSuggestion> {
   return authedGet<AccountInterestFreeSuggestion>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/interest-free-suggestion`,
+    token
+  )
+}
+
+/** 信用卡紅利回饋規則列表(§2.9.5 Phase 4.5)。`accountId` 必須是一張真實的
+ *  `credit_card` 帳戶。 */
+export async function fetchCardRewardRules(
+  token: string,
+  ledgerId: string,
+  accountId: string
+): Promise<ReadCardRewardRule[]> {
+  return authedGet<ReadCardRewardRule[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules`,
+    token
+  )
+}
+
+/** 信用卡紅利回饋當期計算(§2.9.5 Phase 4.5)。回饋金額不落庫,即時算出。 */
+export async function fetchCardRewards(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  periodOffset?: number
+): Promise<ReadCardRewards> {
+  const qs = periodOffset ? `?period_offset=${encodeURIComponent(String(periodOffset))}` : ''
+  return authedGet<ReadCardRewards>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-rewards${qs}`,
+    token
+  )
+}
+
+/** §2.9.5.4:目前使用者名下**所有**信用卡的所有回饋規則(不限某一張卡),
+ *  給共用上限群組跨卡挑選 UI 用。 */
+export async function fetchAllCardRewardRules(
+  token: string,
+  ledgerId: string
+): Promise<ReadCardRewardRule[]> {
+  return authedGet<ReadCardRewardRule[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/card-reward-rules`,
+    token
+  )
+}
+
+/** §2.9.5.3 交易明細彈窗:單一規則命中哪些交易 + 剩餘回饋額度。 */
+export async function fetchCardRewardRuleTransactions(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  ruleId: string,
+  periodOffset?: number
+): Promise<ReadCardRewardRuleTransactions> {
+  const qs = periodOffset ? `?period_offset=${encodeURIComponent(String(periodOffset))}` : ''
+  return authedGet<ReadCardRewardRuleTransactions>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules/${encodeURIComponent(ruleId)}/transactions${qs}`,
     token
   )
 }

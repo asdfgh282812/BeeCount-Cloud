@@ -576,6 +576,13 @@ class ReadTxProjection(Base):
     # 纯粹是个跟 installment_plan_sync_id/recurring_rule_sync_id 同款的
     # denormalized 反查列。
     debt_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記這筆交易時手動勾選
+    # 的 read_card_reward_rule_projection.sync_id 列表(nullable JSON array,
+    # 跟 tag_sync_ids_json 同一模式)。系統不再依 category/金額自動比對「這筆
+    # 該算哪條規則」——services.card_rewards 的當期回饋計算只加總這裡有勾選
+    # 到該規則的交易,min_tx_amount/min_spend_threshold 這兩個金額門檻仍由
+    # 系統在計算時判斷,不受使用者勾選影響。
+    reward_rule_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 Index(
@@ -1037,6 +1044,91 @@ Index(
     "ix_read_tx_template_ledger_sort",
     ReadTxTemplateProjection.ledger_id,
     ReadTxTemplateProjection.sort_order,
+)
+
+
+class ReadCardRewardRuleProjection(Base):
+    """信用卡紅利回饋規則(§2.9.5 Phase 4.5 MOZE_FEATURE_GAP_SD.md)。
+    user-global,PK=(user_id, sync_id)——不像 debt/recurring_rule/
+    installment_plan 那樣掛 ledger_id,因為它綁定的 `account_sync_id`
+    (信用卡帳戶)本身就是 user-global 實體,規則跟著帳戶走同一個 scope,
+    跟 account/category/tag 同款。回饋金額不落庫:讀路徑
+    (`services.card_rewards`)從 `account_sync_id` 當期交易即時算出,
+    跟 `ReadDebtProjection.remaining_amount`/
+    `ReadInstallmentPlanProjection.paid_periods` 是同一個「不落表、讀路徑
+    即時加總」取捨,見那兩個 docstring。"""
+
+    __tablename__ = "read_card_reward_rule_projection"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    account_sync_id: Mapped[str] = mapped_column(String(255), default="")
+    label: Mapped[str] = mapped_column(Text, default="")
+    # nullable JSON array of category sync_id;None/空 = 所有消費都適用。
+    category_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rate_type: Mapped[str] = mapped_column(String(16), default="percentage")
+    rate_value: Mapped[float] = mapped_column(Float, default=0.0)
+    rounding: Mapped[str] = mapped_column(String(8), default="round")
+    calc_basis: Mapped[str] = mapped_column(String(24), default="transaction_date")
+    interval: Mapped[str] = mapped_column(String(16), default="billing_cycle")
+    min_spend_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_tx_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cap_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cap_shared_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 自動入帳(§2.9.5.4,2026-08-07):"manual" = 純顯示不自動化(既有規則
+    # 升級後的預設值,行為不變)。immediate_after_tx/after_posting_date 用
+    # settlement_days(逐筆交易 happened_at + N 天);period_end 不需要
+    # settlement_days(算法定的期間結束日);reward_account_id 是目的帳戶,
+    # settlement_type != "manual" 時必填,見
+    # src/services/card_reward_payout.py。
+    settlement_type: Mapped[str] = mapped_column(String(24), default="manual")
+    settlement_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reward_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class CardRewardPayout(Base):
+    """信用卡紅利回饋自動入帳(§2.9.5.4)去重台帳。不是 sync entity(不進
+    sync_changes/projection),也不是 §2.1 通知中心的一部分——是內部
+    idempotency 記錄。理由見 `src/services/card_reward_payout.py`
+    docstring:`Notification` 表的「查歷史 payload 比對」去重法只適合
+    「每個(帳戶,週期)至多一次」的既有排程(autopay/reminders),
+    immediate_after_tx/after_posting_date 是逐筆交易觸發,量級不同,沿用
+    `Notification` 會讓去重查詢隨時間無界成長、也會把通知中心灌爆。
+
+    `dedup_key`:逐筆結算類型是交易的 sync_id;period_end 是
+    period_end.isoformat()。"""
+
+    __tablename__ = "card_reward_payouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    rule_sync_id: Mapped[str] = mapped_column(String(255))
+    dedup_key: Mapped[str] = mapped_column(String(255))
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    payout_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index(
+    "ux_card_reward_payouts_dedup",
+    CardRewardPayout.user_id,
+    CardRewardPayout.rule_sync_id,
+    CardRewardPayout.dedup_key,
+    unique=True,
+)
+
+
+Index(
+    "ix_read_card_reward_rule_account",
+    ReadCardRewardRuleProjection.user_id,
+    ReadCardRewardRuleProjection.account_sync_id,
 )
 
 

@@ -54,6 +54,7 @@ import {
   uploadAttachment,
   type AttachmentRef,
   type ReadAccount,
+  type ReadCardRewardRule,
   type ReadCategory,
   type ReadDebt,
   type ReadLedger,
@@ -67,6 +68,7 @@ import {
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
   fetchAdminUsers,
+  fetchCardRewardRules,
   fetchReadDebts,
   fetchReadLedgerDetail,
   fetchReadLedgers,
@@ -359,6 +361,10 @@ export function TransactionsPage() {
   // ledger-scoped 实体,按「当前写入账本」单独拉,不进 loadTxDictionaries
   // 那套 user-global 字典逻辑。
   const [txDictionaryDebts, setTxDictionaryDebts] = useState<ReadDebt[]>([])
+  // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):主表單「勾選要走哪幾條規則」
+  // 下拉的選項,按目前表單選中的信用卡帳戶單獨拉(規則綁在具體帳戶上,不是
+  // ledger-scoped,也不进 loadTxDictionaries 的 user-global 字典)。
+  const [txFormRewardRules, setTxFormRewardRules] = useState<ReadCardRewardRule[]>([])
   // 标签详情弹窗：点击标签卡片时打开，内部用 TransactionList 无限滚动加载
   // 该标签关联的交易。
   // tagDetail * state + TAG_DETAIL_PAGE_SIZE 已迁到 TagsPage。
@@ -578,6 +584,35 @@ export function TransactionsPage() {
     txIsSharedEditor && sharedBundle ? sharedAsRead.categories : txDictionaryCategories
   const txWriteTags =
     txIsSharedEditor && sharedBundle ? sharedAsRead.tags : txDictionaryTags
+
+  // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):只有 expense + 選中帳戶是
+  // credit_card 时才需要拉规则列表——不 filter enabled,已停用的规则如果
+  // 曾被这笔交易勾选过,仍要能在列表里显示(打勾状态 + 停用徽章),让使用者
+  // 能取消勾选。
+  useEffect(() => {
+    if (!txDialogOpen || txForm.tx_type !== 'expense' || !txWriteLedgerId) {
+      setTxFormRewardRules([])
+      return
+    }
+    const account = txWriteAccounts.find(
+      (row) => (row.name || '').trim().toLowerCase() === txForm.account_name.trim().toLowerCase(),
+    )
+    if (!account || account.account_type !== 'credit_card') {
+      setTxFormRewardRules([])
+      return
+    }
+    let cancelled = false
+    fetchCardRewardRules(token, txWriteLedgerId, account.id)
+      .then((rows) => {
+        if (!cancelled) setTxFormRewardRules(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxFormRewardRules([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [txDialogOpen, txForm.tx_type, txForm.account_name, txWriteLedgerId, txWriteAccounts, token])
   const txFilterAccountOptions = useMemo(
     () =>
       [...new Set(accounts.map((row) => (row.name || '').trim()).filter((value) => value.length > 0))].sort((a, b) =>
@@ -1558,6 +1593,9 @@ export function TransactionsPage() {
           txForm.tx_type !== 'transfer' && txForm.debt_id !== '__new__'
             ? txForm.debt_id.trim() || null
             : null,
+        // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):跟 debt_id 同款语意,
+        // 只有 expense 有意义(回饋是消費行为),transfer/income 一律清空。
+        reward_rule_ids: txForm.tx_type === 'expense' ? txForm.reward_rule_ids : [],
         // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
         // 时生效(server 也只认 create 路径的这个字段)。
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
@@ -2065,6 +2103,7 @@ export function TransactionsPage() {
                 tags={txWriteTags}
                 debts={txDictionaryDebts}
                 canCreateDebt={txCanCreateDebt}
+                rewardRules={txFormRewardRules}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}
@@ -2133,6 +2172,7 @@ export function TransactionsPage() {
                     exclude_from_budget: Boolean(tx.exclude_from_budget),
                     refund_of_id: tx.refund_of_id || '',
                     debt_id: tx.debt_id || '',
+                    reward_rule_ids: tx.reward_rule_ids || [],
                     // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
                     split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
                     splits: Boolean(tx.has_splits)

@@ -370,6 +370,294 @@ test_workspace_transactions_account_sync_id_expands_group_children`、新增
 同期不重繳、餘額不足跳過+去重+補足重試成功、來源帳戶不能是 account_group、
 不能是自己)。這輪同樣只跑了 pytest + build,沒有走完整瀏覽器手測。
 
+**§2.9.5 信用卡紅利回饋(Phase 4.5,server + web UI,2026-08-05)已落地**:
+新表 `read_card_reward_rule_projection`——**user-global**,PK=`(user_id,
+sync_id)`,不像 debt/recurring_rule 那樣掛 `ledger_id`,因為綁定的
+`account_sync_id`(信用卡帳戶)本身就是 user-global 的
+`UserAccountProjection`,規則跟著走同一個 scope;登記方式跟
+account/category/tag 同款,`sync_applier.py` 走 `_USER_MERGE_SPECS`/
+`_USER_UPSERT_DISPATCH`/`_USER_DELETE_DISPATCH`(而不是 debt 用的
+`_LEDGER_*` 三張表),`routers/write/_shared.py` 也要在
+`_USER_PROJECTION_UPSERTERS`/`_USER_PROJECTION_DELETERS`(不是
+`_LEDGER_PROJECTION_*`)登記一次——這是這個 entity 跟本文件其它「新增
+entity」案例最大的路徑差異,之後如果再加「綁定 user-global 帳戶」的新
+entity,照這個抄比照 debt 抄更準。CRUD 端點
+`POST/PATCH/DELETE /ledgers/{id}/accounts/{account_id}/card-reward-rules`
+(`src/routers/write/card_reward_rules.py`,owner-only,`_assert_account_
+is_credit_card` 擋 `account_group`/不存在的帳戶——回饋規則綁定的是實體
+卡片,不是純管理容器,跟 §2.9 `_assert_account_not_group` 同一個道理但這裡
+更嚴格,連「未掛 group 也未必是 credit_card」的帳戶類型也一併擋掉)。
+回饋金額**不落庫**,跟 §2.5 借還款 `remaining_amount`/§2.3 分期
+`paid_periods` 同一個「不落表、讀路徑即時加總」取捨:新服務
+`src/services/card_rewards.py::compute_account_card_rewards` +
+`apply_caps` 兩段——前者算每條規則的 `raw_reward`(依 `interval` 切period、
+`category_ids`/`min_tx_amount` 過濾、`min_spend_threshold` 門檻判斷、
+`rate_type`/`rate_value`/`rounding` 逐筆取整加總),後者處理
+`cap_amount`/`cap_shared_key`(相同 `cap_shared_key` 的規則先加總
+`raw_reward` 再一起套上限,超過時依佔比分攤,最後一條用減法拿餘數,對齊
+`credit_card_billing.compute_card_payment_allocations` 同款做法避免四捨
+五入對不上)。`interval == "billing_cycle"` 時的結帳日解析
+(`resolve_billing_schedule`)優先用帳戶自己的 `billing_day`,沒有的話
+(掛靠群組的子卡,§2.9 群組模型下 `billing_day` 只設在群組身上)回頭查
+它的 `parent_account_id`,這樣子卡也能設定「帳單週期」回饋而不必是獨立卡
+或群組本身。`calc_basis == "settlement_date"` 目前行為等同
+`"transaction_date"`(§2.10 延後入帳的 `deferred_posting_at` 還沒實作,
+`_attribution_date` 是唯一呼叫點,之後落地只需要改這一個函式)。讀端點
+`GET /ledgers/{id}/accounts/{account_id}/card-rewards`(`period_offset`
+語意同 billing-summary 的 `cycle_offset`,`0` 是還在累積的當期)+
+`GET .../card-reward-rules`(規則列表)都在 `src/routers/read/ledgers.py`,
+`account_id` 必須是 `account_type == "credit_card"`。web:
+`AccountDetailDialog.tsx` 掛了新元件 `CardRewardRulesSection.tsx`(獨立
+檔案,不是塞進本來就很長的 `CreditCardBillingSection`),渲染條件是
+`account_type === "credit_card"`(不管有沒有掛靠群組,獨立卡跟子卡都能設
+規則),折疊面板顯示規則清單(標籤/回饋方式/上限)+ 當期回饋預覽(符合條件
+消費/是否達門檻/實拿回饋金額),CRUD 表單支援分類多選(chip 按鈕,不是
+下拉,因為可以複選)、`cap_shared_key` 共用上限群組;`calc_basis` 目前不在
+UI 暴露(固定送 `transaction_date`,理由同上)。測試見
+`tests/test_card_rewards.py`(11 例:CRUD、owner-only、mobile push merge
+契約、percentage/fixed_amount 兩種 rate_type、category_ids 過濾、
+min_tx_amount/min_spend_threshold 門檻、cap_amount 單規則上限、
+cap_shared_key 跨規則共享上限、billing_cycle 借用群組 billing_day、
+calendar_month、拒絕 account_group 目標)。手動測試清單見
+`docs/PH4_5_CARD_REWARDS_WEB_UI_MANUAL_TEST_PLAN.md`——這輪 backend
+pytest 全量回歸(除既有已知 flaky 用例外全過)+ frontend `pnpm build`/
+`pnpm test:unit` 都過,但**沒有走完整瀏覽器手測**:本機 Vite dev server
+這次會話持續復現「整頁空白 + `useContext` 讀到 null」的渲染錯誤,用
+`git stash` 驗證過在**未改動的 `main` 分支**上同樣復現(說明是本機既有
+的 dev tooling 環境問題,不是這次程式碼改動引入的),但也代表這輪沒有
+機會像前幾個 Phase 那樣在瀏覽器裡抓純前端邏輯 bug,務必自己手動走一遍
+清單。
+
+**§2.9.5 回饋規則歸屬改版:自動比對 → 記交易時手動勾選(2026-08-06)**:
+使用者反饋初版設計不對——現實情境是一筆消費通常只適用一種回饋方案,而
+`category_ids` 自動比對容易讓同一筆錢被多條規則重複算(比如某分類同時
+符合兩條規則的過濾條件),且使用者比系統更清楚這筆消費實際要走哪個回饋。
+改動:①`read_tx_projection` 新增 `reward_rule_sync_ids_json`(nullable
+JSON array,跟 `tag_sync_ids_json` 同一模式,migration
+`0032_tx_reward_rule_ids`),交易的 `WriteTransactionCreateRequest/
+UpdateRequest.reward_rule_ids`(可複選)、`snapshot_mutator.py` 的
+`rewardRuleIds` 欄位映射、`sync_applier.py` merge spec、
+`projection.upsert_tx` 都比照 `tagIds` 現有寫法;②`services/
+card_rewards.py::compute_account_card_rewards` 改成只加總
+`rule.sync_id in tx.reward_rule_sync_ids_json` 的交易,`category_
+sync_ids_json` 過濾整段拿掉(欄位本身留著但不再參與計算,避免多一次
+migration);`min_tx_amount`(單筆門檻)/`min_spend_threshold`(當期累積
+門檻)這兩個「金額」判斷維持由系統計算——這是跟使用者確認過的界線:規則
+篩選(分類)交給使用者手動判斷,金額門檻交給系統算;③新 helper
+`write/_shared.py::_assert_reward_rules_valid`(仿 `_assert_debt_exists`
+模式,但用 `user_id` 查,因為 `card_reward_rule` 是 user-global 實體不是
+ledger-scoped):驗證每個 `reward_rule_id` 都存在且歸屬這筆交易的
+`account_id`,在 `_commit_create_tx_fast`(create,查
+`mutate_payload.get("account_id")`)跟 `_commit_write_fast_tx`(update,
+merge 後在最終狀態的 `new_item.get("accountId")` 上驗證,對齊拆帳
+`_validate_tx_splits` 同一個「改帳戶不改勾選也要重新校驗歸屬」的理由)
+兩處都掛;④web:`TxForm` 新增 `reward_rule_ids: string[]`,
+`TransactionsPanel.tsx` 記交易表單新增「紅利回饋規則」複選 chip 區塊
+(只在 `tx_type === 'expense'` 且選中帳戶是 `credit_card` 時顯示,選項來自
+`TransactionsPage.tsx`/`GlobalEditDialogs.tsx` 各自按選中帳戶單獨拉的
+`fetchCardRewardRules`,不 filter `enabled`——已停用規則若曾被這筆交易
+勾選,仍要能顯示讓使用者取消勾選);`CardRewardRulesSection.tsx` 的規則
+表單拿掉「限定分類」chip 選擇器跟對應的 `fetchWorkspaceCategories` 依賴。
+**舊交易(改版前建立、沒有 `reward_rule_ids`)一律不計入任何規則的回饋,
+不做批次回填**——跟使用者確認過的取捨。測試見 `tests/test_card_rewards.py`
+(14 例,含新增的「未勾選規則交易不計入」「一筆交易複選多條規則各自累加」
+「交易 `rewardRuleIds` mobile push merge 契約」「write 校驗拒絕不存在/掛
+錯帳戶的 rule_id」四類)。這輪同樣只跑了 pytest + frontend build/test,
+沒有走完整瀏覽器手測,見上面清單。
+
+**§2.9.5.4 活動期間 / 帳單週期同步 / 交易明細彈窗 / 自動入帳(2026-08-07)
+已落地**:使用者實測後回報四個缺口,逐一修復。①**活動期間 UI**:
+`starts_at`/`ends_at` 後端其實早就支援(`_rule_active_in_period` 已經在
+判斷),純粹是前端表單沒有欄位——`CardRewardRuleFormDialog` 補上
+`<input type="date">`(UTC getter/setter,照抄 `DebtsPanel.tsx` 的
+`isoToDateInput`/`dateInputToIso` 慣例),清單新增「顯示已過期規則」切換
+(預設隱藏 `ends_at` 已過的規則)+「複製」按鈕(`seed` prop,日期原樣複製,
+使用者自己再改,跟預設值不同是使用者明確要求的)。記交易的回饋規則勾選
+chip(`TransactionsPanel.tsx`)也補上「目前生效中」過濾(`enabled` 且在
+`starts_at`/`ends_at` 區間內),但已經勾選在這筆交易上的規則即使失效仍
+保留顯示,讓使用者能取消勾選——跟已停用規則的既有慣例一致。
+②**帳單週期同步 bug**:`AccountDetailDialog.tsx` 的回饋卡片(`Card
+RewardRulesSection`)原本完全不吃上面 `CreditCardBillingSection` 的
+`cycleOffset`,永遠只顯示「目前還在累積的那期」。根因是兩者對「期數
+offset=0」的定義剛好差一期(`cycleOffset=0` = 最近一次已結束的週期;
+`card-rewards` 的 `period_offset=0` = 目前還在累積、尚未結束的那期),
+換算關係固定是 `period_offset = cycleOffset - 1`。改法:`CreditCard
+BillingSection` 新增 `onCycleOffsetChange` callback prop(仿既有
+`onPeriodRangeChange` 同款「內部 state 不動,額外往上通知一次」模式,
+沒有改動任何既有的自動跳期/日期運算邏輯,風險最小),`AccountDetailDialog`
+接住後換算成 `periodOffset` 傳給 `CardRewardRulesSection`;後端
+`get_account_card_rewards` 的 `period_offset` 下界配合放寬(`ge=-60` →
+`ge=-120`,只是給換算後的範圍留餘裕,不影響既有語意)。③**交易明細彈窗**:
+新端點 `GET .../card-reward-rules/{rule_id}/transactions`,點規則列可以看
+命中哪些交易 + 各自回饋金額 + 剩餘額度;`services/card_rewards.py` 抽出
+共用的 `_qualifying_transactions`(規則+可選期間→符合條件交易,`period_
+start`/`period_end` 皆可傳 `None` 表示不限期間,§2.9.5.4 payout 引擎逐筆
+結算也共用這個函式)跟 `compute_tx_reward_amount`,`compute_account_card_
+rewards` 改呼叫這兩個函式(純重構,14 個既有測試原樣通過)。Moze 參考截圖
+裡「消費列表中間出現已達上限分界線」這種逐筆命中點,因為 `apply_caps` 是
+整期比例分攤不是先到先得,沒有明確的「這一筆壓線」,所以只在彈窗頂部顯示
+整組彙總的「剩餘額度」文字,不做逐筆分界線(v1 簡化,已寫進去)。
+
+**共用上限群組改版為跨卡挑選**:討論過程中發現使用者要的「共用上限群組」
+本來就是**跨卡**的(同一家銀行的正副卡共用一個回饋額度),不是同一張卡上
+的多條規則——但舊版 `get_account_card_rewards` 的規則查詢只 scope 在
+單一 `account_id`,`cap_shared_key` 這個欄位雖然定義上不分帳戶,實際上
+從來沒有真的跨帳戶算過。新增 `services/card_rewards.py::
+fetch_cap_group_rules(db, *, user_id, base_rules)`:把 `base_rules` 裡任何
+一條有 `cap_shared_key` 的,跨帳戶(不限 `account_sync_id`)查出同一個
+user 底下所有共用同一個 key 的規則聯集回傳,`get_account_card_rewards`/
+明細端點/§2.9.5.4 payout 的 `_materialize_period_end` 三處都先呼叫這個
+函式擴成完整群組再丟給 `compute_account_card_rewards` + `apply_caps`。
+**這個改動連帶暴露一個既有的正確性 bug**:`compute_account_card_rewards`
+原本無條件用呼叫端傳入的單一 `account` 幫**所有**規則解析帳單週期
+(`_resolve_period(db, account=account, ...)`),同帳戶場景下這是對的,
+但跨卡場景下第二張卡的規則會被錯誤套用第一張卡的 `billing_day`——修法是
+函式內部改成依每條規則自己的 `account_sync_id` 批次查對應帳戶(`foreign_
+accounts` dict,只在真的出現跨帳戶規則時才多查一次),`account` 參數保留
+但只當「預設/主要」帳戶用,不再假設所有規則都屬於它。前端
+`CardRewardRuleFormDialog` 拿掉原本的 `cap_shared_key` 自由輸入框,改成
+用新端點 `GET /ledgers/{id}/card-reward-rules`(這個使用者名下所有信用卡
+的所有規則,不帶 `account_id` 前綴)拉出清單,渲染成「卡片名稱 - 規則
+名稱」的可勾選 chip;送出時前端邏輯判斷有效 key(選中規則裡已有 key 就
+沿用,都沒有但有勾選就 `crypto.randomUUID()` 生一個新的,選中規則橫跨
+兩個以上不同既有 key 直接前端擋掉),再依序(`retryOnConflict` chaining)
+PATCH 新加入/被移出群組的規則各自的 `cap_shared_key`——這是純前端編排,
+沒有新增後端批次寫入端點,理由是這個操作互動頻率低,沿用既有單規則 CRUD
+即可,不需要新的抽象。
+
+**自動入帳(§2.9.5.4 主功能)**:規則新增 `settlement_type`(`immediate_
+after_tx`/`after_posting_date`/`period_end`/`manual`,預設 `manual` 保證
+既有規則升級後行為不變)、`settlement_days`(逐筆結算類型專用)、`reward_
+account_id`(目的帳戶,非 manual 時必填),寫入驗證在
+`snapshot_mutator.py::create_card_reward_rule`/`update_card_reward_rule`
+(新增 `_assert_valid_reward_account`,比照既有 `_assert_valid_auto_pay_
+source` 但**不擋**「不能是自己」——`reward_account_id == 這張卡自己`
+正是最常見用例,如 U Bear/Cathay 直接折抵當期帳單;`update_card_reward_
+rule` 的一致性檢查要在套用完所有 partial-update 分支、拿到合併後的最終
+狀態才驗證,比照 §2.4 拆帳 `_validate_tx_splits` 同一個理由)。回饋入帳
+交易一律用 `tx_type="income"`——已確認 `credit_card_billing.py` 的應繳/
+餘額計算本來就把 `income` 當負的消費處理,`reward_account_id` 選同一張
+卡時這筆 income 會正確沖抵應繳金額,選別的錢包帳戶時 `recurring_
+materializer.compute_account_balance` 也會正確算進餘額;`income` 不強制
+要求分類,不需要新增分類。新服務 `src/services/card_reward_payout.py::
+materialize_due_card_reward_payouts`:`immediate_after_tx`/`after_posting_
+date`(逐筆結算,`after_posting_date` 目前算法等同 `immediate_after_tx`
+——沿用 `calc_basis`/`_attribution_date` 同款「§2.10 `deferred_posting_
+at` 落地前兩者行為一致」的誠實文檔化限制,唯一呼叫點是新函式
+`card_rewards.compute_settlement_date`,放在 `card_rewards.py` 而不是
+payout 模組是為了讓明細彈窗端點也能共用,避免循環 import)每筆符合資格
+的交易各自在 `happened_at + settlement_days` 天後入帳一次;`period_end`
+只結算「最近一次已結束的那期」(比照 `credit_card_autopay`/`credit_card_
+reminders` 既有的「只看最近一期,長時間離線=錯過一次自動化」限制)。
+**去重機制刻意不沿用 Notification 表**(`credit_card_autopay`/`debt_
+reminders`/`credit_card_reminders` 用的「查歷史 payload 比對」去重法):
+逐筆結算量級可能累積到每個使用者上百筆,沿用會讓去重查詢隨時間無界成長、
+也會把使用者的通知中心灌爆——新增專用表 `card_reward_payouts`
+(`models.CardRewardPayout`,唯一索引 `(user_id, rule_sync_id, dedup_
+key)`,不是 sync entity),`dedup_key` 逐筆類型是交易 `sync_id`,
+`period_end` 類型是 `period_end.isoformat()`。決策(已跟使用者確認):
+逐筆結算**不發通知**(使用者在交易列表就看得到這筆收入),`period_end`
+整批結算才發一則通知(`category="card_reward"`,新增進
+`services/notifications.py::NotificationCategory`,比照
+`credit_card_autopay` 的通知慣例)。掛在 `main.py` 同一個 15 分鐘
+debt/card reminder loop 上(`_run_debt_reminders_once`),手動觸發沿用
+`POST /internal/tasks/materialize-recurring`(回傳體新增
+`card_reward_tx_payouts`/`card_reward_period_payouts`)。**已知限制**:
+①逐筆結算不套用 `min_spend_threshold`(本期累積門檻)——逐筆入帳沒辦法
+等到「這期結束」才知道有沒有達標,已跟使用者確認接受;②共用上限群組
+如果同時包含逐筆結算跟區間結束兩種規則混用,逐筆結算當下沒辦法即時知道
+另一條區間結算規則吃了多少共用額度,極端情況下總額可能略微超出共用上限
+(最多超出一筆區間結算的量),v1 已知限制,寫在這裡不是留待討論項。
+
+**過程中意外發現的既有 bug**:`snapshot_builder.py` 重建帳戶快照(web
+write 引擎每次 mutate 前的基線)時,`cardRewardRules` 的 SELECT 語句沒有
+包含 `settlement_type`/`settlement_days`/`reward_account_id` 三個新欄位
+——導致連續兩次 PATCH(第一次成功設定這三個欄位,第二次改別的欄位)之間,
+第二次讀到的基線快照裡這三個欄位是空的,合併校驗會誤判「reward_account_
+id 缺失」直接擋掉合法的更新。這是本次 pytest 測試(`test_update_card_
+reward_rule_settlement_fields_merged_state_validated`)直接抓到的,修法
+是把三個欄位補進 `snapshot_builder.py` 的 SELECT——跟 CLAUDE.md 之前記錄
+過的 `auto_pay_enabled`/`auto_pay_from_account_id` 漏 SELECT 是同一類
+bug(§2.9 2026-08-02 補強一節),提醒之後每次幫既有 entity 加新欄位,除了
+model/schema/write/projection 四處,**`snapshot_builder.py` 的 SELECT
+也要記得同步加**,不然只有「連續兩次 write 之間」這種場景才會暴露,單次
+create/update 測試測不出來。
+
+測試見 `tests/test_card_rewards.py`(新增 12 例:結算欄位 round-trip、
+寫入校驗缺天數/缺目的帳戶/目的帳戶是群組或不存在/自己當目的帳戶放行、
+merge 後狀態一致性校驗、mobile push 契約、跨卡共用上限、跨卡規則列表
+端點、交易明細端點)+ 新增 `tests/test_card_reward_payout.py`(11 例:
+逐筆結算到期入帳+去重、after_posting_date 現況鎖定、cap_amount 逐筆
+clamp+零金額去重、自我折抵帳單、區間結束整批結算+去重+通知、無帳單週期
+跳過、跨卡共用上限的區間結算、manual/停用規則零副作用、規則事後過期不
+追回已賺回饋、internal task 端點計數)。backend 全量 `pytest tests/ -q`
+除一個既有已知、跟本次改動無關的 flaky 用例(`test_recurring_rules.py::
+test_recurring_occurrence_update_overridden_skipped_by_update_from`,
+本次完全沒碰 `recurring_rules` 相關代碼)外全過;frontend `pnpm build`/
+`pnpm test:unit`(含 i18n 三語系 key 一致性檢查,73 例)都過。**這輪同樣
+沒有走完整瀏覽器手測**,尤其是跨卡共用上限群組挑選這塊純前端互動邏輯
+pytest 測不到,務必手動走一遍 `docs/PH4_5_CARD_REWARDS_WEB_UI_MANUAL_
+TEST_PLAN.md` 更新後的清單。
+
+**§2.9.5.4 手動入帳補上真正的入口 + 兩個前端 bug 修復(2026-08-03 使用者
+實測回報)**:使用者實測後回報四個問題。①**「手動指定」原本只是純展示**
+——`settlement_type = "manual"` 從一開始就設計成「不進自動掃描範圍」,但
+沒人接著問「那使用者自己想入帳的動作要從哪裡觸發」,結果整個 UI 完全沒有
+任何按鈕能真正把回饋金額存進帳戶,對使用者來說等同「設定了卻沒有用」。
+補上新端點 `POST .../accounts/{account_id}/card-reward-rules/{rule_id}/
+manual-payout`(`src/routers/write/card_reward_rules.py`,語意同
+`card_payment_ep` 的「語意化端點包一筆交易」模式,本質產生一筆
+`tx_type="income"`,走一般交易寫權限不是 owner-only):`amount`/
+`reward_account_id` 每次呼叫臨時指定,不要求跟規則上的 `reward_account_id`
+一致(manual 規則的這個欄位原本就允許是 null,建立規則時前端
+`needsRewardAccount` 邏輯也不收集它)。共用同一份 `CardRewardPayout` 台帳
+(`dedup_key = f"manual:{tx_id}"`,交易 sync_id 天生唯一,不需要額外防重複
+校驗——manual 沒有自動引擎的「同一期只能結算一次」天然邊界,使用者自己
+決定要不要重複按)。web 入口在交易明細彈窗(`CardRewardRuleTransactionsDialog`
+in `CardRewardRulesSection.tsx`)頂部,`settlement_type === 'manual'` 時
+顯示「手動入帳」按鈕,展開成金額(預設帶入這期 `capped_reward`)+ 目的帳戶
+兩個欄位;刻意放在 dialog 頂部、不依賴 `detail.status === 'ok'`,因為
+manual 入帳是使用者自己認定「這筆錢該入帳」,不需要規則的期間計算成功。
+②**交易明細彈窗把任何 fetch 失敗都顯示成「帳戶尚未設定帳單日/繳款日」**
+——使用者提供的截圖裡帳戶明明已經設好帳單日(每月 5 號)/繳款日(每月
+23 號),而且同一個規則的彙總卡片也正確算出回饋金額(狀態是 `"ok"`),點
+進明細卻看到這則訊息,懷疑有 bug。逐行覆核 `services/card_rewards.py` 的
+`resolve_billing_schedule`/`_resolve_period`/`list_rule_qualifying_
+transactions`,並且直接用 FastAPI TestClient 重建使用者的確切場景(信用卡
+帳戶 billing_day=5/payment_due_day=23、規則 5% 上限 200、一筆 600 元符合
+條件的消費)三個端點(`card-rewards`/`.../transactions`/跨卡
+`card-reward-rules` 列表)全部回傳 200 且結果正確,**沒有重現任何後端
+缺陷**。回頭看前端 `CardRewardRuleTransactionsDialog` 的
+`fetchCardRewardRuleTransactions(...).catch(() => setDetail(null))`——
+`detail` 為 `null` 時無論真正原因是什麼(網路錯誤、伺服器 500、或任何非
+「帳單週期解析失敗」的例外),UI 一律 fall through 顯示同一句「帳單日未
+設定」文案,完全不反映實際發生了什麼。這是可以直接從程式碼證實的真defect
+(不需要先重現後端問題),遂修成用獨立的 `fetchError` state 區分「fetch
+真的失敗」(顯示中性的「載入失敗,請稍後再試」+ 重試按鈕)跟「fetch 成功
+但這期 `status !== 'ok'`」(才顯示具體的 no_billing_schedule/expired 文案)。
+使用者如果重試後仍然复现,下次至少能看到不會誤導方向的訊息,也能用瀏覽器
+Network 分頁抓到真正的錯誤內容。③**共用上限群組顯示「目前名下沒有其他
+回饋規則」**——覆核後這是正確行為不是 bug:`CardRewardRuleFormDialog` 的
+`capGroupEmpty` 訊息只在 `otherRules.length === 0`(使用者名下**只有這一條**
+回饋規則,沒有第二條可以勾選加入群組)時出現,§2.9.5.4 的 `fetch_cap_group_
+rules`/`list_all_card_reward_rules` 兩處都沒有 ledger 過濾,不會漏掉其它
+帳本/其它卡的規則。附帶把 `CardRewardRuleFormDialog` 原本 `Promise.all(
+[fetchReadAccounts, fetchAllCardRewardRules])` 共用一個 `catch` 的寫法拆成
+兩個独立 `.catch()`——原寫法下任一個 fetch 失敗會連帶把已經成功的
+`accounts` 也清空,回饋帳戶下拉選單會看起來「什麼都選不到」,但其實只是
+共用上限群組那份資料沒抓到而已,跟使用者原本懷疑的「信用卡/戶頭帳戶被
+篩選掉」是兩回事(篩選條件本來就只排除 `account_group`,信用卡/戶頭帳戶
+一直都在候選清單裡)。測試見 `tests/test_card_rewards.py` 新增 3 例
+(`test_manual_payout_creates_income_tx_and_dedup_row`/
+`test_manual_payout_self_credit_offsets_billing`/
+`test_manual_payout_rejects_account_group_and_unknown_account`)。backend
+`pytest tests/ -q` 除既有已知的 `test_recurring_rules.py` flaky 用例外全過;
+frontend `pnpm build`/`pnpm test:unit`(73 例)都過。**這輪同樣沒有走完整
+瀏覽器手測**——尤其②的根因分析只證明了前端錯誤處理確實有 defect,無法
+100% 排除使用者當下環境還疊加了别的因素(例如本機 dev server 的既有 flaky
+渲染問題,見上一節記錄),務必請使用者在瀏覽器裡重新走一次交易明細彈窗
+確認訊息文案已經改善、且錯誤(如果還會發生)能被準確分類。
+
 ## 架构总览(server 端)
 
 FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make

@@ -425,7 +425,7 @@ async def _start_debt_reminder_loop() -> None:  # noqa: B008
 
 
 def _run_debt_reminders_once() -> None:
-    from .services import credit_card_autopay, credit_card_reminders, debt_reminders
+    from .services import card_reward_payout, credit_card_autopay, credit_card_reminders, debt_reminders
 
     with SessionLocal() as db:
         debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
@@ -466,6 +466,15 @@ def _run_debt_reminders_once() -> None:
             logging.getLogger(__name__).info(
                 "credit card autopay: executed=%d skipped_insufficient=%d",
                 autopay_result["executed"], autopay_result["skipped_insufficient"],
+            )
+        # 信用卡紅利回饋自動入帳(§2.9.5.4),同样挂在这个 15 分钟 loop——逐笔
+        # 结算類型要求「到期即入帳」，跟 autopay/reminders 同一个时效性理由。
+        reward_payout_result = card_reward_payout.materialize_due_card_reward_payouts(db)
+        if reward_payout_result["tx_payouts"] or reward_payout_result["period_payouts"]:
+            db.commit()
+            logging.getLogger(__name__).info(
+                "card reward payouts: tx=%d period=%d",
+                reward_payout_result["tx_payouts"], reward_payout_result["period_payouts"],
             )
 
 

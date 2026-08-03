@@ -26,7 +26,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 分類與專案 — 分類 | ✅ 已支援(`categories`：expense/income/transfer，含父子階層) |
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
 | 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)、週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)、拆帳(§2.4)Phase 2、借還款追蹤(§2.5)/範本(§2.7)Phase 3 均已完成(server+web)**；語音記帳/記帳模式缺) |
-| 信用卡管理 | 🟡 部分(**主帳戶合併帳單(群組模型)/信用卡繳款(分攤)/免息期推薦/到期提醒(Phase 4)已完成**，分期複用既有 installment 機制，**自動扣繳(2026-08-04 改版)已是帳戶級開關+來源帳戶，不再借用 recurring 機制**，**紅利回饋/帳單折抵仍缺**) |
+| 信用卡管理 | 🟡 部分(**主帳戶合併帳單(群組模型)/信用卡繳款(分攤)/免息期推薦/到期提醒(Phase 4)、紅利回饋(Phase 4.5)已完成**，分期複用既有 installment 機制，**自動扣繳(2026-08-04 改版)已是帳戶級開關+來源帳戶，不再借用 recurring 機制**，**帳單折抵仍缺**) |
 | 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
 | 捷徑功能 | ⚪ Client-only，server 不需改動 |
@@ -550,12 +550,98 @@ Moze 原文把「回饋金折抵帳單」也算進同一組功能，但台灣主
 
 ### 2.9.5 信用卡紅利回饋 (Phase 4.5)
 
+**✅ server + web UI 已實作(2026-08-05）**：`read_card_reward_rule_projection`
+新表(**user-global**,PK=`(user_id, sync_id)`——不像 debt/recurring_rule
+是 ledger-scoped,因為綁定的 `account_sync_id` 本身就是 user-global 的
+`UserAccountProjection`,規則跟著走同一個 scope,不掛任何 ledger;跟
+account/category/tag 同款,登記在 `sync_applier._USER_MERGE_SPECS`/
+`_USER_UPSERT_DISPATCH`/`_USER_DELETE_DISPATCH` 三張表,以及
+`routers/write/_shared.py` 的 `_USER_PROJECTION_UPSERTERS`/
+`_USER_PROJECTION_DELETERS` 第二套 dispatch)。CRUD 端點
+`POST/PATCH/DELETE /ledgers/{id}/accounts/{account_id}/card-reward-rules`
+(`src/routers/write/card_reward_rules.py`,owner-only,`account_id` 必須是
+真實存在的 `account_type == "credit_card"` 帳戶——不能是 `account_group`,
+群組純管理容器自己不會被刷卡)。計算引擎 `src/services/card_rewards.py`：
+`interval == "billing_cycle"` 時透過 `resolve_billing_schedule` 決定要用
+哪個帳戶的 `billing_day`(優先帳戶自己的,沒有就回頭查它掛靠的
+`account_group`——對齊 §2.9 群組模型子卡自己不帶 `billing_day` 的既有慣例)；
+`calc_basis == "settlement_date"` 目前行為等同 `"transaction_date"`(§2.10
+延後入帳還沒實作,`_attribution_date` 是唯一呼叫點,之後只需要改這一個
+函式);`cap_shared_key` 相同的規則先加總 `raw_reward` 再一起套上限,超過
+時依各規則佔比分攤(對齊 `credit_card_billing.
+compute_card_payment_allocations` 同款「最後一條用減法拿餘數」做法)。
+讀端點 `GET /ledgers/{id}/accounts/{account_id}/card-rewards`(`period_
+offset` 語意同 billing-summary 的 `cycle_offset`)+
+`GET .../card-reward-rules`(規則列表)都在 `src/routers/read/ledgers.py`。
+web UI:`AccountDetailDialog.tsx` 掛了新的 `CardRewardRulesSection.tsx`
+(規則管理 CRUD + 當期回饋預覽卡片),渲染條件是 `account_type ==
+"credit_card"`(不分是否掛靠群組),緊接在既有的 `CreditCardBillingSection`
+後面。測試見 `tests/test_card_rewards.py`(11 例:CRUD、owner-only 校驗、
+mobile push merge 契約、percentage/fixed_amount 兩種 rate_type、
+category_ids 過濾、min_tx_amount/min_spend_threshold 門檻、cap_amount 單
+規則上限、cap_shared_key 跨規則共享上限、billing_cycle 借用群組
+billing_day、calendar_month、account_group 目標拒絕)。手動測試清單見
+`docs/PH4_5_CARD_REWARDS_WEB_UI_MANUAL_TEST_PLAN.md`——這輪只驗證了
+backend pytest 全量回歸(除既有已知 flaky 用例外全過)+ frontend
+`pnpm build`(tsc 類型檢查通過)+ `pnpm test:unit`(73 例全過,含 i18n key
+一致性檢查),**沒有走完整瀏覽器手測**：本機 Vite dev server 這次會話裡
+一直复现「整頁空白 + `useContext` 讀到 null」的渲染錯誤,用 `git stash`
+驗證過在**未改動的 `main` 分支**上同樣復現,確認是本機既有的 dev
+tooling/瀏覽器擴充功能環境問題,跟這次的程式碼改動無關,但也代表這輪
+沒有像前幾個 Phase 那樣抓到「只有瀏覽器裡才測得出來」的純前端邏輯 bug,
+需要你自己手動走一遍,見上面手動測試清單文件。
+
+**⚠️ 2026-08-06 改版:規則歸屬從「系統自動比對」改成「使用者記交易時手動
+勾選」**——下面「原始 gap 分析」段落描述的 `category_sync_ids` 自動比對
+交易的設計**已被取代**,保留原文只為對照設計演進過程,不代表目前行為。
+使用者反饋:現實情境一筆消費通常只適用一種回饋方案,系統按 category 自動
+比對容易讓同一筆錢被多條規則重複計算,而且使用者比系統更清楚這筆消費該
+走哪個方案。改版後:交易新增 `reward_rule_ids`(可複選,`read_tx_
+projection.reward_rule_sync_ids_json`,跟 `tag_sync_ids_json` 同一模式),
+記交易時使用者自己勾選;`category_sync_ids_json` 欄位仍保留在規則表裡
+(避免多一次 migration)但不再參與計算;`min_tx_amount`/`min_spend_
+threshold` 這兩個「金額」門檻維持由系統計算。詳細實作見 `CLAUDE.md`
+§2.9.5「回饋規則歸屬改版」那一節,測試見 `tests/test_card_rewards.py`。
+
+**✅ §2.9.5.4 活動期間/帳單週期同步/交易明細/自動入帳已實作(2026-08-07)**：
+使用者實測回報四個缺口全部補上。規則新增 `starts_at`/`ends_at`(活動期間,
+UI 補上日期輸入,過期規則清單預設隱藏、可切換顯示、可「複製」成新規則)、
+`settlement_type`(`immediate_after_tx`/`after_posting_date`/`period_end`/
+`manual`,預設 `manual`)、`settlement_days`(逐筆結算專用)、
+`reward_account_id`(回饋目的帳戶,非 `manual` 時必填,可以是這張卡自己
+——直接折抵帳單,也可以是別的錢包帳戶)。**共用上限群組改成跨卡**：
+`cap_shared_key` 底層仍是字串,但前端改成從「這個使用者名下所有信用卡的
+所有規則」清單挑選要加入同一組的規則(新讀端點 `GET /ledgers/{id}/
+card-reward-rules`,不帶 `account_id`),後端新增
+`services/card_rewards.py::fetch_cap_group_rules` 做跨帳戶聚合。新增
+交易明細彈窗(`GET .../card-reward-rules/{rule_id}/transactions`):點
+規則看命中哪些交易 + 各自回饋金額 + 剩餘額度。**自動入帳引擎**
+`src/services/card_reward_payout.py`:到期生成 `tx_type="income"` 交易存
+入 `reward_account_id`,逐筆結算(`immediate_after_tx`/`after_posting_
+date`)每筆交易各自在 `happened_at + settlement_days` 天後入帳,`period_
+end` 整期結束後一次結算;去重靠新表 `card_reward_payouts`(不沿用
+Notification 表,理由是逐筆結算量級可能上百筆,詳見 `models.
+CardRewardPayout` docstring)。掛在既有的 15 分鐘 debt/card reminder
+loop 上,也可手動觸發 `POST /internal/tasks/materialize-recurring`。已知
+限制:逐筆結算不套用 `min_spend_threshold`;共用上限群組混用逐筆結算跟
+區間結算時,極端情況下總額可能略微超出共用上限。詳細設計/取捨/過程中
+發現的既有 bug(`snapshot_builder.py` 漏 SELECT 新欄位)見 `CLAUDE.md`
+§2.9.5.4 那一節,測試見 `tests/test_card_rewards.py` + 新增
+`tests/test_card_reward_payout.py`。**2026-08-03 補強**:`manual` 原本
+只是純顯示,沒有任何入口能真正把回饋存進帳戶——新增
+`POST .../card-reward-rules/{rule_id}/manual-payout`,交易明細彈窗頂部
+「手動入帳」按鈕,金額/目的帳戶每次臨時指定;順便修掉交易明細彈窗把任何
+fetch 失敗都誤顯示成「帳單日未設定」的前端 bug,以及 `CardRewardRuleForm
+Dialog` 的 `Promise.all` 共用 catch 導致單一 fetch 失敗會連帶清空已成功
+的帳戶清單的問題。詳見 `CLAUDE.md` 同一節後段。
+
 Moze 分類：[credit-card/rewards](https://doc.moze.app/credit-card/rewards.md)。
 業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成
 Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。目標是做到「使用者設定
 規則後系統自動判斷、按期彙總計算」，不是純手動記帳的簡化版。
 
-**現況**：缺，`accounts`/交易目前沒有任何回饋計算邏輯。
+**原始 gap 分析(建置前)，予以保留供對照**：缺，`accounts`/交易目前沒有
+任何回饋計算邏輯。
 
 新表 `read_card_reward_rule_projection`（回饋規則設定，使用者手動建立，
 一張卡可以掛多條規則，例如「網購 2%」「一般消費 1%」同時存在）：

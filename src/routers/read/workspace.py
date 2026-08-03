@@ -278,6 +278,7 @@ def list_workspace_transactions(
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
+                reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,

@@ -45,6 +45,7 @@ from ...models import (
     AuditLog,
     Ledger,
     LedgerMember,
+    ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
@@ -60,6 +61,9 @@ from ...schemas import (
     WriteBudgetCreateRequest,
     WriteBudgetUpdateRequest,
     WriteCardPaymentRequest,
+    WriteCardRewardManualPayoutRequest,
+    WriteCardRewardRuleCreateRequest,
+    WriteCardRewardRuleUpdateRequest,
     WriteCategoryCreateRequest,
     WriteCategoryUpdateRequest,
     WriteCommitMeta,
@@ -93,6 +97,7 @@ from ...sync_applier import USER_GLOBAL_ENTITY_TYPES
 from ...snapshot_mutator import (
     create_account,
     create_budget,
+    create_card_reward_rule,
     create_category,
     create_debt,
     create_installment_period,
@@ -103,6 +108,7 @@ from ...snapshot_mutator import (
     create_tx_template,
     delete_account,
     delete_budget,
+    delete_card_reward_rule,
     delete_category,
     delete_debt,
     delete_installment_period,
@@ -114,6 +120,7 @@ from ...snapshot_mutator import (
     ensure_snapshot_v2,
     update_account,
     update_budget,
+    update_card_reward_rule,
     update_category,
     update_debt,
     update_installment_period,
@@ -175,11 +182,13 @@ _USER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
+    "card_reward_rule": projection.upsert_card_reward_rule,
 }
 _USER_PROJECTION_DELETERS: dict[str, Any] = {
     "account": projection.delete_account,
     "category": projection.delete_category,
     "tag": projection.delete_tag,
+    "card_reward_rule": projection.delete_card_reward_rule,
 }
 _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "transaction": projection.upsert_tx,
@@ -439,6 +448,9 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("tags") or [], next_snapshot.get("tags") or [],
                       "tag", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("cardRewardRules") or [], next_snapshot.get("cardRewardRules") or [],
+                      "card_reward_rule", emitted_ids)
 
     # Rename cascade via SQL batch,放在 tx diff 之前 —— 保证 tx diff 跳过的
     # cascade 行已经被刷新过。user-global 重构后 rename_cascade_* 按 user_id
@@ -657,6 +669,44 @@ def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> None:
         )
 
 
+def _assert_reward_rules_valid(
+    db: Session, *, user_id: str, account_id: str | None, reward_rule_ids: list[str],
+) -> None:
+    """信用卡紅利回饋(§2.9.5,2026-08-06 改版):`reward_rule_ids` 每個 id
+    必須是使用者名下、掛在 `account_id` 這張信用卡上的真實規則 —— 使用者
+    手動勾選要走哪幾條,系統這裡只做存在性 + 歸屬校驗,不做 category/金額
+    匹配(那些交给 services.card_rewards 在計算當期回饋時判斷)。"""
+    if not reward_rule_ids:
+        return
+    if not account_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reward_rule_ids requires an account_id",
+        )
+    rows = db.execute(
+        select(
+            ReadCardRewardRuleProjection.sync_id,
+            ReadCardRewardRuleProjection.account_sync_id,
+        ).where(
+            ReadCardRewardRuleProjection.user_id == user_id,
+            ReadCardRewardRuleProjection.sync_id.in_(reward_rule_ids),
+        )
+    ).all()
+    owner_by_id = {row.sync_id: row.account_sync_id for row in rows}
+    for rule_id in reward_rule_ids:
+        owner_account_id = owner_by_id.get(rule_id)
+        if owner_account_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"card reward rule not found: {rule_id}",
+            )
+        if owner_account_id != account_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"card reward rule does not belong to this account: {rule_id}",
+            )
+
+
 # 拆帳(§2.4 MOZE_FEATURE_GAP_SD.md Phase 2)。
 _SPLIT_MIN_COUNT = 2
 _SPLIT_AMOUNT_EPSILON = 0.01
@@ -753,6 +803,12 @@ async def _commit_create_tx_fast(
         debt_id = mutate_payload.get("debt_id")
         if debt_id:
             _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+        reward_rule_ids = mutate_payload.get("reward_rule_ids")
+        if reward_rule_ids:
+            _assert_reward_rules_valid(
+                db, user_id=current_user.id, account_id=mutate_payload.get("account_id"),
+                reward_rule_ids=[str(v) for v in reward_rule_ids],
+            )
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
         _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
         new_item = _snap["items"][0]
@@ -1002,6 +1058,15 @@ async def _commit_write_fast_tx(
                     tx_type=new_item.get("type"),
                     amount=new_item.get("amount"),
                     splits=new_item["splits"],
+                )
+
+            # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):在 merge 后的最终状态上
+            # 校验(同拆帳同一理由)—— 单独改 account_id 不改 rewardRuleIds
+            # 时,也要保证既有勾选的规则仍然归属新的 account_id。
+            if new_item.get("rewardRuleIds"):
+                _assert_reward_rules_valid(
+                    db, user_id=current_user.id, account_id=new_item.get("accountId"),
+                    reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
                 )
 
             change_row = SyncChange(
@@ -1632,6 +1697,7 @@ __all__ = [
     'AuditLog',
     'Ledger',
     'LedgerMember',
+    'ReadCardRewardRuleProjection',
     'ReadDebtProjection',
     'ReadTxProjection',
     'ReadTxTemplateProjection',
@@ -1642,6 +1708,9 @@ __all__ = [
     'WriteAccountCreateRequest',
     'WriteAccountUpdateRequest',
     'WriteCardPaymentRequest',
+    'WriteCardRewardManualPayoutRequest',
+    'WriteCardRewardRuleCreateRequest',
+    'WriteCardRewardRuleUpdateRequest',
     'WriteBudgetCreateRequest',
     'WriteBudgetUpdateRequest',
     'WriteCategoryCreateRequest',
@@ -1677,6 +1746,7 @@ __all__ = [
     'snapshot_cache',
     'create_account',
     'create_budget',
+    'create_card_reward_rule',
     'create_category',
     'create_debt',
     'create_installment_period',
@@ -1687,6 +1757,7 @@ __all__ = [
     'create_tx_template',
     'delete_account',
     'delete_budget',
+    'delete_card_reward_rule',
     'delete_category',
     'delete_debt',
     'delete_installment_period',
@@ -1698,6 +1769,7 @@ __all__ = [
     'ensure_snapshot_v2',
     'update_account',
     'update_budget',
+    'update_card_reward_rule',
     'update_category',
     'update_debt',
     'update_installment_period',
@@ -1714,6 +1786,7 @@ __all__ = [
     '_WRITE_RESPONSES',
     '_utcnow',
     '_assert_debt_exists',
+    '_assert_reward_rules_valid',
     '_assert_account_not_group',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',

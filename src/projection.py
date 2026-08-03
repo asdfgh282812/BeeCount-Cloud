@@ -24,6 +24,7 @@ from .models import (
     AttachmentFile,
     Ledger,
     ReadBudgetProjection,
+    ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -81,6 +82,17 @@ def _as_int(v: Any, default: int = 0) -> int:
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+def _as_int_or_none(v: Any) -> int | None:
+    """同 _as_int 但保留 NULL 语义(settlement_days 缺失必须落 NULL,不能
+    被默认值 0 误当成"0 天后入帳")。"""
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_bool(v: Any, default: bool = True) -> bool:
@@ -253,6 +265,11 @@ def upsert_tx(
     tag_sync_ids = payload.get("tagIds")
     tag_sync_ids_json = json.dumps(tag_sync_ids) if isinstance(tag_sync_ids, list) else None
 
+    reward_rule_ids = payload.get("rewardRuleIds")
+    reward_rule_sync_ids_json = (
+        json.dumps(reward_rule_ids) if isinstance(reward_rule_ids, list) else None
+    )
+
     attachments = payload.get("attachments")
     attachments_json = (
         json.dumps(attachments) if isinstance(attachments, list) and attachments else None
@@ -335,6 +352,9 @@ def upsert_tx(
         # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义:None = 普通交易,缺键
         # 保留由上游 merge_with_existing 负责。
         "debt_sync_id": _as_str(payload.get("debtId")),
+        # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)反查字段,同款语义:None =
+        # 没勾选任何规则,缺键保留由上游 merge_with_existing 负责。
+        "reward_rule_sync_ids_json": reward_rule_sync_ids_json,
         "source_change_id": source_change_id,
     }
 
@@ -813,6 +833,60 @@ def delete_tag(db: Session, *, user_id: str, sync_id: str) -> None:
         delete(UserTagProjection).where(
             UserTagProjection.user_id == user_id,
             UserTagProjection.sync_id == sync_id,
+        )
+    )
+
+
+def upsert_card_reward_rule(
+    db: Session,
+    *,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """信用卡紅利回饋規則(§2.9.5 Phase 4.5)。user-global,PK=(user_id, sync_id)
+    ——見 ReadCardRewardRuleProjection docstring。回饋金額不落庫,這裡只寫
+    規則本身的靜態設定欄位。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    category_ids = payload.get("categoryIds")
+    category_ids_json = (
+        json.dumps(category_ids) if isinstance(category_ids, list) and category_ids else None
+    )
+    values = {
+        "user_id": user_id,
+        "sync_id": sync_id,
+        "account_sync_id": _as_str(payload.get("accountId")) or "",
+        "label": _as_str(payload.get("label")) or "",
+        "category_sync_ids_json": category_ids_json,
+        "rate_type": _as_str(payload.get("rateType")) or "percentage",
+        "rate_value": _as_float(payload.get("rateValue")),
+        "rounding": _as_str(payload.get("rounding")) or "round",
+        "calc_basis": _as_str(payload.get("calcBasis")) or "transaction_date",
+        "interval": _as_str(payload.get("interval")) or "billing_cycle",
+        "min_spend_threshold": _as_float_or_none(payload.get("minSpendThreshold")),
+        "min_tx_amount": _as_float_or_none(payload.get("minTxAmount")),
+        "cap_amount": _as_float_or_none(payload.get("capAmount")),
+        "cap_shared_key": _as_str(payload.get("capSharedKey")),
+        "starts_at": _parse_happened_at(payload.get("startsAt")) if payload.get("startsAt") else None,
+        "ends_at": _parse_happened_at(payload.get("endsAt")) if payload.get("endsAt") else None,
+        "settlement_type": _as_str(payload.get("settlementType")) or "manual",
+        "settlement_days": _as_int_or_none(payload.get("settlementDays")),
+        "reward_account_id": _as_str(payload.get("rewardAccountId")),
+        "note": _as_str(payload.get("note")),
+        "enabled": _as_bool(payload.get("enabled"), default=True),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadCardRewardRuleProjection, ("user_id", "sync_id"), values)
+
+
+def delete_card_reward_rule(db: Session, *, user_id: str, sync_id: str) -> None:
+    """user-global card_reward_rule delete。PK=(user_id, sync_id)。"""
+    db.execute(
+        delete(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == user_id,
+            ReadCardRewardRuleProjection.sync_id == sync_id,
         )
     )
 

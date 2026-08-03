@@ -48,6 +48,7 @@ from . import projection
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -68,12 +69,14 @@ from .services.category_icon import resolve_icon_by_name
 INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
-    "installment_period", "debt", "tx_template",
+    "installment_period", "debt", "tx_template", "card_reward_rule",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
 # 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
-USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag", "exchange_rate_override"}
+# card_reward_rule(§2.9.5 Phase 4.5):绑定的信用卡账户本身是 user-global,
+# 规则跟着走同一个 scope,不挂任何 ledger。
+USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag", "exchange_rate_override", "card_reward_rule"}
 
 
 # --------------------------------------------------------------------------- #
@@ -178,6 +181,28 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("syncId", "sync_id"),
         ("name", "name"),
         ("color", "color"),
+    ]),
+    "card_reward_rule": _MergeSpec(ReadCardRewardRuleProjection, [
+        ("syncId", "sync_id"),
+        ("accountId", "account_sync_id"),
+        ("label", "label"),
+        ("categoryIds", "category_sync_ids_json", _json_loads_safe),
+        ("rateType", "rate_type"),
+        ("rateValue", "rate_value"),
+        ("rounding", "rounding"),
+        ("calcBasis", "calc_basis"),
+        ("interval", "interval"),
+        ("minSpendThreshold", "min_spend_threshold"),
+        ("minTxAmount", "min_tx_amount"),
+        ("capAmount", "cap_amount"),
+        ("capSharedKey", "cap_shared_key"),
+        ("startsAt", "starts_at", _isoformat_or_none),
+        ("endsAt", "ends_at", _isoformat_or_none),
+        ("settlementType", "settlement_type"),
+        ("settlementDays", "settlement_days"),
+        ("rewardAccountId", "reward_account_id"),
+        ("note", "note"),
+        ("enabled", "enabled"),
     ]),
 }
 
@@ -306,6 +331,9 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("recurringOccurrenceOverridden", "recurring_occurrence_overridden"),
         # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义。
         ("debtId", "debt_sync_id"),
+        # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)反查字段,同款语义:缺键
+        # 保留既有勾选列表。
+        ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
         # 拆帳(§2.4):缺键保留既有 splits(跟 attachments 同一套惯例)——
         # payload 没带 "splits" key(旧客户端 / 只改其它字段的 push)时,merge
         # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批
@@ -321,6 +349,7 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
     "exchange_rate_override": projection.upsert_exchange_rate_override,
+    "card_reward_rule": projection.upsert_card_reward_rule,
 }
 
 
@@ -480,6 +509,13 @@ def _delete_user_exchange_rate_override(db: Session, user_id: str, sync_id: str)
     )
 
 
+def _delete_user_card_reward_rule(db: Session, user_id: str, sync_id: str) -> None:
+    projection.delete_card_reward_rule(db, user_id=user_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="card_reward_rule", entity_sync_id=sync_id,
+    )
+
+
 _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
     "budget": _delete_budget,
@@ -496,6 +532,7 @@ _USER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
     "category": _delete_user_category,
     "tag": _delete_user_tag,
     "exchange_rate_override": _delete_user_exchange_rate_override,
+    "card_reward_rule": _delete_user_card_reward_rule,
 }
 
 

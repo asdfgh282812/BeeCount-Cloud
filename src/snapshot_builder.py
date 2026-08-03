@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -574,6 +575,77 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 pass
         tx_templates.append(tpl)
 
+    # 信用卡紅利回饋規則(§2.9.5 Phase 4.5)—— user-global,同 accounts 按
+    # user_id 取,不按 ledger_id(即使 diff/write 引擎走 per-ledger snapshot,
+    # 底层这份表跟账本无关)。
+    card_reward_rules: list[dict[str, Any]] = []
+    crr_stmt = select(
+        ReadCardRewardRuleProjection.sync_id,
+        ReadCardRewardRuleProjection.account_sync_id,
+        ReadCardRewardRuleProjection.label,
+        ReadCardRewardRuleProjection.category_sync_ids_json,
+        ReadCardRewardRuleProjection.rate_type,
+        ReadCardRewardRuleProjection.rate_value,
+        ReadCardRewardRuleProjection.rounding,
+        ReadCardRewardRuleProjection.calc_basis,
+        ReadCardRewardRuleProjection.interval,
+        ReadCardRewardRuleProjection.min_spend_threshold,
+        ReadCardRewardRuleProjection.min_tx_amount,
+        ReadCardRewardRuleProjection.cap_amount,
+        ReadCardRewardRuleProjection.cap_shared_key,
+        ReadCardRewardRuleProjection.starts_at,
+        ReadCardRewardRuleProjection.ends_at,
+        ReadCardRewardRuleProjection.settlement_type,
+        ReadCardRewardRuleProjection.settlement_days,
+        ReadCardRewardRuleProjection.reward_account_id,
+        ReadCardRewardRuleProjection.note,
+        ReadCardRewardRuleProjection.enabled,
+    ).where(ReadCardRewardRuleProjection.user_id == user_id)
+    for (
+        sid, acc_sid, label, category_ids_json, rate_type, rate_value, rounding,
+        calc_basis, interval, min_spend_threshold, min_tx_amount, cap_amount,
+        cap_shared_key, starts_at, ends_at, settlement_type, settlement_days,
+        reward_account_id, note, enabled,
+    ) in db.execute(crr_stmt).all():
+        rule: dict[str, Any] = {
+            "syncId": sid,
+            "accountId": acc_sid or "",
+            "label": label or "",
+            "rateType": rate_type or "percentage",
+            "rateValue": rate_value,
+            "rounding": rounding or "round",
+            "calcBasis": calc_basis or "transaction_date",
+            "interval": interval or "billing_cycle",
+            "settlementType": settlement_type or "manual",
+            "enabled": bool(enabled),
+        }
+        if settlement_days is not None:
+            rule["settlementDays"] = settlement_days
+        if reward_account_id:
+            rule["rewardAccountId"] = reward_account_id
+        if category_ids_json:
+            try:
+                category_ids = json.loads(category_ids_json)
+                if isinstance(category_ids, list) and category_ids:
+                    rule["categoryIds"] = category_ids
+            except json.JSONDecodeError:
+                pass
+        if min_spend_threshold is not None:
+            rule["minSpendThreshold"] = min_spend_threshold
+        if min_tx_amount is not None:
+            rule["minTxAmount"] = min_tx_amount
+        if cap_amount is not None:
+            rule["capAmount"] = cap_amount
+        if cap_shared_key:
+            rule["capSharedKey"] = cap_shared_key
+        if starts_at is not None:
+            rule["startsAt"] = _to_iso_utc(starts_at)
+        if ends_at is not None:
+            rule["endsAt"] = _to_iso_utc(ends_at)
+        if note is not None:
+            rule["note"] = note
+        card_reward_rules.append(rule)
+
     return {
         # ledgerSyncId 给 mutator 用 —— 新建预算时要把它写进 budget payload,
         # 让 mobile sync_engine._applyBudgetChange 能解析本地 ledger int id。
@@ -592,6 +664,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "installmentPeriods": installment_periods,
         "debts": debts,
         "txTemplates": tx_templates,
+        "cardRewardRules": card_reward_rules,
     }
 
 

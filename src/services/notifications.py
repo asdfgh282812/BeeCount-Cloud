@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Ledger, Notification
 
-NotificationCategory = Literal["reminder", "budget_alert", "card_due", "system"]
+NotificationCategory = Literal["reminder", "budget_alert", "card_due", "card_reward", "system"]
 
 
 def resolve_ledger_external_id(db: Session, ledger_id: str) -> str | None:

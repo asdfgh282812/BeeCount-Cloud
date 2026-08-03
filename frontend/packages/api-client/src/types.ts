@@ -209,6 +209,9 @@ export type ReadTransaction = {
   debt_id?: string | null
   debt_counterparty_name?: string | null
   debt_direction?: DebtDirection | null
+  /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
+   *  哪幾條回饋規則的 id 列表,空数组 = 没有勾选任何规则。 */
+  reward_rule_ids?: string[]
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -636,6 +639,12 @@ export type TxPayload = {
    * 交易/不改。
    */
   debt_id?: string | null
+  /**
+   * 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
+   * 哪幾條回饋規則(可複選),每個 id 必須是 `account_id` 這張信用卡自己
+   * 名下的規則。undefined = 不改(update);[] = 清空;null 等同 []。
+   */
+  reward_rule_ids?: string[] | null
 }
 
 /** 拆帳(§2.4):挂在 `TxPayload.splits` 上的单个分类明细。 */
@@ -748,6 +757,145 @@ export type CardPaymentPayload = {
   from_account_id: string
   happened_at?: string | null
   note?: string | null
+}
+
+// ────────── 信用卡紅利回饋 (Card Rewards，MOZE_FEATURE_GAP_SD.md §2.9.5 Phase 4.5）──────────
+
+export type CardRewardRateType = 'percentage' | 'fixed_amount'
+export type CardRewardRounding = 'floor' | 'round' | 'ceil'
+export type CardRewardCalcBasis = 'transaction_date' | 'settlement_date'
+export type CardRewardInterval = 'billing_cycle' | 'calendar_month'
+export type CardRewardRuleStatus = 'ok' | 'no_billing_schedule' | 'expired'
+/** 自動入帳(§2.9.5.4):manual = 純顯示不自動化;immediate_after_tx/
+ *  after_posting_date 逐筆結算;period_end 整期結束後一次結算。 */
+export type CardRewardSettlementType =
+  | 'immediate_after_tx'
+  | 'after_posting_date'
+  | 'period_end'
+  | 'manual'
+
+export type ReadCardRewardRule = {
+  id: string
+  account_id: string
+  label: string
+  category_ids?: string[] | null
+  rate_type: CardRewardRateType
+  rate_value: number
+  rounding: CardRewardRounding
+  calc_basis: CardRewardCalcBasis
+  interval: CardRewardInterval
+  min_spend_threshold?: number | null
+  min_tx_amount?: number | null
+  cap_amount?: number | null
+  cap_shared_key?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  settlement_type: CardRewardSettlementType
+  settlement_days?: number | null
+  reward_account_id?: string | null
+  note?: string | null
+  enabled: boolean
+  last_change_id: number
+}
+
+export type CardRewardRuleCreatePayload = {
+  label: string
+  category_ids?: string[] | null
+  rate_type?: CardRewardRateType
+  rate_value: number
+  rounding?: CardRewardRounding
+  calc_basis?: CardRewardCalcBasis
+  interval?: CardRewardInterval
+  min_spend_threshold?: number | null
+  min_tx_amount?: number | null
+  cap_amount?: number | null
+  cap_shared_key?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  settlement_type?: CardRewardSettlementType
+  settlement_days?: number | null
+  reward_account_id?: string | null
+  note?: string | null
+  enabled?: boolean
+}
+
+/** `account_id` 建立後不可改(綁定的信用卡帳戶不能改)。 */
+export type CardRewardRuleUpdatePayload = {
+  label?: string
+  category_ids?: string[] | null
+  rate_type?: CardRewardRateType
+  rate_value?: number
+  rounding?: CardRewardRounding
+  calc_basis?: CardRewardCalcBasis
+  interval?: CardRewardInterval
+  min_spend_threshold?: number | null
+  min_tx_amount?: number | null
+  cap_amount?: number | null
+  cap_shared_key?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  settlement_type?: CardRewardSettlementType
+  settlement_days?: number | null
+  reward_account_id?: string | null
+  note?: string | null
+  enabled?: boolean
+}
+
+/** §2.9.5.4 補強(2026-08-03):手動入帳,`settlement_type == 'manual'`
+ *  的規則用這個端點自己按一下記一筆,`amount`/`reward_account_id` 每次
+ *  臨時指定。 */
+export type CardRewardManualPayoutPayload = {
+  amount: number
+  reward_account_id: string
+  happened_at?: string | null
+  note?: string | null
+}
+
+export type ReadCardRewardRuleUsage = {
+  rule_id: string
+  label: string
+  period_start: string
+  period_end: string
+  qualifying_spend: number
+  threshold_met: boolean
+  raw_reward: number
+  capped_reward: number
+  cap_amount?: number | null
+  cap_shared_key?: string | null
+  status: CardRewardRuleStatus
+}
+
+export type ReadCardRewards = {
+  account_id: string
+  as_of: string
+  items: ReadCardRewardRuleUsage[]
+  total_reward: number
+}
+
+/** §2.9.5.3 交易明細彈窗:單一規則命中哪些交易 + 各自回饋金額。 */
+export type ReadCardRewardQualifyingTx = {
+  tx_id: string
+  happened_at: string
+  amount: number
+  note?: string | null
+  category_name?: string | null
+  reward_amount: number
+  settlement_date?: string | null
+}
+
+export type ReadCardRewardRuleTransactions = {
+  rule_id: string
+  label: string
+  period_start: string
+  period_end: string
+  status: CardRewardRuleStatus
+  qualifying_spend: number
+  raw_reward: number
+  capped_reward: number
+  cap_amount?: number | null
+  cap_shared_key?: string | null
+  remaining_reward_room?: number | null
+  items: ReadCardRewardQualifyingTx[]
 }
 
 export type CategoryPayload = {

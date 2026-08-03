@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from . import (
     accounts,
     budgets,
+    card_reward_rules,
     categories,
     debts,
     exchange_rate_overrides,
@@ -43,3 +44,4 @@ router.include_router(recurring_rules.router)
 router.include_router(installment_plans.router)
 router.include_router(debts.router)
 router.include_router(tx_templates.router)
+router.include_router(card_reward_rules.router)

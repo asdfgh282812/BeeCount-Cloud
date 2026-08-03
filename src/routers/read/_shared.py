@@ -33,6 +33,7 @@ from ...models import (
     Ledger,
     LedgerMember,
     ReadBudgetProjection,
+    ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -56,6 +57,11 @@ from ...schemas import (
     ReadBudgetOut,
     ReadBudgetUsageItemOut,
     ReadBudgetUsageOut,
+    ReadCardRewardQualifyingTxOut,
+    ReadCardRewardRuleOut,
+    ReadCardRewardRuleTransactionsOut,
+    ReadCardRewardRuleUsageOut,
+    ReadCardRewardsOut,
     ReadCategoryOut,
     ReadDebtOut,
     ReadDebtRepaymentOut,
@@ -87,7 +93,7 @@ from ...schemas import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_READ
 from ... import snapshot_cache
-from ...services import credit_card, credit_card_billing
+from ...services import card_rewards, credit_card, credit_card_billing
 
 router = APIRouter()
 settings = get_settings()
@@ -438,6 +444,21 @@ def _tags_list(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _reward_rule_ids_list(raw: str | None) -> list[str]:
+    """信用卡紅利回饋(§2.9.5,2026-08-06 改版):
+    `read_tx_projection.reward_rule_sync_ids_json` → id 列表,交易列表/明细
+    两处读端点共用,跟 `tag_ids` 解析同一套模式。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(v) for v in parsed]
+
+
 def _tx_splits_list(raw: str | None) -> list["ReadTxSplitOut"]:
     """拆帳(§2.4):`read_tx_projection.splits_json` → `ReadTxSplitOut` 列表,
     交易列表/明细两处读端点共用。"""
@@ -722,6 +743,7 @@ __all__ = [
     'Ledger',
     'LedgerMember',
     'ReadBudgetProjection',
+    'ReadCardRewardRuleProjection',
     'ReadDebtProjection',
     'ReadInstallmentPeriodProjection',
     'ReadInstallmentPlanProjection',
@@ -743,6 +765,11 @@ __all__ = [
     'ReadBudgetOut',
     'ReadBudgetUsageItemOut',
     'ReadBudgetUsageOut',
+    'ReadCardRewardQualifyingTxOut',
+    'ReadCardRewardRuleOut',
+    'ReadCardRewardRuleTransactionsOut',
+    'ReadCardRewardRuleUsageOut',
+    'ReadCardRewardsOut',
     'ReadCategoryOut',
     'ReadDebtOut',
     'ReadDebtRepaymentOut',
@@ -774,6 +801,7 @@ __all__ = [
     'SCOPE_APP_WRITE',
     'SCOPE_WEB_READ',
     'snapshot_cache',
+    'card_rewards',
     'credit_card',
     'credit_card_billing',
     'router',
@@ -791,6 +819,7 @@ __all__ = [
     '_resolve_ledger_name',
     '_load_owner_identity',
     '_tags_list',
+    '_reward_rule_ids_list',
     '_to_utc',
     '_projection_totals',
     '_bucket_key',

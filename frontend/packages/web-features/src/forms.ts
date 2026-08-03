@@ -77,6 +77,10 @@ export type TxForm = {
    *  编辑既有交易能改分类的语意)。 */
   split_enabled: boolean
   splits: TxSplitFormItem[]
+  /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
+   *  哪幾條回饋規則(可複選),只在 tx_type='expense' 且選了信用卡帳戶時
+   *  顯示。存 `read_card_reward_rule_projection.sync_id` 列表。 */
+  reward_rule_ids: string[]
 }
 
 /** 拆帳(§2.4):`TxForm.splits` 单行明细的表单态(金额存字符串绑 input)。 */
@@ -291,6 +295,7 @@ export const txDefaults = (): TxForm => ({
   installment_grace_period_months: '0',
   split_enabled: false,
   splits: [],
+  reward_rule_ids: [],
 })
 
 export const accountDefaults = (): AccountForm => ({

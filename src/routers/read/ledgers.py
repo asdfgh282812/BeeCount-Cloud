@@ -390,6 +390,7 @@ def list_transactions(
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
+                reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -640,6 +641,251 @@ def get_account_interest_free_suggestion(
         recommended_purchase_after=_date_to_utc_dt(suggestion["recommended_purchase_after"]),
         min_interest_free_days=suggestion["min_interest_free_days"],
         max_interest_free_days=suggestion["max_interest_free_days"],
+    )
+
+
+def _get_own_credit_card_account(
+    db: Session, *, user_id: str, account_id: str,
+) -> UserAccountProjection:
+    """信用卡紅利回饋(§2.9.5)規則/計算都綁在一張真實的 `credit_card` 帳戶
+    上,不是 account_group(群組純管理容器自己不會被刷卡)。"""
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    if account.account_type != "credit_card":
+        raise HTTPException(status_code=400, detail="account is not a credit_card")
+    return account
+
+
+def _card_reward_rule_to_out(row: ReadCardRewardRuleProjection, *, last_change_id: int) -> ReadCardRewardRuleOut:
+    category_ids: list[str] | None = None
+    if row.category_sync_ids_json:
+        try:
+            parsed = json.loads(row.category_sync_ids_json)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list) and parsed:
+            category_ids = [str(c) for c in parsed]
+    return ReadCardRewardRuleOut(
+        id=row.sync_id,
+        account_id=row.account_sync_id,
+        label=row.label or "",
+        category_ids=category_ids,
+        rate_type=cast("Any", row.rate_type or "percentage"),
+        rate_value=row.rate_value,
+        rounding=cast("Any", row.rounding or "round"),
+        calc_basis=cast("Any", row.calc_basis or "transaction_date"),
+        interval=cast("Any", row.interval or "billing_cycle"),
+        min_spend_threshold=row.min_spend_threshold,
+        min_tx_amount=row.min_tx_amount,
+        cap_amount=row.cap_amount,
+        cap_shared_key=row.cap_shared_key,
+        starts_at=row.starts_at,
+        ends_at=row.ends_at,
+        settlement_type=cast("Any", row.settlement_type or "manual"),
+        settlement_days=row.settlement_days,
+        reward_account_id=row.reward_account_id,
+        note=row.note,
+        enabled=row.enabled,
+        last_change_id=last_change_id,
+    )
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/card-reward-rules",
+    response_model=list[ReadCardRewardRuleOut],
+)
+def list_card_reward_rules(
+    ledger_external_id: str,
+    account_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadCardRewardRuleOut]:
+    """信用卡紅利回饋規則只读列表(§2.9.5 Phase 4.5)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    _get_own_credit_card_account(db, user_id=current_user.id, account_id=account_id)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == current_user.id,
+            ReadCardRewardRuleProjection.account_sync_id == account_id,
+        ).order_by(ReadCardRewardRuleProjection.sync_id.asc())
+    ).all()
+    return [_card_reward_rule_to_out(row, last_change_id=source_change_id) for row in rows]
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/card-reward-rules",
+    response_model=list[ReadCardRewardRuleOut],
+)
+def list_all_card_reward_rules(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadCardRewardRuleOut]:
+    """信用卡紅利回饋規則跨卡列表(§2.9.5.4):回傳目前使用者名下**所有**
+    信用卡的所有回饋規則(不限某一張卡),給共用上限群組跨卡挑選 UI 用
+    (見 `CardRewardRuleFormDialog`)。`ledger_external_id` 只是拿來過既有
+    的帳本成員校驗(`card_reward_rule` 是 user-global 實體,不挂任何
+    ledger,同 `list_card_reward_rules`)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+    rows = db.scalars(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == current_user.id,
+        ).order_by(ReadCardRewardRuleProjection.sync_id.asc())
+    ).all()
+    return [_card_reward_rule_to_out(row, last_change_id=source_change_id) for row in rows]
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/card-rewards",
+    response_model=ReadCardRewardsOut,
+)
+def get_account_card_rewards(
+    ledger_external_id: str,
+    account_id: str,
+    period_offset: int = Query(default=0, ge=-120, le=1),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadCardRewardsOut:
+    """信用卡紅利回饋當期計算(§2.9.5 Phase 4.5)。規則本身不落庫回饋金額,
+    這裡即時從交易加總算出,見 `services.card_rewards` docstring。
+    `period_offset` 跟 billing-summary 的 `cycle_offset` 同款語意:`0` 是
+    目前這一期(`billing_cycle` 規則是「還在累積、尚未結束」的那期,對齊
+    使用者「現在刷卡能拿多少回饋」的直覺;`calendar_month` 規則是本月),
+    負數往回看歷史期別。下界比 billing-summary 的 `cycle_offset`(`-60`)
+    寬,因為前端(`AccountDetailDialog.tsx`)換算成
+    `period_offset = cycleOffset - 1` 傳進來(§2.9.5.4 修正兩者過去各自
+    獨立實作、對「0」定義差一期的 bug)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = _get_own_credit_card_account(db, user_id=current_user.id, account_id=account_id)
+
+    own_rules = db.scalars(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == current_user.id,
+            ReadCardRewardRuleProjection.account_sync_id == account_id,
+        ).order_by(ReadCardRewardRuleProjection.sync_id.asc())
+    ).all()
+    # 共用上限群組是跨卡的(§2.9.5.4),把同組的其它卡規則也一起丟進去算
+    # cap_shared_key 分攤,但只把這張卡自己的規則回給前端。
+    all_rules = card_rewards.fetch_cap_group_rules(db, user_id=current_user.id, base_rules=own_rules)
+
+    now = datetime.now(timezone.utc)
+    results = card_rewards.compute_account_card_rewards(
+        db, ledger_id=ledger.id, account=account, rules=all_rules, now=now, period_offset=period_offset,
+    )
+    card_rewards.apply_caps(results)
+
+    own_rule_ids = {r.sync_id for r in own_rules}
+    items = [
+        ReadCardRewardRuleUsageOut(
+            rule_id=r["rule"].sync_id,
+            label=r["rule"].label or "",
+            period_start=_date_to_utc_dt(r["period_start"]),
+            period_end=_date_to_utc_dt(r["period_end"]),
+            qualifying_spend=r["qualifying_spend"],
+            threshold_met=r["threshold_met"],
+            raw_reward=r["raw_reward"],
+            capped_reward=r["capped_reward"],
+            cap_amount=r["rule"].cap_amount,
+            cap_shared_key=r["rule"].cap_shared_key,
+            status=cast("Any", r["status"]),
+        )
+        for r in results
+        if r["rule"].sync_id in own_rule_ids
+    ]
+    return ReadCardRewardsOut(
+        account_id=account.sync_id,
+        as_of=now,
+        items=items,
+        total_reward=round(sum(i.capped_reward for i in items), 2),
+    )
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/card-reward-rules/{rule_id}/transactions",
+    response_model=ReadCardRewardRuleTransactionsOut,
+)
+def get_card_reward_rule_transactions(
+    ledger_external_id: str,
+    account_id: str,
+    rule_id: str,
+    period_offset: int = Query(default=0, ge=-120, le=1),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadCardRewardRuleTransactionsOut:
+    """單一規則的交易明細彈窗(§2.9.5.3):命中哪些交易 + 剩餘回饋額度。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = _get_own_credit_card_account(db, user_id=current_user.id, account_id=account_id)
+    rule = db.scalar(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == current_user.id,
+            ReadCardRewardRuleProjection.sync_id == rule_id,
+        )
+    )
+    if rule is None:
+        raise HTTPException(status_code=404, detail="card reward rule not found")
+    if rule.account_sync_id != account_id:
+        raise HTTPException(status_code=400, detail="rule_id does not belong to this account")
+
+    now = datetime.now(timezone.utc)
+    detail = card_rewards.list_rule_qualifying_transactions(
+        db, ledger_id=ledger.id, account=account, rule=rule, now=now, period_offset=period_offset,
+    )
+    items = [
+        ReadCardRewardQualifyingTxOut(
+            tx_id=item["tx"].sync_id,
+            happened_at=item["tx"].happened_at,
+            amount=item["tx"].amount,
+            note=item["tx"].note,
+            category_name=item["tx"].category_name,
+            reward_amount=item["reward_amount"],
+            settlement_date=(
+                _date_to_utc_dt(settlement_date)
+                if (settlement_date := card_rewards.compute_settlement_date(
+                    rule, tx_happened_at=item["tx"].happened_at, period_end=detail["period_end"],
+                )) is not None
+                else None
+            ),
+        )
+        for item in detail["items"]
+    ]
+    return ReadCardRewardRuleTransactionsOut(
+        rule_id=rule.sync_id,
+        label=rule.label or "",
+        period_start=_date_to_utc_dt(detail["period_start"]),
+        period_end=_date_to_utc_dt(detail["period_end"]),
+        status=cast("Any", detail["status"]),
+        qualifying_spend=detail["qualifying_spend"],
+        raw_reward=detail["raw_reward"],
+        capped_reward=detail["capped_reward"],
+        cap_amount=rule.cap_amount,
+        cap_shared_key=rule.cap_shared_key,
+        remaining_reward_room=detail["remaining_reward_room"],
+        items=items,
     )
 
 

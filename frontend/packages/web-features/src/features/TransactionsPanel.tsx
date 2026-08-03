@@ -22,6 +22,7 @@ import {
 import type {
   AttachmentRef,
   ReadAccount,
+  ReadCardRewardRule,
   ReadCategory,
   ReadDebt,
   ReadTag,
@@ -59,6 +60,10 @@ type TransactionsPanelProps = {
    *  按 ledger role === 'owner' 算好再传进来(對齊 DebtsPage.tsx 的
    *  canManage 判斷),不在這個 panel 內部重新猜權限。 */
   canCreateDebt?: boolean
+  /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):目前表單選中帳戶(必須是
+   *  credit_card 類型)名下的回饋規則,給「勾選要走哪幾條規則」的多選用。
+   *  呼叫方按 `form.account_name` 對應的帳戶單獨拉,非信用卡帳戶传空数组。 */
+  rewardRules?: ReadCardRewardRule[]
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -256,6 +261,7 @@ export function TransactionsPanel({
   tags,
   debts = [],
   canCreateDebt = false,
+  rewardRules = [],
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -831,6 +837,63 @@ export function TransactionsPanel({
                     </div>
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {/* 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記交易時手動
+                勾選這筆消費要走哪幾條回饋規則(可複選)——系統不再依 category/
+                金額自動判斷,只在 expense + 選中帳戶是信用卡時顯示。
+                §2.9.5.4 補強:只顯示「目前生效中」的規則(enabled 且在
+                starts_at/ends_at 區間內),但如果這條規則已經被這筆交易
+                勾選過,即使後來失效了也要保留顯示,讓使用者可以取消勾選
+                (跟已停用規則若曾被勾選仍要顯示同一個既有慣例)。 */}
+            {form.tx_type === 'expense' &&
+            accounts.find(
+              (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
+            )?.account_type === 'credit_card' &&
+            rewardRules.length > 0 ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.rewardRules')}</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {rewardRules
+                    .filter((rule) => {
+                      if (form.reward_rule_ids.includes(rule.id)) return true
+                      if (!rule.enabled) return false
+                      const now = Date.now()
+                      if (rule.starts_at && new Date(rule.starts_at).getTime() > now) return false
+                      if (rule.ends_at && new Date(rule.ends_at).getTime() < now) return false
+                      return true
+                    })
+                    .map((rule) => {
+                    const checked = form.reward_rule_ids.includes(rule.id)
+                    return (
+                      <button
+                        key={rule.id}
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            reward_rule_ids: checked
+                              ? form.reward_rule_ids.filter((id) => id !== rule.id)
+                              : [...form.reward_rule_ids, rule.id]
+                          })
+                        }
+                        className={`rounded-full border px-2.5 py-1 text-xs ${
+                          checked
+                            ? 'border-primary bg-primary/15 text-primary'
+                            : 'border-input text-muted-foreground hover:bg-accent/40'
+                        }`}
+                      >
+                        {rule.label}
+                        {!rule.enabled ? (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            {t('cardRewards.disabled')}
+                          </span>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             ) : null}
 

@@ -53,6 +53,7 @@ import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { localizeError } from '../../i18n/errors'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialogEvents'
+import { CardRewardRulesSection } from './CardRewardRulesSection'
 import { DetailScopeToggle } from './DetailScopeToggle'
 
 type AccountWithStats = ReadAccount & {
@@ -99,6 +100,16 @@ export function AccountDetailDialog({
   const t = useT()
   const { profileMe } = useAuth()
   const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
+  // §2.9.5.4 使用者反饋:紅利回饋卡片沒有跟著上面的帳單週期選擇器走。
+  // `CreditCardBillingSection` 的 `cycleOffset`(0=最近一次已結束的週期)
+  // 透過 onCycleOffsetChange 回報到這一層,再換算成 card-rewards 的
+  // `period_offset` 語意(0=目前還在累積、尚未結束的那期)傳給
+  // `CardRewardRulesSection`——兩者對「0」的定義差一期,見
+  // `read/ledgers.py::get_account_card_rewards` docstring。
+  const [billingCycleOffset, setBillingCycleOffset] = useState(0)
+  useEffect(() => {
+    setBillingCycleOffset(0)
+  }, [account?.id])
   return (
     <Dialog open={Boolean(account)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
@@ -130,6 +141,17 @@ export function AccountDetailDialog({
               t={t}
               onClose={onClose}
               onPeriodRangeChange={onPeriodRangeChange}
+              onCycleOffsetChange={setBillingCycleOffset}
+            />
+
+            {/* 信用卡紅利回饋(§2.9.5 Phase 4.5):規則管理 + 當期回饋預覽。
+                綁定的是這張真實的 credit_card 帳戶(獨立卡或掛靠群組的子卡
+                都可以),不是 account_group 本身。periodOffset 跟著上面的
+                帳單週期選擇器走(§2.9.5.4)。 */}
+            <CardRewardRulesSection
+              accountId={account.id}
+              accountType={account.account_type}
+              periodOffset={billingCycleOffset - 1}
             />
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -409,6 +431,7 @@ function CreditCardBillingSection({
   t,
   onClose,
   onPeriodRangeChange,
+  onCycleOffsetChange,
 }: {
   account: AccountWithStats
   t: (key: string, params?: Record<string, string | number>) => string
@@ -417,6 +440,10 @@ function CreditCardBillingSection({
    *  切期数下面明细却不动)—— 每次選中週期的日期區間變化時往上通知一次,
    *  非信用卡帳戶 / 週期還沒算出來時傳 null 清空過濾。 */
   onPeriodRangeChange?: (range: { start: string; end: string } | null) => void
+  /** §2.9.5.4:目前瀏覽的帳單週期(cycleOffset,0=最近一次已結束)往上
+   *  回報,讓 CardRewardRulesSection 能跟著同步。非 billing-root 帳戶
+   *  (沒有週期選擇器)固定回報 0。 */
+  onCycleOffsetChange?: (offset: number) => void
 }) {
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
@@ -467,6 +494,11 @@ function CreditCardBillingSection({
     autoAdvancedRef.current = false
     setCycleOffset(0)
   }, [account.id])
+
+  useEffect(() => {
+    onCycleOffsetChange?.(isBillingRoot ? cycleOffset : 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBillingRoot, cycleOffset])
 
   useEffect(() => {
     if (!isBillingRoot || !token || !activeLedgerId) {

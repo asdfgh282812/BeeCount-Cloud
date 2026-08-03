@@ -571,6 +571,9 @@ class ReadTransactionOut(BaseModel):
     # 显示"多分类"),明细在 splits;False 时 splits 是空列表,走原本单分类显示。
     has_splits: bool = False
     splits: list["ReadTxSplitOut"] = Field(default_factory=list)
+    # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走哪
+    # 幾條回饋規則的 sync_id 列表;空列表 = 没有勾选任何规则。
+    reward_rule_ids: list[str] = Field(default_factory=list)
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -693,6 +696,102 @@ class ReadInterestFreeSuggestionOut(BaseModel):
     recommended_purchase_after: datetime
     min_interest_free_days: int
     max_interest_free_days: int
+
+
+CardRewardRateType = Literal["percentage", "fixed_amount"]
+CardRewardRounding = Literal["floor", "round", "ceil"]
+# settlement_date 目前行为等同 transaction_date —— §2.10 延後入帳
+# (deferred_posting_at)还没实作,见 services/card_rewards.py 的
+# _attribution_date docstring。
+CardRewardCalcBasis = Literal["transaction_date", "settlement_date"]
+CardRewardInterval = Literal["billing_cycle", "calendar_month"]
+CardRewardRuleStatus = Literal["ok", "no_billing_schedule", "expired"]
+# 自動入帳(§2.9.5.4):manual = 純顯示不自動化;immediate_after_tx/
+# after_posting_date 逐筆結算;period_end 整期結束後一次結算。見
+# src/services/card_reward_payout.py。
+CardRewardSettlementType = Literal[
+    "immediate_after_tx", "after_posting_date", "period_end", "manual"
+]
+
+
+class ReadCardRewardRuleOut(BaseModel):
+    """信用卡紅利回饋規則只读视图(§2.9.5 Phase 4.5)。"""
+    id: str
+    account_id: str
+    label: str
+    category_ids: list[str] | None = None
+    rate_type: CardRewardRateType
+    rate_value: float
+    rounding: CardRewardRounding
+    calc_basis: CardRewardCalcBasis
+    interval: CardRewardInterval
+    min_spend_threshold: float | None = None
+    min_tx_amount: float | None = None
+    cap_amount: float | None = None
+    cap_shared_key: str | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    settlement_type: CardRewardSettlementType = "manual"
+    settlement_days: int | None = None
+    reward_account_id: str | None = None
+    note: str | None = None
+    enabled: bool = True
+    last_change_id: int
+
+
+class ReadCardRewardQualifyingTxOut(BaseModel):
+    """單筆符合條件交易明細(§2.9.5.3 交易明細彈窗)。"""
+    tx_id: str
+    happened_at: datetime
+    amount: float
+    note: str | None = None
+    category_name: str | None = None
+    reward_amount: float
+    settlement_date: datetime | None = None
+
+
+class ReadCardRewardRuleTransactionsOut(BaseModel):
+    """`GET .../card-reward-rules/{rule_id}/transactions` 返回(§2.9.5.3)。
+    `remaining_reward_room` 是這條規則所屬共用上限群組(跨卡,見
+    `services.card_rewards.fetch_cap_group_rules`)的剩餘額度,`None` =
+    無上限。"""
+    rule_id: str
+    label: str
+    period_start: datetime
+    period_end: datetime
+    status: CardRewardRuleStatus = "ok"
+    qualifying_spend: float
+    raw_reward: float
+    capped_reward: float
+    cap_amount: float | None = None
+    cap_shared_key: str | None = None
+    remaining_reward_room: float | None = None
+    items: list[ReadCardRewardQualifyingTxOut] = Field(default_factory=list)
+
+
+class ReadCardRewardRuleUsageOut(BaseModel):
+    """單條規則在指定期間的計算結果(§2.9.5)。回饋金額不落庫,每次讀取
+    即時從交易加總算出,見 `services.card_rewards` docstring。`status` !=
+    "ok" 时 qualifying_spend/raw_reward/capped_reward 固定为 0。"""
+    rule_id: str
+    label: str
+    period_start: datetime
+    period_end: datetime
+    qualifying_spend: float
+    threshold_met: bool
+    raw_reward: float
+    capped_reward: float
+    cap_amount: float | None = None
+    cap_shared_key: str | None = None
+    status: CardRewardRuleStatus = "ok"
+
+
+class ReadCardRewardsOut(BaseModel):
+    """`GET .../accounts/{account_id}/card-rewards` 返回。"""
+    account_id: str
+    as_of: datetime
+    items: list[ReadCardRewardRuleUsageOut] = Field(default_factory=list)
+    total_reward: float
 
 
 class ReadCategoryOut(BaseModel):
@@ -1104,6 +1203,11 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 收款。None = 普通交易。debt_id 必须指向该账本下已存在的欠款
     # (write/_shared.py `_assert_debt_exists`),允许多笔部分还款。
     debt_id: str | None = None
+    # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易要
+    # 走哪幾條回饋規則(可複選)。None/不传 = 不挂任何规则。每个 id 必须指向
+    # `account_id` 这张信用卡自己名下的规则(write/_shared.py
+    # `_assert_reward_rules_valid`)。
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -1137,6 +1241,9 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     splits: list["WriteTxSplitItem"] | None = None
     # 借還款追蹤(§2.5 Phase 3):None = 不变。传空字符串清空关联。
     debt_id: str | None = None
+    # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):None(不传该 key)= 不变。
+    # 传空列表 [] = 清空,传非空列表 = 整批替换。
+    reward_rule_ids: list[str] | None = None
 
 
 
@@ -1381,6 +1488,62 @@ class WriteDebtUpdateRequest(WriteBaseRequest):
     # 結案(體驗補強):key 不出現 = 不變;傳 ISO 時間 = 結案;傳 null = 重新
     # 開啟。跟 due_at/refund_of_id 同款「以 key 是否出現判斷是否要改」語意。
     closed_at: datetime | None = None
+
+
+class WriteCardRewardRuleCreateRequest(WriteBaseRequest):
+    """§2.9.5:`account_id` 來自 URL path(`/accounts/{account_id}/
+    card-reward-rules`),不重複放進 body。"""
+    label: str = Field(min_length=1, max_length=255)
+    category_ids: list[str] | None = None
+    rate_type: CardRewardRateType = "percentage"
+    rate_value: float = Field(gt=0)
+    rounding: CardRewardRounding = "round"
+    calc_basis: CardRewardCalcBasis = "transaction_date"
+    interval: CardRewardInterval = "billing_cycle"
+    min_spend_threshold: float | None = Field(default=None, gt=0)
+    min_tx_amount: float | None = Field(default=None, gt=0)
+    cap_amount: float | None = Field(default=None, gt=0)
+    cap_shared_key: str | None = Field(default=None, max_length=64)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    settlement_type: CardRewardSettlementType = "manual"
+    settlement_days: int | None = Field(default=None, ge=0, le=365)
+    reward_account_id: str | None = None
+    note: str | None = None
+    enabled: bool = True
+
+
+class WriteCardRewardRuleUpdateRequest(WriteBaseRequest):
+    """`account_id` 建立后不可改(跟其它 entity 的核心綁定欄位同一取舍)。"""
+    label: str | None = Field(default=None, min_length=1, max_length=255)
+    category_ids: list[str] | None = None
+    rate_type: CardRewardRateType | None = None
+    rate_value: float | None = Field(default=None, gt=0)
+    rounding: CardRewardRounding | None = None
+    calc_basis: CardRewardCalcBasis | None = None
+    interval: CardRewardInterval | None = None
+    min_spend_threshold: float | None = Field(default=None, gt=0)
+    min_tx_amount: float | None = Field(default=None, gt=0)
+    cap_amount: float | None = Field(default=None, gt=0)
+    cap_shared_key: str | None = Field(default=None, max_length=64)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    settlement_type: CardRewardSettlementType | None = None
+    settlement_days: int | None = Field(default=None, ge=0, le=365)
+    reward_account_id: str | None = None
+    note: str | None = None
+    enabled: bool | None = None
+
+
+class WriteCardRewardManualPayoutRequest(WriteBaseRequest):
+    """§2.9.5.4 補強(2026-08-03):`settlement_type == "manual"` 的規則不進
+    自動入帳引擎掃描範圍——這是給使用者自己「按一下就記一筆」的手動入帳
+    端點,`amount`/`reward_account_id` 每次呼叫臨時指定,不要求跟規則上的
+    欄位一致(manual 規則的 `reward_account_id` 本來就允許是 null)。"""
+    amount: float = Field(gt=0)
+    reward_account_id: str
+    happened_at: datetime | None = None
+    note: str | None = None
 
 
 class WriteTxTemplateCreateRequest(WriteBaseRequest):

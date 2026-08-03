@@ -4,6 +4,9 @@ import type {
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CardPaymentPayload,
+  CardRewardManualPayoutPayload,
+  CardRewardRuleCreatePayload,
+  CardRewardRuleUpdatePayload,
   CategoryPayload,
   DebtCreatePayload,
   DebtUpdatePayload,
@@ -201,6 +204,72 @@ export async function cardPayment(
     token,
     { base_change_id: baseChangeId, ...payload },
     idempotencyKey
+  )
+}
+
+/** §2.9.5 Phase 4.5:信用卡紅利回饋規則 CRUD,owner-only。`accountId` 必須
+ *  是一張真實的 `credit_card` 帳戶。 */
+export async function createCardRewardRule(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  baseChangeId: number,
+  payload: CardRewardRuleCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+export async function updateCardRewardRule(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  ruleId: string,
+  baseChangeId: number,
+  payload: CardRewardRuleUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules/${encodeURIComponent(ruleId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function deleteCardRewardRule(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  ruleId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules/${encodeURIComponent(ruleId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** §2.9.5.4 補強:手動入帳,建立一筆 income 交易把回饋金額存進使用者
+ *  臨時指定的帳戶。走一般交易寫權限,不是 owner-only。 */
+export async function manualCardRewardPayout(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  ruleId: string,
+  baseChangeId: number,
+  payload: CardRewardManualPayoutPayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/card-reward-rules/${encodeURIComponent(ruleId)}/manual-payout`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
   )
 }
 

@@ -17,7 +17,13 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import require_admin_user
 from ..models import User
-from ..services import credit_card_autopay, credit_card_reminders, debt_reminders, recurring_materializer
+from ..services import (
+    card_reward_payout,
+    credit_card_autopay,
+    credit_card_reminders,
+    debt_reminders,
+    recurring_materializer,
+)
 
 router = APIRouter()
 
@@ -53,4 +59,10 @@ def materialize_recurring(
         db.commit()
     result["card_autopay_executed"] = autopay_result["executed"]
     result["card_autopay_skipped_insufficient"] = autopay_result["skipped_insufficient"]
+    # 信用卡紅利回饋自動入帳(§2.9.5.4),同一个道理复用这个手动触发端点。
+    reward_payout_result = card_reward_payout.materialize_due_card_reward_payouts(db)
+    if reward_payout_result["tx_payouts"] or reward_payout_result["period_payouts"]:
+        db.commit()
+    result["card_reward_tx_payouts"] = reward_payout_result["tx_payouts"]
+    result["card_reward_period_payouts"] = reward_payout_result["period_payouts"]
     return result

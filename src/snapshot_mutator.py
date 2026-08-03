@@ -443,6 +443,15 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
     if payload.get("debt_id") is not None:
         item["debtId"] = str(payload.get("debt_id"))
+    reward_rule_ids_raw = payload.get("reward_rule_ids")
+    if isinstance(reward_rule_ids_raw, list):
+        reward_rule_ids: list[str] = []
+        for raw in reward_rule_ids_raw:
+            value = str(raw).strip()
+            if value and value not in reward_rule_ids:
+                reward_rule_ids.append(value)
+        if reward_rule_ids:
+            item["rewardRuleIds"] = reward_rule_ids
     splits = _normalize_tx_splits(payload.get("splits"))
     if splits is not None:
         item["splits"] = splits
@@ -590,6 +599,20 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("debtId", None)
         else:
             item["debtId"] = str(value)
+    if "reward_rule_ids" in payload:
+        raw = payload.get("reward_rule_ids")
+        if isinstance(raw, list):
+            reward_rule_ids: list[str] = []
+            for value in raw:
+                text = str(value).strip()
+                if text and text not in reward_rule_ids:
+                    reward_rule_ids.append(text)
+            if reward_rule_ids:
+                item["rewardRuleIds"] = reward_rule_ids
+            else:
+                item.pop("rewardRuleIds", None)
+        elif raw is None:
+            item.pop("rewardRuleIds", None)
     if "splits" in payload:
         splits = _normalize_tx_splits(payload.get("splits"))
         if splits is None:
@@ -1593,4 +1616,255 @@ def delete_tx_template(snapshot: dict, template_id: str, payload: dict | None = 
     idx, template = _find_by_sync_id(templates, template_id, expected_prefix="tpl")
     _assert_actor_can_modify(template, payload or {})
     templates.pop(idx)
+    return target
+
+
+# ============================================================================
+# 信用卡紅利回饋規則(§2.9.5 Phase 4.5 MOZE_FEATURE_GAP_SD.md)—— user-global,
+# 存在 snapshot["cardRewardRules"](跟 accounts/categories/tags 同款,即使
+# 挂在某个 ledger 的 snapshot 里,底层数据是 user-global,见
+# ReadCardRewardRuleProjection docstring)。回饋金額不落庫,計算邏輯在
+# services/card_rewards.py。
+# ============================================================================
+
+_CARD_REWARD_RATE_TYPES = {"percentage", "fixed_amount"}
+_CARD_REWARD_ROUNDINGS = {"floor", "round", "ceil"}
+_CARD_REWARD_CALC_BASES = {"transaction_date", "settlement_date"}
+_CARD_REWARD_INTERVALS = {"billing_cycle", "calendar_month"}
+_CARD_REWARD_SETTLEMENT_TYPES = {
+    "immediate_after_tx", "after_posting_date", "period_end", "manual",
+}
+
+
+def _assert_valid_reward_account(accounts: list[dict], reward_account_id: str | None) -> None:
+    """信用卡紅利回饋目的帳戶(§2.9.5.4):必須是同一使用者底下真實存在的
+    帳戶,可以是這張卡自己(最常見用例——U Bear/Cathay 直接折抵當期帳單,
+    跟 `_assert_valid_auto_pay_source` 不同,這裡**不**擋"不能是自己"),
+    不能是 account_group(群組沒有自己的資金,不能拿來當回饋目的地)。"""
+    if not reward_account_id:
+        return
+    by_id = {str(row.get("syncId")): row for row in accounts}
+    if reward_account_id not in by_id:
+        raise ValueError("write validation failed: reward_account_id not found")
+    if by_id[reward_account_id].get("type") == "account_group":
+        raise ValueError(
+            "write validation failed: reward_account_id cannot be an account_group"
+        )
+
+
+def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "cardRewardRules")
+    accounts = _ensure_list(target, "accounts")
+    account_id = _to_optional_str(payload.get("account_id"))
+    if not account_id:
+        raise ValueError("write validation failed: account_id is required")
+    label = _normalize_name(payload.get("label"))
+    rate_type = str(payload.get("rate_type") or "percentage")
+    if rate_type not in _CARD_REWARD_RATE_TYPES:
+        raise ValueError("write validation failed: invalid rate_type")
+    rate_value = _to_optional_float(payload.get("rate_value"))
+    if rate_value is None or rate_value <= 0:
+        raise ValueError("write validation failed: rate_value must be > 0")
+    rounding = str(payload.get("rounding") or "round")
+    if rounding not in _CARD_REWARD_ROUNDINGS:
+        raise ValueError("write validation failed: invalid rounding")
+    calc_basis = str(payload.get("calc_basis") or "transaction_date")
+    if calc_basis not in _CARD_REWARD_CALC_BASES:
+        raise ValueError("write validation failed: invalid calc_basis")
+    interval = str(payload.get("interval") or "billing_cycle")
+    if interval not in _CARD_REWARD_INTERVALS:
+        raise ValueError("write validation failed: invalid interval")
+    settlement_type = str(payload.get("settlement_type") or "manual")
+    if settlement_type not in _CARD_REWARD_SETTLEMENT_TYPES:
+        raise ValueError("write validation failed: invalid settlement_type")
+    settlement_days = _to_optional_int(payload.get("settlement_days"))
+    if settlement_type in ("immediate_after_tx", "after_posting_date"):
+        if settlement_days is None:
+            raise ValueError(
+                "write validation failed: settlement_days is required for this settlement_type"
+            )
+    else:
+        settlement_days = None
+    reward_account_id = _to_optional_str(payload.get("reward_account_id"))
+    if settlement_type != "manual":
+        if not reward_account_id:
+            raise ValueError(
+                "write validation failed: reward_account_id is required for this settlement_type"
+            )
+        _assert_valid_reward_account(accounts, reward_account_id)
+    else:
+        reward_account_id = None
+
+    sync_id = _new_sync_id("crr")
+    rule: dict[str, object] = {
+        "syncId": sync_id,
+        "accountId": account_id,
+        "label": label,
+        "rateType": rate_type,
+        "rateValue": rate_value,
+        "rounding": rounding,
+        "calcBasis": calc_basis,
+        "interval": interval,
+        "settlementType": settlement_type,
+        "enabled": bool(payload.get("enabled", True)),
+    }
+    if settlement_days is not None:
+        rule["settlementDays"] = settlement_days
+    if reward_account_id:
+        rule["rewardAccountId"] = reward_account_id
+    category_ids = payload.get("category_ids")
+    if isinstance(category_ids, list) and category_ids:
+        rule["categoryIds"] = [str(c) for c in category_ids]
+    if payload.get("min_spend_threshold") is not None:
+        rule["minSpendThreshold"] = _to_optional_float(payload.get("min_spend_threshold"))
+    if payload.get("min_tx_amount") is not None:
+        rule["minTxAmount"] = _to_optional_float(payload.get("min_tx_amount"))
+    if payload.get("cap_amount") is not None:
+        rule["capAmount"] = _to_optional_float(payload.get("cap_amount"))
+    if payload.get("cap_shared_key"):
+        rule["capSharedKey"] = str(payload.get("cap_shared_key"))
+    if payload.get("starts_at") is not None:
+        rule["startsAt"] = _to_iso8601(payload.get("starts_at"))
+    if payload.get("ends_at") is not None:
+        rule["endsAt"] = _to_iso8601(payload.get("ends_at"))
+    if payload.get("note") is not None:
+        rule["note"] = str(payload.get("note"))
+    _mark_entity_actor(rule, payload, create=True)
+    rules.append(rule)
+    return target, sync_id
+
+
+def update_card_reward_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "cardRewardRules")
+    accounts = _ensure_list(target, "accounts")
+    _, rule = _find_by_sync_id(rules, rule_id, expected_prefix="crr")
+    _assert_actor_can_modify(rule, payload)
+    if "label" in payload:
+        rule["label"] = _normalize_name(payload.get("label"))
+    if "category_ids" in payload:
+        value = payload.get("category_ids")
+        if isinstance(value, list) and value:
+            rule["categoryIds"] = [str(c) for c in value]
+        else:
+            rule.pop("categoryIds", None)
+    if "rate_type" in payload:
+        value = str(payload.get("rate_type") or "")
+        if value not in _CARD_REWARD_RATE_TYPES:
+            raise ValueError("write validation failed: invalid rate_type")
+        rule["rateType"] = value
+    if "rate_value" in payload:
+        value = _to_optional_float(payload.get("rate_value"))
+        if value is None or value <= 0:
+            raise ValueError("write validation failed: rate_value must be > 0")
+        rule["rateValue"] = value
+    if "rounding" in payload:
+        value = str(payload.get("rounding") or "")
+        if value not in _CARD_REWARD_ROUNDINGS:
+            raise ValueError("write validation failed: invalid rounding")
+        rule["rounding"] = value
+    if "calc_basis" in payload:
+        value = str(payload.get("calc_basis") or "")
+        if value not in _CARD_REWARD_CALC_BASES:
+            raise ValueError("write validation failed: invalid calc_basis")
+        rule["calcBasis"] = value
+    if "interval" in payload:
+        value = str(payload.get("interval") or "")
+        if value not in _CARD_REWARD_INTERVALS:
+            raise ValueError("write validation failed: invalid interval")
+        rule["interval"] = value
+    if "min_spend_threshold" in payload:
+        value = payload.get("min_spend_threshold")
+        if value is None:
+            rule.pop("minSpendThreshold", None)
+        else:
+            rule["minSpendThreshold"] = _to_optional_float(value)
+    if "min_tx_amount" in payload:
+        value = payload.get("min_tx_amount")
+        if value is None:
+            rule.pop("minTxAmount", None)
+        else:
+            rule["minTxAmount"] = _to_optional_float(value)
+    if "cap_amount" in payload:
+        value = payload.get("cap_amount")
+        if value is None:
+            rule.pop("capAmount", None)
+        else:
+            rule["capAmount"] = _to_optional_float(value)
+    if "cap_shared_key" in payload:
+        value = payload.get("cap_shared_key")
+        if value is None or str(value).strip() == "":
+            rule.pop("capSharedKey", None)
+        else:
+            rule["capSharedKey"] = str(value)
+    if "starts_at" in payload:
+        value = payload.get("starts_at")
+        if value is None:
+            rule.pop("startsAt", None)
+        else:
+            rule["startsAt"] = _to_iso8601(value)
+    if "ends_at" in payload:
+        value = payload.get("ends_at")
+        if value is None:
+            rule.pop("endsAt", None)
+        else:
+            rule["endsAt"] = _to_iso8601(value)
+    if "settlement_type" in payload:
+        value = str(payload.get("settlement_type") or "")
+        if value not in _CARD_REWARD_SETTLEMENT_TYPES:
+            raise ValueError("write validation failed: invalid settlement_type")
+        rule["settlementType"] = value
+        if value not in ("immediate_after_tx", "after_posting_date"):
+            rule.pop("settlementDays", None)
+    if "settlement_days" in payload:
+        value = payload.get("settlement_days")
+        if value is None:
+            rule.pop("settlementDays", None)
+        else:
+            rule["settlementDays"] = _to_optional_int(value)
+    if "reward_account_id" in payload:
+        value = payload.get("reward_account_id")
+        if value is None:
+            rule.pop("rewardAccountId", None)
+        else:
+            rule["rewardAccountId"] = str(value)
+    if "note" in payload:
+        value = payload.get("note")
+        if value is None or str(value).strip() == "":
+            rule.pop("note", None)
+        else:
+            rule["note"] = str(value)
+    if "enabled" in payload:
+        rule["enabled"] = bool(payload.get("enabled"))
+
+    # 結算欄位互相依賴,必須在套用完上面所有 partial-update 分支、拿到
+    # 合併後的最終狀態才驗證一致性(比照 §2.4 拆帳 _validate_tx_splits 同
+    # 一個「改一半欄位也要重新校驗完整狀態」的理由)。
+    final_settlement_type = str(rule.get("settlementType") or "manual")
+    if final_settlement_type not in _CARD_REWARD_SETTLEMENT_TYPES:
+        raise ValueError("write validation failed: invalid settlement_type")
+    if final_settlement_type in ("immediate_after_tx", "after_posting_date"):
+        if rule.get("settlementDays") is None:
+            raise ValueError(
+                "write validation failed: settlement_days is required for this settlement_type"
+            )
+    if final_settlement_type != "manual":
+        final_reward_account_id = _to_optional_str(rule.get("rewardAccountId"))
+        if not final_reward_account_id:
+            raise ValueError(
+                "write validation failed: reward_account_id is required for this settlement_type"
+            )
+        _assert_valid_reward_account(accounts, final_reward_account_id)
+
+    _mark_entity_actor(rule, payload, create=False)
+    return target
+
+
+def delete_card_reward_rule(snapshot: dict, rule_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rules = _ensure_list(target, "cardRewardRules")
+    idx, rule = _find_by_sync_id(rules, rule_id, expected_prefix="crr")
+    _assert_actor_can_modify(rule, payload or {})
+    rules.pop(idx)
     return target
