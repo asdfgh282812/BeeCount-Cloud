@@ -621,6 +621,67 @@ def test_billing_summary_merges_children_and_computes_due_amount():
         assert data["due_date"][:10] == credit_card.due_date_for_cycle_end(
             cycle_end, payment_due_day
         ).isoformat()
+        # 沒有建過任何分期計畫,「帳單分期」欄位應該回報空狀態(前端顯示「---」)。
+        assert data["period_installment_active_count"] == 0
+        assert data["period_installment_paid_periods"] is None
+        assert data["period_installment_periods"] is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_billing_summary_period_installment_summary_field():
+    """帳戶詳情彈窗「帳單分期」欄位(2026-08-04 使用者反饋補上):建立一個
+    進行中的分期計畫後,billing-summary 應該回報 active_count=1 + 已到期
+    的期數(paid_periods) + 總期數(periods);建第二個計畫後應該只回報
+    筆數,不再附帶 paid_periods/periods 明細(彈窗空間有限)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccbinst1@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccbinst1@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lgbi1", "ledger", "lgbi1",
+              {"syncId": "lgbi1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgbi1", "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "billingDay": 25, "paymentDueDay": 10}, device_id="d-app")
+
+        # 首期已经到期(昨天),之后 11 期还没到 → paid_periods 应该是 1。
+        first_period_at = datetime.now(timezone.utc) - timedelta(days=1)
+        res = client.post(
+            "/api/v1/write/ledgers/lgbi1/installment-plans", headers=hdr_web,
+            json={
+                "base_change_id": 0, "total_amount": 1200.0, "periods": 12,
+                "first_period_at": first_period_at.isoformat(), "account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        data = client.get(
+            "/api/v1/read/ledgers/lgbi1/accounts/acc-card/billing-summary", headers=hdr_web,
+        ).json()
+        assert data["period_installment_active_count"] == 1
+        assert data["period_installment_paid_periods"] == 1
+        assert data["period_installment_periods"] == 12
+
+        # 再建一個進行中的分期計畫 → 應該退化成只顯示筆數。
+        res2 = client.post(
+            "/api/v1/write/ledgers/lgbi1/installment-plans", headers=hdr_web,
+            json={
+                "base_change_id": 0, "total_amount": 300.0, "periods": 3,
+                "first_period_at": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+                "account_id": "acc-card",
+            },
+        )
+        assert res2.status_code == 200, res2.text
+
+        data2 = client.get(
+            "/api/v1/read/ledgers/lgbi1/accounts/acc-card/billing-summary", headers=hdr_web,
+        ).json()
+        assert data2["period_installment_active_count"] == 2
+        assert data2["period_installment_paid_periods"] is None
+        assert data2["period_installment_periods"] is None
     finally:
         app.dependency_overrides.clear()
 

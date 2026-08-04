@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import type {
@@ -79,9 +79,102 @@ interface Props {
   /** 信用卡帳戶瀏覽帳單週期時,下面交易列表跟著过滤到该週期日期区间;非
    *  信用卡帳戶 / 週期未定時传 null(见 CreditCardBillingSection 用法)。 */
   onPeriodRangeChange?: (range: { start: string; end: string } | null) => void
+  /** 信用卡紅利回饋(§2.9.5,2026-08-04 補強):從交易詳情彈窗「使用回饋」
+   *  chip 跳過來時帶上這條規則的 id,轉傳給 `CardRewardRulesSection` 自動
+   *  展開 + 打開這條規則的交易明細彈窗。其它入口(帳戶列表點卡片)開這個
+   *  彈窗時不帶,不觸發任何自動展開。 */
+  highlightRewardRuleId?: string
 }
 
-/** 点账户卡片弹出的详情:顶部账户名 + 当前余额/累计收入/累计支出 + 交易列表(无限滚动加载)。 */
+/**
+ * 信用卡合併帳單資料抓取(2026-08-04 使用者反饋從 `CreditCardBillingSection`
+ * 提升到 `AccountDetailDialog` 這一層):彈窗頂部的統計區塊(見下面
+ * `AccountStatsHeader`)跟頭部新增的週期選擇器都需要這份資料,原本只有
+ * `CreditCardBillingSection` 自己知道,現在改成共用同一份 state,`
+ * CreditCardBillingSection` 收 `billing` prop 而不是自己重新 fetch 一次。
+ * `isBillingRoot`:account_group(主帳戶),或沒有掛靠任何群組的獨立信用卡
+ * 才會去查(見 `credit_card_billing.is_billing_root` 的後端對應邏輯)。
+ */
+function useAccountBilling(
+  account: AccountWithStats | null,
+  token: string | null,
+  activeLedgerId: string | null,
+) {
+  const accountId = account?.id
+  const isBillingRoot =
+    !!account &&
+    ((account.account_type || '') === 'account_group' ||
+      ((account.account_type || '') === 'credit_card' && !account.parent_account_id))
+
+  const [summary, setSummary] = useState<AccountBillingSummary | null>(null)
+  const [suggestion, setSuggestion] = useState<AccountInterestFreeSuggestion | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [available, setAvailable] = useState(false)
+  // 帳單週期瀏覽(§2.9 補強,2026-08-02):0 = 最近一次已結束的週期,負數 =
+  // 更早的歷史週期,+1 = 目前還在累積中的那期。切換帳戶時歸零,不沿用上一
+  // 張卡瀏覽到的期數。
+  const [cycleOffset, setCycleOffset] = useState(0)
+  // 2026-08-03 使用者反饋:上期(cycleOffset=0)如果已經繳清,預設畫面不該
+  // 停在一筆「已經結案」的舊帳單,應該自動跳去這個月還在累積中的那期(+1)。
+  const autoAdvancedRef = useRef(false)
+
+  useEffect(() => {
+    autoAdvancedRef.current = false
+    setCycleOffset(0)
+  }, [accountId])
+
+  useEffect(() => {
+    if (!isBillingRoot || !token || !activeLedgerId || !accountId) {
+      setAvailable(false)
+      setSummary(null)
+      setSuggestion(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    Promise.all([
+      fetchAccountBillingSummary(token, activeLedgerId, accountId, cycleOffset),
+      fetchAccountInterestFreeSuggestion(token, activeLedgerId, accountId),
+    ])
+      .then(([s, sug]) => {
+        if (cancelled) return
+        setSummary(s)
+        setSuggestion(sug)
+        setAvailable(true)
+        if (
+          !autoAdvancedRef.current &&
+          cycleOffset === 0 &&
+          s.period_remaining_due <= 0 &&
+          s.period_has_newer
+        ) {
+          autoAdvancedRef.current = true
+          setCycleOffset(1)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAvailable(false)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isBillingRoot, token, activeLedgerId, accountId, cycleOffset])
+
+  // 繳款 / 建分期成功後手動重新拉一次最新的帳單摘要,不用整個 effect 重跑。
+  const reload = useCallback(() => {
+    if (!isBillingRoot || !token || !activeLedgerId || !accountId) return
+    fetchAccountBillingSummary(token, activeLedgerId, accountId, cycleOffset)
+      .then(setSummary)
+      .catch(() => {})
+  }, [isBillingRoot, token, activeLedgerId, accountId, cycleOffset])
+
+  return { isBillingRoot, summary, suggestion, loading, available, cycleOffset, setCycleOffset, reload }
+}
+
+/** 点账户卡片弹出的详情:顶部账户名 + 统计信息 + 交易列表(无限滚动加载)。 */
 export function AccountDetailDialog({
   account,
   scope,
@@ -96,36 +189,87 @@ export function AccountDetailDialog({
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
   onPeriodRangeChange,
+  highlightRewardRuleId,
 }: Props) {
   const t = useT()
-  const { profileMe } = useAuth()
+  const { profileMe, token } = useAuth()
+  const { activeLedgerId } = useLedgers()
   const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
+  // 2026-08-04 使用者反饋:帳單週期抓取邏輯從 `CreditCardBillingSection`
+  // 提升到這一層(useAccountBilling),因為彈窗頂部的統計區塊(下面
+  // AccountStatsHeader)跟頭部新增的週期選擇器(見 DialogHeader)都需要
+  // 同一份資料,以前只有 CreditCardBillingSection 自己知道。
+  const billing = useAccountBilling(account, token, activeLedgerId)
+
+  useEffect(() => {
+    if (!billing.isBillingRoot || !billing.summary) {
+      onPeriodRangeChange?.(null)
+      return
+    }
+    onPeriodRangeChange?.({ start: billing.summary.period_cycle_start, end: billing.summary.period_cycle_end })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [billing.isBillingRoot, billing.summary])
+
+  // 卸载(切换到别的账户 / 关闭详情弹窗)时清掉过滤,不让下一个账户的交易
+  // 列表继承上一张卡選中的期数窗口。
+  useEffect(() => {
+    return () => onPeriodRangeChange?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // §2.9.5.4 使用者反饋:紅利回饋卡片沒有跟著上面的帳單週期選擇器走。
-  // `CreditCardBillingSection` 的 `cycleOffset`(0=最近一次已結束的週期)
-  // 透過 onCycleOffsetChange 回報到這一層,再換算成 card-rewards 的
+  // `cycleOffset`(0=最近一次已結束的週期)換算成 card-rewards 的
   // `period_offset` 語意(0=目前還在累積、尚未結束的那期)傳給
   // `CardRewardRulesSection`——兩者對「0」的定義差一期,見
-  // `read/ledgers.py::get_account_card_rewards` docstring。
-  const [billingCycleOffset, setBillingCycleOffset] = useState(0)
-  useEffect(() => {
-    setBillingCycleOffset(0)
-  }, [account?.id])
+  // `read/ledgers.py::get_account_card_rewards` docstring。非
+  // billing-root(掛靠群組的子卡)或帳單資料還不可用(沒設定帳單日等)時,
+  // 對齊「目前這期」,不跟著一個不存在的週期選擇器亂跑。
+  const rewardCycleOffset = billing.isBillingRoot && billing.available ? billing.cycleOffset : 1
+  const rewardPeriodOffset = rewardCycleOffset - 1
+
   return (
     <Dialog open={Boolean(account)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="flex flex-row items-center justify-between gap-3 border-b border-border/60 px-6 py-4">
-          <DialogTitle className="truncate">{account?.name || ''}</DialogTitle>
+          <DialogTitle className="min-w-0 flex-1 truncate">{account?.name || ''}</DialogTitle>
+          {/* 帳單週期日期選擇器(2026-08-04 使用者反饋:移到標題跟 全部帳本/
+              當前帳本 切換之間,尺寸比照那顆切換按鈕)。只在 billing-root
+              帳戶且帳單資料抓取成功時顯示。 */}
+          {billing.isBillingRoot && billing.available && billing.summary ? (
+            <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs">
+              <button
+                type="button"
+                disabled={!billing.summary.period_has_older}
+                aria-label={t('cardBilling.period.prev')}
+                onClick={() => billing.setCycleOffset((v) => v - 1)}
+                className="rounded p-1 text-muted-foreground hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="whitespace-nowrap px-0.5 font-mono font-medium tabular-nums text-foreground">
+                {formatDateSlash(billing.summary.period_cycle_start)} – {formatDateSlash(billing.summary.period_cycle_end)}
+              </span>
+              <button
+                type="button"
+                disabled={!billing.summary.period_has_newer}
+                aria-label={t('cardBilling.period.next')}
+                onClick={() => billing.setCycleOffset((v) => v + 1)}
+                className="rounded p-1 text-muted-foreground hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           <DetailScopeToggle value={scope} onChange={onScopeChange} className="shrink-0" />
         </DialogHeader>
         {account ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* 统计:优先 server 返回的 balance/income/expense,缺失时兜底 initial_balance.
-                注意:这里的统计来自 props 上的 account 实体,本身是按上层 scope
-                取的(GlobalEntityDialogs / AccountsPage 通过 fetchWorkspaceAccounts
-                的 ledgerId 参数控制)。弹窗顶部 scope 切换只影响交易列表过滤,
-                上面这块 KPI 沿用打开时的快照,不跟随 scope 实时切换 —
-                跟 mobile 端 account_detail_page 行为一致。 */}
-            <AccountStatsHeader account={account} t={t} />
+            {/* 统计:account_group(主帳戶)/沒有掛靠群組的獨立信用卡改顯示
+                Moze 風格的帳單欄位(新增花費/上期欠款/應繳金額/已繳金額/
+                帳單分期/對帳筆數/剩餘帳款,見 useAccountBilling + 下面
+                AccountStatsHeader),跟著上面新增的週期選擇器走;其它帳戶
+                類型維持原本的餘額/收入/支出統計。 */}
+            <AccountStatsHeader account={account} t={t} billing={billing} />
 
             {/* 信用卡 / 银行卡专属信息:bank_name / 卡号末 4 / 信用额度 /
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
@@ -136,13 +280,7 @@ export function AccountDetailDialog({
                 account_type=account_group(主帳戶),或沒有掛靠任何群組的
                 獨立信用卡,且当前有选中账本时渲染(帐单摘要是
                 ledger-scoped 读端点)。 */}
-            <CreditCardBillingSection
-              account={account}
-              t={t}
-              onClose={onClose}
-              onPeriodRangeChange={onPeriodRangeChange}
-              onCycleOffsetChange={setBillingCycleOffset}
-            />
+            <CreditCardBillingSection account={account} t={t} onClose={onClose} billing={billing} />
 
             {/* 信用卡紅利回饋(§2.9.5 Phase 4.5):規則管理 + 當期回饋預覽。
                 綁定的是這張真實的 credit_card 帳戶(獨立卡或掛靠群組的子卡
@@ -151,7 +289,8 @@ export function AccountDetailDialog({
             <CardRewardRulesSection
               accountId={account.id}
               accountType={account.account_type}
-              periodOffset={billingCycleOffset - 1}
+              periodOffset={rewardPeriodOffset}
+              highlightRuleId={highlightRewardRuleId}
             />
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -179,21 +318,96 @@ export function AccountDetailDialog({
   )
 }
 
+function StatTile({
+  label,
+  value,
+  tone,
+  emphasis,
+}: {
+  label: string
+  value: string
+  tone?: 'income' | 'expense'
+  emphasis?: boolean
+}) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div
+        className={`mt-0.5 font-mono tabular-nums ${emphasis ? 'text-base font-bold' : 'text-sm font-medium'} ${
+          tone === 'income' ? 'text-income' : tone === 'expense' ? 'text-expense' : 'text-foreground'
+        }`}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
 function AccountStatsHeader({
   account,
   t,
+  billing,
 }: {
   account: AccountWithStats
-  t: (key: string) => string
+  t: (key: string, params?: Record<string, string | number>) => string
+  billing: ReturnType<typeof useAccountBilling>
 }) {
   const hasServerStats = typeof account.balance === 'number'
   const balance = hasServerStats ? account.balance! : account.initial_balance ?? 0
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+  // 主帳戶(account_group)/沒有掛靠群組的獨立信用卡(2026-08-04 使用者反饋):
+  // 頂部改顯示 Moze 風格的帳單欄位,取代原本的餘額/收入/支出或「當前欠款」
+  // ——這些欄位對信用卡群組沒有意義(群組自己不記交易,子卡的欠款才是重點,
+  // 而且使用者需要的是「這期帳單」的資訊,不是終身餘額)。只在資料抓取成功
+  // 時渲染;沒設定帳單日/還款日(billing.available 恆為 false)或還在載入時
+  // 落回下面的舊版顯示,不讓畫面整塊空白。
+  if (billing.isBillingRoot && billing.available && billing.summary) {
+    const s = billing.summary
+    const installmentText =
+      s.period_installment_active_count === 0
+        ? t('cardBilling.period.installmentPlan.none')
+        : s.period_installment_active_count === 1
+          ? t('cardBilling.period.installmentPlan.progress', {
+              paid: s.period_installment_paid_periods ?? 0,
+              total: s.period_installment_periods ?? 0,
+            })
+          : t('cardBilling.period.installmentPlan.multiple', { count: s.period_installment_active_count })
+    return (
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 border-b border-border/60 bg-muted/20 px-6 py-4 sm:grid-cols-4">
+        <StatTile label={t('cardBilling.period.newSpend')} value={fmt(s.period_new_spend)} />
+        <StatTile label={t('cardBilling.period.carryoverDue')} value={fmt(s.period_carryover_due)} />
+        <StatTile label={t('cardBilling.period.totalDue')} value={fmt(s.period_total_due)} emphasis />
+        <StatTile label={t('cardBilling.period.paidInCycle')} value={fmt(s.period_paid_in_cycle)} tone="income" />
+        <StatTile label={t('cardBilling.period.installmentPlan')} value={installmentText} />
+        <StatTile
+          label={t('cardBilling.period.reconciledCount')}
+          value={t('cardBilling.period.reconciledCount.none')}
+        />
+        <StatTile
+          label={t('cardBilling.period.remainingDue')}
+          value={fmt(s.period_remaining_due)}
+          tone="expense"
+          emphasis
+        />
+      </div>
+    )
+  }
+
+  if (billing.isBillingRoot && billing.loading) {
+    return (
+      <div className="border-b border-border/60 bg-muted/20 px-6 py-4 text-center text-xs text-muted-foreground">
+        {t('cardBilling.loading')}
+      </div>
+    )
+  }
+
   // 信用卡按负债展示:只显当前欠款(= -balance,余额为负=欠款),不显示
   // 累计收入/支出(信用卡入账是还款/退款,非收入);额度/可用/账单在下方
-  // AccountCardInfo。对齐 mobile account_detail_page。
+  // AccountCardInfo。对齐 mobile account_detail_page。这裡也是掛靠群組的
+  // 子卡(billing.isBillingRoot 恆為 false)跟「主帳戶但還沒設定帳單日」
+  // 兩種情況共用的落回顯示。
   if ((account.account_type || '') === 'credit_card') {
     const owed = Math.max(0, -balance)
     return (
@@ -430,47 +644,22 @@ function CreditCardBillingSection({
   account,
   t,
   onClose,
-  onPeriodRangeChange,
-  onCycleOffsetChange,
+  billing,
 }: {
   account: AccountWithStats
   t: (key: string, params?: Record<string, string | number>) => string
   onClose: () => void
-  /** 下面交易明細列表要跟著目前瀏覽的帳單週期走(2026-08-02 用户反馈:
-   *  切期数下面明细却不动)—— 每次選中週期的日期區間變化時往上通知一次,
-   *  非信用卡帳戶 / 週期還沒算出來時傳 null 清空過濾。 */
-  onPeriodRangeChange?: (range: { start: string; end: string } | null) => void
-  /** §2.9.5.4:目前瀏覽的帳單週期(cycleOffset,0=最近一次已結束)往上
-   *  回報,讓 CardRewardRulesSection 能跟著同步。非 billing-root 帳戶
-   *  (沒有週期選擇器)固定回報 0。 */
-  onCycleOffsetChange?: (offset: number) => void
+  /** 帳單摘要資料(§2.9 Phase 4)現在由 `AccountDetailDialog` 統一透過
+   *  `useAccountBilling` 抓取並往下傳,這個元件不再自己 fetch 一次——彈窗
+   *  頂部的統計區塊 + 標題列的週期選擇器都需要同一份資料(2026-08-04 使用
+   *  者反饋:週期選擇器要移到標題列)。 */
+  billing: ReturnType<typeof useAccountBilling>
 }) {
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict } = useLedgerWrite()
   const toast = useToast()
   const navigate = useNavigate()
-  // §2.9 Phase 4(2026-08-02 改版,同日第二輪放寬到單卡):合併帳單只對
-  // account_group(主帳戶群組),或沒有掛靠任何群組的獨立信用卡查——已經
-  // 掛靠群組的子卡不算,要透過它的群組查(對齊後端 is_billing_root)。
-  const isBillingRoot =
-    (account.account_type || '') === 'account_group' ||
-    ((account.account_type || '') === 'credit_card' && !account.parent_account_id)
-
-  const [summary, setSummary] = useState<AccountBillingSummary | null>(null)
-  const [suggestion, setSuggestion] = useState<AccountInterestFreeSuggestion | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [available, setAvailable] = useState(false)
-  // 帳單週期瀏覽(§2.9 補強,2026-08-02):0 = 最近一次已結束的週期,負數 =
-  // 更早的歷史週期,+1 = 目前還在累積中的那期。切換帳戶時歸零,不沿用上一
-  // 張卡瀏覽到的期數。
-  const [cycleOffset, setCycleOffset] = useState(0)
-  // 2026-08-03 使用者反饋:上期(cycleOffset=0)如果已經繳清,預設畫面不該
-  // 停在一筆「已經結案」的舊帳單,應該自動跳去這個月還在累積中的那期(+1)。
-  // 用 ref 而非 state 記「這次開卡是否已經自動跳過一次」——只在初次載入
-  // (cycleOffset === 0 的那次 fetch)判斷一次,避免使用者手動切回上期後又
-  // 被重新導回去。
-  const autoAdvancedRef = useRef(false)
 
   // 2026-08-03 使用者反饋:手機頁面這個區塊太長,展開時交易列表被推到看
   // 不見的地方——加個折疊開關,預設收合只留一行「目前應繳」,點了才展開
@@ -490,93 +679,16 @@ function CreditCardBillingSection({
 
   const [installOpen, setInstallOpen] = useState(false)
 
-  useEffect(() => {
-    autoAdvancedRef.current = false
-    setCycleOffset(0)
-  }, [account.id])
-
-  useEffect(() => {
-    if (!isBillingRoot) {
-      onCycleOffsetChange?.(0)
-      return
-    }
-    // 沒設定帳單日/繳款日的卡,billing summary fetch 必定失敗
-    // (`available` 恆為 false),下面「已繳清自動跳到累積期」那段邏輯
-    // 只在 fetch 成功時才跑,cycleOffset 永遠停在初始值 0——但這種卡本來
-    // 就沒有「上一期/這一期」的帳單週期概念,紅利回饋(`periodOffset =
-    // cycleOffset - 1`)應該直接對齊「目前這期」(periodOffset=0),回報
-    // 1 換算後才會是 0,不然沒設定帳單日的 calendar_month 規則預設會整組
-    // 對錯一期,且沒有周期選擇器 UI 能讓使用者自己切回來。
-    onCycleOffsetChange?.(available ? cycleOffset : 1)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBillingRoot, cycleOffset, available])
-
-  useEffect(() => {
-    if (!isBillingRoot || !token || !activeLedgerId) {
-      setAvailable(false)
-      setSummary(null)
-      setSuggestion(null)
-      return
-    }
-    let cancelled = false
-    setLoading(true)
-    Promise.all([
-      fetchAccountBillingSummary(token, activeLedgerId, account.id, cycleOffset),
-      fetchAccountInterestFreeSuggestion(token, activeLedgerId, account.id),
-    ])
-      .then(([s, sug]) => {
-        if (cancelled) return
-        setSummary(s)
-        setSuggestion(sug)
-        setAvailable(true)
-        if (
-          !autoAdvancedRef.current &&
-          cycleOffset === 0 &&
-          s.period_remaining_due <= 0 &&
-          s.period_has_newer
-        ) {
-          autoAdvancedRef.current = true
-          setCycleOffset(1)
-        }
-      })
-      .catch(() => {
-        if (cancelled) return
-        setAvailable(false)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBillingRoot, token, activeLedgerId, account.id, cycleOffset])
-
-  useEffect(() => {
-    if (!isBillingRoot || !summary) {
-      onPeriodRangeChange?.(null)
-      return
-    }
-    onPeriodRangeChange?.({ start: summary.period_cycle_start, end: summary.period_cycle_end })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBillingRoot, summary])
-
-  // 卸载(切换到别的账户 / 关闭详情弹窗)时清掉过滤,不让下一个账户的交易
-  // 列表继承上一张卡選中的期数窗口。
-  useEffect(() => {
-    return () => onPeriodRangeChange?.(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  if (!isBillingRoot || !activeLedgerId) return null
-  if (loading) {
+  if (!billing.isBillingRoot || !activeLedgerId) return null
+  if (billing.loading) {
     return (
       <div className="border-b border-border/60 px-6 py-3 text-xs text-muted-foreground">
         {t('cardBilling.loading')}
       </div>
     )
   }
-  if (!available || !summary) return null
+  const { summary, suggestion } = billing
+  if (!billing.available || !summary) return null
 
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -611,9 +723,7 @@ function CreditCardBillingSection({
       )
       toast.success(t('cardPayment.notice.success'), t('notice.success'))
       setPayOpen(false)
-      fetchAccountBillingSummary(token, activeLedgerId, account.id, cycleOffset)
-        .then(setSummary)
-        .catch(() => {})
+      billing.reload()
     } catch (err) {
       toast.error(localizeError(err, t), t('notice.error'))
     } finally {
@@ -633,33 +743,6 @@ function CreditCardBillingSection({
           {t('cardBilling.title')}
           {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
-        {/* 帳單週期日期翻頁(2026-08-03 使用者反饋:移到收合開關旁,永遠
-            可見,不受 expanded 影響)—— 下面交易列表跟著這個日期區間過濾
-            (見 onPeriodRangeChange),使用者要看某一期交易不該還得先展開
-            這個區塊。 */}
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            disabled={!summary.period_has_older}
-            aria-label={t('cardBilling.period.prev')}
-            onClick={() => setCycleOffset((v) => v - 1)}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <span className="font-mono text-xs font-medium tabular-nums">
-            {formatDateSlash(summary.period_cycle_start)} – {formatDateSlash(summary.period_cycle_end)}
-          </span>
-          <button
-            type="button"
-            disabled={!summary.period_has_newer}
-            aria-label={t('cardBilling.period.next')}
-            onClick={() => setCycleOffset((v) => v + 1)}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
         <button
           type="button"
           className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
@@ -716,44 +799,10 @@ function CreditCardBillingSection({
           </div>
         ) : null}
       </div>
-      {/* 帳單週期明細(§2.9 補強,2026-08-02):日期翻頁本身已移到上面收合
-          開關旁永遠可見,這裡只保留該週期的統計明細。 */}
-      <div className="rounded-lg border border-border/50 bg-background/40 p-3">
-        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {t('cardBilling.period.newSpend')}
-            </div>
-            <div className="font-mono tabular-nums">{fmt(summary.period_new_spend)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {t('cardBilling.period.carryoverDue')}
-            </div>
-            <div className="font-mono tabular-nums">{fmt(summary.period_carryover_due)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {t('cardBilling.period.totalDue')}
-            </div>
-            <div className="font-mono font-semibold tabular-nums">{fmt(summary.period_total_due)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {t('cardBilling.period.paidInCycle')}
-            </div>
-            <div className="font-mono tabular-nums text-income">{fmt(summary.period_paid_in_cycle)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {t('cardBilling.period.remainingDue')}
-            </div>
-            <div className="font-mono font-semibold tabular-nums text-expense">
-              {fmt(summary.period_remaining_due)}
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* 帳單週期明細(2026-08-04 使用者反饋):新增花費/上期欠款/應繳金額/
+          已繳金額/帳單分期/對帳筆數/剩餘帳款已經移到彈窗最頂部的統計區塊
+          (見 AccountStatsHeader),跟著標題列的週期選擇器走,這裡不再重複
+          顯示同一組數字。 */}
       {summary.members.length > 1 ? (
         <div className="space-y-1 text-xs text-muted-foreground">
           <div className="font-medium">{t('cardBilling.members')}</div>
@@ -878,11 +927,7 @@ function CreditCardBillingSection({
           defaultAmount={summary.period_total_due > 0 ? summary.period_total_due : summary.remaining_due}
           defaultDueDate={summary.due_date}
           retryOnConflict={retryOnConflict}
-          onCreated={() => {
-            fetchAccountBillingSummary(token || '', activeLedgerId, account.id, cycleOffset)
-              .then(setSummary)
-              .catch(() => {})
-          }}
+          onCreated={() => billing.reload()}
         />
       ) : null}
     </div>

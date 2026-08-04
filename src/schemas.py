@@ -682,6 +682,13 @@ class ReadAccountBillingSummaryOut(BaseModel):
     period_remaining_due: float
     period_has_older: bool
     period_has_newer: bool
+    # 帳單分期(2026-08-04 使用者反饋補上,對齊 Moze 參考截圖)。0 = 沒有
+    # 進行中的分期(前端顯示「---」);1 = 附帶 paid_periods/periods 顯示
+    # 進度;>1 = 只顯示筆數,見 credit_card_billing.compute_installment_
+    # summary docstring。
+    period_installment_active_count: int
+    period_installment_paid_periods: int | None = None
+    period_installment_periods: int | None = None
 
 
 class ReadInterestFreeSuggestionOut(BaseModel):

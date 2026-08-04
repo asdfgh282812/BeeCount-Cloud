@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type {
   CardRewardInterval,
@@ -114,12 +114,18 @@ export function CardRewardRulesSection({
   accountId,
   accountType,
   periodOffset = 0,
+  highlightRuleId,
 }: {
   accountId: string
   accountType: string | null | undefined
   /** 跟著上面 CreditCardBillingSection 的帳單週期選擇器走(§2.9.5.4),
    *  非 billing-root 帳戶固定 0(目前還在累積的那期)。 */
   periodOffset?: number
+  /** 從交易詳情彈窗「使用回饋」chip 跳過來時帶(2026-08-04 補強):比對到
+   *  哪張子卡的規則清單裡有這個 id,就自動展開那張子卡的區塊 + 打開這條
+   *  規則的交易明細彈窗 —— 主帳戶(account_group)場景下每張子卡都會收到
+   *  同一個 id,只有真的命中的那張會有反應。 */
+  highlightRuleId?: string
 }) {
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
@@ -149,7 +155,9 @@ export function CardRewardRulesSection({
   }, [isGroup, token, activeLedgerId, accountId])
 
   if ((accountType || '') === 'credit_card') {
-    return <SingleCardCardRewards accountId={accountId} periodOffset={periodOffset} />
+    return (
+      <SingleCardCardRewards accountId={accountId} periodOffset={periodOffset} highlightRuleId={highlightRuleId} />
+    )
   }
   if (!isGroup || groupChildren.length === 0) return null
   return (
@@ -160,6 +168,7 @@ export function CardRewardRulesSection({
           accountId={child.id}
           accountLabel={child.name}
           periodOffset={periodOffset}
+          highlightRuleId={highlightRuleId}
         />
       ))}
     </div>
@@ -170,12 +179,14 @@ function SingleCardCardRewards({
   accountId,
   accountLabel,
   periodOffset = 0,
+  highlightRuleId,
 }: {
   accountId: string
   /** 主帳戶(account_group)展開多張子卡時,各自標題帶卡片名稱區分;單卡
    *  detail dialog 直接渲染時不傳,標題維持原樣不變。 */
   accountLabel?: string
   periodOffset?: number
+  highlightRuleId?: string
 }) {
   const t = useT()
   const { token } = useAuth()
@@ -193,6 +204,10 @@ function SingleCardCardRewards({
   const [duplicateSeed, setDuplicateSeed] = useState<ReadCardRewardRule | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [detailRule, setDetailRule] = useState<ReadCardRewardRule | null>(null)
+  // 記住「這個 highlightRuleId 已經自動展開/打開過一次」,避免規則清單重新
+  // 整理(比如切換帳單週期)時重複強制展開/彈出使用者已經手動關掉的明細
+  // 彈窗。帳戶切換時(元件重新掛載或 accountId 變化)重置。
+  const appliedHighlightRef = useRef<string | null>(null)
 
   const reload = () => {
     if (!token || !activeLedgerId) return
@@ -218,6 +233,25 @@ function SingleCardCardRewards({
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, token, activeLedgerId, periodOffset])
+
+  // 帳戶切換時重置「是否已自動展開過」的標記,不然換一張沒有這條規則的卡
+  // 又切回來時不會再觸發。
+  useEffect(() => {
+    appliedHighlightRef.current = null
+  }, [accountId])
+
+  // 從交易詳情彈窗跳過來(highlightRuleId 非空)時,規則清單載入後自動展開
+  // + 直接打開這條規則的交易明細彈窗,不用使用者自己再找一次。只在真的命中
+  // 這張卡的規則清單時才動作,同一個 highlightRuleId 只自動觸發一次(使用者
+  // 手動關掉明細彈窗後不會被重新強制打開)。
+  useEffect(() => {
+    if (!highlightRuleId || appliedHighlightRef.current === highlightRuleId) return
+    const match = rules.find((r) => r.id === highlightRuleId)
+    if (!match) return
+    appliedHighlightRef.current = highlightRuleId
+    setExpanded(true)
+    setDetailRule(match)
+  }, [rules, highlightRuleId])
 
   if (!activeLedgerId) return null
 

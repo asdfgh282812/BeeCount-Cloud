@@ -169,15 +169,44 @@ const TX_PAGE_SIZE_DEFAULT = 20
 // 旧 storage 数据 partial 回填出空字段。
 const TX_FILTER_STORAGE_PREFIX = 'beecount:web:txFilter:v2'
 
+/** `YYYY-MM-DD`(本地时区),对齐既有 `range=today` shortcut 的算法。 */
+function formatDateInput(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function todayRange(): { dateFrom: string; dateTo: string } {
+  const today = formatDateInput(new Date())
+  return { dateFrom: today, dateTo: today }
+}
+
+function last7DaysRange(): { dateFrom: string; dateTo: string } {
+  const now = new Date()
+  const from = new Date(now)
+  from.setDate(from.getDate() - 6) // 含今天共 7 天
+  return { dateFrom: formatDateInput(from), dateTo: formatDateInput(now) }
+}
+
+function last1MonthRange(): { dateFrom: string; dateTo: string } {
+  const now = new Date()
+  const from = new Date(now)
+  from.setMonth(from.getMonth() - 1)
+  return { dateFrom: formatDateInput(from), dateTo: formatDateInput(now) }
+}
+
+// 2026-08-04 使用者反饋:交易列表预设显示「全部」看得眼花,改成预设只看
+// 「今日」(跟头部新增的快速日期筛选一致)。只影响：①从没设过筛选的全新
+// 用户/账本组合;②使用者点「重设筛选」时回到的默认值——已经存过筛选(哪怕
+// 是空日期)的既有用户不受影响,尊重已经保存下来的偏好。
 function defaultTxFilter(): TxFilter {
+  const today = todayRange()
   return {
     q: '',
     txType: '',
     accountName: '',
     amountMin: '',
     amountMax: '',
-    dateFrom: '',
-    dateTo: '',
+    dateFrom: today.dateFrom,
+    dateTo: today.dateTo,
     categorySyncId: '',
     categoryName: '',
     tagSyncId: '',
@@ -315,6 +344,13 @@ export function TransactionsPage() {
   const previewRequestSeqRef = useRef(0)
   const txFilterRestoreInProgressRef = useRef(false)
   const txAttachmentPreviewUrlByFileIdRef = useRef<Record<string, string>>({})
+  // 进交易页时初始 state 是 defaultTxFilter()(今日),localStorage 里持久化
+  // 的筛选(比如「全部」)由 restore effect 异步覆盖回来——这中间会短暂触发
+  // 两次交易列表 fetch(先今日、后恢复值)。两个请求谁先返回不保证:如果
+  // 「今日」那个请求恰好较晚 resolve,会用旧数据覆盖掉已经显示正确的「恢复值」
+  // 结果,造成"筛选标签显示全部,但列表只有今日数据"的不一致。用递增序号只让
+  // 最后发起的那次请求的结果生效。
+  const txFetchSeqRef = useRef(0)
 
   // 原来用 Notice 顶栏显示成功/失败,改成 toast 后不再需要这个 state。
   const [baseChangeId, setBaseChangeId] = useState(0)
@@ -422,6 +458,17 @@ export function TransactionsPage() {
   const [txWriteLedgerId, setTxWriteLedgerId] = useState('')
 
   const [txFilterApplied, setTxFilterApplied] = useState<TxFilter>(defaultTxFilter)
+  // refreshCurrent/refreshAllSections(挂载引导 / 下拉刷新 / WS 重连兜底)会
+  // 调用 refreshSectionData,但它们各自的闭包可能定格在很早的 render(比如
+  // 挂载引导 effect 的 deps 是 route.section/route.ledgerId,不含
+  // txFilterApplied,restore effect 把筛选从「今日」改成持久化值后它也不会
+  // 重新捕获)。这些调用点普遍还要先 await loadLedgers/loadLedgerBase(比
+  // 主 data-loading effect 的路径慢),经常在 restore 早就生效之后才真正
+  // 发出交易请求,却带着挂载那一刻的旧筛选——用 ref 保证不管哪个闭包发起
+  // 调用,实际发出去的请求永远用当下最新的筛选,不会用旧值覆盖已经正确显示
+  // 的结果。
+  const txFilterAppliedRef = useRef(txFilterApplied)
+  txFilterAppliedRef.current = txFilterApplied
   const [txFilterDraft, setTxFilterDraft] = useState<TxFilter>(defaultTxFilter)
   const [txFilterOpen, setTxFilterOpen] = useState(false)
   // filter dialog 内嵌的 category / tag picker。这两个 dialog 跟 filter dialog
@@ -691,7 +738,7 @@ export function TransactionsPage() {
     return detail.source_change_id
   }
 
-  const refreshSectionData = async (ledgerId: string, section: AppSection) => {
+  const refreshSectionData = async (ledgerId: string, section: AppSection, preAssignedSeq?: number) => {
     if (sectionNeedsLedger(section) && !ledgerId) {
       return
     }
@@ -705,35 +752,51 @@ export function TransactionsPage() {
       // (Flutter schema:Categories/Accounts/Tags 表都没 ledger_id 字段,一套
       // 跨所有账本共享)—— 拉字典不要按 ledger 过滤,避免多账本下漏数据。
       const txUserId = isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined
+      // 读 ref 不读闭包参数 txFilterApplied —— refreshCurrent/refreshAllSections
+      // 等调用点的闭包可能定格在 restore effect 生效之前的旧 render(它们的
+      // 触发 effect 不依赖 txFilterApplied,不会因为筛选恢复而重新捕获),
+      // 且这些调用点普遍还要先 await loadLedgers/loadLedgerBase,经常在
+      // restore 早就生效之后才真正发出请求,却带着挂载那一刻的旧筛选。ref
+      // 保证不管哪个闭包发起调用,实际发出去的请求永远用当下最新筛选。
+      const activeFilter = txFilterAppliedRef.current
       // 把 filter draft / 应用值里 stringy 的字段转成 server 期望的形式:
       //   - amountMin/Max: '' → undefined,'12.5' → 12.5
       //   - dateFrom: 'YYYY-MM-DD' → ISO datetime 当天 00:00 (UTC)
       //   - dateTo:   'YYYY-MM-DD' → ISO datetime **次日** 00:00 (UTC),
       //     server 端用 happened_at < date_to,正好覆盖整个 dateTo 当天
-      const minNum = Number(txFilterApplied.amountMin || '')
-      const maxNum = Number(txFilterApplied.amountMax || '')
-      const dateFromIso = txFilterApplied.dateFrom
-        ? new Date(`${txFilterApplied.dateFrom}T00:00:00`).toISOString()
+      const minNum = Number(activeFilter.amountMin || '')
+      const maxNum = Number(activeFilter.amountMax || '')
+      const dateFromIso = activeFilter.dateFrom
+        ? new Date(`${activeFilter.dateFrom}T00:00:00`).toISOString()
         : undefined
-      const dateToIso = txFilterApplied.dateTo
+      const dateToIso = activeFilter.dateTo
         ? (() => {
-            const d = new Date(`${txFilterApplied.dateTo}T00:00:00`)
+            const d = new Date(`${activeFilter.dateTo}T00:00:00`)
             d.setDate(d.getDate() + 1)
             return d.toISOString()
           })()
         : undefined
+
+      // 进页面/恢复筛选那一小段时间可能连续触发两次这个分支(先用初始默认值
+      // 「今日」,restore effect 恢复持久化筛选后再来一次)。两次请求谁先返回
+      // 不保证,只让最后发起的这次结果落地,避免旧请求(比如「今日」)较晚
+      // resolve 时用过期数据覆盖掉已经正确显示的新筛选结果。preAssignedSeq
+      // 由调用方(data-loading effect)在 await loadLedgerBase 之前同步分配,
+      // 反映 effect 真实触发顺序;没有传入时(其它零散调用点)退回这里自己
+      // 分配,仍然单调递增。
+      const fetchSeq = preAssignedSeq ?? ++txFetchSeqRef.current
 
       const [txPageResult, accountRows, categoryRows, tagRows] = await Promise.all([
         fetchWorkspaceTransactions(token, {
           ledgerId: ledgerId || undefined,
           userId: txUserId,
           q: listQuery || undefined,
-          txType: txFilterApplied.txType || undefined,
-          accountName: txFilterApplied.accountName || undefined,
-          categorySyncId: txFilterApplied.categorySyncId || undefined,
-          tagSyncId: txFilterApplied.tagSyncId || undefined,
-          amountMin: Number.isFinite(minNum) && txFilterApplied.amountMin ? minNum : undefined,
-          amountMax: Number.isFinite(maxNum) && txFilterApplied.amountMax ? maxNum : undefined,
+          txType: activeFilter.txType || undefined,
+          accountName: activeFilter.accountName || undefined,
+          categorySyncId: activeFilter.categorySyncId || undefined,
+          tagSyncId: activeFilter.tagSyncId || undefined,
+          amountMin: Number.isFinite(minNum) && activeFilter.amountMin ? minNum : undefined,
+          amountMax: Number.isFinite(maxNum) && activeFilter.amountMax ? maxNum : undefined,
           dateFrom: dateFromIso,
           dateTo: dateToIso,
           limit: txPageSize,
@@ -743,6 +806,7 @@ export function TransactionsPage() {
         fetchWorkspaceCategories(token, { userId: txUserId, limit: 500 }),
         fetchWorkspaceTags(token, { userId: txUserId, limit: 500 })
       ])
+      if (fetchSeq !== txFetchSeqRef.current) return
       setTransactions(txPageResult.items)
       setTxTotal(txPageResult.total)
       if (txPageResult.total > 0 && txPage > 1 && txPageResult.items.length === 0) {
@@ -996,8 +1060,24 @@ export function TransactionsPage() {
     }
     // 需要 ledger 的 section(用户还没选/没拉到 ledger 列表时静默等待)
     if (sectionNeedsLedger(section) && !activeLedgerId) return
+    // 进交易页那一刻,restore effect(见上面)可能还没把 localStorage 里持久化
+    // 的筛选(比如「全部」)写回 txFilterApplied —— 此时 state 仍是初始默认值
+    // 「今日」。如果这里照样用当前 state 发一次 fetch,就是拿着马上要被覆盖掉
+    // 的「今日」筛选去查,等 restore 的 setState 真正生效、这个 effect 因为
+    // deps 变化重新跑一次「全部」查询时,两次请求谁的响应先回来不保证,验证时
+    // 会看到"筛选标签显示全部,但列表其实是今日那次请求的结果"。restore
+    // 阶段直接跳过这次 fetch,只等 restore 完成后 state 变化触发的那次为准。
+    if (section === 'transactions' && txFilterRestoreInProgressRef.current) return
 
     let cancelled = false
+    // seq 必须在这里(await loadLedgerBase 之前)同步分配,不能留给
+    // refreshSectionData 内部在 Promise.all 前才分配 —— loadLedgerBase 本身
+    // 是一次网络请求,耗时不定,如果先后触发了两次 effect,各自的 loadLedgerBase
+    // 谁先 resolve 不保证,后触发的那次可能因为 loadLedgerBase 更快返回而先跑到
+    // refreshSectionData 内部去分配 seq,导致先触发但 loadLedgerBase 较慢的那次
+    // 反而拿到更大的 seq,把正确结果覆盖掉。同步分配保证 seq 顺序 = effect 真实
+    // 触发顺序,不受后续 await 时长影响。
+    const mySeq = section === 'transactions' ? ++txFetchSeqRef.current : 0
     const run = async () => {
       try {
         // 切账本 / 进页面时要更新 base_change_id 给写操作用。section 不需要
@@ -1006,7 +1086,7 @@ export function TransactionsPage() {
           await loadLedgerBase(activeLedgerId)
         }
         if (cancelled) return
-        await refreshSectionData(activeLedgerId || '', section)
+        await refreshSectionData(activeLedgerId || '', section, mySeq || undefined)
       } catch (err) {
         if (!cancelled) {
           setErrorNotice(renderError(err))
@@ -1203,6 +1283,22 @@ export function TransactionsPage() {
     Number(Boolean(txFilterApplied.dateTo)) +
     Number(Boolean(txFilterApplied.categorySyncId)) +
     Number(Boolean(txFilterApplied.tagSyncId))
+
+  // 快速日期筛选(2026-08-04 使用者反饋):今日(默认)/七天内/一个月内/全部,
+  // 免得每次都要开 filter dialog 手动选日期。跟 dialog 里的日期字段共用同一份
+  // txFilterApplied/txFilterDraft 状态,点其中一个会互相同步。
+  const txQuickDatePresets = [
+    { key: 'today' as const, label: t('transactions.quickDate.today'), range: todayRange() },
+    { key: 'last7' as const, label: t('transactions.quickDate.last7Days'), range: last7DaysRange() },
+    { key: 'last1m' as const, label: t('transactions.quickDate.last1Month'), range: last1MonthRange() },
+  ]
+  const applyTxQuickDateRange = (range: { dateFrom: string; dateTo: string } | null) => {
+    const nextDateFrom = range?.dateFrom ?? ''
+    const nextDateTo = range?.dateTo ?? ''
+    setTxFilterApplied((prev) => ({ ...prev, dateFrom: nextDateFrom, dateTo: nextDateTo }))
+    setTxFilterDraft((prev) => ({ ...prev, dateFrom: nextDateFrom, dateTo: nextDateTo }))
+    setTxPage(1)
+  }
 
   const onOpenTxFilter = () => {
     // draft 必须 mirror 全部 applied 字段(原版只搬 q/txType/accountName,
@@ -1458,8 +1554,16 @@ export function TransactionsPage() {
     }
     // 非转账交易必须选分类(transfer 自动归虚拟"转账"分类,server 处理)。
     // mobile 端 transaction_editor_page 也强制必选,跨端一致避免 ungrouped tx
-    // 污染分类统计。拆帳(§2.4)时不看单一 category,改看 splits。
-    if (txForm.tx_type !== 'transfer' && !txForm.split_enabled && !txForm.category_name.trim()) {
+    // 污染分类统计。拆帳(§2.4)时不看单一 category,改看 splits。退款交易
+    // (refund_of_id 非空)留空分类时 server 会自动归到自建的「退款」分类
+    // (`ensure_refund_category`,同 `ensure_reward_category` 的既有模式),
+    // 不强制用户手动选。
+    if (
+      txForm.tx_type !== 'transfer' &&
+      !txForm.split_enabled &&
+      !txForm.refund_of_id.trim() &&
+      !txForm.category_name.trim()
+    ) {
       setErrorNotice(t('transactions.error.categoryRequired'))
       return false
     }
@@ -2072,6 +2176,42 @@ export function TransactionsPage() {
                   </Button>
                 ) : null}
                 </div>
+              </div>
+              {/* 快速日期筛选(2026-08-04 使用者反饋):今日(默认)/七天内/
+                  一个月内/全部,免得每次都要开 filter dialog 手动选日期。 */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {txQuickDatePresets.map((preset) => {
+                  const active =
+                    txFilterApplied.dateFrom === preset.range.dateFrom &&
+                    txFilterApplied.dateTo === preset.range.dateTo
+                  return (
+                    <button
+                      key={preset.key}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => applyTxQuickDateRange(preset.range)}
+                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  aria-pressed={!txFilterApplied.dateFrom && !txFilterApplied.dateTo}
+                  onClick={() => applyTxQuickDateRange(null)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    !txFilterApplied.dateFrom && !txFilterApplied.dateTo
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                  }`}
+                >
+                  {t('transactions.quickDate.all')}
+                </button>
               </div>
               {selectionMode ? (
                 <SelectionToolbar

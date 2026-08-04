@@ -21,7 +21,12 @@ from sqlalchemy import case as sa_case
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import ReadInstallmentPlanProjection, ReadTxProjection, UserAccountProjection
+from ..models import (
+    ReadInstallmentPeriodProjection,
+    ReadInstallmentPlanProjection,
+    ReadTxProjection,
+    UserAccountProjection,
+)
 from . import credit_card
 
 
@@ -432,6 +437,50 @@ def compute_cycle_period_billing(
         "has_older": has_older,
         "has_newer": has_newer,
     }
+
+
+class InstallmentSummary(TypedDict):
+    active_count: int
+    paid_periods: int | None
+    periods: int | None
+
+
+def compute_installment_summary(
+    db: Session, *, ledger_id: str, member_ids: Sequence[str],
+) -> InstallmentSummary:
+    """帳戶詳情彈窗「帳單分期」欄位(2026-08-04 使用者反饋補上,對齊 Moze
+    參考截圖)。只看 `status == "active"` 的分期計畫,`paid_periods` 算法
+    對齊 `read/ledgers.py::list_installment_plans`(從 `read_installment_
+    period_projection` 的 `due_at <= now` 即時算,不信任 projection 本身
+    不被排程更新的歷史相容欄位)。回傳結構化數字(不是預先格式化的文案)
+    讓前端依當前語系自己組字串;`active_count == 0` 時前端顯示「---」,
+    `active_count == 1` 時額外帶 `paid_periods`/`periods` 顯示進度,
+    `active_count > 1` 時只顯示筆數(彈窗空間有限,不逐筆列出每個計畫的
+    細節,詳細清單使用者可以自己去 `/app/installment-plans` 頁面看)。"""
+    if not member_ids:
+        return {"active_count": 0, "paid_periods": None, "periods": None}
+    plans = db.scalars(
+        select(ReadInstallmentPlanProjection).where(
+            ReadInstallmentPlanProjection.ledger_id == ledger_id,
+            ReadInstallmentPlanProjection.account_sync_id.in_(member_ids),
+            ReadInstallmentPlanProjection.status == "active",
+        )
+    ).all()
+    if not plans:
+        return {"active_count": 0, "paid_periods": None, "periods": None}
+    if len(plans) > 1:
+        return {"active_count": len(plans), "paid_periods": None, "periods": None}
+
+    plan = plans[0]
+    now = datetime.now(timezone.utc)
+    due_dates = db.scalars(
+        select(ReadInstallmentPeriodProjection.due_at).where(
+            ReadInstallmentPeriodProjection.ledger_id == ledger_id,
+            ReadInstallmentPeriodProjection.plan_sync_id == plan.sync_id,
+        )
+    ).all()
+    paid_periods = sum(1 for d in due_dates if (d if d.tzinfo else d.replace(tzinfo=timezone.utc)) <= now)
+    return {"active_count": 1, "paid_periods": paid_periods, "periods": plan.periods}
 
 
 def compute_card_payment_allocations(

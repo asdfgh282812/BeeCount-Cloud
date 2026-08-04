@@ -115,6 +115,10 @@ export type DetailScope = 'all' | 'current'
 
 export type DetailOpenOptions = {
   defaultScope?: DetailScope
+  /** 從交易詳情彈窗點「使用回饋」規則跳轉過來時(2026-08-04 新增):打開帳戶
+   *  詳情彈窗後,自動展開紅利回饋區塊並直接彈出這條規則的交易明細彈窗 ——
+   *  見 `AccountDetailDialog` / `CardRewardRulesSection` 的 `highlightRuleId`。 */
+  highlightRewardRuleId?: string
 }
 
 // ========== Account ==========
@@ -123,6 +127,7 @@ const DETAIL_ACCOUNT_EVENT = 'bee:open-detail-account'
 type AccountDetailPayload = {
   account: WorkspaceAccount
   defaultScope: DetailScope
+  highlightRewardRuleId?: string
 }
 
 export function dispatchOpenDetailAccount(
@@ -132,16 +137,17 @@ export function dispatchOpenDetailAccount(
   const payload: AccountDetailPayload = {
     account,
     defaultScope: options?.defaultScope ?? 'current',
+    highlightRewardRuleId: options?.highlightRewardRuleId,
   }
   window.dispatchEvent(new CustomEvent(DETAIL_ACCOUNT_EVENT, { detail: payload }))
 }
 
 export function onOpenDetailAccount(
-  handler: (account: WorkspaceAccount, defaultScope: DetailScope) => void,
+  handler: (account: WorkspaceAccount, defaultScope: DetailScope, highlightRewardRuleId?: string) => void,
 ): () => void {
   const wrapped = (e: Event) => {
     const detail = (e as CustomEvent<AccountDetailPayload>).detail
-    if (detail?.account) handler(detail.account, detail.defaultScope)
+    if (detail?.account) handler(detail.account, detail.defaultScope, detail.highlightRewardRuleId)
   }
   window.addEventListener(DETAIL_ACCOUNT_EVENT, wrapped)
   return () => window.removeEventListener(DETAIL_ACCOUNT_EVENT, wrapped)

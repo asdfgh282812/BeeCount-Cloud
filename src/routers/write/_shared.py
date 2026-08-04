@@ -800,6 +800,19 @@ async def _commit_create_tx_fast(
             _assert_refund_target_not_already_refunded(
                 db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
             )
+            # 退款分类自动归类(2026-08-04 使用者反馈):没显式选分类时,
+            # 自建/复用「退款」分类(`ensure_refund_category`,跟回饋金分类
+            # 同一套「sync push 等价」旁路模式),不强迫用户手动挑一个跟这笔
+            # 交易毫不相关的既有分类凑数;用户如果自己选了分类,原样尊重。
+            if not mutate_payload.get("category_id") and not mutate_payload.get("category_name"):
+                from ...services import card_rewards as _card_rewards
+                refund_tx_type = mutate_payload.get("tx_type")
+                if refund_tx_type in ("income", "expense"):
+                    mutate_payload["category_id"] = _card_rewards.ensure_refund_category(
+                        db, user_id=ledger.user_id, kind=refund_tx_type,
+                    )
+                    mutate_payload["category_name"] = _card_rewards.REFUND_CATEGORY_NAME
+                    mutate_payload["category_kind"] = refund_tx_type
         debt_id = mutate_payload.get("debt_id")
         if debt_id:
             _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
@@ -833,6 +846,19 @@ async def _commit_create_tx_fast(
             source_change_id=change_row.change_id,
             payload=new_item,
         )
+
+        if refund_of_id:
+            # 信用卡回饋沖銷(2026-08-04 使用者反馈):这笔退款如果冲抵了一笔
+            # 已经逐笔结算入帐过回饋金的消费,补一笔沖銷交易,跟退款交易同一个
+            # DB transaction 原子 commit——`_qualifying_transactions` 已经把
+            # 被退款的交易排除在未来结算范围外(排程还没跑到的情况),这里补的
+            # 是排程已经跑过、回饋已经入帐的情况,两者合起来保证退款前/退款后
+            # 结算净效果一致。
+            from ...services.card_reward_payout import reverse_card_reward_payouts_for_refund
+            reverse_card_reward_payouts_for_refund(
+                db, ledger_id=ledger.id, user_id=ledger.user_id,
+                refunded_tx_id=str(refund_of_id), now=now,
+            )
 
         db.add(
             AuditLog(
@@ -1045,6 +1071,22 @@ async def _commit_write_fast_tx(
             minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
             new_item = minimal_snap["items"][0]
 
+            # 退款分类自动归类(2026-08-04 使用者反馈):跟 create 快路径同一套
+            # 逻辑,搬到 merge 后的最终状态判断——`prev_item` 原本不是退款、
+            # 这次 PATCH 才把它变成退款(`refundOfId` 从空变非空)时才补,不然
+            # 每次编辑一笔已经是退款的交易(`refundOfId` 原样带回)都会重新
+            # 触发,把用户后来自己改的分类覆盖回「退款」。
+            is_newly_refund = bool(new_item.get("refundOfId")) and not prev_item.get("refundOfId")
+            if is_newly_refund and not new_item.get("categoryId") and not new_item.get("categoryName"):
+                from ...services import card_rewards as _card_rewards
+                refund_tx_type = new_item.get("type")
+                if refund_tx_type in ("income", "expense"):
+                    new_item["categoryId"] = _card_rewards.ensure_refund_category(
+                        db, user_id=ledger.user_id, kind=refund_tx_type,
+                    )
+                    new_item["categoryName"] = _card_rewards.REFUND_CATEGORY_NAME
+                    new_item["categoryKind"] = refund_tx_type
+
             # 拆帳(§2.4):在 merge 后的最终状态上校验(而不是只看这次 PATCH
             # 带的字段)—— 单独改 amount 不改 splits 时,也要保证新 amount
             # 还能被既有 splits 加总对上。
@@ -1089,6 +1131,14 @@ async def _commit_write_fast_tx(
                 source_change_id=change_row.change_id,
                 payload=new_item,
             )
+
+            if is_newly_refund:
+                # 信用卡回饋沖銷:跟 create 快路径同一套逻辑,见该处注释。
+                from ...services.card_reward_payout import reverse_card_reward_payouts_for_refund
+                reverse_card_reward_payouts_for_refund(
+                    db, ledger_id=ledger.id, user_id=ledger.user_id,
+                    refunded_tx_id=str(new_item.get("refundOfId")), now=now,
+                )
 
         new_change_id = change_row.change_id
 

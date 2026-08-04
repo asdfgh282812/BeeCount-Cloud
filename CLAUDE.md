@@ -801,6 +801,22 @@ dev-api` 实际跑的是 `uvicorn server:app`)。核心模块:
 - 添加新 entity 必须添加一条 `test_mobile_push_<entity>_partial_update_keeps_existing_fields`
   风格的 merge 契约测试 —— 防 2026-04 踩过的"漏 merge 某字段"类 bug
 
+**任何触及 web UI 的改动,报告"完成"之前必须实际打开浏览器走一遍,不能只
+跑 `pytest`/`pnpm build`/`pnpm test:unit` 就宣称修好了。** 本文件 §2.9/
+§2.9.5 系列的历史记录里,几乎每一轮"只跑了 pytest + build,没有走完整
+浏览器手测"之后,下一轮手测都会挖出新 bug(纯前端状态管理问题、事件总线
+没接上、字段换算 off-by-one 等——这些完全不在 pytest 的覆盖范围内,因为
+后端测试直接打 API,不经过任何前端渲染/事件派发逻辑)。2026-08-04 还
+额外踩过一次：`uvicorn --reload` 在这台机器上曾经安静地没有捕捉到
+`src/` 下的文件改动(进程存活、端口正常响应,但跑的是改动前的旧代码),
+导致"代码明明改对了,但实测复现原 bug"——**如果一次改动之后浏览器验证
+结果跟预期不符,先确认 dev server 是否真的 reload 了新代码(比较进程
+启动时间与文件 mtime,或直接重启 `make dev-api`)再去怀疑代码逻辑本身
+有问题**,省下大量误诊时间。验证时优先用真实点击/表单操作触发的路径
+(不是只用浏览器 console 里的 `fetch` 直接打 API)——后者会绕过前端的
+事件总线(`txDialogEvents.ts`)、表单校验、状态换算等整层逻辑,一样测
+不出纯前端 bug。
+
 ### 日志
 
 - 同步决策点用 `logger.info("sync.push.accept entity=...")` 结构化日志

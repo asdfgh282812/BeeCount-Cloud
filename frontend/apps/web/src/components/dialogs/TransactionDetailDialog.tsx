@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { resolveApiUrl, type AttachmentRef, type WorkspaceTag, type WorkspaceTransaction } from '@beecount/api-client'
+import {
+  resolveApiUrl,
+  type AttachmentRef,
+  type ReadCardRewardRule,
+  type WorkspaceTag,
+  type WorkspaceTransaction,
+} from '@beecount/api-client'
 import {
   Button,
   Dialog,
@@ -32,6 +38,13 @@ interface Props {
   onJumpToTx?: (txId: string) => void
   /** 借還款雙向勾稽(體驗補強):點「關聯欠款」跳去借還款頁對應卡片。 */
   onJumpToDebt?: (debtId: string) => void
+  /** 信用卡紅利回饋(§2.9.5):這筆交易勾選過的回饋規則(已解析出 label,
+   *  由 GlobalEntityDialogs 依 tx.reward_rule_ids 反查同一張卡的規則列表拿到)
+   *  —— 一筆交易可能複選多條規則,空数组/undefined = 没有勾选任何规则。 */
+  rewardRules?: ReadCardRewardRule[]
+  /** 點某條「使用回饋」chip 跳去該帳戶詳情彈窗,自動展開紅利回饋區塊並打開
+   *  這條規則的交易明細彈窗。 */
+  onJumpToReward?: (accountId: string, ruleId: string) => void
 }
 
 /**
@@ -54,6 +67,8 @@ export function TransactionDetailDialog({
   onRefund,
   onJumpToTx,
   onJumpToDebt,
+  rewardRules,
+  onJumpToReward,
 }: Props) {
   const t = useT()
 
@@ -158,6 +173,31 @@ export function TransactionDetailDialog({
                 <Calendar className="mr-1 inline h-3 w-3" />
                 {formatDateTime(tx.happened_at)}
               </span>
+              {/* 信用卡紅利回饋(§2.9.5):這筆交易勾選過的規則,可能複選 ——
+                  每條都是可點擊 chip,跳去帳戶詳情彈窗查看這條規則的完整明細
+                  (使用者反饋:交易詳情看不出這筆消費用了哪些回饋、也没有连
+                  动入口)。account_id 缺失(理论上不会,因为 reward_rule_ids
+                  只在 expense + 信用卡帳戶才可能非空)时整块不渲染。 */}
+              {rewardRules && rewardRules.length > 0 && tx.account_id ? (
+                <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+                  <span className="text-[11px] text-muted-foreground">
+                    {t('detail.transaction.rewardRulesUsed')}
+                  </span>
+                  {rewardRules.map((rule) => (
+                    <button
+                      key={rule.id}
+                      type="button"
+                      onClick={() => onJumpToReward?.(tx.account_id!, rule.id)}
+                      disabled={!onJumpToReward}
+                      className="flex items-center gap-1 rounded-full bg-income/15 px-2 py-0.5 text-[11px] text-income transition hover:bg-income/25 disabled:cursor-default disabled:opacity-70"
+                      title={onJumpToReward ? t('transactions.badge.rewardRule.jumpHint') : undefined}
+                    >
+                      <Gift className="h-3 w-3" />
+                      {rule.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             {/* 字段列表 */}

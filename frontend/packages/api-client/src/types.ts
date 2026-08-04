@@ -738,6 +738,9 @@ export type AccountBillingSummary = {
   period_remaining_due: number
   period_has_older: boolean
   period_has_newer: boolean
+  period_installment_active_count: number
+  period_installment_paid_periods: number | null
+  period_installment_periods: number | null
 }
 
 export type AccountInterestFreeSuggestion = {

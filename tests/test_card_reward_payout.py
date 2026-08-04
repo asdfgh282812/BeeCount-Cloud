@@ -78,6 +78,18 @@ def _income_tx_to(TS, account_id):
         return rows
 
 
+def _all_tx_in(TS, account_id):
+    with TS() as db:
+        rows = db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.account_sync_id == account_id,
+            ).order_by(ReadTxProjection.happened_at.asc())
+        ).all()
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+
 def _payout_rows(TS, email, rule_id):
     with TS() as db:
         user_id = db.scalar(select(User.id).where(User.email == email))
@@ -445,12 +457,17 @@ def test_immediate_after_tx_cap_amount_clamps_and_dedups_zero_amount():
 
 def test_immediate_after_tx_self_credit_offsets_billing():
     """reward_account_id 指回卡片自己(最常見用例——直接折抵當期帳單)。
-    payout 引擎生成的 income 交易日期是「執行當下」(`now`),落在**還在
-    累積、尚未結束**的那個帳單週期,所以要看 `open_cycle_spend`(該窗口
-    expense 正/income 負的加總)而不是隻反映已結束週期的 `remaining_due`
-    (見 `credit_card_billing.compute_group_billing` docstring)。原始消費
-    (`tx-1`)刻意放在已結束的週期內,讓 `open_cycle_spend` 起始值是 0,
-    回饋入帳後變成 -20 才是唯一在變動的數字,斷言更乾淨。"""
+
+    2026-08-04 使用者反饋修復:payout 引擎生成的 income 交易日期必須是
+    「規則算出的入帳日」(`tx_happened_at + settlement_days`),不能是
+    「排程實際執行的時間點」(`now`)——不然使用者事後補記一筆很久以前的
+    消費(比如今天補記上個月的帳),回饋交易會被錯誤地記在「今天」,而不是
+    使用者設定的入帳時機該落在的那一天。這裡 `settlement_days=0`,原始消費
+    (`tx-1`)刻意放在已結束的週期內,所以回饋應該落在**同一個**已結束週期
+    裡,反映在 `remaining_due`(終身跑動餘額)/`statement_amount`(該週期
+    窗口)雙雙減少 20,而不是被計入還在累積中的 `open_cycle_spend`(修復前
+    的錯誤行為——回饋交易被錯誤地蓋上 `now` 的時間戳,才會落到當下這個還在
+    累積的週期)。"""
     client, TS = _make_client()
     try:
         email = "crp4@t.com"
@@ -473,6 +490,8 @@ def test_immediate_after_tx_self_credit_offsets_billing():
             "/api/v1/read/ledgers/lgp4/accounts/acc-card/billing-summary", headers=hdr_web,
         ).json()
         assert billing_before["open_cycle_spend"] == 0.0
+        assert billing_before["remaining_due"] == 200.0
+        assert billing_before["statement_amount"] == 200.0
 
         with TS() as db:
             result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
@@ -482,8 +501,29 @@ def test_immediate_after_tx_self_credit_offsets_billing():
         billing_after = client.get(
             "/api/v1/read/ledgers/lgp4/accounts/acc-card/billing-summary", headers=hdr_web,
         ).json()
-        # 20 元回饋(200*10%)以 income 記在同一張卡上,計入當期窗口。
-        assert billing_after["open_cycle_spend"] == -20.0
+        # 20 元回饋(200*10%)日期落在原始消費所屬的那個已結束週期(settlement_
+        # days=0),所以計入 remaining_due/statement_amount,不是 open_cycle_
+        # spend(那個窗口完全沒有任何交易落在裡面,理當維持 0)。
+        assert billing_after["remaining_due"] == 180.0
+        assert billing_after["statement_amount"] == 180.0
+        assert billing_after["open_cycle_spend"] == 0.0
+
+        # 回饋交易自己的 happened_at 應該等於 tx-1 的消費日期(settlement_
+        # days=0),不是 payout 引擎實際跑的時間點 `now`。
+        with TS() as db:
+            reward_tx = db.scalar(
+                select(ReadTxProjection).where(
+                    ReadTxProjection.ledger_id == db.scalar(
+                        select(ReadTxProjection.ledger_id).where(ReadTxProjection.sync_id == "tx-1")
+                    ),
+                    ReadTxProjection.tx_type == "income",
+                )
+            )
+            assert reward_tx is not None
+            happened = reward_tx.happened_at
+            if happened.tzinfo is None:
+                happened = happened.replace(tzinfo=timezone.utc)
+            assert happened.date() == spend_at.date()
     finally:
         app.dependency_overrides.clear()
 
@@ -733,5 +773,277 @@ def test_internal_task_endpoint_reports_reward_payout_counts():
         body = r.json()
         assert body["card_reward_tx_payouts"] == 1
         assert body["card_reward_period_payouts"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# 退款(2026-08-04 使用者反饋):退款交易自動歸類「退款」分類 + 已入帳的      #
+# 信用卡回饋要跟著沖銷,不管排程是退款前還是退款後跑                          #
+# --------------------------------------------------------------------------- #
+
+
+def test_refund_before_payout_excludes_tx_from_future_settlement():
+    """退款發生在排程還沒跑到結算日之前 —— 被退款的消費從此排除在
+    `_qualifying_transactions` 之外,排程晚點跑到也不會再把它排入結算,
+    不需要任何沖銷(因為根本沒有入帳過)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ref1@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgpr1", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgpr1",
+            settlement_type="immediate_after_tx", settlement_days=3, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgpr1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        base = _latest_change_id(client, hdr_web, "lgpr1")
+        r = client.post(
+            "/api/v1/write/ledgers/lgpr1/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 100.0,
+                "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # 排程晚點才跑到(超過 settlement_days),tx-1 已經被退款排除,不入帳。
+        now2 = tx_day + timedelta(days=3)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now2)
+            db.commit()
+        assert result == {"tx_payouts": 0, "period_payouts": 0}
+        assert len(_income_tx_to(TS, "acc-wallet")) == 0
+        assert len(_payout_rows(TS, email, rule_id)) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refund_after_payout_reverses_reward_and_auto_categorizes():
+    """退款發生在排程已經跑過、回饋已經入帳之後 —— 退款當下同一個 DB
+    transaction 裡補一筆沖銷交易,把已經拿到的回饋沖銷掉;退款交易本身跟
+    沖銷交易都自動歸到自建的「退款」分類。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ref2@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgpr2", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgpr2",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgpr2", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+        assert [t.amount for t in _income_tx_to(TS, "acc-wallet")] == [10.0]
+
+        base = _latest_change_id(client, hdr_web, "lgpr2")
+        r = client.post(
+            "/api/v1/write/ledgers/lgpr2/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 100.0,
+                "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        refund_tx_id = r.json()["entity_id"]
+
+        with TS() as db:
+            refund_row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == refund_tx_id))
+            assert refund_row is not None
+            assert refund_row.category_name == "退款"
+            assert refund_row.category_kind == "income"
+            assert refund_row.category_sync_id is not None
+
+        # 沖銷交易:expense,金額等於已入帳的回饋金,落在回饋原本入帳的帳戶。
+        expenses = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(expenses) == 1
+        clawback = expenses[0]
+        assert clawback.amount == 10.0
+        assert clawback.category_name == "退款"
+        assert clawback.category_kind == "expense"
+        assert clawback.reward_source_tx_sync_id == "tx-1"
+
+        # 沖銷不影響原本的去重記錄(那筆 payout 歷史還在,不是被撤銷/刪除)。
+        payouts = _payout_rows(TS, email, rule_id)
+        assert len(payouts) == 1
+
+        # 重跑排程不會重複沖銷(沖銷只在退款建立當下觸發一次,不是排程行為;
+        # tx-1 也已經被 `_qualifying_transactions` 排除,不會被重新評估)。
+        with TS() as db:
+            result2 = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result2 == {"tx_payouts": 0, "period_payouts": 0}
+        assert len([t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_plain_refund_without_reward_rule_gets_refund_category():
+    """跟信用卡回饋完全無關的普通退款,也要自動歸到「退款」分類——income/
+    expense 各自獨立一份(退款可能是任一方向,見 §2.6 反向类型设计)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ref3@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgpr3", email)
+        _push(client, hdr_app, "lgpr3", "transaction", "tx-plain-1",
+              {"syncId": "tx-plain-1", "type": "expense", "amount": 50.0, "happenedAt": _iso(),
+               "accountId": "acc-wallet", "accountName": "點數錢包"},
+              device_id="d-app")
+
+        base = _latest_change_id(client, hdr_web, "lgpr3")
+        r = client.post(
+            "/api/v1/write/ledgers/lgpr3/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 50.0,
+                "happened_at": _iso(), "account_id": "acc-wallet", "refund_of_id": "tx-plain-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        refund_tx_id = r.json()["entity_id"]
+        with TS() as db:
+            row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == refund_tx_id))
+            assert row.category_name == "退款"
+            assert row.category_kind == "income"
+
+        # 反過來:income 交易被退成 expense,分类各自独立一份(不是共用一行)。
+        _push(client, hdr_app, "lgpr3", "transaction", "tx-plain-income",
+              {"syncId": "tx-plain-income", "type": "income", "amount": 30.0, "happenedAt": _iso(),
+               "accountId": "acc-wallet", "accountName": "點數錢包"},
+              device_id="d-app")
+        base2 = _latest_change_id(client, hdr_web, "lgpr3")
+        r2 = client.post(
+            "/api/v1/write/ledgers/lgpr3/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base2, "tx_type": "expense", "amount": 30.0,
+                "happened_at": _iso(), "account_id": "acc-wallet", "refund_of_id": "tx-plain-income",
+            },
+        )
+        assert r2.status_code == 200, r2.text
+        refund_tx_id2 = r2.json()["entity_id"]
+        with TS() as db:
+            row2 = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == refund_tx_id2))
+            assert row2.category_name == "退款"
+            assert row2.category_kind == "expense"
+
+            from src.models import UserCategoryProjection
+
+            user_id = db.scalar(select(User.id).where(User.email == email))
+            cats = db.scalars(
+                select(UserCategoryProjection).where(
+                    UserCategoryProjection.user_id == user_id,
+                    UserCategoryProjection.name == "退款",
+                )
+            ).all()
+        assert {c.kind for c in cats} == {"income", "expense"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refund_respects_explicit_category_choice():
+    """退款表单如果用户自己选了分类,原样尊重,不被自动归类覆盖。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ref4@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgpr4", email)
+        _push(client, hdr_app, "lgpr4", "transaction", "tx-explicit-1",
+              {"syncId": "tx-explicit-1", "type": "expense", "amount": 40.0, "happenedAt": _iso(),
+               "accountId": "acc-wallet", "accountName": "點數錢包"},
+              device_id="d-app")
+        _push(client, hdr_app, "lgpr4", "category", "cat-custom",
+              {"syncId": "cat-custom", "name": "自訂分類", "kind": "income"}, device_id="d-app")
+
+        base = _latest_change_id(client, hdr_web, "lgpr4")
+        r = client.post(
+            "/api/v1/write/ledgers/lgpr4/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 40.0,
+                "happened_at": _iso(), "account_id": "acc-wallet", "refund_of_id": "tx-explicit-1",
+                "category_id": "cat-custom", "category_name": "自訂分類", "category_kind": "income",
+            },
+        )
+        assert r.status_code == 200, r.text
+        refund_tx_id = r.json()["entity_id"]
+        with TS() as db:
+            row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == refund_tx_id))
+            assert row.category_name == "自訂分類"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_patch_newly_marking_tx_as_refund_reverses_reward_once():
+    """PATCH 把一筆既有交易改成退款(`refund_of_id` 從空變非空)也要觸發
+    同一套沖銷 + 自動歸類邏輯;之後再 PATCH 別的欄位(`refund_of_id` 原樣
+    帶回)不能重複沖銷。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ref5@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgpr5", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgpr5",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgpr5", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert len(_income_tx_to(TS, "acc-wallet")) == 1
+
+        base = _latest_change_id(client, hdr_web, "lgpr5")
+        r = client.post(
+            "/api/v1/write/ledgers/lgpr5/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 100.0,
+                "happened_at": _iso(), "account_id": "acc-card",
+            },
+        )
+        assert r.status_code == 200, r.text
+        tx_id = r.json()["entity_id"]
+        base2 = r.json()["new_change_id"]
+
+        r2 = client.patch(
+            f"/api/v1/write/ledgers/lgpr5/transactions/{tx_id}",
+            headers=hdr_web,
+            json={"base_change_id": base2, "refund_of_id": "tx-1"},
+        )
+        assert r2.status_code == 200, r2.text
+        base3 = r2.json()["new_change_id"]
+
+        with TS() as db:
+            row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == tx_id))
+            assert row.category_name == "退款"
+
+        expenses = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(expenses) == 1
+
+        # 再 PATCH 一次別的欄位,refund_of_id 原樣帶回,不應該重複沖銷。
+        r3 = client.patch(
+            f"/api/v1/write/ledgers/lgpr5/transactions/{tx_id}",
+            headers=hdr_web,
+            json={"base_change_id": base3, "refund_of_id": "tx-1", "note": "改個備注"},
+        )
+        assert r3.status_code == 200, r3.text
+        expenses2 = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(expenses2) == 1
     finally:
         app.dependency_overrides.clear()

@@ -37,8 +37,8 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, select
+from sqlalchemy.orm import Session, aliased
 
 from ..models import ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection, UserCategoryProjection
 from ..sync_applier import apply_user_change_to_projection
@@ -47,21 +47,30 @@ from . import credit_card
 REWARD_CATEGORY_NAME = "回饋金"
 _REWARD_CATEGORY_DEVICE_ID = "server-card-reward-payout"
 
+# 退款自建分类(使用者反馈,2026-08-04):退款交易(及信用卡回饋沖銷,见
+# `services.card_reward_payout.reverse_card_reward_payouts_for_refund`)
+# 统一归到这个自建分类,不再让用户空着分类字段/自己乱填备注凑数。income/
+# expense 各自一份(退款可能是 income 也可能是 expense,見 §2.6 反向类型
+# 设计),同名不同 kind 是两个独立分类行,`ensure_refund_category` 按 kind
+# 各自幂等建一次。
+REFUND_CATEGORY_NAME = "退款"
+_REFUND_CATEGORY_DEVICE_ID = "server-refund"
 
-def ensure_reward_category(db: Session, *, user_id: str) -> str:
-    """信用卡回饋自動入帳(§2.9.5.4 補強)的交易需要一個分類,不然交易列表
-    顯示空白很奇怪(使用者反饋)。找不到就用跟 `exchange_rate_overrides.py`
-    同款「sync push 等价」旁路建一個 user-global 的 income 分類,名稱固定
-    `"回饋金"`——`category` 已經在 `USER_GLOBAL_ENTITY_TYPES`,直接複用
-    `apply_user_change_to_projection` 的既有 dispatch,不用另外走
-    `snapshot_mutator.create_category` + `_emit_entity_diffs` 那整套需要
-    完整 ledger snapshot 的 HTTP write 引擎。同名同 kind 只會建一次(之後
-    每次呼叫都直接命中既有規則),多個規則/多次入帳共用同一個分類。"""
+
+def _ensure_user_global_category(
+    db: Session, *, user_id: str, name: str, kind: str, device_id: str,
+) -> str:
+    """建一個 user-global 分類的共用旁路(不落 snapshot_mutator 那整套需要
+    完整 ledger snapshot 的 HTTP write 引擎),用跟 `exchange_rate_overrides.py`
+    同款「sync push 等价」寫法直接寫 SyncChange + `apply_user_change_to_
+    projection`——`category` 已經在 `USER_GLOBAL_ENTITY_TYPES`,可以直接複用
+    既有 dispatch。同名同 kind 只會建一次,之後每次呼叫都直接命中既有分類。
+    `ensure_reward_category`/`ensure_refund_category` 共用這份實作。"""
     existing = db.scalar(
         select(UserCategoryProjection.sync_id).where(
             UserCategoryProjection.user_id == user_id,
-            UserCategoryProjection.name == REWARD_CATEGORY_NAME,
-            UserCategoryProjection.kind == "income",
+            UserCategoryProjection.name == name,
+            UserCategoryProjection.kind == kind,
         )
     )
     if existing is not None:
@@ -71,8 +80,8 @@ def ensure_reward_category(db: Session, *, user_id: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "syncId": sync_id,
-        "name": REWARD_CATEGORY_NAME,
-        "kind": "income",
+        "name": name,
+        "kind": kind,
         "createdByUserId": user_id,
         "updatedByUserId": user_id,
     }
@@ -85,13 +94,36 @@ def ensure_reward_category(db: Session, *, user_id: str) -> str:
         action="upsert",
         payload_json=payload,
         updated_at=now,
-        updated_by_device_id=_REWARD_CATEGORY_DEVICE_ID,
+        updated_by_device_id=device_id,
         updated_by_user_id=user_id,
     )
     db.add(change)
     db.flush()
     apply_user_change_to_projection(db, user_id=user_id, change=change)
     return sync_id
+
+
+def ensure_reward_category(db: Session, *, user_id: str) -> str:
+    """信用卡回饋自動入帳(§2.9.5.4 補強)的交易需要一個分類,不然交易列表
+    顯示空白很奇怪(使用者反饋)。名稱固定 `"回饋金"`,永遠是 income kind
+    (回饋金一定是收入)。"""
+    return _ensure_user_global_category(
+        db, user_id=user_id, name=REWARD_CATEGORY_NAME, kind="income",
+        device_id=_REWARD_CATEGORY_DEVICE_ID,
+    )
+
+
+def ensure_refund_category(db: Session, *, user_id: str, kind: str) -> str:
+    """退款交易(§2.6/§2.12.3)+ 信用卡回饋沖銷(§2.9.5,見
+    `card_reward_payout.reverse_card_reward_payouts_for_refund`)統一歸到
+    這個自建分類,不再讓使用者自己選/留空(2026-08-04 使用者反饋)。退款可能
+    是 income(退支出)也可能是 expense(退收入,見 §2.6 反向类型设计)、
+    回饋沖銷永遠是 expense(把已入帳的 income 冲销掉)——`kind` 由呼叫端按
+    實際交易類型傳入,income/expense 各自獨立建一次。"""
+    return _ensure_user_global_category(
+        db, user_id=user_id, name=REFUND_CATEGORY_NAME, kind=kind,
+        device_id=_REFUND_CATEGORY_DEVICE_ID,
+    )
 
 
 def _attribution_date(tx: ReadTxProjection) -> datetime:
@@ -207,12 +239,25 @@ def _qualifying_transactions(
     payout 引擎逐筆結算用,靠 account_sync_id + LIKE 前綴天然限縮範圍)。
     `compute_account_card_rewards`(聚合顯示)、`list_rule_qualifying_
     transactions`(§2.9.5.3 明細彈窗)、payout 引擎三處共用,避免第三次
-    複製同一段 LIKE 粗篩 + JSON membership + min_tx_amount 過濾邏輯。"""
+    複製同一段 LIKE 粗篩 + JSON membership + min_tx_amount 過濾邏輯。
+
+    2026-08-04 使用者反饋(退款沖銷回饋):已經被退款的消費(有另一筆交易的
+    `refund_of_sync_id` 指向它)一律排除,不管排程有沒有結算過——還沒結算
+    的话直接在这裡被排除掉,永遠不會被排入,等同「退款發生在排程跑之前」
+    的情況天然一致;已經結算過的话這裡的排除不影響歷史 payout 記錄,由
+    `card_reward_payout.reverse_card_reward_payouts_for_refund` 在退款當下
+    另外補一筆沖銷交易,兩條路徑合起來保證「退款前/退款後結算」淨效果一致
+    (使用者最終從這筆消費拿到的回饋淨額都是 0)。"""
+    RefundTx = aliased(ReadTxProjection)
     conditions = [
         ReadTxProjection.ledger_id == ledger_id,
         ReadTxProjection.account_sync_id == rule.account_sync_id,
         ReadTxProjection.tx_type == "expense",
         ReadTxProjection.reward_rule_sync_ids_json.like(f'%"{rule.sync_id}"%'),
+        ~exists().where(
+            RefundTx.ledger_id == ledger_id,
+            RefundTx.refund_of_sync_id == ReadTxProjection.sync_id,
+        ),
     ]
     start_dt = end_dt = None
     if period_start is not None:

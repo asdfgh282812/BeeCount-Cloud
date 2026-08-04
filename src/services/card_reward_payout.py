@@ -39,6 +39,7 @@ compute_account_balance` 也會正確算進餘額。回饋是系統依規則算�
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timezone
 
@@ -97,7 +98,7 @@ def _record_payout(
 
 
 def _emit_reward_tx(
-    db: Session, *, ledger_id: str, user_id: str, now: datetime,
+    db: Session, *, ledger_id: str, user_id: str, now: datetime, happened_at: datetime,
     reward_account_id: str, amount: float, note: str,
     source_tx_id: str | None = None,
 ) -> str:
@@ -106,14 +107,18 @@ def _emit_reward_tx(
     user-global 只會建一次),不然交易列表顯示空白分類很奇怪;②
     `source_tx_id` 非空時(逐筆結算才有單一對應的原始消費)寫入
     `rewardSourceTxId`,web 交易詳情弹窗會渲染一個可點擊的「關聯消費」連結
-    跳去看那筆原始消費(取代舊版把 tx sync_id 原樣寫進備註文字裡的做法)。"""
+    跳去看那筆原始消費(取代舊版把 tx sync_id 原樣寫進備註文字裡的做法)。
+    `happened_at` 是這筆回饋交易的業務日期(依規則算出的入帳日/期末日),
+    跟 `now`(排程實際跑的時間,只用來寫 SyncChange.updated_at)刻意分開
+    ——不然補記/回溯交易時,回饋交易的日期會被排程實際執行的時間點污染,
+    而不是反映規則設定的入帳時機(2026-08-04 使用者回報的 bug)。"""
     to_name = _account_name(db, user_id=user_id, sync_id=reward_account_id)
     category_id = card_rewards.ensure_reward_category(db, user_id=user_id)
     item: dict[str, object] = {
         "syncId": new_sync_id("tx"),
         "type": "income",
         "amount": amount,
-        "happenedAt": now.isoformat(),
+        "happenedAt": happened_at.isoformat(),
         "note": note,
         "accountId": reward_account_id,
         "accountName": to_name,
@@ -126,6 +131,99 @@ def _emit_reward_tx(
     if source_tx_id is not None:
         item["rewardSourceTxId"] = source_tx_id
     return emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item)
+
+
+def reverse_card_reward_payouts_for_refund(
+    db: Session, *, ledger_id: str, user_id: str, refunded_tx_id: str, now: datetime,
+) -> list[str]:
+    """退款沖銷已入帳的信用卡回饋(2026-08-04 使用者反饋):`refunded_tx_id`
+    這筆消費一旦被退款,它已經逐筆結算(`immediate_after_tx`/`after_posting_
+    date`)入帳過的回饋金要跟著沖銷回去——不然使用者退了貨還留著那筆「憑空」
+    多出來的回饋收入。呼叫點是 `routers/write/_shared.py` 建立退款交易的
+    同一個 DB transaction(`_commit_create_tx_fast`),原子性地跟退款交易
+    一起 commit。
+
+    只找得到 `CardRewardPayout.dedup_key == refunded_tx_id` 的紀錄(逐筆
+    結算,dedup_key 就是消費本身的 sync_id)——`period_end`(整期結算)的
+    dedup_key 是「期末日期」字串,回饋金額是整期彙總算出來的,沒有跟單一
+    消費綁定的紀錄可查,無法精準沖銷「這一筆消費佔了多少」,是已知限制
+    (v1 不處理,同這個 codebase 其它「已知限制」慣例,不在這裡另外強行
+    重算整期分攤)。
+
+    `card_rewards._qualifying_transactions` 已經把「被退款的交易」整個排除
+    在未來的結算掃描之外(見該函式 docstring),所以「退款發生在排程跑之前」
+    的情況天然不會被排入、不需要這裡處理;這個函式只處理「排程已經跑過,
+    回饋已經入帳」的情況——兩條路徑合起來,退款前/退款後結算的淨效果一致
+    (這筆消費的回饋淨額最終都是 0)。
+
+    沖銷交易本身是一筆 `expense`,金額/入帳帳戶取自當初實際入帳的那筆回饋
+    交易(`payout.payout_tx_sync_id`,而不是重新计算——實際落袋的錢是唯一
+    權威來源),分類用自建的「退款」分類(`ensure_refund_category`,expense
+    kind)。回傳新建的沖銷交易 sync_id 列表(通常 0~規則勾選數量那麼多筆)。
+    """
+    refunded_tx = db.scalar(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == refunded_tx_id,
+        )
+    )
+    if refunded_tx is None or not refunded_tx.reward_rule_sync_ids_json:
+        return []
+    try:
+        rule_ids = json.loads(refunded_tx.reward_rule_sync_ids_json)
+    except (TypeError, ValueError):
+        rule_ids = []
+    if not isinstance(rule_ids, list) or not rule_ids:
+        return []
+
+    created: list[str] = []
+    for rule_id in rule_ids:
+        rule_sync_id = str(rule_id)
+        payout = db.scalar(
+            select(CardRewardPayout).where(
+                CardRewardPayout.user_id == user_id,
+                CardRewardPayout.rule_sync_id == rule_sync_id,
+                CardRewardPayout.dedup_key == refunded_tx_id,
+            )
+        )
+        if payout is None or payout.payout_tx_sync_id is None or payout.amount <= 0:
+            continue  # 還沒結算 / 結算成 0 元,沒有錢要沖銷
+
+        reward_tx = db.scalar(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id == payout.payout_tx_sync_id,
+            )
+        )
+        if reward_tx is None:
+            continue  # 回饋交易本身被删了(理论上不该发生),没有帐户/金额可沖銷
+
+        rule = db.scalar(
+            select(ReadCardRewardRuleProjection).where(
+                ReadCardRewardRuleProjection.user_id == user_id,
+                ReadCardRewardRuleProjection.sync_id == rule_sync_id,
+            )
+        )
+        rule_label = rule.label if rule is not None else rule_sync_id
+
+        category_id = card_rewards.ensure_refund_category(db, user_id=user_id, kind="expense")
+        item: dict[str, object] = {
+            "syncId": new_sync_id("tx"),
+            "type": "expense",
+            "amount": reward_tx.amount,
+            "happenedAt": now.isoformat(),
+            "note": f"退款沖銷回饋金：{rule_label}",
+            "accountId": reward_tx.account_sync_id,
+            "accountName": reward_tx.account_name,
+            "categoryId": category_id,
+            "categoryName": card_rewards.REFUND_CATEGORY_NAME,
+            "categoryKind": "expense",
+            "rewardSourceTxId": refunded_tx_id,
+            "createdByUserId": user_id,
+            "updatedByUserId": user_id,
+        }
+        created.append(emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item))
+    return created
 
 
 def _paid_in_period(
@@ -196,6 +294,7 @@ def _materialize_per_tx(
             assert rule.reward_account_id is not None  # 上層 WHERE 已过滤
             payout_tx_sync_id = _emit_reward_tx(
                 db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
+                happened_at=card_rewards._date_to_utc_dt(settlement_date),
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
                 note=f"信用卡回饋入帳：{rule.label}",
                 source_tx_id=tx.sync_id,
@@ -243,6 +342,7 @@ def _materialize_period_end(
     assert rule.reward_account_id is not None
     payout_tx_sync_id = _emit_reward_tx(
         db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
+        happened_at=card_rewards._date_to_utc_dt(period_end),
         reward_account_id=rule.reward_account_id, amount=reward_amount,
         note=(
             f"信用卡回饋入帳：{rule.label}"

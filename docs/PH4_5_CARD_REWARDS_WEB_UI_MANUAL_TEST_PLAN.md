@@ -4,8 +4,220 @@
   2026-08-07(§2.9.5.4:活動期間、帳單週期同步、交易明細彈窗、跨卡共用
   上限群組、自動入帳)/ 2026-08-03(§2.9.5.4 補強:手動入帳真正的入口 +
   兩個前端 bug 修復)/ 2026-08-03 第二輪(真正走完整瀏覽器手測 + 真實多
-  用戶場景)/ **2026-08-04(本輪,見下方新章節):主帳戶回饋不顯示 + 活動
-  期間不顯示 + 回饋排程獨立 5 分鐘 + 回饋入帳連結原始消費 + 自動分類**
+  用戶場景)/ 2026-08-04(主帳戶回饋不顯示 + 活動期間不顯示 + 回饋排程獨立
+  5 分鐘 + 回饋入帳連結原始消費 + 自動分類)/ 2026-08-04 第二輪(掛靠群組
+  的子卡,紅利回饋卡片預設看到「上一期」而非「這一期」)/ 2026-08-04
+  第三輪:交易詳情彈窗新增「使用回饋」顯示 + 跳轉連結 / 2026-08-04
+  第四輪:回饋入帳日期改用結算日而非排程執行時間、帳戶詳情彈窗頂部改
+  顯示帳單週期欄位、週期選擇器移到彈窗標題列 / **2026-08-04 第五輪
+  (本輪,見下方新章節):退款自動沖銷已結算回饋 + 退款分類自動歸類,
+  真實瀏覽器驗證通過**
+
+## 〇之六、2026-08-04 第五輪 —— 退款沖銷信用卡回饋 + 退款自動分類(真實瀏覽器驗證)
+
+**背景**:使用者回報「退款沒有逆轉信用卡回饋、也沒有退款分類」(即先前
+會話裡的 Bug 2),照 CLAUDE.md 要求走真實瀏覽器手測驗證,不能只看程式碼
+或跑 pytest 就結案。
+
+**第一次驗證失敗,但不是程式碼問題**:第一輪用瀏覽器實際點「退款」按鈕
+(帳戶詳情彈窗 → 交易明細 → 退款),送出後查 DB:退款交易的分類是空的、
+也沒有產生沖銷回饋的交易——看起來 bug 沒修好。往下追查發現:當時跑著的
+`uvicorn --reload` dev server 進程啟動時間(15:42:30)早於這批程式碼改動
+的檔案 mtime(16:42:10)整整一小時,但這一小時內完全沒有 worker 重啟的
+跡象(`Get-CimInstance Win32_Process` 查到的 PID/啟動時間全程沒變)——
+`--reload` 在這台機器上安靜地沒有偵測到 `src/` 下的檔案變動,服務端口
+正常回應、看起來一切正常,但實際執行的是**改動前的舊程式碼**。**重啟
+dev server 後同一個操作(退款一筆已經逐筆結算過回饋的消費)立刻正確产生
+兩個結果:退款交易自動歸類到自建的「退款」分類、同時原子性地補一筆
+「退款沖銷回饋金：{規則名稱}」的沖銷支出交易,兩者都在真實瀏覽器 UI
+(不是 console fetch)裡點擊「退款」按鈕觸發,且交易詳情彈窗正確顯示
+分類「退款」+ 沖銷交易的「關聯消費」可點擊連結**。已寫入 CLAUDE.md
+「測試」一節,提醒之後任何一輪浏览器验证结果跟预期不符,先确认 dev
+server 是否真的 reload 了新代码,再去怀疑代码逻辑本身。
+
+**驗證步驟**(帳本「測試帳本」,信用卡帳戶「cube」,回饋規則 3%
+immediate_after_tx 自我折抵):
+1. 帳戶詳情彈窗 → 點一筆已經逐筆結算過回饋的消費(例如 -7,500,已有
+   對應的 +225 回饋入帳交易)→ 交易詳情彈窗點「退款」。
+2. 建立交易表單自動預填收入 225、帳戶 cube、`refund_of_id` 指向原交易,
+   分類欄位留空(不強制選)→ 直接送出「建立交易」。
+3. 交易列表立刻多出兩筆:退款收入 +225(分類「退款」)+ 沖銷支出 -225
+   (分類「退款」,備註「退款沖銷回饋金：3%」,交易詳情彈窗「關聯消費」
+   連結指向原始消費)。
+4. 帳戶當前欠款隨之正確減少(退款 + 沖銷兩筆一起生效,不是只退款那一
+   筆生效)。
+5. 重複上述步驟驗證另外兩筆(-1,500 對應回饋 +45)結果一致。
+6. 順帶確認「退款」按鈕從帳戶詳情彈窗(不是只有 `/app/transactions`
+   自己的表單)點擊一樣能正確打開全局建立交易表單並預填——`GlobalEditDialogs`
+   在 `AppShell` 頂層全局監聽 `bee:open-new-tx` 事件,不需要先跳轉頁面。
+
+**已知限制(跟程式碼註解一致,本輪沒有另外驗證)**:`period_end`(整期
+結算)類型的回饋沒有單筆對應紀錄可查,退款無法精準沖銷「這一筆消費佔了
+多少」,是文件裡已經記錄的 v1 限制,不在這輪重新討論。
+
+## 〇之五、2026-08-04 第四輪 —— 回饋入帳日期修正 + 帳戶詳情彈窗改版(使用者需求)
+
+**需求一(回饋入帳日期):使用者回報消費日 7/4、回饋設定「消費當下 0 天」
+入帳,但因為是 8/4 才補記這筆 7/4 的交易,系統排程在 8/4 執行時把回饋交易
+也記在 8/4,而不是應該對齊的 7/4。**
+
+**根因**:`services/card_reward_payout.py::_emit_reward_tx` 產生回饋交易時,
+`happenedAt` 欄位直接寫死用 `now`(排程實際執行的時間點),完全沒有用到
+旁邊已經算好、真正代表「規則設定的入帳日」的 `settlement_date`
+(`immediate_after_tx`/`after_posting_date`)或 `period_end`(整期結算)。
+補記舊交易時,`now`(排程跑的時間)跟交易真正的結算日期是兩回事,只有在
+「消費當下立刻被排程掃到」的情境下兩者才會剛好相等,巧合掩蓋了這個 bug。
+
+**修法**:`_emit_reward_tx` 新增 `happened_at` 參數,跟 `now`(只用於
+`SyncChange.updated_at` 這種系統記帳時間戳)分開;`_materialize_per_tx`
+傳入已經算好的 `settlement_date`(轉成 UTC 零點的 datetime),
+`_materialize_period_end` 傳入 `period_end`。回歸測試
+`test_immediate_after_tx_self_credit_offsets_billing` 原本斷言回饋交易
+落在「排程當下還在累積的那期」(`open_cycle_spend`),這個斷言本身就是在
+驗證修復前的錯誤行為,已改成驗證回饋交易落在「原始消費所屬的那個已結束
+週期」(`remaining_due`/`statement_amount` 對應減少,`open_cycle_spend`
+維持 0)+ 直接斷言回饋交易的 `happened_at` 等於原始消費的日期。
+
+**需求二(帳戶詳情彈窗欄位):使用者提供 Moze 參考截圖,主帳戶(合併帳單)
+彈窗頂部不該顯示「當前餘額/累計收入/累計支出」,信用卡帳戶也不該只顯示
+「當前欠款」——應該顯示新增花費/上期欠款/應繳金額/已繳金額/帳單分期/
+對帳筆數/剩餘帳款這組帳單週期欄位。**
+
+**範圍確認(已跟使用者對齊)**:①「對帳筆數」代表的「逐筆勾選交易是否已
+跟銀行帳單核對」是這個 app 完全沒有的全新概念,這輪只放欄位佔位顯示
+「-」,不做完整對帳功能;②新欄位「完全取代」頂部區塊,不是並存。
+
+**實作**:
+- 後端新增 `credit_card_billing.compute_installment_summary`:查
+  `account_sync_id in member_ids` 且 `status == "active"` 的分期計畫,
+  回傳結構化數字(`active_count`/`paid_periods`/`periods`,不是預先格式化
+  的字串,讓前端依語系自己組字串)而不是直接查「這期帳單有沒有分期」——
+  因為分期計畫不是按帳單週期切的獨立實體,用「進行中」近似。
+  `billing-summary` 端點新增 `period_installment_active_count`/
+  `period_installment_paid_periods`/`period_installment_periods` 三個
+  欄位。
+- `新增花費`/`上期欠款`/`應繳金額`/`已繳金額`/`剩餘帳款` 直接複用既有的
+  `period_new_spend`/`period_carryover_due`/`period_total_due`/
+  `period_paid_in_cycle`/`period_remaining_due`(§2.9 補強 2026-08-02
+  已經算好,只是原本只在「展開」狀態下顯示在彈窗中段,這輪搬到彈窗頂部
+  永遠可見,原本中段的重複區塊拿掉)。
+- `AccountDetailDialog.tsx` 抽出 `useAccountBilling` hook,把原本只有
+  `CreditCardBillingSection` 自己知道的帳單摘要 fetch 邏輯提升到彈窗最外層
+  ——因為新的頂部統計區塊(`AccountStatsHeader`)跟新增的標題列週期選擇器
+  都需要同一份資料。只在 `billing.isBillingRoot && billing.available` 時
+  顯示新欄位;沒設定帳單日/還款日、或掛靠群組的子卡,落回原本的顯示
+  (信用卡「當前欠款」/一般帳戶餘額三欄)。
+
+**需求三(週期選擇器位置):使用者要求把帳單週期日期選擇器移到彈窗標題
+「國泰」跟「全部帳本/當前帳本」切換之間,尺寸比照那顆切換按鈕。**
+
+**實作**:同一輪 `useAccountBilling` 重構的直接結果——週期選擇器(prev/
+日期區間/next)從 `CreditCardBillingSection` 內部搬到 `DialogHeader`,
+样式比照 `DetailScopeToggle` 的 `inline-flex rounded-md border
+border-border/60 bg-muted/30 p-0.5 text-xs` 容器 + `rounded px-2.5 py-1`
+按鈕尺寸。只在 billing-root 帳戶且帳單資料抓取成功時顯示,跟原本的顯示
+條件一致,只是位置換了。
+
+**測試**:後端新增 `tests/test_credit_card.py::
+test_billing_summary_period_installment_summary_field`(單一/多筆進行中
+分期計畫兩種情境)+ 既有 `test_billing_summary_merges_children_and_
+computes_due_amount` 補上空狀態斷言;`test_card_reward_payout.py::
+test_immediate_after_tx_self_credit_offsets_billing` 改寫成驗證修復後的
+正確行為。`pytest tests/ -q` 全量回歸兩輪都只有既有已知的
+`test_recurring_rules.py` flaky 用例失敗(跟本次改動無關)。前端
+`pnpm -C apps/web exec tsc -b`/`test:unit`(73 例)/`build` 三項全過。
+**這輪同樣沒有走完整瀏覽器手測**,務必手動確認:①主帳戶/獨立信用卡彈窗
+頂部正確顯示七個新欄位(對帳筆數固定顯示「-」);②掛靠群組的子卡/沒設
+帳單日的卡正確落回舊版顯示,不是空白;③標題列週期選擇器點擊上一頁/
+下一頁後,頂部統計數字跟著切換週期一起變化;④建一筆分期計畫後「帳單
+分期」欄位正確顯示「已繳 x/y 期」,建第二筆後改顯示「N 筆進行中」。
+
+## 〇之四、2026-08-04 第三輪 —— 交易詳情彈窗顯示「使用回饋」+ 跳轉連結(使用者需求)
+
+**需求**:交易詳情彈窗(`TransactionDetailDialog.tsx`)日期下面看不出這筆
+交易走了哪條回饋規則,也没有連結能跳去看這條規則的完整明細——使用者希望
+在日期下面顯示這筆交易用了哪些回饋(一筆交易可能複選多條規則),且每一條
+都能點擊連動到該回饋規則。
+
+**實作**:
+- `TransactionDetailDialog.tsx` header 區塊、日期正下方新增一排 chip,列出
+  `tx.reward_rule_ids` 對應的規則 `label`(可複選,逐條顯示,無勾選任何
+  規則時整塊不渲染),每個 chip 可點擊。
+- `GlobalEntityDialogs.tsx` 新增 `txRewardRules` state:tx 變化時用
+  `fetchCardRewardRules(token, tx.ledger_id, tx.account_id)` 查這張卡的
+  規則列表,過濾出 `tx.reward_rule_ids` 命中的那幾條算出 label(規則只會
+  掛在交易自己的帳戶上,見 `_assert_reward_rules_valid`,不需要跨卡查)。
+- 點 chip 觸發 `handleJumpToReward`:關掉交易詳情 → 用
+  `fetchWorkspaceAccounts` 查出這張卡完整的帳戶物件 → 開帳戶詳情彈窗並帶上
+  `highlightRewardRuleId`。這個 id 沿 `dispatchOpenDetailAccount` →
+  `AccountDetailDialog` → `CardRewardRulesSection` → `SingleCardCardRewards`
+  一路往下傳(`highlightRuleId` prop),規則列表載入後比對到就自動展開
+  「紅利回饋」區塊 + 直接彈出這條規則的交易明細彈窗(復用既有
+  `CardRewardRuleTransactionsDialog`,不是重新做一個)。`account_group`
+  主帳戶場景下每張子卡都會收到同一個 id,只有真的持有這條規則的子卡會
+  反應。用 `appliedHighlightRef` 記「這個 id 已經自動展開過一次」,使用者
+  手動關掉明細彈窗後不會被重新強制彈出;帳戶切換時重置。
+- 新增 i18n key:`detail.transaction.rewardRulesUsed`(三語系)、
+  `transactions.badge.rewardRule.jumpHint`(三語系)。
+
+**已知限制**:跳轉後預設顯示的是該規則「目前這期」(或帳戶詳情彈窗當下
+瀏覽中的那期)的交易明細,不是自動定位到「來源交易自己所屬的那一期」——
+如果來源交易屬於一個已經結束的歷史帳單週期,使用者需要自己在帳戶詳情彈窗
+的帳單週期選擇器裡往回翻,才能在規則明細裡看到那筆交易。這是刻意的
+簡化(計算「來源交易屬於哪一期」需要重新推導 `billing_day`/自然月邊界,
+複雜度不低),沒有在這輪實作。
+
+**瀏覽器驗證**(真實走過,非只跑 pytest/build):
+1. `/app/transactions` 打開 2026-08-04 一筆 -13,500 支出交易(帳戶
+   `cube`,已勾選 `3%` 回饋規則)的詳情彈窗——日期下方正確顯示
+   「使用回饋: 🎁 3%」chip。
+2. 點擊 chip:交易詳情關閉,帳戶詳情彈窗自動打開(標題「cube」)、「紅利
+   回饋」區塊自動展開、規則「3%」的交易明細彈窗自動彈出,顯示「本期回饋:
+   405.00」+ 清單裡這筆 13,500 消費對應的回饋金額 405.00——連結正確指向
+   這筆消費實際拿到的回饋。
+3. 再打開另一筆 2026-07-03 的 -7,500 交易(同一條 `3%` 規則),詳情彈窗
+   同樣正確顯示 chip;點擊後同樣正確跳轉開帳戶詳情 + 規則明細彈窗(驗證
+   上述「已知限制」:因為 7 月那筆屬於已結束的歷史週期,明細彈窗預設顯示
+   的是「目前這期」的 405.00 那筆 8 月消費,不是 7 月那筆——與程式碼設計
+   一致,不是 bug)。
+4. 迴歸檢查:打開一筆本身是回饋入帳產生的收入交易(分類「回饋金」,備註
+   「信用卡回饋入帳：3%」)——這筆交易自己沒有勾選任何回饋規則
+   (`reward_rule_ids` 為空),詳情彈窗日期下方正確地**不顯示**「使用回饋」
+   chip,原有的「關聯消費」→「查看原始消費」連結行為不受影響。
+5. 瀏覽器 console 檢查:只有既有的、跟本次改動無關的 Radix Dialog
+   `Missing Description`/`forwardRef` 警告,沒有新增的錯誤。
+
+**前端測試**:`pnpm -C apps/web exec tsc -b`(型別檢查通過)、`pnpm -C
+apps/web test:unit`(73 例全過,含 i18n 三語系 key 一致性檢查)、`pnpm -C
+apps/web build`(全綠)。这轮改动不涉及后端,没有新增/修改 pytest。
+
+## 〇之三、2026-08-04 第二輪 —— 子卡回饋卡片期別 off-by-one(使用者實測回報)
+
+**使用者現象**:某張掛靠群組的子卡(截圖帳戶「cube」)剛記一筆 -13,500 的
+支出並勾選了 3% 回饋規則,背景排程也已經逐筆結算入帳一筆 +405.00(備註
+「信用卡回饋入帳：3%」),證明规则/入账机制都正确执行了——但帳戶詳情彈窗
+的「紅利回饋」卡片仍顯示「符合條件消費：0.00」「0.00」,標題還帶著
+`(2026-08-04)` 這種只有 `periodOffset !== 0` 才會出現的日期後綴,好像在看
+別的一期。
+
+**根因**:`AccountDetailDialog.tsx` 的 `CreditCardBillingSection` 只在
+`isBillingRoot`(account_group 本身,或沒掛靠任何群組的獨立信用卡)才會
+渲染出帶週期選擇器的合併帳單卡片;掛靠群組的子卡(比如這張「cube」,不是
+群組本身,是子卡)完全不渲染這塊 UI,`onCycleOffsetChange` 的 effect 卻
+無條件回報 `0`,經過 `AccountDetailDialog` 的換算式
+`periodOffset = billingCycleOffset - 1` 之後變成 `-1`——查詢的是「上一期」
+而不是「目前還在累積的這一期」,今天才記的交易自然對不上,`符合條件消費`
+恆為 0(除非上一期剛好也有勾選同一條規則的交易)。這跟 2026-08-03 第二輪
+修過的「沒設定帳單日的卡預設看到上一期」是同一類 off-by-one,只是那次的
+觸發條件是「沒有帳單日」,這次是「子卡沒有自己的週期選擇器 UI」——兩種
+情況都該對齊「目前這期」(`periodOffset=0`,回報 `cycleOffset=1`),但
+`!isBillingRoot` 分支當時漏改,一直卡在 `0`。
+
+**修法**:`onCycleOffsetChange` 的 `!isBillingRoot` 分支從回報 `0` 改成
+回報 `1`(換算後 `periodOffset=0`),跟旁邊「沒設定帳單日」分支的處理方式
+一致。已跑過 `pnpm -C apps/web exec tsc -b` 確認無型別錯誤,**這次修復
+本身沒有走瀏覽器手測**,建議下次驗證时优先挑一張「掛靠群組的子卡」帳戶
+確認回饋卡片標題不再帶日期後綴、且今天的交易正確算進「符合條件消費」。
 
 ## 〇之二、2026-08-04 —— 五項使用者回報問題修復(真實瀏覽器驗證)
 

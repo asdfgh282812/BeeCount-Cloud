@@ -296,9 +296,13 @@ export function GlobalEditDialogs() {
       notifyError(new Error(t('transactions.error.amountInvalid')))
       return false
     }
+    // 退款交易(refund_of_id 非空)留空分类时 server 会自动归到自建的「退款」
+    // 分类(`ensure_refund_category`),跟主表单(TransactionsPage.tsx)同款
+    // 放宽,不强制用户手动选。
     if (
       editTxForm.tx_type !== 'transfer' &&
       !editTxForm.split_enabled &&
+      !editTxForm.refund_of_id.trim() &&
       !editTxForm.category_name.trim()
     ) {
       notifyError(new Error(t('transactions.error.categoryRequired')))

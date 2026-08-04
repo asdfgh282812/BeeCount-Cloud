@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   deleteInstallmentPlan,
+  fetchCardRewardRules,
+  fetchWorkspaceAccounts,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   refundInstallmentPeriod,
+  type ReadCardRewardRule,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -20,6 +23,7 @@ import { useLedgers } from '../context/LedgersContext'
 import { useLedgerWrite } from '../app/useLedgerWrite'
 import { localizeError } from '../i18n/errors'
 import {
+  dispatchOpenDetailAccount,
   dispatchOpenEditCategory,
   dispatchOpenEditTx,
   dispatchOpenNewTx,
@@ -68,6 +72,12 @@ export function GlobalEntityDialogs() {
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
   const [tx, setTx] = useState<WorkspaceTransaction | null>(null)
 
+  // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):tx.reward_rule_ids 只有 id,
+  // 详情弹窗要显示规则名称 —— 反查同一张卡(tx.account_id)的规则列表,过滤
+  // 出这笔交易勾选过的那几条。规则一定挂在这笔交易自己的帐户上(写入校验
+  // `_assert_reward_rules_valid` 保证),不需要跨卡查。
+  const [txRewardRules, setTxRewardRules] = useState<ReadCardRewardRule[]>([])
+
   // §2.6:分期交易的退款发起点 —— 先问「只退这一期」还是「整笔退款」。
   // step === 'confirmWhole' 时展示第二个 destructive 二次确认(删整个计划
   // 不可复原,跟本应用其它破坏性分期操作的既有模式一致)。
@@ -91,6 +101,13 @@ export function GlobalEntityDialogs() {
   // 下面明细却不动"。null = 不过滤(非信用卡帳戶 / 週期還沒算出來)。
   const [accountPeriodRange, setAccountPeriodRange] = useState<{ start: string; end: string } | null>(
     null,
+  )
+  // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):從交易詳情彈窗點「使用回饋」
+  // chip 跳過來時帶上這條規則的 id,讓 AccountDetailDialog 自動展開紅利回饋
+  // 區塊並直接打開這條規則的交易明細彈窗。從其它入口(帳戶列表點卡片)打開
+  // 詳情彈窗時维持 undefined,不触发任何自动展开。
+  const [accountHighlightRewardRuleId, setAccountHighlightRewardRuleId] = useState<string | undefined>(
+    undefined,
   )
 
   const [category, setCategory] = useState<WorkspaceCategory | null>(null)
@@ -128,6 +145,27 @@ export function GlobalEntityDialogs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
+  // 信用卡紅利回饋(§2.9.5):tx 变化时反查它勾选过的规则的 label —— 只有
+  // account_id + reward_rule_ids 都非空(expense + 信用卡帳戶)才需要查。
+  useEffect(() => {
+    if (!tx || !tx.account_id || !tx.reward_rule_ids || tx.reward_rule_ids.length === 0) {
+      setTxRewardRules([])
+      return
+    }
+    let cancelled = false
+    const ids = new Set(tx.reward_rule_ids)
+    fetchCardRewardRules(token, tx.ledger_id, tx.account_id)
+      .then((rules) => {
+        if (!cancelled) setTxRewardRules(rules.filter((r) => ids.has(r.id)))
+      })
+      .catch(() => {
+        if (!cancelled) setTxRewardRules([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tx, token])
+
   const loadAccountTxs = useCallback(
     async (accountId: string, scope: DetailScope, offset: number) => {
       setAccountLoading(true)
@@ -162,9 +200,10 @@ export function GlobalEntityDialogs() {
 
   // 监听 account detail
   useEffect(() => {
-    return onOpenDetailAccount((acc, defaultScope) => {
+    return onOpenDetailAccount((acc, defaultScope, highlightRewardRuleId) => {
       setAccount(acc)
       setAccountScope(defaultScope)
+      setAccountHighlightRewardRuleId(highlightRewardRuleId)
       setAccountTxs([])
       setAccountTotal(0)
       setAccountOffset(0)
@@ -496,6 +535,32 @@ export function GlobalEntityDialogs() {
     [navigate],
   )
 
+  // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):點交易詳情的「使用回饋」chip
+  // —— 关掉交易详情,查出这张卡的完整帳戶物件(帳戶詳情彈窗需要 account_type
+  // /credit_limit 等欄位才能正确渲染紅利回饋區塊),再開帳戶詳情彈窗並帶上
+  // 這條規則的 id 讓它自動展開 + 打開規則明細彈窗(見
+  // `onOpenDetailAccount`/`AccountDetailDialog`/`CardRewardRulesSection` 的
+  // `highlightRewardRuleId`/`highlightRuleId` 串接)。
+  const handleJumpToReward = useCallback(
+    async (accountId: string, ruleId: string) => {
+      const sourceTx = tx
+      setTx(null)
+      if (!sourceTx) return
+      try {
+        const accounts = await fetchWorkspaceAccounts(token, { ledgerId: sourceTx.ledger_id, limit: 500 })
+        const found = accounts.find((a) => a.id === accountId)
+        if (!found) {
+          toast.error(t('transactions.error.jumpTargetNotFound'), t('notice.error'))
+          return
+        }
+        dispatchOpenDetailAccount(found, { defaultScope: 'current', highlightRewardRuleId: ruleId })
+      } catch (err) {
+        toast.error(localizeError(err, t), t('notice.error'))
+      }
+    },
+    [tx, token, toast, t],
+  )
+
   const handleJumpToTransactions = useCallback(
     (cat: WorkspaceCategory) => {
       const scopeAtJump = categoryScope
@@ -523,6 +588,8 @@ export function GlobalEntityDialogs() {
         onRefund={handleRefundTx}
         onJumpToTx={(txId) => void handleJumpToTx(txId)}
         onJumpToDebt={handleJumpToDebt}
+        rewardRules={txRewardRules}
+        onJumpToReward={(accountId, ruleId) => void handleJumpToReward(accountId, ruleId)}
       />
       <InstallmentRefundChoiceDialog
         open={installmentRefund?.step === 'choice'}
@@ -560,9 +627,13 @@ export function GlobalEntityDialogs() {
         offset={accountOffset}
         loading={accountLoading}
         tags={tagsDict}
-        onClose={() => setAccount(null)}
+        onClose={() => {
+          setAccount(null)
+          setAccountHighlightRewardRuleId(undefined)
+        }}
         onLoadMore={(id, off) => void loadAccountTxs(id, accountScope, off)}
         onPeriodRangeChange={handleAccountPeriodRangeChange}
+        highlightRewardRuleId={accountHighlightRewardRuleId}
       />
       <CategoryDetailDialog
         category={category}

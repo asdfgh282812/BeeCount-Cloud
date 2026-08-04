@@ -564,6 +564,9 @@ def get_account_billing_summary(
     period = credit_card_billing.compute_cycle_period_billing(
         db, ledger_id=ledger.id, group=account, children=children, now=now, cycle_offset=cycle_offset,
     )
+    installment_summary = credit_card_billing.compute_installment_summary(
+        db, ledger_id=ledger.id, member_ids=member_ids,
+    )
 
     return ReadAccountBillingSummaryOut(
         account_id=account.sync_id,
@@ -594,6 +597,9 @@ def get_account_billing_summary(
         period_remaining_due=period["remaining_due"],
         period_has_older=period["has_older"],
         period_has_newer=period["has_newer"],
+        period_installment_active_count=installment_summary["active_count"],
+        period_installment_paid_periods=installment_summary["paid_periods"],
+        period_installment_periods=installment_summary["periods"],
     )
 
 
