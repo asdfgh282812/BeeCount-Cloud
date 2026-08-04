@@ -164,9 +164,20 @@ export type ReadLedgerDetail = ReadLedger & {
 export type ReadTransaction = {
   id: string
   tx_index: number
-  tx_type: 'expense' | 'income' | 'transfer'
+  /** 'adjustment'(§2.10 Phase 5,餘額調整):語意化端點
+   *  `POST .../accounts/{accountId}/balance-adjustment` 產生,無分類/無拆帳/
+   *  無轉帳對象,只綁 `account_id`。 */
+  tx_type: 'expense' | 'income' | 'transfer' | 'adjustment'
   amount: number
   happened_at: string
+  /** 延後入帳(§2.10 Phase 5):這筆交易的實際入帳日與 `happened_at`(消費日)
+   *  不同時填 —— 比如信用卡商戶延遲請款。對帳 / 信用卡帳單週期歸屬按
+   *  `deferred_posting_at ?? happened_at` 計算。null = 未設定(用
+   *  `happened_at`)。 */
+  deferred_posting_at?: string | null
+  /** 對帳模式(§2.10,2026-08-09 改版):非 null = 使用者在對帳模式裡勾選
+   *  確認過這筆交易。 */
+  reconciled_at?: string | null
   note: string | null
   category_name: string | null
   category_kind: string | null
@@ -599,13 +610,22 @@ export type AdminBackupRestoreResponse = {
 }
 
 export type TxPayload = {
-  tx_type: 'expense' | 'income' | 'transfer'
+  /** 'adjustment' 只由 balance-adjustment 语意化端点在服务端产生,前端不应
+   *  直接建这个 tx_type 的交易(见 `balanceAdjustment` in write.ts)。 */
+  tx_type: 'expense' | 'income' | 'transfer' | 'adjustment'
   amount: number
   happened_at: string
   /** 交易级多币种(0018):原币种;不传 = 账本本位币(不产生字段)。 */
   currency_code?: string | null
   /** 折账本本位币的金额快照(前端按 server 汇率算好传入)。 */
   native_amount?: number | null
+  /** 延後入帳(§2.10 Phase 5):create 不传/null = 未设置;update 不传 = 不改,
+   *  传 ISO 字符串 = 设置,传 null = 清空。 */
+  deferred_posting_at?: string | null
+  /** 對帳模式(§2.10,2026-08-09 改版):不传 = 不改,ISO 字符串 = 標記已在
+   *  對帳模式勾選確認,null = 取消確認。統計/檢查表都透過既有通用的
+   *  `updateTransaction` 帶這個欄位完成,不是專門的 write endpoint。 */
+  reconciled_at?: string | null
   note?: string | null
   category_name?: string | null
   category_kind?: 'expense' | 'income' | 'transfer' | null
@@ -764,6 +784,49 @@ export type CardPaymentPayload = {
   from_account_id: string
   happened_at?: string | null
   note?: string | null
+}
+
+// ────────── 餘額調整 (Balance Adjustment，MOZE_FEATURE_GAP_SD.md §2.10 Phase 5）──────────
+
+/** §2.10 Phase 5:語意化端點,服务端算 `diff = target_balance - 当前计算余额`
+ *  后建一笔 `tx_type=adjustment` 的交易。`happened_at` 不传 = 用当下时间。 */
+export type BalanceAdjustmentPayload = {
+  target_balance: number
+  happened_at?: string | null
+  note?: string | null
+}
+
+// ────────── 比較報表 (Comparison Report，MOZE_FEATURE_GAP_SD.md §2.10 Phase 5）──────────
+
+export type ComparisonReportMetric = {
+  current: number
+  previous: number
+  diff: number
+  /** `previous` 为 0 时为 null(避免除以零),前端展示为「—」。 */
+  diff_pct: number | null
+}
+
+export type ComparisonCategoryBreakdownItem = {
+  category_id: string | null
+  category_name: string
+  category_kind: 'income' | 'expense'
+  current: number
+  previous: number
+  diff: number
+}
+
+export type ComparisonReport = {
+  scope: 'month' | 'year'
+  offset: number
+  current_period_start: string
+  current_period_end: string
+  previous_period_start: string
+  previous_period_end: string
+  income: ComparisonReportMetric
+  expense: ComparisonReportMetric
+  balance: ComparisonReportMetric
+  /** 按 |diff| 降序排列。 */
+  category_breakdown: ComparisonCategoryBreakdownItem[]
 }
 
 // ────────── 信用卡紅利回饋 (Card Rewards，MOZE_FEATURE_GAP_SD.md §2.9.5 Phase 4.5）──────────
@@ -1327,6 +1390,56 @@ export type DebtUpdatePayload = {
   due_at?: string | null
   note?: string | null
   closed_at?: string | null
+}
+
+// ────────── 對帳模式 (Statement Mode，MOZE_FEATURE_GAP_SD.md §2.10 Phase 5，
+// 2026-08-09 改版為 Moze 式逐筆核對清單，取代 v1 的「單筆餘額比對記錄」）──────────
+
+/** 「這期帳單」清單裡的一行交易。`account_id`/`account_name` 是這筆交易實際
+ *  掛的那張卡（account_group 場景下用來分組顯示），不一定等於查詢用的
+ *  `account_id`。確認/取消確認、延後入帳都透過既有通用的 `updateTransaction`
+ *  完成（帶 `reconciled_at`/`deferred_posting_at`），不是專門的 write
+ *  endpoint。 */
+export type StatementTransaction = {
+  id: string
+  account_id: string
+  account_name: string | null
+  tx_type: string
+  amount: number
+  category_name: string | null
+  note: string | null
+  happened_at: string
+  deferred_posting_at?: string | null
+  reconciled_at?: string | null
+}
+
+export type StatementAccountTotal = {
+  account_id: string
+  account_name: string | null
+  count: number
+  total: number
+}
+
+/** 選單「取消全部選取」:清空指定週期裡所有已確認狀態,不影響其它週期。 */
+export type StatementClearConfirmationsPayload = {
+  cycle_offset: number
+}
+
+export type AccountStatement = {
+  account_id: string
+  account_name: string | null
+  cycle_start: string
+  cycle_end: string
+  due_date: string
+  cycle_offset: number
+  has_older: boolean
+  has_newer: boolean
+  statement_count: number
+  statement_total: number
+  confirmed_count: number
+  confirmed_total: number
+  accounts: StatementAccountTotal[]
+  transactions: StatementTransaction[]
 }
 
 // ────────── 交易範本 (Templates，MOZE_FEATURE_GAP_SD.md §2.7 Phase 3）──────────

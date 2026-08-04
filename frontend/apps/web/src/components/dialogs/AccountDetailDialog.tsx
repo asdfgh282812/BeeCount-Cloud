@@ -53,6 +53,7 @@ import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { localizeError } from '../../i18n/errors'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialogEvents'
+import { AccountStatementSection, BalanceAdjustmentButton } from './AccountReconciliationSection'
 import { CardRewardRulesSection } from './CardRewardRulesSection'
 import { DetailScopeToggle } from './DetailScopeToggle'
 
@@ -299,8 +300,10 @@ export function AccountDetailDialog({
           <div className="flex min-h-0 flex-1 flex-col">
             {/* 统计:account_group(主帳戶)/沒有掛靠群組的獨立信用卡改顯示
                 Moze 風格的帳單欄位(新增花費/上期欠款/應繳金額/已繳金額/
-                帳單分期/對帳筆數/剩餘帳款,見 useAccountBilling + 下面
-                AccountStatsHeader),跟著上面新增的週期選擇器走;其它帳戶
+                帳單分期/剩餘帳款,見 useAccountBilling + 下面
+                AccountStatsHeader;對帳確認筆數改顯示在下面
+                `AccountStatementSection` 自己的標題列,不在這裡重複),
+                跟著上面新增的週期選擇器走;其它帳戶
                 類型維持原本的餘額/收入/支出統計。 */}
             {/* 所屬主帳戶(2026-08-04 第二輪使用者反饋):子卡才顯示,點擊
                 切換這個彈窗去看主帳戶(§2.9 群組模型)。名稱取自
@@ -349,6 +352,31 @@ export function AccountDetailDialog({
               periodOffset={rewardPeriodOffset}
               highlightRuleId={highlightRewardRuleId}
             />
+
+            {/* 餘額調整(§2.10 Phase 5):account_group 是純管理容器,自己沒有
+                餘額可調整(對齐服务端 balance-adjustment 拒绝 account_group
+                目标的校验),不渲染。 */}
+            {account.account_type !== 'account_group' ? (
+              <div className="flex justify-end border-b border-border/60 px-6 py-2">
+                <BalanceAdjustmentButton account={account} />
+              </div>
+            ) : null}
+
+            {/* 對帳模式(§2.10 Phase 5,2026-08-09 改版為 Moze 式逐筆核對清單):
+                原文入口本來就限定在「信用卡交易明細頁」,範圍跟
+                `CreditCardBillingSection`/`CardRewardRulesSection` 一致
+                ——account_group 或沒掛靠群組的獨立信用卡才有意義,`billing.
+                billingAccountId`/`billing.cycleOffset` 直接沿用上面標題列
+                的帳單週期選擇器狀態,不要自己另外维护一份(§2.9.5.4 的既有
+                教训)。跟 `CreditCardBillingSection` 同款用 `billing.
+                available` 把關(還沒設定 billing_day/payment_due_day 時
+                後端一律 400,乾脆不掛載,不讓使用者看到一片「載入失敗」)。 */}
+            {billing.canViewBilling && billing.available && billing.billingAccountId ? (
+              <AccountStatementSection
+                billingAccountId={billing.billingAccountId}
+                cycleOffset={billing.cycleOffset}
+              />
+            ) : null}
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TransactionList
@@ -438,10 +466,6 @@ function AccountStatsHeader({
         <StatTile label={t('cardBilling.period.totalDue')} value={fmt(s.period_total_due)} emphasis />
         <StatTile label={t('cardBilling.period.paidInCycle')} value={fmt(s.period_paid_in_cycle)} tone="income" />
         <StatTile label={t('cardBilling.period.installmentPlan')} value={installmentText} />
-        <StatTile
-          label={t('cardBilling.period.reconciledCount')}
-          value={t('cardBilling.period.reconciledCount.none')}
-        />
         <StatTile
           label={t('cardBilling.period.remainingDue')}
           value={fmt(s.period_remaining_due)}
@@ -878,9 +902,9 @@ function CreditCardBillingSection({
         ) : null}
       </div>
       {/* 帳單週期明細(2026-08-04 使用者反饋):新增花費/上期欠款/應繳金額/
-          已繳金額/帳單分期/對帳筆數/剩餘帳款已經移到彈窗最頂部的統計區塊
-          (見 AccountStatsHeader),跟著標題列的週期選擇器走,這裡不再重複
-          顯示同一組數字。 */}
+          已繳金額/帳單分期/剩餘帳款已經移到彈窗最頂部的統計區塊(見
+          AccountStatsHeader),跟著標題列的週期選擇器走,這裡不再重複顯示
+          同一組數字。 */}
       {summary.members.length > 1 ? (
         <div className="space-y-1 text-xs text-muted-foreground">
           <div className="font-medium">{t('cardBilling.members')}</div>

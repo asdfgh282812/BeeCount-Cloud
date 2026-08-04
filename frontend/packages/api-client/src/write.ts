@@ -1,6 +1,7 @@
 import { authedDelete, authedPatch, authedPost } from './http'
 import type {
   AccountPayload,
+  BalanceAdjustmentPayload,
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CardPaymentPayload,
@@ -26,6 +27,7 @@ import type {
   RecurringRuleCreatePayload,
   RecurringRuleUpdatePayload,
   RecurringUpdateFromPayload,
+  StatementClearConfirmationsPayload,
   TagPayload,
   TxPayload,
   TxTemplateApplyPayload,
@@ -204,6 +206,42 @@ export async function cardPayment(
     token,
     { base_change_id: baseChangeId, ...payload },
     idempotencyKey
+  )
+}
+
+/** §2.10 Phase 5:餘額調整,語意化端點,建立一笔 `tx_type=adjustment` 交易。
+ *  走一般交易寫權限(owner 或 editor),不是 owner-only。 */
+export async function balanceAdjustment(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  baseChangeId: number,
+  payload: BalanceAdjustmentPayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/balance-adjustment`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+/** 對帳模式(§2.10 Phase 5,2026-08-09 改版)選單「取消全部選取」:清空
+ *  指定週期裡所有已確認狀態。走一般交易寫權限,不是 owner-only。 */
+export async function clearStatementConfirmations(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  baseChangeId: number,
+  payload: StatementClearConfirmationsPayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/statement/clear-confirmations`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
   )
 }
 

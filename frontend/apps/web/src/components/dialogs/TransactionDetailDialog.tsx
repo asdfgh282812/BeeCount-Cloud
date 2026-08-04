@@ -82,6 +82,12 @@ export function TransactionDetailDialog({
   // server 端没有额外挡这个(refund_of_id 只查目标是否已被别人退过,不检查
   // 目标本身是不是退款交易),所以前端直接不出这个按钮,从入口上避免。
   const isRefundTx = Boolean(tx?.refund_of_id)
+  // 餘額調整(§2.10 Phase 5):`tx_type=adjustment` 只由語意化端點
+  // `POST .../accounts/{accountId}/balance-adjustment` 產生,一般交易編輯
+  // 表單的 tx_type 選項不含 'adjustment' —— 讓使用者從這裡點「編輯」會
+  // 意外把它改回 expense(表單只能收窄成既有三選一),灰掉編輯入口避免
+  // 悄悄改壞這筆交易的類型,要調整餘額請回到帳戶詳情頁重新做一次餘額調整。
+  const isAdjustmentTx = tx?.tx_type === 'adjustment'
 
   const open = Boolean(tx)
   const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
@@ -299,6 +305,15 @@ export function TransactionDetailDialog({
                   value={tx.note}
                 />
               ) : null}
+              {/* 延後入帳(§2.10 Phase 5):進階/選填欄位,只在設定過時顯示
+                  一行,不常用不占版面。 */}
+              {tx.deferred_posting_at ? (
+                <DetailRow
+                  icon={<Calendar className="h-4 w-4" />}
+                  label={t('detail.transaction.deferredPostingAt')}
+                  value={formatDateTime(tx.deferred_posting_at)}
+                />
+              ) : null}
               {tagsList.length > 0 ? (
                 <DetailRow
                   icon={<Tag className="h-4 w-4" />}
@@ -419,7 +434,8 @@ export function TransactionDetailDialog({
           </Button>
           <Button
             size="sm"
-            disabled={!canManage}
+            disabled={!canManage || isAdjustmentTx}
+            title={isAdjustmentTx ? t('transactions.button.edit.adjustmentDisabled') : undefined}
             onClick={() => tx && onEdit(tx)}
           >
             <Edit3 className="mr-1 h-3.5 w-3.5" />

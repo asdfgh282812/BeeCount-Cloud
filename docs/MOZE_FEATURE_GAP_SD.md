@@ -27,7 +27,7 @@ server 資料模型/API 變動的項目才會展開「修改內容」小節。
 | 分類與專案 — 專案/預算 | 🟡 部分(有 `budgets` 總額/分類預算，**沒有獨立「專案」概念**——§2.11 記帳模式依賴這個缺口，需要先決定要不要做真正的 project entity) |
 | 記帳功能 | 🟡 部分(基本欄位、跨幣種、圖片/文字 AI 記帳已有；**退款 Phase 1.5 修正(§2.12.3)、週期性/分期 Phase 1.5 修正(§2.12.1/§2.12.2)、拆帳(§2.4)Phase 2、借還款追蹤(§2.5)/範本(§2.7)Phase 3 均已完成(server+web)**；語音記帳/記帳模式缺) |
 | 信用卡管理 | 🟡 部分(**主帳戶合併帳單(群組模型)/信用卡繳款(分攤)/免息期推薦/到期提醒(Phase 4)、紅利回饋(Phase 4.5)已完成**，分期複用既有 installment 機制，**自動扣繳(2026-08-04 改版)已是帳戶級開關+來源帳戶，不再借用 recurring 機制**，**帳單折抵仍缺**) |
-| 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整缺**) |
+| 分析與對帳 | 🟡 部分(統計報表、淨值歷史已有；**比較報表、對帳模式(含延後入帳)、餘額調整 server + web UI 已完成(Phase 5，2026-08-08 首版/2026-08-09 對帳模式依 Moze 官方文件重做)，尚未走完整瀏覽器手測**) |
 | 同步與雲端 | ✅ 已支援(本倉庫就是這塊：登入/2FA/裝置管理/離線佇列/刪除帳號) |
 | 捷徑功能 | ⚪ Client-only，server 不需改動 |
 | 其他功能 | 🟡 部分(備份還原、搜尋、批次改刪、匯入匯出、**通知中心(Phase 0)**已有；台灣電子發票視市場決定要不要做) |
@@ -705,7 +705,7 @@ Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。目標是做到「�
 |---|---|---|
 | 統計報表 | ✅ `workspace_analytics` / `summary.py` 已覆蓋大部分 | 若要對齊 Moze 的[statistics-report.md](https://doc.moze.app/analysis/statistics-report.md) 細節維度(如按 tag 交叉分析)，屬於既有端點加參數，不需新架構 |
 | 比較報表 | 🟡 只有 `net-worth-history`，沒有「本月 vs 上月/去年同期」結構化比較 | 新端點 `GET /workspace/comparison?period=month&offset=1`，複用 `workspace_analytics` 的聚合邏輯跑兩個區間再算 diff，不需新表 |
-| 對帳模式 | 缺 | 新表 `read_reconciliation_projection`：`account_sync_id, statement_date, statement_balance, reconciled_at`；核心邏輯是比對 `statement_balance` vs 該帳戶截至該日的交易加總，差額提示使用者去補交易或走下一項「餘額調整」 |
+| 對帳模式 | 缺 | **2026-08-09 依 Moze 官方文件修正**（[reconciliation/statement-mode.md](https://doc.moze.app/reconciliation/statement-mode.md)）：不是「輸入對帳單餘額比對差額」，而是顯示「這期帳單」的交易清單，逐筆勾選確認是否出現在銀行帳單上（原文右滑，web 版改點擊），對不在本期帳單上的交易左滑「延後入帳到下期」。不需要獨立的 reconciliation 表——`read_tx_projection` 加 `reconciled_at` 欄位（跟 `deferred_posting_at` 同款「tx 自身狀態」設計），新讀端點 `GET .../accounts/{id}/statement` 回傳這期帳單的交易清單 + 依卡分組小計 + 已確認筆數/金額 |
 | **延後入帳** | 缺 | 見下方獨立小節 —— 這是對帳模式能不能對得準的關鍵前提，**必做**，不是可選項 |
 | 餘額調整 | 缺 | 交易層面加一個 `tx_type=adjustment`(目前 Literal 只有 expense/income/transfer)，語意是「直接把帳戶餘額修正到指定值」，差額系統自動算出寫成一筆特殊交易；`snapshot_mutator.py` 幾處 `tx_type not in {"expense","income","transfer"}` 的白名單檢查都要加上 `adjustment` |
 
@@ -1112,6 +1112,29 @@ Phase 4.5(信用卡紅利回饋，業務規則因發卡行而異，複雜度獨�
                         `read_card_reward_rule_projection`，規則化自動
                         計算(非手動記帳簡化版)，不含帳單折抵
 Phase 5(分析對帳，必做）: 延後入帳(必做前置) → §2.10 對帳模式/餘額調整 → 比較報表(輕)
+                        ✅ server + web 已完成(2026-08-08 首版，
+                        2026-08-09 對帳模式依 Moze 官方文件全面重做)：
+                        延後入帳(`deferred_posting_at` + 共用 COALESCE
+                        helper `services/deferred_posting.py`，套用在
+                        對帳/信用卡帳單彙總/信用卡回饋計算，
+                        `workspace_analytics` 主統計口徑刻意不動，見
+                        CLAUDE.md §2.10)不變；對帳模式改成「這期帳單」
+                        逐筆核對清單(`read_tx_projection.reconciled_at` +
+                        `GET .../accounts/{id}/statement` +
+                        `POST .../statement/clear-confirmations`，取代
+                        首版的單筆餘額比對 CRUD)；餘額調整
+                        (`tx_type=adjustment` + 語意化端點
+                        `POST .../accounts/{id}/balance-adjustment`，
+                        2026-08-09 未變動)；比較報表(`GET /workspace/
+                        comparison`，只支援 month/year 兩種 scope，不含
+                        quarter)均已落地，測試見
+                        `tests/test_deferred_posting.py` +
+                        `tests/test_reconciliation.py`(對帳模式部分
+                        2026-08-09 重寫)+ `tests/test_balance_adjustment.py`
+                        + `tests/test_comparison_report.py`；web UI 已串接
+                        完成但尚未走完整瀏覽器手測(見
+                        `docs/PH5_RECONCILIATION_WEB_UI_MANUAL_TEST_PLAN.md`)，
+                        mobile UI 待排期
 Phase 6(AI 擴充，跟前面無依賴，可隨時插入）: §2.8 語音記帳
 Phase 7(依賴專案 entity 決策，排期最晚）: §2.11 記帳模式
 ```

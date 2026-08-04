@@ -58,6 +58,7 @@ from ...models import (
 from ...schemas import (
     WriteAccountCreateRequest,
     WriteAccountUpdateRequest,
+    WriteBalanceAdjustmentRequest,
     WriteBudgetCreateRequest,
     WriteBudgetUpdateRequest,
     WriteCardPaymentRequest,
@@ -83,6 +84,7 @@ from ...schemas import (
     WriteRecurringRuleCreateRequest,
     WriteRecurringRuleUpdateRequest,
     WriteRecurringUpdateFromRequest,
+    WriteStatementClearConfirmationsRequest,
     WriteTagCreateRequest,
     WriteTagUpdateRequest,
     WriteTransactionCreateRequest,
@@ -707,6 +709,65 @@ def _assert_reward_rules_valid(
             )
 
 
+def _assert_valid_adjustment_tx(
+    *,
+    tx_type: str | None,
+    account_id: str | None,
+    category_id: str | None,
+    category_name: str | None,
+    from_account_id: str | None,
+    to_account_id: str | None,
+    splits: Any,
+    refund_of_id: str | None,
+    debt_id: str | None,
+    reward_rule_ids: Any,
+) -> None:
+    """餘額調整(§2.10 Phase 5):`tx_type == "adjustment"` 只描述「這個帳戶
+    餘額被直接修正了多少」,語意上不該疊加分類/轉帳對象/拆帳/退款/欠款/
+    紅利回饋這些屬於一般收支/轉帳交易的概念——校验成功路径(語意化端點
+    `POST .../balance-adjustment`)只会产生完全干净的 payload,这里是给
+    直接调用 `POST/PATCH .../transactions` 手动传 `tx_type=adjustment` 的
+    调用方(未来 mobile / API 直连)兜底,create/update 两条 fast path 都要
+    挂。"""
+    if tx_type != "adjustment":
+        return
+    if not account_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions require account_id",
+        )
+    if category_id or category_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot have a category",
+        )
+    if from_account_id or to_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot set from_account_id/to_account_id",
+        )
+    if splits:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot be split",
+        )
+    if refund_of_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot be a refund",
+        )
+    if debt_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot be linked to a debt",
+        )
+    if reward_rule_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot have reward_rule_ids",
+        )
+
+
 # 拆帳(§2.4 MOZE_FEATURE_GAP_SD.md Phase 2)。
 _SPLIT_MIN_COUNT = 2
 _SPLIT_AMOUNT_EPSILON = 0.01
@@ -785,6 +846,18 @@ async def _commit_create_tx_fast(
         now = _utcnow()
         splits_payload = mutate_payload.get("splits")
         refund_of_id = mutate_payload.get("refund_of_id")
+        _assert_valid_adjustment_tx(
+            tx_type=mutate_payload.get("tx_type"),
+            account_id=mutate_payload.get("account_id"),
+            category_id=mutate_payload.get("category_id"),
+            category_name=mutate_payload.get("category_name"),
+            from_account_id=mutate_payload.get("from_account_id"),
+            to_account_id=mutate_payload.get("to_account_id"),
+            splits=splits_payload,
+            refund_of_id=refund_of_id,
+            debt_id=mutate_payload.get("debt_id"),
+            reward_rule_ids=mutate_payload.get("reward_rule_ids"),
+        )
         if splits_payload:
             if refund_of_id:
                 raise HTTPException(
@@ -1070,6 +1143,23 @@ async def _commit_write_fast_tx(
             minimal_snap = {"items": [prev_item], "count": 1}
             minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
             new_item = minimal_snap["items"][0]
+
+            # 餘額調整(§2.10 Phase 5):在 merge 后的最终状态上校验(同拆帳/
+            # 紅利回饋同一理由)—— 单独改其它字段没带 tx_type 时,payload 里
+            # 也不会出现 "tx_type" key,new_item["type"] 沿用旧值,校验对
+            # 「维持是/不是 adjustment」两种情况都成立。
+            _assert_valid_adjustment_tx(
+                tx_type=new_item.get("type"),
+                account_id=new_item.get("accountId"),
+                category_id=new_item.get("categoryId"),
+                category_name=new_item.get("categoryName"),
+                from_account_id=new_item.get("fromAccountId"),
+                to_account_id=new_item.get("toAccountId"),
+                splits=new_item.get("splits"),
+                refund_of_id=new_item.get("refundOfId"),
+                debt_id=new_item.get("debtId"),
+                reward_rule_ids=new_item.get("rewardRuleIds"),
+            )
 
             # 退款分类自动归类(2026-08-04 使用者反馈):跟 create 快路径同一套
             # 逻辑,搬到 merge 后的最终状态判断——`prev_item` 原本不是退款、
@@ -1772,6 +1862,7 @@ __all__ = [
     'UserAccountProjection',
     'WriteAccountCreateRequest',
     'WriteAccountUpdateRequest',
+    'WriteBalanceAdjustmentRequest',
     'WriteCardPaymentRequest',
     'WriteCardRewardManualPayoutRequest',
     'WriteCardRewardRuleCreateRequest',
@@ -1793,6 +1884,7 @@ __all__ = [
     'WriteInstallmentRebalanceRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteStatementClearConfirmationsRequest',
     'WriteRecurringOccurrenceUpdateRequest',
     'WriteRecurringRuleCreateRequest',
     'WriteRecurringRuleUpdateRequest',
@@ -1853,6 +1945,7 @@ __all__ = [
     '_assert_debt_exists',
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
+    '_assert_valid_adjustment_tx',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',
     '_LEDGER_PROJECTION_UPSERTERS',

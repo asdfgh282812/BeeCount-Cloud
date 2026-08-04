@@ -382,7 +382,10 @@ def _sort_transactions(snapshot: dict) -> None:
 def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     tx_type = str(payload.get("tx_type") or "expense")
-    if tx_type not in {"expense", "income", "transfer"}:
+    # 餘額調整(§2.10 Phase 5):第四種 tx_type,只在这里 + update_transaction
+    # 放行——recurring_rule/tx_template 不该有「週期性」或「範本」餘額調整
+    # 这种没有业务意义的组合,那两处的白名单保持原样不加。
+    if tx_type not in {"expense", "income", "transfer", "adjustment"}:
         raise ValueError("write validation failed: invalid transaction type")
 
     tx_id = _new_sync_id("tx")
@@ -443,6 +446,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
     if payload.get("debt_id") is not None:
         item["debtId"] = str(payload.get("debt_id"))
+    if payload.get("deferred_posting_at") is not None:
+        item["deferredPostingAt"] = _to_iso8601(payload.get("deferred_posting_at"))
     reward_rule_ids_raw = payload.get("reward_rule_ids")
     if isinstance(reward_rule_ids_raw, list):
         reward_rule_ids: list[str] = []
@@ -490,7 +495,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
 
     if "tx_type" in payload:
         tx_type = str(payload.get("tx_type") or "")
-        if tx_type not in {"expense", "income", "transfer"}:
+        if tx_type not in {"expense", "income", "transfer", "adjustment"}:
             raise ValueError("write validation failed: invalid transaction type")
         item["type"] = tx_type
     if "amount" in payload:
@@ -599,6 +604,18 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("debtId", None)
         else:
             item["debtId"] = str(value)
+    if "deferred_posting_at" in payload:
+        value = payload.get("deferred_posting_at")
+        if value is None:
+            item.pop("deferredPostingAt", None)
+        else:
+            item["deferredPostingAt"] = _to_iso8601(value)
+    if "reconciled_at" in payload:
+        value = payload.get("reconciled_at")
+        if value is None:
+            item.pop("reconciledAt", None)
+        else:
+            item["reconciledAt"] = _to_iso8601(value)
     if "reward_rule_ids" in payload:
         raw = payload.get("reward_rule_ids")
         if isinstance(raw, list):

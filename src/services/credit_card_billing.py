@@ -28,6 +28,13 @@ from ..models import (
     UserAccountProjection,
 )
 from . import credit_card
+from .deferred_posting import attribution_date_expr
+
+# 延後入帳(§2.10 Phase 5):信用卡帳單週期窗口按「入帳日」歸屬,不是單純
+# 消費日 —— 這是延後入帳這個功能對信用卡場景最主要的使用情境(店家批次
+# 請款延遲)。`deferred_posting_at` 對既有資料一律是 NULL,COALESCE 落回
+# `happened_at`,對舊資料零行為變化。
+_ATTR_DATE = attribution_date_expr()
 
 
 def compute_offset_totals(
@@ -76,7 +83,11 @@ def compute_offset_totals(
     return totals
 
 
-def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
+def date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
+    """把週期邊界 `date` 轉成查詢用的 UTC datetime 邊界。公開(2026-08-09,
+    §2.10 對帳模式改版)給 `read/ledgers.py::get_account_statement`/
+    `write/accounts.py::clear_statement_confirmations_ep` 共用同一份邊界
+    計算,不重複實作。"""
     if end_of_day:
         return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
@@ -180,8 +191,8 @@ def compute_group_billing(
 
     # 下界用結帳日「當天結束」當排除點:結帳日整天都算進「已結束的上一期」,
     # 不能被誤判進這一期。上界同理用 cycle_end 當天結束當 inclusive 上界。
-    cycle_start_query_dt = _date_to_utc_dt(cycle_start, end_of_day=True)
-    cycle_end_query_dt = _date_to_utc_dt(cycle_end, end_of_day=True)
+    cycle_start_query_dt = date_to_utc_dt(cycle_start, end_of_day=True)
+    cycle_end_query_dt = date_to_utc_dt(cycle_end, end_of_day=True)
 
     per_child_cycle_spend: dict[str, float] = {}
     per_child_lifetime_charged: dict[str, float] = {}
@@ -200,8 +211,8 @@ def compute_group_billing(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
-                ReadTxProjection.happened_at > cycle_start_query_dt,
-                ReadTxProjection.happened_at <= cycle_end_query_dt,
+                _ATTR_DATE > cycle_start_query_dt,
+                _ATTR_DATE <= cycle_end_query_dt,
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
         per_child_cycle_spend = {acc: float(amt) for acc, amt in spend_rows}
@@ -218,7 +229,7 @@ def compute_group_billing(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
-                ReadTxProjection.happened_at <= cycle_end_query_dt,
+                _ATTR_DATE <= cycle_end_query_dt,
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
         per_child_lifetime_charged = {acc: float(amt) for acc, amt in charged_rows}
@@ -271,8 +282,8 @@ def compute_group_billing(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
-                ReadTxProjection.happened_at > cycle_end_query_dt,
-                ReadTxProjection.happened_at <= now,
+                _ATTR_DATE > cycle_end_query_dt,
+                _ATTR_DATE <= now,
             )
         ).one()
         open_cycle_spend = float(open_exp) - float(open_inc)
@@ -357,8 +368,8 @@ def compute_cycle_period_billing(
     due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
     _open_start, open_end = credit_card.billing_cycle_containing(now.date(), billing_day)
 
-    cycle_start_dt = _date_to_utc_dt(cycle_start, end_of_day=True)
-    cycle_end_dt = _date_to_utc_dt(cycle_end, end_of_day=True)
+    cycle_start_dt = date_to_utc_dt(cycle_start, end_of_day=True)
+    cycle_end_dt = date_to_utc_dt(cycle_end, end_of_day=True)
 
     new_spend = 0.0
     if member_ids:
@@ -371,8 +382,8 @@ def compute_cycle_period_billing(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
-                ReadTxProjection.happened_at > cycle_start_dt,
-                ReadTxProjection.happened_at <= cycle_end_dt,
+                _ATTR_DATE > cycle_start_dt,
+                _ATTR_DATE <= cycle_end_dt,
             )
         ) or 0.0)
 
@@ -392,7 +403,7 @@ def compute_cycle_period_billing(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
-                ReadTxProjection.happened_at <= cutoff_dt,
+                _ATTR_DATE <= cutoff_dt,
             )
         ) or 0.0)
         return raw - offset_total

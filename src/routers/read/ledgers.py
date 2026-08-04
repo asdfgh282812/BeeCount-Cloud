@@ -392,6 +392,7 @@ def list_transactions(
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
+                deferred_posting_at=row.deferred_posting_at,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -1428,6 +1429,130 @@ def list_debts(
             )
         )
     return out
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/statement",
+    response_model=StatementPeriodOut,
+)
+def get_account_statement(
+    ledger_external_id: str,
+    account_id: str,
+    cycle_offset: int = Query(default=0, ge=-120, le=12),
+    sort_desc: bool = Query(default=False),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StatementPeriodOut:
+    """對帳模式(§2.10 Phase 5,2026-08-09 改版,對齊
+    doc.moze.app/reconciliation/statement-mode):進入對帳模式看到的是「這期
+    帳單」的交易清單本身(依卡分組 + 筆數/金額小計),不是輸入一個對帳單
+    餘額數字去比對——v1(單筆「餘額比對記錄」CRUD)不符合原文設計,整個
+    重做。`account_id` 範圍限制同 `get_account_billing_summary`:必須通過
+    `credit_card_billing.is_billing_root`(account_group 或沒掛靠群組的獨立
+    信用卡),因為原文入口本來就是「信用卡交易明細頁」,不是任意帳戶。
+    `cycle_offset` 語意跟 billing-summary 的週期瀏覽一致:0 = 最近一次已
+    結束的週期,正數往未來翻,負數往過去翻。`statement_total`/單筆
+    `amount` 的正負號口徑跟 `compute_cycle_period_billing.new_spend` 一致
+    (expense 為正、income/退款為負);每筆交易可以在對帳模式裡被勾選確認
+    (`reconciled_at`,對應原文右滑「完成對帳確認」)或延後入帳
+    (`deferred_posting_at`,對應原文左滑「延後入帳到下期帳單」)——web 版
+    用按鈕+日期選擇器取代滑動手勢,兩者都透過既有的通用
+    `PATCH .../transactions/{id}` 端點完成(帶 `reconciled_at`/
+    `deferred_posting_at`),不需要為此新增專門的 write endpoint。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    _require_billing_root(account)
+    _require_credit_card_schedule(account)
+
+    children = credit_card_billing.resolve_billing_children(db, account=account)
+    member_ids = credit_card_billing.billing_member_ids(account, children)
+    now = datetime.now(timezone.utc)
+    billing = credit_card_billing.compute_cycle_period_billing(
+        db, ledger_id=ledger.id, group=account, children=children, now=now, cycle_offset=cycle_offset,
+    )
+    cycle_start_dt = credit_card_billing.date_to_utc_dt(billing["cycle_start"], end_of_day=True)
+    cycle_end_dt = credit_card_billing.date_to_utc_dt(billing["cycle_end"], end_of_day=True)
+
+    attr_date = attribution_date_expr()
+    order_col = ReadTxProjection.happened_at.desc() if sort_desc else ReadTxProjection.happened_at.asc()
+    rows = db.scalars(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.account_sync_id.in_(member_ids),
+            ReadTxProjection.tx_type.in_(["expense", "income"]),
+            attr_date > cycle_start_dt,
+            attr_date <= cycle_end_dt,
+        ).order_by(order_col)
+    ).all()
+
+    transactions_out: list[StatementTransactionOut] = []
+    account_totals: dict[str, dict[str, Any]] = {}
+    statement_total = 0.0
+    confirmed_count = 0
+    confirmed_total = 0.0
+    for row in rows:
+        signed = row.amount if row.tx_type == "expense" else -row.amount
+        statement_total += signed
+        bucket = account_totals.setdefault(
+            row.account_sync_id, {"account_name": row.account_name, "count": 0, "total": 0.0},
+        )
+        bucket["count"] += 1
+        bucket["total"] += signed
+        if row.reconciled_at is not None:
+            confirmed_count += 1
+            confirmed_total += signed
+        transactions_out.append(
+            StatementTransactionOut(
+                id=row.sync_id,
+                account_id=row.account_sync_id or "",
+                account_name=row.account_name,
+                tx_type=row.tx_type,
+                amount=row.amount,
+                category_name=row.category_name,
+                note=row.note,
+                happened_at=row.happened_at,
+                deferred_posting_at=row.deferred_posting_at,
+                reconciled_at=row.reconciled_at,
+            )
+        )
+
+    accounts_out = [
+        StatementAccountTotalOut(
+            account_id=aid,
+            account_name=data["account_name"],
+            count=data["count"],
+            total=round(data["total"], 2),
+        )
+        for aid, data in account_totals.items()
+    ]
+
+    return StatementPeriodOut(
+        account_id=account.sync_id,
+        account_name=account.name or "",
+        cycle_start=billing["cycle_start"],
+        cycle_end=billing["cycle_end"],
+        due_date=billing["due_date"],
+        cycle_offset=cycle_offset,
+        has_older=billing["has_older"],
+        has_newer=billing["has_newer"],
+        statement_count=len(transactions_out),
+        statement_total=round(statement_total, 2),
+        confirmed_count=confirmed_count,
+        confirmed_total=round(confirmed_total, 2),
+        accounts=accounts_out,
+        transactions=transactions_out,
+    )
 
 
 @router.get(

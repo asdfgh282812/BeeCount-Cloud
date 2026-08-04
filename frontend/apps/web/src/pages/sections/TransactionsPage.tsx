@@ -174,6 +174,22 @@ function formatDateInput(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** 延後入帳(§2.10 Phase 5)回显用:同 CardRewardRulesSection.tsx/
+ *  DebtsPanel.tsx 的 isoToDateInput —— 后端这类"纯日期"字段可能回传不带
+ *  时区位移的 naive datetime 字串,缺位移标记时补 "Z" 强制当 UTC 解析,
+ *  避免 UTC+8 使用者少算一天。跟上面 formatDateInput(本地时区,给"今天"
+ *  这类相对日期筛选用)是两种不同语义,不能混用。 */
+function isoToDateInputUtc(iso: string): string {
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  const d = new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+}
+
+function dateInputToIsoUtc(value: string): string {
+  return `${value}T00:00:00+00:00`
+}
+
 function todayRange(): { dateFrom: string; dateTo: string } {
   const today = formatDateInput(new Date())
   return { dateFrom: today, dateTo: today }
@@ -1668,6 +1684,12 @@ export function TransactionsPage() {
         tx_type: txForm.tx_type,
         amount: Number(txForm.amount || 0),
         happened_at: txForm.happened_at || new Date().toISOString(),
+        // 延後入帳(§2.10 Phase 5):進階/選填欄位,''=未設定 → 顯式傳 null
+        // (create 場景等同不傳;update 場景顯式清空既有值,對齊 debt_id/
+        // refund_of_id 同款"總是送計算後的值"既有慣例,不做額外 diff)。
+        deferred_posting_at: txForm.deferred_posting_at
+          ? dateInputToIsoUtc(txForm.deferred_posting_at)
+          : null,
         note: txForm.note || null,
         category_name: isTransfer || txForm.split_enabled ? null : categoryName || null,
         category_kind: isTransfer ? null : categoryKind || null,
@@ -2285,9 +2307,14 @@ export function TransactionsPage() {
                     ...txDefaults(),
                     editingId: tx.id,
                     editingOwnerUserId: tx.created_by_user_id || '',
-                    tx_type: tx.tx_type,
+                    // §2.10 Phase 5:同 GlobalEditDialogs.tsx —— 'adjustment'
+                    // 只由餘額調整語意化端點產生,一般編輯表單收窄成 'expense'
+                    // 顯示(行內編輯按鈕已經對這種交易灰掉,這裡是防禦性 cast,
+                    // 不會真的被使用者從這條路径觸發)。
+                    tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
                     amount: String(tx.amount),
                     happened_at: tx.happened_at,
+                    deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
                     note: tx.note || '',
                     category_name: tx.category_name || '',
                     category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',

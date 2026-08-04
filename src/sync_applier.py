@@ -341,6 +341,10 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批
         # delete-then-insert read_tx_split_projection。
         ("splits", "splits_json", _json_loads_safe),
+        # 延後入帳(§2.10 Phase 5):缺键保留既有标记,同款语义。
+        ("deferredPostingAt", "deferred_posting_at", _isoformat_or_none),
+        # 對帳模式(§2.10,2026-08-09 改版):缺键保留既有核对状态,同款语义。
+        ("reconciledAt", "reconciled_at", _isoformat_or_none),
     ]),
 }
 

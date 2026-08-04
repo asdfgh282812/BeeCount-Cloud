@@ -101,6 +101,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同样必须进 full
         # snapshot,原因同上。
         ReadTxProjection.reward_source_tx_sync_id,
+        # 延後入帳(§2.10 Phase 5),同样必须进 full snapshot,原因同上
+        # (CLAUDE.md 記過的既有 bug 模式:漏 SELECT 新欄位 → 下一次
+        # `_commit_write` 的 diff 把它當「本來就沒有」靜默清空)。
+        ReadTxProjection.deferred_posting_at,
+        # 對帳模式(§2.10,2026-08-09 改版),同样必须进 full snapshot,原因
+        # 同上(漏 SELECT 新欄位的既有 bug 模式)。
+        ReadTxProjection.reconciled_at,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -117,7 +124,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
          splits_json, debt_id,
-         reward_rule_ids_json, reward_source_tx_id) = row
+         reward_rule_ids_json, reward_source_tx_id,
+         deferred_posting_at, reconciled_at) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -195,6 +203,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 pass
         if reward_source_tx_id:
             item["rewardSourceTxId"] = reward_source_tx_id
+        if deferred_posting_at is not None:
+            item["deferredPostingAt"] = _to_iso_utc(deferred_posting_at)
+        if reconciled_at is not None:
+            item["reconciledAt"] = _to_iso_utc(reconciled_at)
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户

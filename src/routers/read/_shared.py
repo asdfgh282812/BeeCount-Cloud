@@ -51,6 +51,9 @@ from ...models import (
 from ...schemas import (
     AnalyticsMetric,
     AnalyticsScope,
+    ComparisonCategoryBreakdownItemOut,
+    ComparisonReportMetricOut,
+    ComparisonReportOut,
     ReadAccountBillingMemberOut,
     ReadAccountBillingSummaryOut,
     ReadAccountOut,
@@ -77,6 +80,9 @@ from ...schemas import (
     ReadTxRefundSummaryOut,
     ReadTxSplitOut,
     ReadTxTemplateOut,
+    StatementAccountTotalOut,
+    StatementPeriodOut,
+    StatementTransactionOut,
     WorkspaceAccountOut,
     WorkspaceAnalyticsAnomalyAttributionOut,
     WorkspaceAnalyticsAnomalyMonthOut,
@@ -94,6 +100,7 @@ from ...schemas import (
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_READ
 from ... import snapshot_cache
 from ...services import card_rewards, credit_card, credit_card_billing
+from ...services.deferred_posting import attribution_date_expr
 
 router = APIRouter()
 settings = get_settings()
@@ -751,6 +758,7 @@ __all__ = [
     'ReadTxProjection',
     'ReadTxSplitProjection',
     'ReadTxTemplateProjection',
+    'attribution_date_expr',
     'UserAccountProjection',
     'UserCategoryProjection',
     'UserTagProjection',
@@ -759,6 +767,9 @@ __all__ = [
     'UserProfile',
     'AnalyticsMetric',
     'AnalyticsScope',
+    'ComparisonCategoryBreakdownItemOut',
+    'ComparisonReportMetricOut',
+    'ComparisonReportOut',
     'ReadAccountBillingMemberOut',
     'ReadAccountBillingSummaryOut',
     'ReadAccountOut',
@@ -778,6 +789,9 @@ __all__ = [
     'ReadInterestFreeSuggestionOut',
     'ReadLedgerDetailOut',
     'ReadLedgerOut',
+    'StatementAccountTotalOut',
+    'StatementPeriodOut',
+    'StatementTransactionOut',
     'ReadRecurringRuleOut',
     'ReadSummaryOut',
     'ReadTagOut',

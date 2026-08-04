@@ -954,6 +954,21 @@ export function TransactionsPanel({
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
+            {/* 延後入帳(§2.10 Phase 5):進階/選填欄位,不常用 —— 只在消費日
+                跟實際入帳日不同時填(比如信用卡商戶延遲請款),用於對帳 /
+                信用卡帳單週期歸屬。刻意放在筆記欄位旁,不做成顯眼的必填
+                欄位。 */}
+            <div className="space-y-1">
+              <Label>{t('tx.form.deferredPostingAt.label')}</Label>
+              <Input
+                type="date"
+                value={form.deferred_posting_at}
+                onChange={(e) => onFormChange({ ...form, deferred_posting_at: e.target.value })}
+              />
+              <div className="text-[11px] text-muted-foreground">
+                {t('tx.form.deferredPostingAt.hint')}
+              </div>
+            </div>
             {/* Phase 1.5(§2.12.1/§2.12.2):建交易当下顺便设成週期性收支/
                 分期付款起点。只在新建(非编辑)时显示,两者互斥(挂在同一笔
                 amount/happened_at 上,语意冲突);分期只对 expense 有意义。 */}

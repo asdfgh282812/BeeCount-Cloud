@@ -236,7 +236,16 @@ export function TransactionRow({
               {onEdit ? (
                 <button
                   type="button"
-                  disabled={!canManage}
+                  // 餘額調整(§2.10 Phase 5):tx_type=adjustment 只由帳戶詳情
+                  // 頁的餘額調整語意化端點產生,一般交易編輯表單的 tx_type
+                  // 選項不含它 —— 跟 TransactionDetailDialog 的編輯按鈕同一個
+                  // 理由,灰掉避免悄悄改壞這筆交易的類型。
+                  disabled={!canManage || row.tx_type === 'adjustment'}
+                  title={
+                    row.tx_type === 'adjustment'
+                      ? t('transactions.button.edit.adjustmentDisabled')
+                      : undefined
+                  }
                   onClick={(event) => {
                     event.stopPropagation()
                     onEdit(row)

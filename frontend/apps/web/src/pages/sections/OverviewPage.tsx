@@ -16,6 +16,7 @@ import {
 } from '@beecount/api-client'
 import { fetchBudgetsWithUsage, periodLabel, type BudgetUsage } from '@beecount/web-features'
 
+import { ComparisonReportCard } from '../../components/dashboard/ComparisonReportCard'
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -289,28 +290,33 @@ export function OverviewPage() {
   }, [overBudgetCount])
 
   return (
-    <OverviewSection
-      accounts={accounts}
-      tags={tags}
-      currentMonthSummary={currentMonthSummary}
-      currentMonthSeries={currentMonthSeries}
-      currentMonthCategoryRanks={currentMonthCategoryRanks}
-      currentYearSummary={currentYearSummary}
-      currentYearSeries={currentYearSeries}
-      allTimeSummary={allTimeSummary}
-      allTimeSeries={allTimeSeries}
-      analyticsData={analyticsData}
-      analyticsIncomeRanks={analyticsIncomeRanks}
-      ledgerCounts={ledgerCounts}
-      budgets={budgets}
-      budgetUsageById={budgetUsageById}
-      onJumpToTransactionsWithQuery={(q) => {
-        // 把关键词(通常是分类名)作为 URL query 传过去,TransactionsPage
-        // 在 useState 初始化时会读取 `?q=` 填到 listQuery。
-        const suffix = q ? `?q=${encodeURIComponent(q)}` : ''
-        navigate(`/app/transactions${suffix}`)
-      }}
-      onCategoryClickFromTop={onCategoryClickFromHome}
-    />
+    <div className="space-y-4">
+      <OverviewSection
+        accounts={accounts}
+        tags={tags}
+        currentMonthSummary={currentMonthSummary}
+        currentMonthSeries={currentMonthSeries}
+        currentMonthCategoryRanks={currentMonthCategoryRanks}
+        currentYearSummary={currentYearSummary}
+        currentYearSeries={currentYearSeries}
+        allTimeSummary={allTimeSummary}
+        allTimeSeries={allTimeSeries}
+        analyticsData={analyticsData}
+        analyticsIncomeRanks={analyticsIncomeRanks}
+        ledgerCounts={ledgerCounts}
+        budgets={budgets}
+        budgetUsageById={budgetUsageById}
+        onJumpToTransactionsWithQuery={(q) => {
+          // 把关键词(通常是分类名)作为 URL query 传过去,TransactionsPage
+          // 在 useState 初始化时会读取 `?q=` 填到 listQuery。
+          const suffix = q ? `?q=${encodeURIComponent(q)}` : ''
+          navigate(`/app/transactions${suffix}`)
+        }}
+        onCategoryClickFromTop={onCategoryClickFromHome}
+      />
+      {/* 比較報表(§2.10 Phase 5):自給自足的獨立小工具,不進上面
+          usePageCache 的批量 analytics 抓取管線(見組件內注釋),風險最小。 */}
+      <ComparisonReportCard />
+    </div>
   )
 }

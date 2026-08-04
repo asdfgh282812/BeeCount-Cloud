@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session, aliased
 from ..models import ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection, UserCategoryProjection
 from ..sync_applier import apply_user_change_to_projection
 from . import credit_card
+from .deferred_posting import attribution_date as _shared_attribution_date
 
 REWARD_CATEGORY_NAME = "回饋金"
 _REWARD_CATEGORY_DEVICE_ID = "server-card-reward-payout"
@@ -127,15 +128,14 @@ def ensure_refund_category(db: Session, *, user_id: str, kind: str) -> str:
 
 
 def _attribution_date(tx: ReadTxProjection) -> datetime:
-    """交易歸屬到哪一期回饋計算的日期。§2.10 落地後,理論上
-    `calc_basis == "settlement_date"` 應該改成
-    `COALESCE(deferred_posting_at, happened_at)`,目前两种 calc_basis
-    行為相同,因為 `deferred_posting_at` 還不存在。SQLite 讀回來的
-    DateTime 可能是 naive 的,補 UTC 才能跟本模块其它 aware datetime 比較。"""
-    happened_at = tx.happened_at
-    if happened_at.tzinfo is None:
-        happened_at = happened_at.replace(tzinfo=timezone.utc)
-    return happened_at
+    """交易歸屬到哪一期回饋計算的日期。§2.10 延後入帳已落地
+    (`services.deferred_posting`),`calc_basis == "settlement_date"` 目前
+    仍等同 `"transaction_date"`(都用 `COALESCE(deferred_posting_at,
+    happened_at)`)——這裡沒有再區分兩種 calc_basis,是因為信用卡回饋計算
+    「這筆消費算哪一期」的自然口徑本來就該用實際入帳日,沒有再另外做一個
+    「即使延後入帳也按消費日算」的第三種語意的實際需求,見文件 §2.9.5
+    `calc_basis` 欄位說明。"""
+    return _shared_attribution_date(tx)
 
 
 def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:

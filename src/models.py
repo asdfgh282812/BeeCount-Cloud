@@ -591,6 +591,23 @@ class ReadTxProjection(Base):
     # 存就够)。None = 普通交易,或 period_end/manual 這種不對應單一原始
     # 交易的回饋入帳。
     reward_source_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 延後入帳(§2.10 MOZE_FEATURE_GAP_SD.md Phase 5,對帳模式的必要前置):
+    # 有值 = 這筆交易處於「延後入帳」狀態,值是使用者填的實際入帳日;None =
+    # 正常,沿用 happened_at。對帳/信用卡帳單彙總等需要「入帳日口徑」的地方
+    # 一律用 `services.deferred_posting.attribution_date_expr()` 產生的
+    # `COALESCE(deferred_posting_at, happened_at)` 表達式,不要各自重寫。
+    deferred_posting_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 對帳模式(§2.10,2026-08-09 改版為 Moze 式逐筆核對清單,取代舊版「單筆
+    # 餘額比對記錄」):非空 = 使用者在對帳模式裡勾選確認過「這筆交易確實在
+    # 這期信用卡帳單上」。跟 deferred_posting_at 一样是 tx 自身的字段,不再
+    # 需要独立的 reconciliation entity/表——一笔交易只需要记「有没有被对过
+    # 帐」这一个布尔状态(用哪一期帐单核对过它,由它自己的 attribution_date
+    # 落在哪个週期窗口決定,不需要额外记"是哪一期确认的")。
+    reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 Index(

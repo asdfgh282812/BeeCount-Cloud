@@ -48,6 +48,10 @@ export type TxForm = {
    *  见 read/ledgers.py::list_debts 的 repaid 累加逻辑)。 */
   new_debt_counterparty_name: string
   new_debt_due_at: string
+  /** 延後入帳(§2.10 Phase 5):這筆交易的實際入帳日跟 `happened_at`(消費日)
+   *  不同時填,純日期字符串 yyyy-mm-dd,''=未設定(server 不收這個字段/清空)。
+   *  進階/選填欄位,只給對帳/信用卡帳單週期歸屬用。 */
+  deferred_posting_at: string
   /** Phase 1.5(§2.12.2):建交易当下顺便設為週期性收支起点。只在新建
    *  (editingId=null)时可开启,跟 installment_enabled 互斥。 */
   recurring_enabled: boolean
@@ -278,6 +282,7 @@ export const txDefaults = (): TxForm => ({
   debt_id: '',
   new_debt_counterparty_name: '',
   new_debt_due_at: '',
+  deferred_posting_at: '',
   recurring_enabled: false,
   recurring_frequency: 'monthly',
   recurring_interval: '1',

@@ -28,12 +28,22 @@ export async function fetchAnnualReportData(
     fetchAllPaged(token, ledger.id, prevYearFrom, prevYearTo),
   ])
 
+  // §2.10 Phase 5:tx_type 新增 'adjustment'(餘額調整,語意化端點產生,不是
+  // 真实收支活动)——年度报告只关心 expense/income/transfer 叙事,把它整个
+  // 排除在外(而不是像 aggregate.ts 现有逻辑那样只在 sum 时隐式跳过),避免
+  // 它混进"总笔数"之类没有显式按 txType 过滤的统计口径。
   return aggregate({
-    thisYearTxs: thisYear.map(toLite),
-    prevYearTxs: prevYear.map(toLite),
+    thisYearTxs: thisYear.filter(isReportableTx).map(toLite),
+    prevYearTxs: prevYear.filter(isReportableTx).map(toLite),
     year,
     ledger,
   })
+}
+
+function isReportableTx(
+  t: WorkspaceTransaction,
+): t is WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'transfer' } {
+  return t.tx_type !== 'adjustment'
 }
 
 async function fetchAllPaged(
@@ -61,7 +71,7 @@ async function fetchAllPaged(
   return all
 }
 
-function toLite(t: WorkspaceTransaction): TransactionLite {
+function toLite(t: WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'transfer' }): TransactionLite {
   return {
     id: t.id,
     txType: t.tx_type,

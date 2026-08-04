@@ -7,6 +7,7 @@ projection 做聚合(tx 计数 / balance / category 排行等)。
 from __future__ import annotations
 
 import statistics as _stats
+from typing import Literal
 
 from pydantic import BaseModel
 from sqlalchemy import false as sa_false
@@ -280,6 +281,7 @@ def list_workspace_transactions(
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
+                deferred_posting_at=row.deferred_posting_at,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -655,6 +657,20 @@ def list_workspace_accounts(
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
+    # 餘額調整(§2.10 Phase 5):amount 本身带正负号的差量,直接累加进 balance,
+    # 不像 income/expense 分开算再相减。
+    adjustment_rows = db.execute(
+        select(
+            ReadTxProjection.account_sync_id,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "adjustment",
+            ReadTxProjection.account_sync_id.is_not(None),
+        ).group_by(ReadTxProjection.account_sync_id)
+    ).all()
+
     # Transfer adjustments: from_account = minus, to_account = plus
     transfer_from = db.execute(
         select(
@@ -690,6 +706,11 @@ def list_workspace_accounts(
         bucket["count"] = int(bucket["count"]) + int(cnt)
         bucket["balance"] = float(bucket["balance"]) - float(amt)
     for acc, cnt, amt in transfer_to:
+        bucket = stats.setdefault(acc,
+                                   {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
+        bucket["count"] = int(bucket["count"]) + int(cnt)
+        bucket["balance"] = float(bucket["balance"]) + float(amt)
+    for acc, cnt, amt in adjustment_rows:
         bucket = stats.setdefault(acc,
                                    {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
         bucket["count"] = int(bucket["count"]) + int(cnt)
@@ -1429,6 +1450,190 @@ def _compute_anomaly_months(
     # 按超出 baseline 的绝对值降序(最异常的排前面)
     out.sort(key=lambda a: -(a.expense - a.baseline))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 比較報表(§2.10 MOZE_FEATURE_GAP_SD.md Phase 5)—— 複用 `_analytics_range`
+# 的區間計算 + `workspace_analytics` 核心迴圈同款的 refund netting/拆帳展開
+# 規則(精簡版:只算 income/expense 總額 + 分類排行,不需要 series/anomaly/
+# distinct_days,所以沒有直接呼叫 workspace_analytics 端點函式本身,而是把
+# 共用邏輯抽成這個獨立 helper)。
+# ---------------------------------------------------------------------------
+
+
+def _comparison_period_totals(
+    db: Session, *, ledger_internal_ids: list[str], start_at: datetime | None, end_at: datetime | None,
+) -> tuple[float, float, dict[str, dict[str, float]]]:
+    """回傳 (income_total, expense_total, category_map)。category_map 的
+    value 是 `{"income": x, "expense": y}`(跟 `workspace_analytics` 的
+    `category_map` 同款結構,只是不需要 count)。口徑對齊
+    `workspace_analytics`:账本本位币(native_amount ?? amount)、
+    exclude_from_stats 排除、退款 netting、拆帳展開。"""
+    income_total = 0.0
+    expense_total = 0.0
+    category_map: dict[str, dict[str, float]] = {}
+    if not ledger_internal_ids:
+        return income_total, expense_total, category_map
+
+    tx_query = select(
+        ReadTxProjection.tx_type,
+        ReadTxProjection.amount,
+        ReadTxProjection.native_amount,
+        ReadTxProjection.category_name,
+        ReadTxProjection.refund_of_sync_id,
+        ReadTxProjection.has_splits,
+        ReadTxProjection.splits_json,
+    ).where(
+        ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+        ReadTxProjection.exclude_from_stats == sa_false(),
+    )
+    if start_at is not None:
+        tx_query = tx_query.where(ReadTxProjection.happened_at >= start_at)
+    if end_at is not None:
+        tx_query = tx_query.where(ReadTxProjection.happened_at < end_at)
+
+    for (tx_type_val, raw_amount, native_amount_val, cat_name,
+         refund_of_id, has_splits, splits_json) in db.execute(tx_query).all():
+        raw_amt = float(raw_amount or 0.0)
+        coalesced_amt = float(native_amount_val) if native_amount_val is not None else raw_amt
+
+        legs: list[tuple[str, float]] = []
+        if has_splits and splits_json:
+            try:
+                raw_splits = json.loads(splits_json)
+            except (TypeError, json.JSONDecodeError):
+                raw_splits = None
+            if isinstance(raw_splits, list) and raw_splits:
+                scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
+                for entry in raw_splits:
+                    if not isinstance(entry, dict):
+                        continue
+                    leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
+                    leg_amt = float(entry.get("amount") or 0.0) * scale
+                    legs.append((leg_cat, leg_amt))
+        if not legs:
+            legs = [((cat_name or "").strip() or "Uncategorized", coalesced_amt)]
+
+        is_income_refund = tx_type_val == "income" and refund_of_id is not None
+        is_expense_refund = tx_type_val == "expense" and refund_of_id is not None
+        for leg_cat, leg_amt in legs:
+            category_slot = category_map.setdefault(leg_cat, {"income": 0.0, "expense": 0.0})
+            if is_income_refund:
+                expense_total -= leg_amt
+                category_slot["expense"] -= leg_amt
+                continue
+            if is_expense_refund:
+                income_total -= leg_amt
+                category_slot["income"] -= leg_amt
+                continue
+            if tx_type_val == "income":
+                income_total += leg_amt
+                category_slot["income"] += leg_amt
+            elif tx_type_val == "expense":
+                expense_total += leg_amt
+                category_slot["expense"] += leg_amt
+    return income_total, expense_total, category_map
+
+
+def _comparison_metric(current: float, previous: float) -> ComparisonReportMetricOut:
+    diff = round(current - previous, 2)
+    diff_pct = round((current - previous) / abs(previous) * 100, 2) if previous else None
+    return ComparisonReportMetricOut(
+        current=round(current, 2), previous=round(previous, 2), diff=diff, diff_pct=diff_pct,
+    )
+
+
+@router.get("/workspace/comparison", response_model=ComparisonReportOut)
+def comparison_report(
+    scope: Literal["month", "year"] = Query(default="month"),
+    period: str | None = Query(default=None),
+    offset: int = Query(default=1, ge=1, le=120),
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    natural_month: bool = Query(default=False),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ComparisonReportOut:
+    """比較報表(§2.10 Phase 5):「當期」跟「比較期」兩個區間各自的
+    income/expense/balance + 分類排行對比。`period` 語意跟 `/workspace/
+    analytics` 相同(不傳 = 目前所在的那個 scope 週期);`offset` 決定比較期
+    往前推幾個週期 —— `scope=month` 時 `offset=1` 是上個月(環比),
+    `offset=12` 是去年同月(同比);`scope=year` 時 `offset=1` 是去年。
+    複用 `_analytics_range` 算區間邊界,跟 analytics 端點的月份起始日/自然月
+    語意完全一致。"""
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
+    month_start_day = (
+        1
+        if natural_month
+        else ((ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1)
+    )
+    current_start, current_end, normalized_period = _analytics_range(
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
+    )
+    if current_start is None or current_end is None:
+        raise HTTPException(status_code=400, detail="comparison report requires a concrete period")
+
+    # 比較期邊界:直接對當期起訖各自往前推 offset 個週期(月用 12 個月循環
+    # 減法避免手滾 calendar 运算,年直接減年数),不透过 `_analytics_range`
+    # 重新解析字符串(省去月份 wrap-around 的字符串拼接)。
+    def _shift(dt: datetime) -> datetime:
+        if scope == "year":
+            return dt.replace(year=dt.year - offset)
+        total_months = dt.year * 12 + (dt.month - 1) - offset
+        year, month0 = divmod(total_months, 12)
+        return dt.replace(year=year, month=month0 + 1)
+
+    previous_start = _shift(current_start)
+    previous_end = _shift(current_end)
+
+    ledger_internal_ids = [l.id for l in ledgers]
+    cur_income, cur_expense, cur_cat = _comparison_period_totals(
+        db, ledger_internal_ids=ledger_internal_ids, start_at=current_start, end_at=current_end,
+    )
+    prev_income, prev_expense, prev_cat = _comparison_period_totals(
+        db, ledger_internal_ids=ledger_internal_ids, start_at=previous_start, end_at=previous_end,
+    )
+
+    breakdown: list[ComparisonCategoryBreakdownItemOut] = []
+    for cat_name in set(cur_cat) | set(prev_cat):
+        cur_slot = cur_cat.get(cat_name, {"income": 0.0, "expense": 0.0})
+        prev_slot = prev_cat.get(cat_name, {"income": 0.0, "expense": 0.0})
+        # 分類排行以 expense 為主(比較報表最常見的用法是看支出分類漲跌);
+        # 純收入分類(expense 兩期都是 0)一律歸類成 kind=income,net 用收入。
+        if cur_slot["expense"] or prev_slot["expense"]:
+            kind = "expense"
+            cur_amt, prev_amt = cur_slot["expense"], prev_slot["expense"]
+        else:
+            kind = "income"
+            cur_amt, prev_amt = cur_slot["income"], prev_slot["income"]
+        breakdown.append(ComparisonCategoryBreakdownItemOut(
+            category_name=cat_name,
+            category_kind=kind,
+            current=round(cur_amt, 2),
+            previous=round(prev_amt, 2),
+            diff=round(cur_amt - prev_amt, 2),
+        ))
+    breakdown.sort(key=lambda item: -abs(item.diff))
+
+    return ComparisonReportOut(
+        scope=scope,
+        offset=offset,
+        current_period_start=current_start,
+        current_period_end=current_end,
+        previous_period_start=previous_start,
+        previous_period_end=previous_end,
+        income=_comparison_metric(cur_income, prev_income),
+        expense=_comparison_metric(cur_expense, prev_expense),
+        balance=_comparison_metric(cur_income - cur_expense, prev_income - prev_expense),
+        category_breakdown=breakdown,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -3,8 +3,10 @@ import { extractApiError } from './errors'
 import type {
   AccountBillingSummary,
   AccountInterestFreeSuggestion,
+  AccountStatement,
   AnalyticsMetric,
   AnalyticsScope,
+  ComparisonReport,
   NetWorthHistory,
   ReadAccount,
   ReadBudget,
@@ -259,6 +261,29 @@ export async function fetchReadDebts(
   )
 }
 
+/** MOZE_FEATURE_GAP_SD.md §2.10 Phase 5 —— 對帳記錄列表,按 statement_date
+ *  降序(最近的在前)。`computed_balance`/`difference` 由 server 即时算出。 */
+/** 對帳模式(§2.10 Phase 5,2026-08-09 改版):「這期帳單」的交易清單,
+ *  `cycleOffset` 語意跟 `fetchAccountBillingSummary` 一致(0 = 最近一次已
+ *  結束的週期)。`account_id` 必須是 account_group 或沒掛靠群組的獨立信用卡
+ *  (同 billing-summary 的範圍限制)。 */
+export async function fetchAccountStatement(
+  token: string,
+  ledgerId: string,
+  accountId: string,
+  cycleOffset?: number,
+  sortDesc?: boolean,
+): Promise<AccountStatement> {
+  const params = new URLSearchParams()
+  if (cycleOffset) params.set('cycle_offset', String(cycleOffset))
+  if (sortDesc) params.set('sort_desc', 'true')
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return authedGet<AccountStatement>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/statement${qs}`,
+    token,
+  )
+}
+
 /** MOZE_FEATURE_GAP_SD.md §2.7 Phase 3 —— 交易範本列表,按 sort_order/name 排序。 */
 export async function fetchReadTxTemplates(
   token: string,
@@ -438,6 +463,31 @@ export async function fetchWorkspaceAnalytics(
   if (options?.naturalMonth) query.set('natural_month', 'true')
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAnalytics>(`/read/workspace/analytics${suffix}`, token)
+}
+
+/** MOZE_FEATURE_GAP_SD.md §2.10 Phase 5 —— 比較報表(月/年環比、同比)。
+ *  `offset` 默认 1(server 侧默认值),范围 1-120。 */
+export async function fetchComparisonReport(
+  token: string,
+  params: {
+    scope: 'month' | 'year'
+    period?: string
+    offset?: number
+    ledgerId?: string | null
+    userId?: string | null
+    tzOffsetMinutes?: number
+    naturalMonth?: boolean
+  }
+): Promise<ComparisonReport> {
+  const query = new URLSearchParams()
+  query.set('scope', params.scope)
+  if (params.period) query.set('period', params.period)
+  if (typeof params.offset === 'number') query.set('offset', `${params.offset}`)
+  if (params.ledgerId) query.set('ledger_id', params.ledgerId)
+  if (params.userId) query.set('user_id', params.userId)
+  if (typeof params.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${params.tzOffsetMinutes}`)
+  if (params.naturalMonth) query.set('natural_month', 'true')
+  return authedGet<ComparisonReport>(`/read/workspace/comparison?${query.toString()}`, token)
 }
 
 export async function fetchNetWorthHistory(

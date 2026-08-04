@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -578,6 +578,12 @@ class ReadTransactionOut(BaseModel):
     # 自动产生的回饋 income,反查它对应的原始消费交易 sync_id;None = 普通
     # 交易,或 period_end/manual 這種不對應單一原始交易的回饋。
     reward_source_tx_id: str | None = None
+    # 延後入帳(§2.10 Phase 5):有值 = 實際入帳日跟 happened_at 不同,對帳/
+    # 信用卡帳單彙總按這個日期歸屬期別;None = 正常交易。
+    deferred_posting_at: datetime | None = None
+    # 對帳模式(§2.10,2026-08-09 改版):有值 = 這筆交易已經在對帳模式裡被
+    # 使用者勾選確認過;None = 尚未核對。
+    reconciled_at: datetime | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -993,6 +999,94 @@ class ReadTxTemplateOut(BaseModel):
     ledger_name: str | None = None
 
 
+class StatementTransactionOut(BaseModel):
+    """對帳模式(§2.10 Phase 5,2026-08-09 改版為 Moze 式逐筆核對清單)裡
+    「這期帳單」列表的一行。`account_id`/`account_name` 是這筆交易實際掛的
+    那張卡(account_group 場景下用來分組顯示,對齊 Moze 參考文件「依卡分組」
+    的行為),不一定等於查詢用的 `account_id`(可能是群組本身)。"""
+    id: str
+    account_id: str
+    account_name: str | None = None
+    tx_type: str
+    amount: float
+    category_name: str | None = None
+    note: str | None = None
+    happened_at: datetime
+    deferred_posting_at: datetime | None = None
+    reconciled_at: datetime | None = None
+
+
+class StatementAccountTotalOut(BaseModel):
+    """對帳模式:account_group 場景下,依卡分組的筆數/金額小計。"""
+    account_id: str
+    account_name: str | None = None
+    count: int
+    total: float
+
+
+class StatementPeriodOut(BaseModel):
+    """`GET .../accounts/{account_id}/statement`(對帳模式,§2.10 Phase 5,
+    2026-08-09 改版):對齊 Moze `doc.moze.app/reconciliation/statement-mode`
+    —— 進入對帳模式看到的是「這期帳單」的交易清單本身,不是輸入一個對帳單
+    餘額數字去比對。每筆交易可以被勾選確認(`reconciled_at`,對應原文右滑
+    「完成對帳確認」)或延後入帳(`deferred_posting_at`,對應左滑「延後入帳
+    到下期帳單」,web 版用按鈕+日期選擇器取代滑動手勢)。`cycle_offset`
+    語意跟 `credit_card_billing.compute_cycle_period_billing` 一致:0 = 最近
+    一次已結束的週期,正數往未來翻,負數往過去翻。"""
+    account_id: str
+    account_name: str | None = None
+    cycle_start: date
+    cycle_end: date
+    due_date: date
+    cycle_offset: int
+    has_older: bool
+    has_newer: bool
+    statement_count: int
+    statement_total: float
+    confirmed_count: int
+    confirmed_total: float
+    accounts: list[StatementAccountTotalOut]
+    transactions: list[StatementTransactionOut]
+
+
+class ComparisonReportMetricOut(BaseModel):
+    """比較報表(§2.10 Phase 5)單一指標(income/expense/balance)的兩期
+    對比,`diff = current - previous`,`diff_pct` 是相對前一期的變動百分比
+    (前一期為 0 時回 None,避免除以零)。"""
+    current: float
+    previous: float
+    diff: float
+    diff_pct: float | None = None
+
+
+class ComparisonReportOut(BaseModel):
+    """`GET /workspace/comparison`:複用 `_analytics_range` 的區間計算邏輯 +
+    `workspace_analytics` 核心聚合迴圈同款的 refund netting/拆帳展開規則,
+    分別跑「當期」跟「比較期」兩次區間再算 diff,不需要新表——本身就是純
+    衍生計算,見 `read/workspace.py::comparison_report` docstring。
+    `offset` 決定比較期怎麼選:`scope=month` 時 `offset=1` 是上個月、
+    `offset=12` 是去年同月(年比年);`scope=year` 時 `offset=1` 是去年。"""
+    scope: Literal["month", "year"]
+    offset: int
+    current_period_start: datetime
+    current_period_end: datetime
+    previous_period_start: datetime
+    previous_period_end: datetime
+    income: ComparisonReportMetricOut
+    expense: ComparisonReportMetricOut
+    balance: ComparisonReportMetricOut
+    category_breakdown: list["ComparisonCategoryBreakdownItemOut"] = Field(default_factory=list)
+
+
+class ComparisonCategoryBreakdownItemOut(BaseModel):
+    category_id: str | None = None
+    category_name: str
+    category_kind: str
+    current: float
+    previous: float
+    diff: float
+
+
 class WorkspaceTransactionOut(ReadTransactionOut):
     pass
 
@@ -1178,7 +1272,12 @@ class WriteTxSplitItem(BaseModel):
 
 
 class WriteTransactionCreateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    # 餘額調整(§2.10 Phase 5):`adjustment` 一般不建议直接传 amount 手填,
+    # 而是走 `POST .../accounts/{account_id}/balance-adjustment` 语意化端点
+    # (由 server 算出 amount = target_balance - 当下余额)。这里仍然把它
+    # 加进 Literal——sync entity 必须支持任意合法值被写入/回放,且未来
+    # mobile 端可能有自己的直接创建路径。
+    tx_type: Literal["expense", "income", "transfer", "adjustment"] = "expense"
     amount: float
     happened_at: datetime
     note: str | None = None
@@ -1219,10 +1318,14 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # `account_id` 这张信用卡自己名下的规则(write/_shared.py
     # `_assert_reward_rules_valid`)。
     reward_rule_ids: list[str] | None = None
+    # 延後入帳(§2.10 Phase 5):有值 = 這筆交易的實際入帳日跟消費日
+    # (happened_at)不同,對帳/信用卡帳單彙總按這個日期歸屬期別。None =
+    # 正常交易(不延後)。
+    deferred_posting_at: datetime | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: Literal["expense", "income", "transfer", "adjustment"] | None = None
     amount: float | None = None
     happened_at: datetime | None = None
     note: str | None = None
@@ -1255,6 +1358,16 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):None(不传该 key)= 不变。
     # 传空列表 [] = 清空,传非空列表 = 整批替换。
     reward_rule_ids: list[str] | None = None
+    # 延後入帳(§2.10 Phase 5):key 不出現 = 不變;傳 ISO 時間 = 設定/更新;
+    # 傳 null = 清除延後入帳標記(跟 debt closed_at 同款「key 是否出現才
+    # 決定要不要改」語意,用 exclude_unset dump)。
+    deferred_posting_at: datetime | None = None
+    # 對帳模式(§2.10,2026-08-09 改版):key 不出現 = 不變;傳 ISO 時間 =
+    # 標記已在對帳模式勾選確認;傳 null = 取消確認(對齊 Moze 選單「取消全部
+    # 選取」對單筆交易的等價動作)。同款 exclude_unset 語意,web UI 的「確認/
+    # 取消確認」按鈕直接呼叫既有的 `PATCH .../transactions/{id}` 帶這個欄位,
+    # 不需要為此新增專門的 write endpoint。
+    reconciled_at: datetime | None = None
 
 
 
@@ -1499,6 +1612,25 @@ class WriteDebtUpdateRequest(WriteBaseRequest):
     # 結案(體驗補強):key 不出現 = 不變;傳 ISO 時間 = 結案;傳 null = 重新
     # 開啟。跟 due_at/refund_of_id 同款「以 key 是否出現判斷是否要改」語意。
     closed_at: datetime | None = None
+
+
+class WriteStatementClearConfirmationsRequest(WriteBaseRequest):
+    """對帳模式(§2.10 Phase 5,2026-08-09 改版)選單裡的「取消全部選取」
+    (對齊 Moze 原文「清除所有已選項目,恢復到未對帳狀態」)——把 `cycle_offset`
+    指定週期窗口裡、目前掛在 `account_id` 底下的所有交易的 `reconciled_at`
+    一次清空,不影響 `deferred_posting_at`(延後入帳是另一個獨立動作,清除
+    確認狀態不等於撤銷延後入帳)。"""
+    cycle_offset: int = 0
+
+
+class WriteBalanceAdjustmentRequest(WriteBaseRequest):
+    """餘額調整(§2.10 Phase 5):語意化端點 —— 使用者直接輸入「這個帳戶
+    現在應該是多少錢」,server 算出跟目前記帳餘額的差額,寫成一筆
+    `tx_type=adjustment` 的交易(`amount` = 差額,可正可負)。`account_id`
+    來自 URL path。"""
+    target_balance: float
+    happened_at: datetime | None = None
+    note: str | None = None
 
 
 class WriteCardRewardRuleCreateRequest(WriteBaseRequest):

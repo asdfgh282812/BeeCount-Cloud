@@ -42,6 +42,21 @@ import { useLedgers } from '../context/LedgersContext'
 import { localizeError } from '../i18n/errors'
 import { onOpenEditCategory, onOpenEditTx, onOpenNewTx } from '../lib/txDialogEvents'
 
+/** 延後入帳(§2.10 Phase 5)回显/提交用:同 CardRewardRulesSection.tsx/
+ *  DebtsPanel.tsx 的 isoToDateInput/dateInputToIso —— 后端这类"纯日期"字段
+ *  可能回传不带时区位移的 naive datetime 字串,缺位移标记时补 "Z" 强制当
+ *  UTC 解析,避免 UTC+8 使用者少算一天。 */
+function isoToDateInputUtc(iso: string): string {
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  const d = new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+}
+
+function dateInputToIsoUtc(value: string): string {
+  return `${value}T00:00:00+00:00`
+}
+
 /**
  * 全局编辑容器 — 任何页都能触发交易/分类编辑弹窗,不需要 navigate 到对应
  * 管理页。复用 TransactionsPanel/CategoriesPanel 的 Dialog + picker
@@ -189,9 +204,15 @@ export function GlobalEditDialogs() {
         ...txDefaults(),
         editingId: tx.id,
         editingOwnerUserId: tx.created_by_user_id || '',
-        tx_type: tx.tx_type,
+        // §2.10 Phase 5:`tx.tx_type` 現在含 'adjustment'(餘額調整語意化端點
+        // 產生,不是一般交易表單能建的類型)——同 category_kind 既有慣例用
+        // cast 收窄,編輯這種交易時表單會落回 'expense' 顯示,不影響它
+        // 已經存在的 tx_type(這個表單本來就不打算讓使用者手動改成
+        // adjustment,payload 也不会送这个值)。
+        tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
         amount: String(tx.amount),
         happened_at: tx.happened_at,
+        deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
         // v30 多币种:回显该笔币种 + 原币种(提交时币种未变不发字段,金额
         // 变更折算由 server L14 隐含汇率联动,防快照漂移)
         currency: (tx.currency_code || '').toUpperCase(),
@@ -429,6 +450,10 @@ export function GlobalEditDialogs() {
       tx_type: editTxForm.tx_type,
       amount: amountNum,
       happened_at: editTxForm.happened_at,
+      // 延後入帳(§2.10 Phase 5):同 TransactionsPage.onSaveTransaction。
+      deferred_posting_at: editTxForm.deferred_posting_at
+        ? dateInputToIsoUtc(editTxForm.deferred_posting_at)
+        : null,
       note: editTxForm.note.trim() || null,
       category_name:
         editTxForm.tx_type === 'transfer' || editTxForm.split_enabled

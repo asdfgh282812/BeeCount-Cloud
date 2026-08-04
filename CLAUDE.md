@@ -699,6 +699,144 @@ codebase 其它 owner-only 端點共用的既有慣例,不是 bug)。測試過�
 把 `cctest@example.com` 提升為 `is_admin=1` 以便呼叫 admin-only 的
 materialize-recurring 端點,只影響本機 SQLite,如需清理見上述文件。
 
+## §2.10 分析與對帳(Phase 5,server 已完成,2026-08-08)
+
+**✅ 延後入帳(Deferred Posting,對帳模式的必要前置)+ 對帳模式(Reconciliation
+Mode)+ 餘額調整(Balance Adjustment)+ 比較報表(Comparison Report)四項全部
+落地**,migration `0035_deferred_posting_and_reconciliation`(只加
+`read_tx_projection.deferred_posting_at`/`reconciled_at` 兩個欄位——
+2026-08-09 對帳模式改版拿掉了原本這個 migration 裡的
+`read_reconciliation_projection` 建表,因為這個 migration 從未上線過生產
+環境,直接原地改掉比疊一條新 migration 去撤銷它更乾淨,不留一張建完馬上
+被下一輪刪掉的表在遷移歷史裡)。
+
+**延後入帳**:`read_tx_projection` 加 `deferred_posting_at`(nullable
+datetime)+ `WriteTransactionCreateRequest/UpdateRequest.deferred_posting_at`
+同款欄位,`sync_applier._LEDGER_MERGE_SPECS["transaction"]` 登記 merge 規則
+(缺鍵保留舊值,跟 `refundOfId`/`installmentPlanId` 同款)。共用 helper
+`src/services/deferred_posting.py`:`attribution_date_expr()`(SQL
+`COALESCE(deferred_posting_at, happened_at)`,給查詢用)/`attribution_date()`
+(Python 端單筆物件用)。**COALESCE 對既有資料(全部是 NULL)零行為改變**,
+是安全的向後相容改動,套用在:①`read/ledgers.py::get_account_statement`
+(對帳模式的「這期帳單」交易篩選,見下方 2026-08-09 改版)+
+`write/accounts.py::clear_statement_confirmations_ep`(清除確認的週期邊界
+計算);②`services/credit_card_billing.py` 的帳單週期窗口查詢
+(`compute_group_billing`/`compute_cycle_period_billing` 的 `happened_at`
+篩選條件全部換成這個 expr,§2.9 信用卡帳單彙總同步吃到延後入帳);
+③`services/card_rewards.py::_attribution_date` 改成呼叫共用 helper(原本
+是本地重複實作,行為不變,現在是真正共用同一份)。**刻意不改**
+`workspace_analytics`/`_projection_totals` 這類主要收支統計端點(維持
+`happened_at` 消費日口徑)——這些是既有、已測過的核心聚合邏輯,文件裡
+「若也要看入帳日口徑」用詞本身就是「可選」,沒有強制要求,為了控制這輪
+改動的 blast radius 刻意不動,已知限制(如果之後要做,同一個 helper 直接
+換掉那幾處 `ReadTxProjection.happened_at` 即可)。
+
+**對帳模式(2026-08-09 全面改版)**:v1(上面 2026-08-08 那版)做成「使用者
+手動輸入一筆對帳單餘額,系統跟記帳總額比對算差額」的獨立 CRUD entity,
+上線後使用者反饋這個設計跟 Moze 參考頁面(`doc.moze.app/reconciliation/
+statement-mode` + `doc.moze.app/record/postpone`)完全不符——Moze 的對帳
+模式**沒有**「輸入對帳單餘額」這個步驟,而是直接顯示「這期帳單」的交易
+清單本身,逐筆勾選確認是否出現在銀行的帳單上(右滑),對不在本期帳單上的
+交易(店家還沒請款)左滑「延後入帳到下期帳單」。v1 整個推翻重做:
+①**刪除** `read_reconciliation_projection` 表 + 對應的 CRUD write endpoint
+(`write/reconciliations.py`)+ read endpoint(`get_account_reconciliation`)
++ schemas(`WriteReconciliationCreateRequest`/`UpdateRequest`/
+`ReadReconciliationOut`)+ sync_applier/projection 三張表登記——**這是本
+文件少見的「刪掉一個剛落地的 entity」案例**,因為上一輪還沒有真正被使用者
+在瀏覽器裡驗證過就先寫了完整後端,這次教訓是:對照 Moze 截圖/文件的功能,
+應該在寫 code 之前先核對 UI 流程細節,不能只看功能名稱字面意思猜測資料
+模型。②**新增** `read_tx_projection.reconciled_at`(nullable datetime,
+跟 `deferred_posting_at` 同一種「tx 自身的核對狀態」欄位,不是獨立
+entity)——一筆交易只需要記「有沒有被使用者在對帳模式裡勾選確認過」這一個
+布林狀態,merge/projection/schemas 三處都比照 `deferred_posting_at` 現有
+寫法各加一行(`WriteTransactionUpdateRequest.reconciled_at`/
+`ReadTransactionOut.reconciled_at`/`snapshot_mutator.update_transaction`/
+`sync_applier` merge spec/`projection.upsert_tx`/`snapshot_builder.py`
+SELECT)。確認/取消確認、延後入帳都**直接複用既有的通用**
+`PATCH /ledgers/{id}/transactions/{id}` 端點(帶 `reconciled_at`/
+`deferred_posting_at`),不是專門的 write endpoint——這兩個動作本質就是
+「改交易的一個欄位」,沒有必要新增 API surface。③新讀端點
+`GET /ledgers/{id}/accounts/{account_id}/statement`
+(`read/ledgers.py::get_account_statement`):範圍限制跟 billing-summary
+一致(`credit_card_billing.is_billing_root`,account_group 或沒掛靠群組的
+獨立信用卡——Moze 原文入口本來就是「信用卡交易明細頁」,不是任意帳戶),
+`cycle_offset` 語意直接複用 `compute_cycle_period_billing`(0 = 最近一次
+已結束的週期),回傳這期窗口內的 `expense`/`income` 交易清單(依卡分組
+小計,對齊原文「主帳戶依不同信用卡分組顯示」)+ 統計筆數/金額 + 已確認
+筆數/金額。④新寫端點 `POST .../accounts/{account_id}/statement/
+clear-confirmations`(`write/accounts.py::clear_statement_confirmations_ep`,
+對齊選單「取消全部選取」):把指定週期窗口裡所有已確認交易的
+`reconciled_at` 批次清空,走 `_commit_write` 全量 diff 路徑(不是 fast
+path,因為要一次改多筆 tx),走一般交易寫權限(不是 owner-only)——對帳
+本身是記帳動作,跟確認/取消確認單筆交易走的 `PATCH transactions` 同一個
+權限模型。`services/credit_card_billing.py::date_to_utc_dt`(原本
+`_date_to_utc_dt`)順手改成公開函式,讓 read/write 兩處都能算同一份週期
+邊界,不重複實作。
+
+**餘額調整**:第四種 `tx_type = "adjustment"`(`Literal["expense", "income",
+"transfer", "adjustment"]`,只加在 `WriteTransactionCreateRequest/
+UpdateRequest` 跟 `snapshot_mutator.create_transaction/update_transaction`
+的白名單裡——`recurring_rule`/`tx_template` 那兩處白名單刻意不加,週期性
+收支/範本沒有「餘額調整」這種業務組合的意義)。`amount` 是帶正負號的差量,
+直接加總進帳戶餘額(不像 income/expense 分開算再相減)——這個加法邏輯其實
+早就寫在 `read/workspace.py::workspace_net_worth_history` 的 `_apply()`
+裡(`elif tx_type == "adjustment": bal[acc] += amt`),但因為 `tx_type`
+之前不可能是 `"adjustment"` 一直是死代碼,這次順手激活。餘額公式的另外
+兩處(`recurring_materializer.compute_account_balance`、`read/workspace.py::
+list_workspace_accounts` 的 `main_stats`/新增的 `adjustment_rows` 查詢)
+都補上 adjustment 加總,三處保持一致。**語意化端點**
+`POST /ledgers/{id}/accounts/{account_id}/balance-adjustment`
+(`src/routers/write/accounts.py::balance_adjustment_ep`,跟 `card_payment_
+ep`/`manual_card_reward_payout_ep` 同一個「使用者輸入高階意圖,server 算
+出實際交易內容」模式):使用者填「這個帳戶現在應該是多少錢」
+(`target_balance`),server 用 `compute_account_balance` 算出當下記帳餘額,
+差額寫成一筆 `adjustment` 交易。走一般交易寫權限(`_TRANSACTION_WRITE_
+ROLES`,不是 owner-only)——這是記一筆交易,不是帳戶級設定變更。拒絕
+`account_group` 目標(`_assert_account_not_group`,群組沒有自己的資金)。
+**兜底校驗**(`write/_shared.py::_assert_valid_adjustment_tx`,`_commit_
+create_tx_fast`/`_commit_write_fast_tx` 兩條 fast path 都掛,仿照 splits/
+reward_rule_ids 在 merge 後最終狀態上校驗的模式):`adjustment` 交易不能
+帶分類/from-to 帳戶/拆帳/退款/欠款/紅利回饋,只能有 `account_id` +
+`amount` + `note`,防止 mobile/未來直連 API 繞過語意化端點塞出語意矛盾
+的 payload。**已知限制**:`adjustment` 交易目前不影響 §2.9 信用卡帳單彙總
+(`credit_card_billing.py` 的 charged/paid 查詢只看 `expense`/`income`/
+`transfer`),如果使用者對信用卡帳戶做餘額調整,帳戶總餘額(workspace/
+accounts)會反映但信用卡「應繳金額」不會連動——這個組合場景本輪沒有處理,
+留待有實際需求時再評估(信用卡的餘額調整語意本來就模糊:是修正額度使用
+還是修正现金流,需要先定義清楚)。
+
+**比較報表**:`GET /workspace/comparison`(`read/workspace.py::
+comparison_report`),不新增表,純衍生計算。`scope=month|year`(不支援
+quarter,`_analytics_range` 本來就只認這兩種,沒有為了這個端點新增第三種
+週期語意)、`period` 跟既有 `/workspace/analytics` 的 `period` 参数同語意
+(不傳 = 目前所在週期)、`offset`(預設 1,範圍 1-120)決定比較期往前推
+幾個週期——`scope=month` 時 `offset=1` 是環比上個月,`offset=12` 是同比
+去年同月;`scope=year` 時 `offset=1` 是跟去年比。核心聚合邏輯抽成
+`_comparison_period_totals()`,是 `workspace_analytics` 端點函式裡那段
+「退款 netting + 拆帳展開」核心迴圈的精簡版(拿掉 series/anomaly/
+distinct_days 這些比較報表不需要的東西),兩份邏輯目前是分開維護的——如果
+之後改任一處的收支口徑(比如退款/拆帳規則),記得兩處都要看一眼會不會
+對不上,沒有抽出更高層的共用函式是因為兩者需要的欄位/回傳形狀差異夠大,
+硬抽象反而會讓兩邊都變難讀。分類排行 `category_breakdown` 依 `|diff|`
+降序,收入分類(expense 兩期都是 0)歸 `category_kind="income"`。
+
+**測試**:`tests/test_deferred_posting.py`(mobile push merge 契約 + 信用卡
+帳單 COALESCE 生效驗證,含一個零回歸檢查用例)、`tests/test_reconciliation.py`
+(2026-08-09 改版後全部重寫:「這期帳單」清單 + 依卡分組小計、確認/取消
+確認透過通用 PATCH transactions 反映到 statement 讀端點、延後入帳把交易
+移到下一期、`statement`/`billing-summary` 範圍限制一致的拒絕情境、清除
+確認只影響指定週期不波及其它週期、owner+editor 都可操作、mobile push
+的 `reconciledAt` merge 契約、排序切換)、`tests/test_balance_adjustment.py`
+(語意化端點正負差額 + 零差額仍允許 + account_group 拒絕 + editor 角色
+允許 + 直接建 adjustment 交易的兜底校驗四種,這個功能 2026-08-09 沒有變動)、
+`tests/test_comparison_report.py`(月比月/年比年同比/年 scope/退款
+netting/空區間零值)。全量 `pytest tests/` 除既有已知、跟本次改動無關的
+`test_recurring_rules.py::test_recurring_occurrence_update_overridden_
+skipped_by_update_from` flaky 用例外全過。**web UI 尚未走完整瀏覽器手測**
+(按本文件的慣例,下一輪如果有新 bug 幾乎必然是純前端邏輯,pytest 測不到),
+手動測試清單見 `docs/PH5_RECONCILIATION_WEB_UI_MANUAL_TEST_PLAN.md`。
+mobile 端仍待排期。
+
 ## 架构总览(server 端)
 
 FastAPI 应用,入口是 `src/main.py`,可执行文件是仓根 `server.py`(`make

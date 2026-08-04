@@ -280,9 +280,13 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
 
 def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) -> float:
     """当下记账余额 = initial_balance + income - expense - transfer_out +
-    transfer_in,跟 `routers/read/workspace.py::list_workspace_accounts` 算
-    单个帐户余额的公式完全一致(那边是批量算全部帐户,这里只算一个)。用来
-    给 `materialize_due_transfer_rules` 判断"来源帐户当下够不够扣"。"""
+    transfer_in + adjustment,跟 `routers/read/workspace.py::
+    list_workspace_accounts` 算单个帐户余额的公式完全一致(那边是批量算
+    全部帐户,这里只算一个)。用来给 `materialize_due_transfer_rules` 判断
+    "来源帐户当下够不够扣",也给 `write/accounts.py::balance_adjustment_ep`
+    (§2.10 Phase 5)算「目标余额 - 当下余额」的差额。adjustment(§2.10)
+    的 `amount` 本身就是带正负号的差量,直接加总(不像 income/expense 分开
+    两个 CASE 再相减)。"""
     account = db.scalar(
         select(UserAccountProjection).where(
             UserAccountProjection.user_id == user_id,
@@ -310,7 +314,12 @@ def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) 
             ReadTxProjection.to_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
         )
     ) or 0.0)
-    return init_bal + income - expense - transfer_out + transfer_in
+    adjustment = float(db.scalar(
+        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "adjustment",
+        )
+    ) or 0.0)
+    return init_bal + income - expense - transfer_out + transfer_in + adjustment
 
 
 def _already_notified_insufficient(

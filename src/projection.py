@@ -358,6 +358,18 @@ def upsert_tx(
         # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同款语义:None =
         # 普通交易(或 period_end/manual 這種不對應單一原始交易的回饋)。
         "reward_source_tx_sync_id": _as_str(payload.get("rewardSourceTxId")),
+        # 延後入帳(§2.10 Phase 5):None = 正常交易,缺键保留由上游
+        # merge_with_existing 负责。
+        "deferred_posting_at": (
+            _parse_happened_at(payload.get("deferredPostingAt"))
+            if payload.get("deferredPostingAt") else None
+        ),
+        # 對帳模式(§2.10,2026-08-09 改版):None = 尚未核對,缺键保留由上游
+        # merge_with_existing 负责。
+        "reconciled_at": (
+            _parse_happened_at(payload.get("reconciledAt"))
+            if payload.get("reconciledAt") else None
+        ),
         "source_change_id": source_change_id,
     }
 
