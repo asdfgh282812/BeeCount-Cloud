@@ -657,6 +657,8 @@ const zhTW = {
   'cardBilling.autoPayOn': '自動扣繳:已開啟',
   'cardBilling.autoPayOff': '自動扣繳:未開啟',
   'cardBilling.manageAutoPay': '前往帳戶設定',
+  'cardBilling.autoPayOnParentHint': '自動扣繳設定在主帳戶,點擊前往查看',
+  'cardBilling.parentAccountLink': '所屬主帳戶:{name}',
   'cardBilling.setupInstallment': '新增帳單分期',
   'cardBilling.members': '子卡明細',
   'cardBilling.interestFreeHint': '{date} 之後消費,最晚可延到 {due} 才繳款(最長 {days} 天免息期)',

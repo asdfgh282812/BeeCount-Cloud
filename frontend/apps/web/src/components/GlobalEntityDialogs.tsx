@@ -250,6 +250,32 @@ export function GlobalEntityDialogs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountPeriodRange])
 
+  // 2026-08-04 第二輪使用者反饋:子卡詳情裡的「所屬主帳戶」連結——查出主
+  // 帳戶的完整 WorkspaceAccount 物件(詳情彈窗需要 account_type/
+  // parent_account_id 等欄位才能正确渲染),再重新派發 open-detail-account
+  // 事件切換這個彈窗去顯示它,跟 handleJumpToReward 同一個「自己派發自己
+  // 監聽」模式。
+  const handleJumpToParentAccount = useCallback(
+    async (parentAccountId: string) => {
+      try {
+        const accounts = await fetchWorkspaceAccounts(token, {
+          ledgerId: accountScope === 'current' ? activeLedgerId || undefined : undefined,
+          limit: 500,
+        })
+        const found = accounts.find((a) => a.id === parentAccountId)
+        if (!found) {
+          toast.error(t('transactions.error.jumpTargetNotFound'), t('notice.error'))
+          return
+        }
+        setAccountHighlightRewardRuleId(undefined)
+        dispatchOpenDetailAccount(found, { defaultScope: accountScope })
+      } catch (err) {
+        toast.error(localizeError(err, t), t('notice.error'))
+      }
+    },
+    [token, activeLedgerId, accountScope, toast, t],
+  )
+
   const loadCategoryTxs = useCallback(
     async (categorySyncId: string, scope: DetailScope, offset: number) => {
       setCategoryLoading(true)
@@ -634,6 +660,7 @@ export function GlobalEntityDialogs() {
         onLoadMore={(id, off) => void loadAccountTxs(id, accountScope, off)}
         onPeriodRangeChange={handleAccountPeriodRangeChange}
         highlightRewardRuleId={accountHighlightRewardRuleId}
+        onJumpToParentAccount={(id) => void handleJumpToParentAccount(id)}
       />
       <CategoryDetailDialog
         category={category}

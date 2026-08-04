@@ -658,6 +658,8 @@ const en = {
   'cardBilling.autoPayOn': 'Auto-pay: On',
   'cardBilling.autoPayOff': 'Auto-pay: Off',
   'cardBilling.manageAutoPay': 'Manage in Account Settings',
+  'cardBilling.autoPayOnParentHint': 'Auto-pay is set on the parent account — view it there',
+  'cardBilling.parentAccountLink': 'Parent account: {name}',
   'cardBilling.setupInstallment': 'Add Statement Installment',
   'cardBilling.members': 'Sub-card Breakdown',
   'cardBilling.interestFreeHint': 'Spend after {date} to get the longest interest-free period — due {due} at the latest ({days} days).',

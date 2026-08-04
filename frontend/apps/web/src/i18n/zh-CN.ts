@@ -192,6 +192,8 @@ const zhCN = {
   'cardBilling.autoPayOn': '自动扣缴:已开启',
   'cardBilling.autoPayOff': '自动扣缴:未开启',
   'cardBilling.manageAutoPay': '前往账户设置',
+  'cardBilling.autoPayOnParentHint': '自动扣缴设置在主账户,点击前往查看',
+  'cardBilling.parentAccountLink': '所属主账户:{name}',
   'cardBilling.setupInstallment': '新增账单分期',
   'cardBilling.members': '子卡明细',
   'cardBilling.interestFreeHint': '{date} 之后消费,最晚可延到 {due} 才缴款(最长 {days} 天免息期)',

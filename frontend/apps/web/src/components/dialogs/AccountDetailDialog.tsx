@@ -84,6 +84,10 @@ interface Props {
    *  展開 + 打開這條規則的交易明細彈窗。其它入口(帳戶列表點卡片)開這個
    *  彈窗時不帶,不觸發任何自動展開。 */
   highlightRewardRuleId?: string
+  /** 2026-08-04 第二輪使用者反饋:已掛靠群組的子卡詳情裡顯示「所屬主帳戶」
+   *  連結,點擊後由呼叫端(`GlobalEntityDialogs`)查出主帳戶的完整物件並
+   *  切換這個彈窗去顯示它——查帳戶列表是異步的,這裡只丟出 accountId。 */
+  onJumpToParentAccount?: (accountId: string) => void
 }
 
 /**
@@ -94,6 +98,18 @@ interface Props {
  * CreditCardBillingSection` 收 `billing` prop 而不是自己重新 fetch 一次。
  * `isBillingRoot`:account_group(主帳戶),或沒有掛靠任何群組的獨立信用卡
  * 才會去查(見 `credit_card_billing.is_billing_root` 的後端對應邏輯)。
+ *
+ * 2026-08-04 第二輪使用者反饋:已經掛靠群組的子卡打開詳情時原本完全看不到
+ * 帳單資訊(`isBillingRoot` 恆為 false)——改成子卡也能瀏覽,只是查詢/繳款/
+ * 建分期時一律改用它掛靠的 `parent_account_id`(`billingAccountId`)當
+ * `account_id` 打後端既有的 billing-summary/interest-free-suggestion/
+ * card-payment/installment-plan 端點——這些端點本來就要求「必須是
+ * account_group 或無父的獨立信用卡」(`credit_card_billing.is_billing_
+ * root`),子卡自己過不了這個檢查,但它的父群組永遠過得了,所以不需要改
+ * 後端,單純讓前端「問對帳戶」即可。回傳的 `summary.account_id`/
+ * `account_name` 因此會是父群組自己的,`isBillingChild` 讓 UI 知道現在
+ * 顯示的是「借用父群組資料」,用來顯示「所屬主帳戶」連結 + 隱藏只對群組
+ * 自己有意義的自動扣繳狀態(那個欄位設在群組身上,子卡自己讀不到正確值)。
  */
 function useAccountBilling(
   account: AccountWithStats | null,
@@ -105,6 +121,10 @@ function useAccountBilling(
     !!account &&
     ((account.account_type || '') === 'account_group' ||
       ((account.account_type || '') === 'credit_card' && !account.parent_account_id))
+  const isBillingChild =
+    !!account && (account.account_type || '') === 'credit_card' && !!account.parent_account_id
+  const canViewBilling = isBillingRoot || isBillingChild
+  const billingAccountId = isBillingChild ? account!.parent_account_id! : accountId
 
   const [summary, setSummary] = useState<AccountBillingSummary | null>(null)
   const [suggestion, setSuggestion] = useState<AccountInterestFreeSuggestion | null>(null)
@@ -124,7 +144,7 @@ function useAccountBilling(
   }, [accountId])
 
   useEffect(() => {
-    if (!isBillingRoot || !token || !activeLedgerId || !accountId) {
+    if (!canViewBilling || !token || !activeLedgerId || !billingAccountId) {
       setAvailable(false)
       setSummary(null)
       setSuggestion(null)
@@ -133,8 +153,8 @@ function useAccountBilling(
     let cancelled = false
     setLoading(true)
     Promise.all([
-      fetchAccountBillingSummary(token, activeLedgerId, accountId, cycleOffset),
-      fetchAccountInterestFreeSuggestion(token, activeLedgerId, accountId),
+      fetchAccountBillingSummary(token, activeLedgerId, billingAccountId, cycleOffset),
+      fetchAccountInterestFreeSuggestion(token, activeLedgerId, billingAccountId),
     ])
       .then(([s, sug]) => {
         if (cancelled) return
@@ -161,17 +181,29 @@ function useAccountBilling(
     return () => {
       cancelled = true
     }
-  }, [isBillingRoot, token, activeLedgerId, accountId, cycleOffset])
+  }, [canViewBilling, token, activeLedgerId, billingAccountId, cycleOffset])
 
   // 繳款 / 建分期成功後手動重新拉一次最新的帳單摘要,不用整個 effect 重跑。
   const reload = useCallback(() => {
-    if (!isBillingRoot || !token || !activeLedgerId || !accountId) return
-    fetchAccountBillingSummary(token, activeLedgerId, accountId, cycleOffset)
+    if (!canViewBilling || !token || !activeLedgerId || !billingAccountId) return
+    fetchAccountBillingSummary(token, activeLedgerId, billingAccountId, cycleOffset)
       .then(setSummary)
       .catch(() => {})
-  }, [isBillingRoot, token, activeLedgerId, accountId, cycleOffset])
+  }, [canViewBilling, token, activeLedgerId, billingAccountId, cycleOffset])
 
-  return { isBillingRoot, summary, suggestion, loading, available, cycleOffset, setCycleOffset, reload }
+  return {
+    isBillingRoot,
+    isBillingChild,
+    canViewBilling,
+    billingAccountId,
+    summary,
+    suggestion,
+    loading,
+    available,
+    cycleOffset,
+    setCycleOffset,
+    reload,
+  }
 }
 
 /** 点账户卡片弹出的详情:顶部账户名 + 统计信息 + 交易列表(无限滚动加载)。 */
@@ -190,6 +222,7 @@ export function AccountDetailDialog({
   resolveAttachmentPreviewUrl,
   onPeriodRangeChange,
   highlightRewardRuleId,
+  onJumpToParentAccount,
 }: Props) {
   const t = useT()
   const { profileMe, token } = useAuth()
@@ -202,13 +235,13 @@ export function AccountDetailDialog({
   const billing = useAccountBilling(account, token, activeLedgerId)
 
   useEffect(() => {
-    if (!billing.isBillingRoot || !billing.summary) {
+    if (!billing.canViewBilling || !billing.summary) {
       onPeriodRangeChange?.(null)
       return
     }
     onPeriodRangeChange?.({ start: billing.summary.period_cycle_start, end: billing.summary.period_cycle_end })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [billing.isBillingRoot, billing.summary])
+  }, [billing.canViewBilling, billing.summary])
 
   // 卸载(切换到别的账户 / 关闭详情弹窗)时清掉过滤,不让下一个账户的交易
   // 列表继承上一张卡選中的期数窗口。
@@ -224,7 +257,7 @@ export function AccountDetailDialog({
   // `read/ledgers.py::get_account_card_rewards` docstring。非
   // billing-root(掛靠群組的子卡)或帳單資料還不可用(沒設定帳單日等)時,
   // 對齊「目前這期」,不跟著一個不存在的週期選擇器亂跑。
-  const rewardCycleOffset = billing.isBillingRoot && billing.available ? billing.cycleOffset : 1
+  const rewardCycleOffset = billing.canViewBilling && billing.available ? billing.cycleOffset : 1
   const rewardPeriodOffset = rewardCycleOffset - 1
 
   return (
@@ -235,7 +268,7 @@ export function AccountDetailDialog({
           {/* 帳單週期日期選擇器(2026-08-04 使用者反饋:移到標題跟 全部帳本/
               當前帳本 切換之間,尺寸比照那顆切換按鈕)。只在 billing-root
               帳戶且帳單資料抓取成功時顯示。 */}
-          {billing.isBillingRoot && billing.available && billing.summary ? (
+          {billing.canViewBilling && billing.available && billing.summary ? (
             <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs">
               <button
                 type="button"
@@ -269,18 +302,42 @@ export function AccountDetailDialog({
                 帳單分期/對帳筆數/剩餘帳款,見 useAccountBilling + 下面
                 AccountStatsHeader),跟著上面新增的週期選擇器走;其它帳戶
                 類型維持原本的餘額/收入/支出統計。 */}
+            {/* 所屬主帳戶(2026-08-04 第二輪使用者反饋):子卡才顯示,點擊
+                切換這個彈窗去看主帳戶(§2.9 群組模型)。名稱取自
+                billing.summary.account_name——查詢時已經改用主帳戶的
+                parent_account_id 當 account_id(見 useAccountBilling),
+                後端回傳的 account_name 因此天然就是主帳戶自己的名字。 */}
+            {billing.isBillingChild && billing.summary && onJumpToParentAccount ? (
+              <button
+                type="button"
+                className="flex items-center gap-1.5 border-b border-border/60 bg-muted/10 px-6 py-2 text-left text-xs text-muted-foreground hover:text-foreground hover:underline"
+                onClick={() => onJumpToParentAccount(billing.billingAccountId!)}
+              >
+                <CreditCard className="h-3.5 w-3.5 shrink-0" />
+                <span>{t('cardBilling.parentAccountLink', { name: billing.summary.account_name })}</span>
+              </button>
+            ) : null}
+
             <AccountStatsHeader account={account} t={t} billing={billing} />
 
             {/* 信用卡 / 银行卡专属信息:bank_name / 卡号末 4 / 信用额度 /
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
-            <AccountCardInfo account={account} t={t} />
+            <AccountCardInfo account={account} t={t} billing={billing} />
 
             {/* 信用卡合併帳單 + 免息期建议 + 繳款(§2.9 Phase 4,2026-08-02
-                改版為群組模型,同日第二輪放寬到單卡)。只在
-                account_type=account_group(主帳戶),或沒有掛靠任何群組的
-                獨立信用卡,且当前有选中账本时渲染(帐单摘要是
+                改版為群組模型,同日第二輪放寬到單卡,2026-08-04 第二輪放寬到
+                已掛靠群組的子卡——子卡瀏覽/繳款/建分期一律借用主帳戶的
+                billingAccountId,見 useAccountBilling)。只在
+                account_type=account_group(主帳戶)/沒有掛靠任何群組的獨立
+                信用卡/已掛靠群組的子卡,且当前有选中账本时渲染(帐单摘要是
                 ledger-scoped 读端点)。 */}
-            <CreditCardBillingSection account={account} t={t} onClose={onClose} billing={billing} />
+            <CreditCardBillingSection
+              account={account}
+              t={t}
+              onClose={onClose}
+              billing={billing}
+              onJumpToParentAccount={onJumpToParentAccount}
+            />
 
             {/* 信用卡紅利回饋(§2.9.5 Phase 4.5):規則管理 + 當期回饋預覽。
                 綁定的是這張真實的 credit_card 帳戶(獨立卡或掛靠群組的子卡
@@ -363,7 +420,7 @@ function AccountStatsHeader({
   // 而且使用者需要的是「這期帳單」的資訊,不是終身餘額)。只在資料抓取成功
   // 時渲染;沒設定帳單日/還款日(billing.available 恆為 false)或還在載入時
   // 落回下面的舊版顯示,不讓畫面整塊空白。
-  if (billing.isBillingRoot && billing.available && billing.summary) {
+  if (billing.canViewBilling && billing.available && billing.summary) {
     const s = billing.summary
     const installmentText =
       s.period_installment_active_count === 0
@@ -395,7 +452,7 @@ function AccountStatsHeader({
     )
   }
 
-  if (billing.isBillingRoot && billing.loading) {
+  if (billing.canViewBilling && billing.loading) {
     return (
       <div className="border-b border-border/60 bg-muted/20 px-6 py-4 text-center text-xs text-muted-foreground">
         {t('cardBilling.loading')}
@@ -471,27 +528,38 @@ function AccountStatsHeader({
 function AccountCardInfo({
   account,
   t,
+  billing,
 }: {
   account: AccountWithStats
   t: (key: string, params?: Record<string, string | number>) => string
+  billing: ReturnType<typeof useAccountBilling>
 }) {
   const accountType = account.account_type || ''
   const isCreditCard = accountType === 'credit_card'
   // 主帳戶(§2.9 Phase 4,2026-08-02 改版,同日第二輪放寬到單卡):信用
   // 額度/帳單日/還款日設在 account_group 自己身上,或沒有掛靠任何群組的
-  // 獨立信用卡自己身上;已經掛靠群組的子帳戶不再各自帶這些欄位——沿用
-  // 群組的結帳週期,見下面 CreditCardBillingSection。
+  // 獨立信用卡自己身上;已經掛靠群組的子帳戶自己沒有這些欄位。2026-08-04
+  // 第二輪使用者反饋:子卡改成顯示「跟主帳戶一樣的資訊」——直接借用
+  // billing.summary(查詢時已經改用主帳戶的 id,見 useAccountBilling)裡
+  // 回傳的 credit_limit/billing_day/payment_due_day,不是靠子卡自己的
+  // (恆為 null 的)欄位。
   const isAccountGroup = accountType === 'account_group'
   const isStandaloneCreditCard = isCreditCard && !account.parent_account_id
-  const showsBillingFields = isAccountGroup || isStandaloneCreditCard
+  const showsBillingFields = isAccountGroup || isStandaloneCreditCard || billing.isBillingChild
   const isBankOrCredit = isCreditCard || isAccountGroup || accountType === 'bank_card'
   if (!isBankOrCredit) return null
 
   const bankName = account.bank_name?.trim() || ''
   const cardLastFour = account.card_last_four?.trim() || ''
-  const creditLimit = showsBillingFields ? account.credit_limit : null
-  const billingDay = showsBillingFields ? account.billing_day : null
-  const paymentDueDay = showsBillingFields ? account.payment_due_day : null
+  const creditLimit = showsBillingFields
+    ? (billing.isBillingChild ? billing.summary?.credit_limit ?? null : account.credit_limit)
+    : null
+  const billingDay = showsBillingFields
+    ? (billing.isBillingChild ? billing.summary?.billing_day ?? null : account.billing_day)
+    : null
+  const paymentDueDay = showsBillingFields
+    ? (billing.isBillingChild ? billing.summary?.payment_due_day ?? null : account.payment_due_day)
+    : null
 
   // 信用卡已用额度 = -balance(余额为负表示欠款),剩余额度 = limit - used。
   // 这是粗略估算 — 没考虑账单周期,只看终身累计。但作为"大致还能刷多少"
@@ -645,6 +713,7 @@ function CreditCardBillingSection({
   t,
   onClose,
   billing,
+  onJumpToParentAccount,
 }: {
   account: AccountWithStats
   t: (key: string, params?: Record<string, string | number>) => string
@@ -654,6 +723,7 @@ function CreditCardBillingSection({
    *  頂部的統計區塊 + 標題列的週期選擇器都需要同一份資料(2026-08-04 使用
    *  者反饋:週期選擇器要移到標題列)。 */
   billing: ReturnType<typeof useAccountBilling>
+  onJumpToParentAccount?: (accountId: string) => void
 }) {
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
@@ -679,7 +749,7 @@ function CreditCardBillingSection({
 
   const [installOpen, setInstallOpen] = useState(false)
 
-  if (!billing.isBillingRoot || !activeLedgerId) return null
+  if (!billing.canViewBilling || !activeLedgerId) return null
   if (billing.loading) {
     return (
       <div className="border-b border-border/60 px-6 py-3 text-xs text-muted-foreground">
@@ -700,23 +770,31 @@ function CreditCardBillingSection({
     if (token && activeLedgerId) {
       fetchReadAccounts(token, activeLedgerId)
         .then((accts) =>
-          // 付款來源不能是這個群組自己,也不能是任何 account_group(§2.9
-          // Phase 4:群組沒有自己的資金,不能拿來當繳費來源,對齊後端
-          // `_assert_account_not_group` 校驗)。
-          setPayAccounts(accts.filter((a) => a.id !== account.id && a.account_type !== 'account_group'))
+          // 付款來源不能是實際被繳款的那個帳戶(billingAccountId,子卡時是
+          // 它掛靠的主帳戶而不是子卡自己)、也不能是正在瀏覽的這張子卡自己
+          // 、也不能是任何 account_group(§2.9 Phase 4:群組沒有自己的資金,
+          // 不能拿來當繳費來源,對齊後端 `_assert_account_not_group` 校驗)。
+          setPayAccounts(
+            accts.filter(
+              (a) =>
+                a.id !== account.id &&
+                a.id !== billing.billingAccountId &&
+                a.account_type !== 'account_group',
+            ),
+          ),
         )
         .catch(() => setPayAccounts([]))
     }
   }
 
   const submitPayment = async () => {
-    if (!token || !activeLedgerId) return
+    if (!token || !activeLedgerId || !billing.billingAccountId) return
     const amount = Number(payAmount)
     if (!Number.isFinite(amount) || amount <= 0 || !payFromAccountId) return
     setPaying(true)
     try {
       await retryOnConflict(activeLedgerId, (base) =>
-        cardPayment(token, activeLedgerId, account.id, base, {
+        cardPayment(token, activeLedgerId, billing.billingAccountId!, base, {
           amount,
           from_account_id: payFromAccountId,
         }),
@@ -827,32 +905,50 @@ function CreditCardBillingSection({
       {/* 自動扣繳(§2.9,2026-08-04 改版)状态:開關 + 來源帳戶現在直接設在
           這張卡/群組自己的編輯表單裡(帳戶列表頁「編輯」),不再是另一個
           頁面的週期性收支規則,這裡只顯示目前狀態 + 指引入口。分期入口
-          (§2.3)維持既有的另一個通用頁面。 */}
+          (§2.3)維持既有的另一個通用頁面。2026-08-04 第二輪使用者反饋:
+          子卡自己的 `auto_pay_enabled` 欄位恆為空(這個開關實際設在它掛靠
+          的主帳戶身上)——顯示子卡自己的欄位會誤導成「一律關閉」,子卡改成
+          指向「前往主帳戶查看」而不是顯示可能錯誤的狀態。 */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span
-          className={`rounded-md px-2.5 py-1 font-medium ${
-            account.auto_pay_enabled
-              ? 'bg-primary/15 text-primary'
-              : 'bg-muted/50 text-muted-foreground'
-          }`}
-        >
-          {account.auto_pay_enabled ? t('cardBilling.autoPayOn') : t('cardBilling.autoPayOff')}
-        </span>
-        <button
-          type="button"
-          className="rounded-md border border-border px-2.5 py-1 font-medium text-muted-foreground hover:bg-muted/50"
-          onClick={() => {
-            // 详情弹窗是全局挂载的(可能从任意页面打开),先关自己 + 跳到
-            // 账户列表页,再派发 openEditAccount 让该页把这个账户装进编辑
-            // 表单 —— 单纯 navigate 在已经身处 /app/accounts 时是个 no-op,
-            // 弹窗也不会自己关掉,点了跟没点一样(2026-08-02 用户实测反馈)。
-            onClose()
-            navigate('/app/accounts')
-            dispatchOpenEditAccount(account as WorkspaceAccount)
-          }}
-        >
-          {t('cardBilling.manageAutoPay')}
-        </button>
+        {billing.isBillingChild ? (
+          onJumpToParentAccount ? (
+            <button
+              type="button"
+              className="rounded-md border border-border px-2.5 py-1 font-medium text-muted-foreground hover:bg-muted/50"
+              onClick={() => onJumpToParentAccount(billing.billingAccountId!)}
+            >
+              {t('cardBilling.autoPayOnParentHint')}
+            </button>
+          ) : null
+        ) : (
+          <>
+            <span
+              className={`rounded-md px-2.5 py-1 font-medium ${
+                account.auto_pay_enabled
+                  ? 'bg-primary/15 text-primary'
+                  : 'bg-muted/50 text-muted-foreground'
+              }`}
+            >
+              {account.auto_pay_enabled ? t('cardBilling.autoPayOn') : t('cardBilling.autoPayOff')}
+            </span>
+            <button
+              type="button"
+              className="rounded-md border border-border px-2.5 py-1 font-medium text-muted-foreground hover:bg-muted/50"
+              onClick={() => {
+                // 详情弹窗是全局挂载的(可能从任意页面打开),先关自己 + 跳到
+                // 账户列表页,再派发 openEditAccount 让该页把这个账户装进编辑
+                // 表单 —— 单纯 navigate 在已经身处 /app/accounts 时是个
+                // no-op,弹窗也不会自己关掉,点了跟没点一样(2026-08-02 用户
+                // 实测反馈)。
+                onClose()
+                navigate('/app/accounts')
+                dispatchOpenEditAccount(account as WorkspaceAccount)
+              }}
+            >
+              {t('cardBilling.manageAutoPay')}
+            </button>
+          </>
+        )}
         <button
           type="button"
           disabled={summary.remaining_due <= 0}
@@ -917,13 +1013,13 @@ function CreditCardBillingSection({
         </DialogContent>
       </Dialog>
 
-      {installOpen ? (
+      {installOpen && billing.billingAccountId ? (
         <InstallmentQuickCreateDialog
           onClose={() => setInstallOpen(false)}
           token={token || ''}
           ledgerId={activeLedgerId}
-          accountId={account.id}
-          accountLabel={account.name}
+          accountId={billing.billingAccountId}
+          accountLabel={summary.account_name || account.name}
           defaultAmount={summary.period_total_due > 0 ? summary.period_total_due : summary.remaining_due}
           defaultDueDate={summary.due_date}
           retryOnConflict={retryOnConflict}
