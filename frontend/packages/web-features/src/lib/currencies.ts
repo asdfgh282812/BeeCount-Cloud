@@ -56,7 +56,7 @@ export function currencySymbol(code: string, locale = 'zh-CN'): string {
  *  与 App lib/utils/currencies.dart countryCodeForCurrency 对齐。 */
 const _CURRENCY_COUNTRY: Record<string, string | null> = {
   EUR: 'EU',
-  TWD: 'CN', // 新台币显示中国国旗(中国大陆市场合规)
+  TWD: 'TW', // 新台币显示台湾旗
   XAF: null, XOF: null, XCD: null, XPF: null,
   XDR: null, XAU: null, XAG: null, XPT: null, XPD: null,
 }

@@ -440,7 +440,7 @@ function AccountStatsHeader({
   const hasServerStats = typeof account.balance === 'number'
   const balance = hasServerStats ? account.balance! : account.initial_balance ?? 0
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   // 主帳戶(account_group)/沒有掛靠群組的獨立信用卡(2026-08-04 使用者反饋):
   // 頂部改顯示 Moze 風格的帳單欄位,取代原本的餘額/收入/支出或「當前欠款」
@@ -614,7 +614,7 @@ function AccountCardInfo({
   }
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   return (
     <div className="border-b border-border/60 bg-muted/10 px-6 py-3">
@@ -785,7 +785,7 @@ function CreditCardBillingSection({
   if (!billing.available || !summary) return null
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const openPayDialog = () => {
     setPayAmount(summary.remaining_due > 0 ? String(summary.remaining_due) : '')

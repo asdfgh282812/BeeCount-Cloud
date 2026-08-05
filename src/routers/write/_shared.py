@@ -57,6 +57,7 @@ from ...models import (
 )
 from ...schemas import (
     WriteAccountCreateRequest,
+    WriteAccountDeleteRequest,
     WriteAccountUpdateRequest,
     WriteBalanceAdjustmentRequest,
     WriteBudgetCreateRequest,

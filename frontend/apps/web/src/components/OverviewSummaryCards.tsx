@@ -21,7 +21,7 @@ export function OverviewSummaryCards({ ledgers, currency }: Props) {
   )
 
   const fmt = (v: number) =>
-    `${currency} ${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    `${currency} ${v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 
   const cards: { label: string; value: string; hint: string; tint: string }[] = [
     {

@@ -1375,6 +1375,13 @@ class WriteEntityDeleteRequest(WriteBaseRequest):
     pass
 
 
+class WriteAccountDeleteRequest(WriteEntityDeleteRequest):
+    # 級聯刪除(2026-08-05):True 時,若帳戶還有一般交易引用,連同這些交易
+    # 一併刪除(結構性設定引用——週期性收支/分期/範本/回饋規則/自動扣繳
+    # 來源——不論這個旗標一律照舊擋下,見 snapshot_mutator.delete_account)。
+    cascade: bool = False
+
+
 class WriteAccountCreateRequest(WriteBaseRequest):
     name: str = Field(min_length=1, max_length=255)
     account_type: str | None = None

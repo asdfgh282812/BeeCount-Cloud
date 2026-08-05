@@ -75,7 +75,7 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
               <div className={`mt-3 text-2xl font-bold tracking-tight ${
                 net >= 0 ? 'text-income' : 'text-expense'
               }`}>
-                {net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {net.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                 <div className="rounded bg-income/10 px-2 py-1 text-income">

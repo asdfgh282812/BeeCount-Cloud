@@ -154,7 +154,7 @@ export function TransactionDetailDialog({
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
                 {sign}
                 {tx.amount.toLocaleString('zh-CN', {
-                  minimumFractionDigits: 2,
+                  minimumFractionDigits: 0,
                   maximumFractionDigits: 2,
                 })}
                 {tx.currency_code && tx.native_amount != null && tx.native_amount !== tx.amount ? (
@@ -170,7 +170,7 @@ export function TransactionDetailDialog({
                   title={t('transactions.convertedToBase')}
                 >
                   ≈ {tx.native_amount.toLocaleString('zh-CN', {
-                    minimumFractionDigits: 2,
+                    minimumFractionDigits: 0,
                     maximumFractionDigits: 2,
                   })}
                 </span>
@@ -221,7 +221,7 @@ export function TransactionDetailDialog({
                           <span>{s.category_name || '—'}</span>
                           <span className="tabular-nums text-muted-foreground">
                             {s.amount.toLocaleString('zh-CN', {
-                              minimumFractionDigits: 2,
+                              minimumFractionDigits: 0,
                               maximumFractionDigits: 2,
                             })}
                           </span>
@@ -229,7 +229,7 @@ export function TransactionDetailDialog({
                       ))}
                     </div>
                   ) : (
-                    tx.category_name || '—'
+                    tx.category_name || (tx.tx_type === 'adjustment' ? t('enum.txType.adjustment') : '—')
                   )
                 }
               />
@@ -345,7 +345,7 @@ export function TransactionDetailDialog({
                       <span className="font-medium">
                         {tx.refunds
                           .reduce((sum, r) => sum + r.amount, 0)
-                          .toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          .toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
                       </span>
                       <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
                         {tx.refunds.map((r) =>
@@ -356,11 +356,11 @@ export function TransactionDetailDialog({
                               onClick={() => onJumpToTx(r.id)}
                               className="underline-offset-2 hover:text-primary hover:underline"
                             >
-                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
                             </button>
                           ) : (
                             <span key={r.id}>
-                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatDateTime(r.happened_at)} · {r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
                             </span>
                           ),
                         )}

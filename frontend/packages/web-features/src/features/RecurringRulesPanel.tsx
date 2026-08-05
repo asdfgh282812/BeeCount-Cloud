@@ -33,6 +33,7 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { RecurringRuleForm } from '../forms'
 import { recurringRuleDefaults } from '../forms'
+import { formatAmountTrimmed } from '../format'
 
 type RecurringRulesPanelProps = {
   rules: readonly ReadRecurringRule[]
@@ -713,7 +714,7 @@ function RecurringRuleCard({
                         {formatDate(tx.happened_at)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
-                        {tx.amount.toFixed(2)}
+                        {formatAmountTrimmed(tx.amount)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2">
                         {tx.recurring_occurrence_overridden ? (

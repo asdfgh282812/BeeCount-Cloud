@@ -21,7 +21,7 @@ import {
   type MemberStatScope,
   type MemberStatsResponse,
 } from '@beecount/api-client'
-import { Amount } from '@beecount/web-features'
+import { Amount, formatAmountTrimmed } from '@beecount/web-features'
 import {
   Button,
   Dialog,
@@ -412,10 +412,11 @@ function formatCurrency(value: number, currency: string): string {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency,
+      minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     }).format(value)
   } catch {
-    return `${currency} ${value.toFixed(2)}`
+    return `${currency} ${formatAmountTrimmed(value)}`
   }
 }
 

@@ -239,7 +239,7 @@ function formatAmount(raw: string): string {
   const num = Number(raw)
   if (Number.isNaN(num)) return raw
   return num.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })
 }

@@ -252,7 +252,7 @@ function renderAmount({
     body = formatBalanceCompact(absVal, cur, { chinese, wanUnit })
   } else {
     const formatted = absVal.toLocaleString(chinese ? 'zh-CN' : 'en-US', {
-      minimumFractionDigits: 2,
+      minimumFractionDigits: 0,
       maximumFractionDigits: 2
     })
     body = cur ? `${currencySymbol(cur)}${formatted}` : formatted

@@ -106,7 +106,12 @@ export function TransactionRow({
     ? splitCategoryNames.length > 0
       ? splitCategoryNames.join('、')
       : t('transactions.split.badge')
-    : row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+    : row.category_name ||
+      (row.tx_type === 'transfer'
+        ? t('enum.txType.transfer')
+        : row.tx_type === 'adjustment'
+          ? t('enum.txType.adjustment')
+          : '-')
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
     categoryName: row.category_name,
@@ -281,7 +286,7 @@ export function TransactionRow({
             {/* 外币显示其币种符号(JP¥/US$…,与本位币一眼区分);本位币维持纯数字 */}
             {isForeignCurrency ? currencySymbol(row.currency_code as string) : ''}
             {row.amount.toLocaleString('zh-CN', {
-              minimumFractionDigits: 2,
+              minimumFractionDigits: 0,
               maximumFractionDigits: 2
             })}
           </span>
@@ -342,7 +347,7 @@ export function TransactionRow({
               title={t('transactions.convertedToBase')}
             >
               ≈{(row.native_amount as number).toLocaleString('zh-CN', {
-                minimumFractionDigits: 2,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 2
               })}
             </span>

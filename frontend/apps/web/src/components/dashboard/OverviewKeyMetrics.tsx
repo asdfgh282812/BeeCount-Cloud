@@ -19,7 +19,7 @@ export function OverviewKeyMetrics({ summary }: Props) {
   const txCount = summary?.transaction_count ?? 0
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const cards = [
     {

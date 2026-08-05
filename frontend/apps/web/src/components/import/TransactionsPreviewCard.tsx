@@ -146,7 +146,7 @@ function formatAmount(raw: string): string {
   const n = Number(raw)
   if (Number.isNaN(n)) return raw
   return Math.abs(n).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })
 }

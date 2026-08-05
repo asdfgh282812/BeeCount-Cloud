@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 import type { WorkspaceAnalyticsSeriesItem } from '@beecount/api-client'
-import { Amount } from '@beecount/web-features'
+import { Amount, formatAmountTrimmed } from '@beecount/web-features'
 
 interface Props {
   /** year scope 的 series，bucket 是 YYYY-MM。 */
@@ -105,16 +105,16 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                 <div className="pointer-events-none absolute -top-1 left-1/2 z-30 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
                   <div className="font-semibold">{row.monthLabel}</div>
                   <div className="text-income">
-                    {t('home.heatmap.tooltipIncome').replace('{value}', row.income.toFixed(2))}
+                    {t('home.heatmap.tooltipIncome').replace('{value}', formatAmountTrimmed(row.income))}
                   </div>
                   <div className="text-expense">
-                    {t('home.heatmap.tooltipExpense').replace('{value}', row.expense.toFixed(2))}
+                    {t('home.heatmap.tooltipExpense').replace('{value}', formatAmountTrimmed(row.expense))}
                   </div>
                   <div>
                     <span
                       className={row.balance >= 0 ? 'text-income' : 'text-expense'}
                     >
-                      {t('home.heatmap.tooltipBalance').replace('{value}', row.balance.toFixed(2))}
+                      {t('home.heatmap.tooltipBalance').replace('{value}', formatAmountTrimmed(row.balance))}
                     </span>
                   </div>
                 </div>

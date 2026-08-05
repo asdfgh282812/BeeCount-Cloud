@@ -426,7 +426,7 @@ export function DebtsPanel({
           pendingClose
             ? t('debts.confirm.closeDescription', {
                 amount: pendingClose.remaining_amount.toLocaleString('zh-CN', {
-                  minimumFractionDigits: 2,
+                  minimumFractionDigits: 0,
                   maximumFractionDigits: 2,
                 }),
               })

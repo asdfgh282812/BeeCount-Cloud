@@ -58,7 +58,9 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                         {tx.category_name ||
                           (tx.tx_type === 'transfer'
                             ? t('overview.recent.transfer')
-                            : t('overview.recent.uncategorized'))}
+                            : tx.tx_type === 'adjustment'
+                              ? t('enum.txType.adjustment')
+                              : t('overview.recent.uncategorized'))}
                       </span>
                       {tx.tags_list && tx.tags_list.length > 0 ? (
                         <span className="truncate text-[11px] text-muted-foreground">
@@ -75,7 +77,7 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                   <div className={`shrink-0 font-mono tabular-nums ${amountColor}`}>
                     {sign}
                     {tx.amount.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
+                      minimumFractionDigits: 0,
                       maximumFractionDigits: 2
                     })}
                   </div>

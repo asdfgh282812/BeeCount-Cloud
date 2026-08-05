@@ -72,7 +72,9 @@ describe('i18n error mapping and formatting', () => {
   })
 
   it('formats amount and datetime in fixed mode', () => {
-    expect(formatAmountCny(12.5)).toBe('CNY 12.50')
+    // 整数不带小数点,有小数才保留(最多两位,去尾随 0)——见「所有显示金额」需求
+    expect(formatAmountCny(12.5)).toBe('CNY 12.5')
+    expect(formatAmountCny(12)).toBe('CNY 12')
     expect(formatIsoDateTime('2026-02-25T10:20:30Z')).toBe('2026-02-25 10:20:30')
   })
 })
@@ -85,8 +87,9 @@ describe('compact amount locale unit', () => {
   it('formatBalanceCompact uses 万 for chinese', () => {
     expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('¥5万')
     expect(formatBalanceCompact(2472500, 'CNY', { chinese: true })).toBe('¥247.25万')
-    // < 1 万保留两位
-    expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('¥980.00')
+    // < 1 万整数不带小数点(见「所有显示金额」需求)
+    expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('¥980')
+    expect(formatBalanceCompact(980.5, 'CNY', { chinese: true })).toBe('¥980.5')
   })
 
   it('formatBalanceCompact honors traditional 萬 via wanUnit', () => {
@@ -97,7 +100,7 @@ describe('compact amount locale unit', () => {
   it('formatBalanceCompact uses k / M for english (even CNY)', () => {
     expect(formatBalanceCompact(50000, 'CNY', { chinese: false })).toBe('¥50k')
     expect(formatBalanceCompact(2472500, 'CNY', { chinese: false })).toBe('¥2.47M')
-    expect(formatBalanceCompact(980, 'CNY', { chinese: false })).toBe('¥980.00')
+    expect(formatBalanceCompact(980, 'CNY', { chinese: false })).toBe('¥980')
     // currencyCode 传 null 不带符号
     expect(formatBalanceCompact(50000, null, { chinese: false })).toBe('50k')
   })

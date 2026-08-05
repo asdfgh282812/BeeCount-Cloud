@@ -1580,18 +1580,25 @@ def comparison_report(
     if current_start is None or current_end is None:
         raise HTTPException(status_code=400, detail="comparison report requires a concrete period")
 
-    # 比較期邊界:直接對當期起訖各自往前推 offset 個週期(月用 12 個月循環
-    # 減法避免手滾 calendar 运算,年直接減年数),不透过 `_analytics_range`
-    # 重新解析字符串(省去月份 wrap-around 的字符串拼接)。
-    def _shift(dt: datetime) -> datetime:
+    # 比較期邊界:對「當期週期標籤」(normalized_period,本地日曆的
+    # "YYYY-MM"/"YYYY")做整數年月位移,再重新透過 `_analytics_range` 算出
+    # UTC 邊界 —— 不能直接對 current_start/current_end(已轉 UTC 的 instant)
+    # 做 dt.replace(month=...),那是本地日期在轉 UTC 後可能已經跨到前一天
+    # (正時區偏移時),此時 dt.day 對「位移後的目標月」可能無效(例如 31 號
+    # 位移到只有 30 天的月份)直接炸 ValueError。
+    def _shift_period_label(period: str, offset: int) -> str:
         if scope == "year":
-            return dt.replace(year=dt.year - offset)
-        total_months = dt.year * 12 + (dt.month - 1) - offset
+            return str(int(period) - offset)
+        year_part, month_part = period.split("-", 1)
+        total_months = int(year_part) * 12 + (int(month_part) - 1) - offset
         year, month0 = divmod(total_months, 12)
-        return dt.replace(year=year, month=month0 + 1)
+        return f"{year:04d}-{month0 + 1:02d}"
 
-    previous_start = _shift(current_start)
-    previous_end = _shift(current_end)
+    previous_period_label = _shift_period_label(normalized_period, offset)
+    previous_start, previous_end, _ = _analytics_range(
+        scope=scope, period=previous_period_label, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
+    )
 
     ledger_internal_ids = [l.id for l in ledgers]
     cur_income, cur_expense, cur_cat = _comparison_period_totals(

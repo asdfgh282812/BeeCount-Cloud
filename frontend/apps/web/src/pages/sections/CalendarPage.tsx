@@ -9,6 +9,7 @@ import {
   type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { Button, Card, CardContent, useLocale, useT } from '@beecount/ui'
+import { formatAmountTrimmed } from '@beecount/web-features'
 import { ChevronLeft, ChevronRight, Info, Plus, Sparkles } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -746,14 +747,14 @@ function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderPr
                   className="h-1.5 w-1.5 rounded-full bg-[rgb(var(--income-rgb))]"
                   aria-hidden
                 />
-                {t('calendar.income')} {currency} {bucket.income.toFixed(2)}
+                {t('calendar.income')} {currency} {formatAmountTrimmed(bucket.income)}
               </span>
               <span className="inline-flex items-center gap-1">
                 <span
                   className="h-1.5 w-1.5 rounded-full bg-[rgb(var(--expense-rgb))]"
                   aria-hidden
                 />
-                {t('calendar.expense')} {currency} {bucket.expense.toFixed(2)}
+                {t('calendar.expense')} {currency} {formatAmountTrimmed(bucket.expense)}
               </span>
             </div>
           </div>
@@ -768,7 +769,7 @@ function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderPr
 }
 
 function signedAmount(value: number, currency: string): string {
-  return `${currency} ${Math.abs(value).toFixed(2)}`
+  return `${currency} ${formatAmountTrimmed(Math.abs(value))}`
 }
 
 type DayTxListProps = {
@@ -814,7 +815,12 @@ function DayTxList({ txs, loading, currency }: DayTxListProps) {
             />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">
-                {tx.category_name || (tx.tx_type === 'transfer' ? '↔︎' : '—')}
+                {tx.category_name ||
+                  (tx.tx_type === 'transfer'
+                    ? '↔︎'
+                    : tx.tx_type === 'adjustment'
+                      ? t('enum.txType.adjustment')
+                      : '—')}
               </div>
               <div className="truncate text-[11px] text-muted-foreground">
                 {tx.account_name || tx.from_account_name || '—'}
@@ -832,7 +838,7 @@ function DayTxList({ txs, loading, currency }: DayTxListProps) {
               ].join(' ')}
             >
               {tx.tx_type === 'income' ? '+' : tx.tx_type === 'expense' ? '-' : ''}
-              {currency} {Number(tx.amount).toFixed(2)}
+              {currency} {formatAmountTrimmed(Number(tx.amount))}
             </div>
           </button>
         </li>

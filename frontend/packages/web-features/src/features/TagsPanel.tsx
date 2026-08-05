@@ -68,7 +68,7 @@ export function TagsPanel({
   const [duplicateError, setDuplicateError] = useState<string | null>(null)
   const hasStats = Boolean(statsById)
   const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   // 同名查重:把当前用户已有标签名字小写化收成 Set,提交时 O(1) 查。编辑模
   // 式下排除自己 (form.editingId 对应的行) 以允许"改色不改名"。

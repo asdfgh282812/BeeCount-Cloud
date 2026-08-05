@@ -49,7 +49,7 @@ export function BatchDeleteDialog({
             <p className="mt-2 text-xs text-muted-foreground">
               {t('txBatch.confirm.totalAmount', {
                 amount: totalAmount.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
+                  minimumFractionDigits: 0,
                   maximumFractionDigits: 2,
                 }),
               })}

@@ -1,8 +1,20 @@
 import type { ReadLedger } from '@beecount/api-client'
 
+/** 去掉小数点后多余的尾随 0(657.00 → 657、657.50 → 657.5),用户不想在没有
+ *  小数的金额上一律拖一条 ".00"(见「所有显示金额」需求)。 */
+function trimZero(s: string): string {
+  return s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+
+/** 供 `.toFixed(2)` 手写格式化的调用点直接换用:整数不带小数点,有小数才
+ *  保留(最多两位,去尾随 0)。 */
+export function formatAmountTrimmed(value: number): string {
+  return trimZero(value.toFixed(2))
+}
+
 export function formatAmountCny(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '-'
-  return `CNY ${value.toFixed(2)}`
+  return `CNY ${trimZero(value.toFixed(2))}`
 }
 
 /**
@@ -25,10 +37,8 @@ export function formatBalanceCompact(
   const symbol = currencyCode ? currencySymbol(currencyCode) : ''
   const sign = value >= 0 ? symbol : `-${symbol}`
 
-  const trimZero = (s: string) => s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
-
   if (chinese) {
-    if (absVal < 10000) return `${sign}${absVal.toFixed(2)}`
+    if (absVal < 10000) return `${sign}${trimZero(absVal.toFixed(2))}`
     const wan = absVal / 10000
     const r1 = Number(wan.toFixed(1))
     const err1 = Math.abs(r1 * 10000 - absVal)
@@ -49,7 +59,7 @@ export function formatBalanceCompact(
     const formatted = Math.abs(r1 * 1000 - absVal) > 100 ? k.toFixed(2) : k.toFixed(1)
     return `${sign}${trimZero(formatted)}k`
   }
-  return `${sign}${absVal.toFixed(2)}`
+  return `${sign}${trimZero(absVal.toFixed(2))}`
 }
 
 /**

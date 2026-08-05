@@ -47,7 +47,7 @@ export function OverviewHero({
     (periodSeries || []).reduce((a, it) => a + (it.expense || 0), 0)
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const trendData = (periodSeries || []).slice(-30).map((it, i) => ({
     idx: i,

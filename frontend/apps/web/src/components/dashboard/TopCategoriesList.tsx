@@ -24,7 +24,7 @@ export function TopCategoriesList({ ranks, variant = 'expense', title, onClickCa
   const grandTotal = Math.max(1, ranks.reduce((sum, r) => sum + r.total, 0))
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
   const fmtPct = (v: number) => {
     // < 1% 显示 "<1%",避免 "0.4%" 之类极小看着像 0
     if (v < 1) return v < 0.05 ? '0%' : '<1%'

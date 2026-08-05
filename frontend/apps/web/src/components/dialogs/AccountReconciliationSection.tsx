@@ -23,7 +23,7 @@ import {
   useToast
 } from '@beecount/ui'
 import { ConfirmDialog } from '@beecount/web-features'
-import { ArrowDownUp, Check, ChevronDown, ChevronUp, Clock3, ListChecks, MoreVertical } from 'lucide-react'
+import { ArrowDownUp, Check, Clock3, ListChecks, MoreVertical } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -147,7 +147,7 @@ function BalanceAdjustmentDialog({
   }
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -221,7 +221,9 @@ export function AccountStatementSection({
   const { retryOnConflict } = useLedgerWrite()
   const toast = useToast()
 
-  const [expanded, setExpanded] = useState(false)
+  // 2026-08-05 使用者反饋:原地展開的清單即使收合也會把下面的交易明細往下
+  // 推,改成點標題開一個獨立彈出視窗(跟 CardRewardRulesSection 同款改法)。
+  const [dialogOpen, setDialogOpen] = useState(false)
   const [statement, setStatement] = useState<AccountStatement | null>(null)
   const [loading, setLoading] = useState(false)
   const [sortDesc, setSortDesc] = useState(false)
@@ -245,13 +247,13 @@ export function AccountStatementSection({
   }, [billingAccountId, cycleOffset, sortDesc, token, activeLedgerId])
 
   useEffect(() => {
-    setExpanded(false)
+    setDialogOpen(false)
   }, [billingAccountId])
 
   if (!activeLedgerId) return null
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const toggleConfirmed = async (tx: StatementTransaction) => {
     if (!token) return
@@ -300,9 +302,8 @@ export function AccountStatementSection({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
-          className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+          onClick={() => setDialogOpen(true)}
         >
           <ListChecks className="h-3.5 w-3.5" />
           {t('statement.title')}
@@ -311,91 +312,105 @@ export function AccountStatementSection({
               {statement.confirmed_count}/{statement.statement_count}
             </span>
           ) : null}
-          {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
-        {expanded ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={t('statement.menu.label')}
-                className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted/50"
-              >
-                <MoreVertical className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={() =>
-                  dispatchOpenNewTx({
-                    happenedAt: statement ? `${statement.cycle_end}T12:00:00+00:00` : undefined,
-                    ledgerId: activeLedgerId
-                  })
-                }
-              >
-                {t('statement.menu.addRecord')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSortDesc((v) => !v)}>
-                <ArrowDownUp className="mr-2 h-3.5 w-3.5" />
-                {sortDesc ? t('statement.menu.sortOldestFirst') : t('statement.menu.sortNewestFirst')}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                disabled={!statement || statement.confirmed_count === 0}
-                onClick={() => setClearConfirmOpen(true)}
-              >
-                {t('statement.menu.clearConfirmations')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
       </div>
 
-      {expanded ? (
-        loading ? (
-          <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div>
-        ) : !statement ? (
-          <div className="text-xs text-muted-foreground">{t('statement.error')}</div>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-              <SummaryTile label={t('statement.summary.count')} value={String(statement.statement_count)} />
-              <SummaryTile label={t('statement.summary.total')} value={fmt(statement.statement_total)} />
-              <SummaryTile
-                label={t('statement.summary.confirmedCount')}
-                value={String(statement.confirmed_count)}
-                tone="income"
-              />
-              <SummaryTile
-                label={t('statement.summary.confirmedTotal')}
-                value={fmt(statement.confirmed_total)}
-                tone="income"
-              />
-            </div>
-
-            {statement.transactions.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border/60 py-4 text-center text-xs text-muted-foreground">
-                {t('statement.empty')}
-              </div>
+      {/* 2026-08-05 使用者反饋:對帳清單改到彈出視窗裡顯示,不再原地展開
+          （原地展開即使收合仍會把下面的交易明細往下推)。 */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="flex max-h-[80vh] max-w-lg flex-col gap-0 p-0">
+          <DialogHeader className="flex flex-row items-center justify-between gap-2 border-b border-border/60 px-5 py-3">
+            <DialogTitle className="flex items-center gap-1.5 text-base">
+              <ListChecks className="h-4 w-4" />
+              {t('statement.title')}
+              {statement ? (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                  {statement.confirmed_count}/{statement.statement_count}
+                </span>
+              ) : null}
+            </DialogTitle>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t('statement.menu.label')}
+                  className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted/50"
+                >
+                  <MoreVertical className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() =>
+                    dispatchOpenNewTx({
+                      happenedAt: statement ? `${statement.cycle_end}T12:00:00+00:00` : undefined,
+                      ledgerId: activeLedgerId
+                    })
+                  }
+                >
+                  {t('statement.menu.addRecord')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setSortDesc((v) => !v)}>
+                  <ArrowDownUp className="mr-2 h-3.5 w-3.5" />
+                  {sortDesc ? t('statement.menu.sortOldestFirst') : t('statement.menu.sortNewestFirst')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={!statement || statement.confirmed_count === 0}
+                  onClick={() => setClearConfirmOpen(true)}
+                >
+                  {t('statement.menu.clearConfirmations')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+            {loading ? (
+              <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div>
+            ) : !statement ? (
+              <div className="text-xs text-muted-foreground">{t('statement.error')}</div>
             ) : (
-              <div className="space-y-1.5">
-                {statement.transactions.map((tx) => (
-                  <StatementRow
-                    key={tx.id}
-                    tx={tx}
-                    showAccountName={showAccountName}
-                    busy={busyTxId === tx.id}
-                    fmt={fmt}
-                    t={t}
-                    onToggleConfirm={() => void toggleConfirmed(tx)}
-                    onPostpone={() => setPostponeTarget(tx)}
+              <>
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <SummaryTile label={t('statement.summary.count')} value={String(statement.statement_count)} />
+                  <SummaryTile label={t('statement.summary.total')} value={fmt(statement.statement_total)} />
+                  <SummaryTile
+                    label={t('statement.summary.confirmedCount')}
+                    value={String(statement.confirmed_count)}
+                    tone="income"
                   />
-                ))}
-              </div>
+                  <SummaryTile
+                    label={t('statement.summary.confirmedTotal')}
+                    value={fmt(statement.confirmed_total)}
+                    tone="income"
+                  />
+                </div>
+
+                {statement.transactions.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border/60 py-4 text-center text-xs text-muted-foreground">
+                    {t('statement.empty')}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {statement.transactions.map((tx) => (
+                      <StatementRow
+                        key={tx.id}
+                        tx={tx}
+                        showAccountName={showAccountName}
+                        busy={busyTxId === tx.id}
+                        fmt={fmt}
+                        t={t}
+                        onToggleConfirm={() => void toggleConfirmed(tx)}
+                        onPostpone={() => setPostponeTarget(tx)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-          </>
-        )
-      ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {postponeTarget ? (
         <PostponeDialog

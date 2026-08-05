@@ -33,6 +33,11 @@ export function AssetCompositionDonut({ accounts }: Props) {
   // abs,否则同类型内正负互抵的账户会被虚增。
   const totals = new Map<string, number>()
   for (const a of accounts) {
+    // account_group(§2.9 主帳戶群組)是純管理容器,自己的 balance 是子帳戶
+    // 加總回填出來的展示值(見 read/workspace.py list_workspace_accounts),
+    // 子帳戶本身也在 accounts 列表里各自出现 —— 這裡再算一次會讓同一筆錢在
+    // 圖表裡被算兩遍(比如主卡子卡都算進資產/負債合計),必須跳過。
+    if (a.account_type === 'account_group') continue
     const key = a.account_type || 'other'
     // 用 balance(= initial_balance + 净流水)而非 initial_balance。用户常常
     // 把初始余额留 0,靠日常记账累积现金/微信/支付宝等账户流水 —— 若只看

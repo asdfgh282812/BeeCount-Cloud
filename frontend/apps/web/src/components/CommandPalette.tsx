@@ -754,7 +754,7 @@ async function runSearch(
 
 function formatAmount(value: number): string {
   return Math.abs(value).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })
 }

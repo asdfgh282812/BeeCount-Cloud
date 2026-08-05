@@ -34,6 +34,7 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { InstallmentPlanForm } from '../forms'
 import { installmentPlanDefaults } from '../forms'
+import { formatAmountTrimmed } from '../format'
 
 type InstallmentPlansPanelProps = {
   plans: readonly ReadInstallmentPlan[]
@@ -677,19 +678,19 @@ function InstallmentPlanCard({
                         {formatDate(p.due_at)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums">
-                        {p.principal_amount.toFixed(2)}
+                        {formatAmountTrimmed(p.principal_amount)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2 text-right tabular-nums text-muted-foreground">
-                        +{p.interest_amount.toFixed(2)}
+                        +{formatAmountTrimmed(p.interest_amount)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
-                        {p.total_amount.toFixed(2)}
+                        {formatAmountTrimmed(p.total_amount)}
                       </td>
                       <td className="whitespace-nowrap py-1.5 pr-2">
                         {p.status === 'refunded' ? (
                           <span
                             className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive"
-                            title={p.refund_amount != null ? p.refund_amount.toFixed(2) : undefined}
+                            title={p.refund_amount != null ? formatAmountTrimmed(p.refund_amount) : undefined}
                           >
                             {t('installmentPlans.periods.refunded', {
                               date: formatDate(p.refunded_at || p.due_at),

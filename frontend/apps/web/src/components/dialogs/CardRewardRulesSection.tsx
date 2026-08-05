@@ -36,7 +36,7 @@ import {
   useT,
   useToast
 } from '@beecount/ui'
-import { ChevronDown, ChevronUp, Copy, Gift, Pencil, Trash2 } from 'lucide-react'
+import { Copy, Gift, Pencil, Trash2 } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -197,7 +197,10 @@ function SingleCardCardRewards({
   const [rules, setRules] = useState<ReadCardRewardRule[]>([])
   const [rewards, setRewards] = useState<ReadCardRewards | null>(null)
   const [loading, setLoading] = useState(false)
-  const [expanded, setExpanded] = useState(false)
+  // 2026-08-05 使用者反饋:原本點標題原地展開的清單,即便收合起來也會把
+  // 下面的交易明細往下推。改成點標題開一個獨立彈出視窗,詳情彈窗本身的
+  // 版面高度不再被這個區塊的展開狀態影響。
+  const [dialogOpen, setDialogOpen] = useState(false)
   const [showExpired, setShowExpired] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ReadCardRewardRule | null>(null)
@@ -228,7 +231,7 @@ function SingleCardCardRewards({
   }
 
   useEffect(() => {
-    setExpanded(false)
+    setDialogOpen(false)
     setShowExpired(false)
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -249,7 +252,7 @@ function SingleCardCardRewards({
     const match = rules.find((r) => r.id === highlightRuleId)
     if (!match) return
     appliedHighlightRef.current = highlightRuleId
-    setExpanded(true)
+    setDialogOpen(true)
     setDetailRule(match)
   }, [rules, highlightRuleId])
 
@@ -257,7 +260,7 @@ function SingleCardCardRewards({
 
   const usageByRuleId = new Map((rewards?.items || []).map((item) => [item.rule_id, item]))
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const visibleRules = rules.filter((r) => showExpired || !isExpired(r))
   const hiddenExpiredCount = rules.length - visibleRules.length
@@ -283,9 +286,8 @@ function SingleCardCardRewards({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
-          className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+          onClick={() => setDialogOpen(true)}
         >
           <Gift className="h-3.5 w-3.5" />
           {t('cardRewards.title')}
@@ -297,7 +299,6 @@ function SingleCardCardRewards({
               ({isoToDateInput(rewards.as_of)})
             </span>
           ) : null}
-          {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
         {rewards && rewards.total_reward > 0 ? (
           <span className="font-mono text-xs font-semibold tabular-nums text-income">
@@ -306,137 +307,151 @@ function SingleCardCardRewards({
         ) : null}
       </div>
       {loading ? <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div> : null}
-      {expanded && !loading ? (
-        <div className="space-y-2">
-          {hiddenExpiredCount > 0 ? (
+
+      {/* 2026-08-05 使用者反饋:規則清單改到彈出視窗裡顯示,不再原地展開
+          （原地展開即使收合仍會把下面的交易明細往下推）。 */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="flex max-h-[80vh] max-w-md flex-col gap-0 p-0">
+          <DialogHeader className="border-b border-border/60 px-5 py-3">
+            <DialogTitle className="flex items-center gap-1.5 text-base">
+              <Gift className="h-4 w-4" />
+              {t('cardRewards.title')}
+              {accountLabel ? (
+                <span className="text-xs font-normal text-muted-foreground">· {accountLabel}</span>
+              ) : null}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
+            {hiddenExpiredCount > 0 ? (
+              <button
+                type="button"
+                className="text-[11px] text-muted-foreground underline underline-offset-2"
+                onClick={() => setShowExpired((v) => !v)}
+              >
+                {showExpired
+                  ? t('cardRewards.hideExpired')
+                  : t('cardRewards.showExpired', { count: hiddenExpiredCount })}
+              </button>
+            ) : null}
+            {visibleRules.length === 0 ? (
+              <div className="text-xs text-muted-foreground">{t('cardRewards.empty')}</div>
+            ) : (
+              visibleRules.map((rule) => {
+                const usage = usageByRuleId.get(rule.id)
+                const expired = isExpired(rule)
+                return (
+                  <div
+                    key={rule.id}
+                    className="rounded-lg border border-border/50 bg-background/40 p-3 text-xs"
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-2 text-left"
+                      onClick={() => setDetailRule(rule)}
+                    >
+                      <div className="flex items-center gap-2 font-medium">
+                        <span>{rule.label}</span>
+                        {!rule.enabled ? (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {t('cardRewards.disabled')}
+                          </span>
+                        ) : null}
+                        {expired ? (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {t('cardRewards.expiredBadge')}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <div className="text-muted-foreground">
+                        {rule.rate_type === 'percentage'
+                          ? t('cardRewards.summary.percentage', { rate: rule.rate_value })
+                          : t('cardRewards.summary.fixedAmount', { amount: rule.rate_value })}
+                        {rule.cap_amount ? ` · ${t('cardRewards.summary.cap', { cap: fmt(rule.cap_amount) })}` : ''}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
+                          onClick={() => {
+                            setDuplicateSeed(rule)
+                            setEditing(null)
+                            setFormOpen(true)
+                          }}
+                          aria-label={t('cardRewards.duplicate')}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
+                          onClick={() => {
+                            setEditing(rule)
+                            setDuplicateSeed(null)
+                            setFormOpen(true)
+                          }}
+                          aria-label={t('cardRewards.edit')}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingId === rule.id}
+                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+                          onClick={() => {
+                            if (window.confirm(t('cardRewards.confirmDelete'))) void handleDelete(rule.id)
+                          }}
+                          aria-label={t('cardRewards.delete')}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    {activePeriodText(rule, t) ? (
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">
+                        {activePeriodText(rule, t)}
+                      </div>
+                    ) : null}
+                    {usage ? (
+                      usage.status === 'no_billing_schedule' ? (
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {t('cardRewards.status.noBillingSchedule')}
+                        </div>
+                      ) : usage.status === 'expired' ? (
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {t('cardRewards.status.expired')}
+                        </div>
+                      ) : (
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-[11px] text-muted-foreground">
+                            {t('cardRewards.qualifyingSpend')}: {fmt(usage.qualifying_spend)}
+                            {!usage.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
+                          </span>
+                          <span className="font-mono font-semibold tabular-nums text-income">
+                            {fmt(usage.capped_reward)}
+                          </span>
+                        </div>
+                      )
+                    ) : null}
+                  </div>
+                )
+              })
+            )}
             <button
               type="button"
-              className="text-[11px] text-muted-foreground underline underline-offset-2"
-              onClick={() => setShowExpired((v) => !v)}
+              className="w-full rounded-md border border-dashed border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted/50"
+              onClick={() => {
+                setEditing(null)
+                setDuplicateSeed(null)
+                setFormOpen(true)
+              }}
             >
-              {showExpired
-                ? t('cardRewards.hideExpired')
-                : t('cardRewards.showExpired', { count: hiddenExpiredCount })}
+              {t('cardRewards.addRule')}
             </button>
-          ) : null}
-          {visibleRules.length === 0 ? (
-            <div className="text-xs text-muted-foreground">{t('cardRewards.empty')}</div>
-          ) : (
-            visibleRules.map((rule) => {
-              const usage = usageByRuleId.get(rule.id)
-              const expired = isExpired(rule)
-              return (
-                <div
-                  key={rule.id}
-                  className="rounded-lg border border-border/50 bg-background/40 p-3 text-xs"
-                >
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-2 text-left"
-                    onClick={() => setDetailRule(rule)}
-                  >
-                    <div className="flex items-center gap-2 font-medium">
-                      <span>{rule.label}</span>
-                      {!rule.enabled ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          {t('cardRewards.disabled')}
-                        </span>
-                      ) : null}
-                      {expired ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          {t('cardRewards.expiredBadge')}
-                        </span>
-                      ) : null}
-                    </div>
-                  </button>
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <div className="text-muted-foreground">
-                      {rule.rate_type === 'percentage'
-                        ? t('cardRewards.summary.percentage', { rate: rule.rate_value })
-                        : t('cardRewards.summary.fixedAmount', { amount: rule.rate_value })}
-                      {rule.cap_amount ? ` · ${t('cardRewards.summary.cap', { cap: fmt(rule.cap_amount) })}` : ''}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
-                        onClick={() => {
-                          setDuplicateSeed(rule)
-                          setEditing(null)
-                          setFormOpen(true)
-                        }}
-                        aria-label={t('cardRewards.duplicate')}
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
-                        onClick={() => {
-                          setEditing(rule)
-                          setDuplicateSeed(null)
-                          setFormOpen(true)
-                        }}
-                        aria-label={t('cardRewards.edit')}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={deletingId === rule.id}
-                        className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-                        onClick={() => {
-                          if (window.confirm(t('cardRewards.confirmDelete'))) void handleDelete(rule.id)
-                        }}
-                        aria-label={t('cardRewards.delete')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  {activePeriodText(rule, t) ? (
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">
-                      {activePeriodText(rule, t)}
-                    </div>
-                  ) : null}
-                  {usage ? (
-                    usage.status === 'no_billing_schedule' ? (
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        {t('cardRewards.status.noBillingSchedule')}
-                      </div>
-                    ) : usage.status === 'expired' ? (
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        {t('cardRewards.status.expired')}
-                      </div>
-                    ) : (
-                      <div className="mt-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">
-                          {t('cardRewards.qualifyingSpend')}: {fmt(usage.qualifying_spend)}
-                          {!usage.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
-                        </span>
-                        <span className="font-mono font-semibold tabular-nums text-income">
-                          {fmt(usage.capped_reward)}
-                        </span>
-                      </div>
-                    )
-                  ) : null}
-                </div>
-              )
-            })
-          )}
-          <button
-            type="button"
-            className="w-full rounded-md border border-dashed border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted/50"
-            onClick={() => {
-              setEditing(null)
-              setDuplicateSeed(null)
-              setFormOpen(true)
-            }}
-          >
-            {t('cardRewards.addRule')}
-          </button>
-        </div>
-      ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {formOpen ? (
         <CardRewardRuleFormDialog
@@ -964,7 +979,7 @@ function CardRewardRuleTransactionsDialog({
   }, [detail])
 
   const fmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const handleManualPayout = async () => {
     const amount = Number(payoutAmount)

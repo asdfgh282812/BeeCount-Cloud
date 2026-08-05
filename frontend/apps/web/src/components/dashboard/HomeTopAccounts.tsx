@@ -22,7 +22,10 @@ const EXCLUDE_TYPES = new Set([
   'investment',
   'insurance',
   'social_fund',
-  'loan'
+  'loan',
+  // account_group(§2.9 主帳戶群組)自己的 tx_count/balance 是子帳戶加總
+  // 回填出來的展示值,子帳戶本身也在列表里——不排除会跟子帳戶重复上榜。
+  'account_group'
 ])
 
 // 账户类型 → 品牌 SVG 路径（与 AccountsPanel 一致，无导出引用降低耦合）
