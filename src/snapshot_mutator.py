@@ -743,7 +743,60 @@ def update_account(snapshot: dict, account_id: str, payload: dict) -> dict:
     return target
 
 
-def delete_account(snapshot: dict, account_id: str, payload: dict | None = None) -> dict:
+def _assert_account_has_no_structural_references(accounts: list[dict], target: dict, account_id: str) -> None:
+    """帳戶級聯刪除(2026-08-05):不論交易是否要一併級聯刪除,「結構性設定」
+    (週期性收支規則/分期付款/交易範本/信用卡回饋規則/自動扣繳來源帳戶)
+    一律照舊擋下,使用者需先到對應功能頁面處理——這些不是單純的一次性
+    交易紀錄,自動連動刪除/解除掛勾的影響面太大(例如刪掉一條還在跑的
+    週期性收支規則,使用者可能不知情),交給使用者手動決定比較安全。"""
+    blockers: list[str] = []
+
+    recurring_hits = sum(
+        1
+        for rule in _ensure_list(target, "recurringRules")
+        if account_id in (rule.get("accountId"), rule.get("fromAccountId"), rule.get("toAccountId"))
+    )
+    if recurring_hits:
+        blockers.append(f"{recurring_hits} recurring rule(s)")
+
+    installment_hits = sum(
+        1 for plan in _ensure_list(target, "installmentPlans") if plan.get("accountId") == account_id
+    )
+    if installment_hits:
+        blockers.append(f"{installment_hits} installment plan(s)")
+
+    template_hits = sum(
+        1
+        for tpl in _ensure_list(target, "txTemplates")
+        if account_id in (tpl.get("accountId"), tpl.get("fromAccountId"), tpl.get("toAccountId"))
+    )
+    if template_hits:
+        blockers.append(f"{template_hits} transaction template(s)")
+
+    reward_rule_hits = sum(
+        1
+        for rule in _ensure_list(target, "cardRewardRules")
+        if account_id in (rule.get("accountId"), rule.get("rewardAccountId"))
+    )
+    if reward_rule_hits:
+        blockers.append(f"{reward_rule_hits} card reward rule(s)")
+
+    auto_pay_hits = sum(
+        1 for row in accounts if row.get("syncId") != account_id and row.get("autoPayFromAccountId") == account_id
+    )
+    if auto_pay_hits:
+        blockers.append(f"{auto_pay_hits} account(s) using it as auto-pay source")
+
+    if blockers:
+        raise ValueError(
+            "write validation failed: account is still referenced by " + ", ".join(blockers) +
+            "; remove or reassign these first"
+        )
+
+
+def delete_account(
+    snapshot: dict, account_id: str, payload: dict | None = None, *, cascade: bool = False,
+) -> dict:
     target = ensure_snapshot_v2(snapshot)
     accounts = _ensure_list(target, "accounts")
     idx, account = _find_by_sync_id(accounts, account_id, expected_prefix="acc")
@@ -758,25 +811,46 @@ def delete_account(snapshot: dict, account_id: str, payload: dict | None = None)
             "write validation failed: account_group has linked child accounts; "
             f"unlink or delete the {children} child accounts first"
         )
-    # 安全检查:任何关联交易都拒绝删除(用户决定:不要 warn-and-orphan 模式)。
-    # 客户端必须先把交易改/删/迁走,账户的 tx_count 回到 0 才允许删。
+    _assert_account_has_no_structural_references(accounts, target, account_id)
+    # 安全检查:关联交易——cascade=False(现况)拒绝删除,客户端必须先把交易
+    # 改/删/迁走;cascade=True(2026-08-05 新增)时改成把这些交易一并删除,
+    # 但只要其中有分期付款关联的交易(installmentPlanId 非空,比照
+    # transactions_batch_delete.py 的 installment_linked guard),整个级联
+    # 删除中止、不留部分删除的中间状态——分期付款是结构性设定,必须让使用者
+    # 先去处理分期付款本身。
     # mobile 自己走 sync_applier 路径不经过 snapshot_mutator,这条 guard 只对
     # web write API 生效;mobile 现有行为(orphan)保留不变。
+    linked_tx_ids: list[str] = []
     if old_name:
-        linked = sum(
-            1
+        linked_tx_ids = [
+            str(tx.get("syncId"))
             for tx in _ensure_list(target, "items")
             if (
                 tx.get("accountName") == old_name
                 or tx.get("fromAccountName") == old_name
                 or tx.get("toAccountName") == old_name
             )
-        )
-        if linked > 0:
+        ]
+    if linked_tx_ids:
+        if not cascade:
             raise ValueError(
                 "write validation failed: account has linked transactions; "
-                f"reassign or delete the {linked} transactions first"
+                f"reassign or delete the {len(linked_tx_ids)} transactions first"
             )
+        installment_linked = sum(
+            1
+            for tx in _ensure_list(target, "items")
+            if str(tx.get("syncId")) in linked_tx_ids and tx.get("installmentPlanId")
+        )
+        if installment_linked:
+            raise ValueError(
+                "write validation failed: account has "
+                f"{installment_linked} installment-linked transactions; resolve the installment plan first"
+            )
+        linked_id_set = set(linked_tx_ids)
+        items = _ensure_list(target, "items")
+        target["items"] = [tx for tx in items if str(tx.get("syncId")) not in linked_id_set]
+        target["count"] = len(target["items"])
     accounts.pop(idx)
     if old_name:
         for tx in _ensure_list(target, "items"):

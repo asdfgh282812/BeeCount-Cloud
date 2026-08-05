@@ -115,7 +115,7 @@ async def update_acc(
 async def delete_acc(
     ledger_id: str,
     account_id: str,
-    req: WriteEntityDeleteRequest,
+    req: WriteAccountDeleteRequest,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     device_id: str = Header(default="web-console", alias="X-Device-ID"),
@@ -148,7 +148,10 @@ async def delete_acc(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_account_delete",
-        mutate=lambda snapshot: (delete_account(snapshot, account_id, mutate_payload), account_id),
+        mutate=lambda snapshot: (
+            delete_account(snapshot, account_id, mutate_payload, cascade=req.cascade),
+            account_id,
+        ),
     )
 
 

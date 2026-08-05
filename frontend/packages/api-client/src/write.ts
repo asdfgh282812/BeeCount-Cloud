@@ -182,13 +182,16 @@ export async function deleteAccount(
   ledgerId: string,
   accountId: string,
   baseChangeId: number,
+  options?: { cascade?: boolean },
 ): Promise<WriteCommitMeta> {
-  // server 端 snapshot_mutator.delete_account 会 raise 如果账户还有任何关联
-  // 交易 —— 客户端必须先看 tx_count,>0 时直接拒绝,不要走删除流程。
+  // server 端 snapshot_mutator.delete_account:若帳戶還被結構性設定引用
+  // (週期性收支/分期付款/範本/回饋規則/自動扣繳來源)一律拒絕,不受
+  // cascade 影響;cascade=true 時連同關聯交易一併刪除(2026-08 新增),
+  // 除非其中有分期關聯交易(此時整體拒絕)。
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}`,
     token,
-    { base_change_id: baseChangeId },
+    { base_change_id: baseChangeId, cascade: options?.cascade ?? false },
   )
 }
 

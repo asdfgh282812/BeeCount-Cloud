@@ -1862,6 +1862,7 @@ __all__ = [
     'User',
     'UserAccountProjection',
     'WriteAccountCreateRequest',
+    'WriteAccountDeleteRequest',
     'WriteAccountUpdateRequest',
     'WriteBalanceAdjustmentRequest',
     'WriteCardPaymentRequest',

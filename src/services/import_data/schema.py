@@ -97,17 +97,34 @@ class ImportFieldMapping:
 
 @dataclass
 class ImportAccount:
+    """獨立帳戶匯入(2026-08 新增,`routers/import_data/simple_endpoints.py`
+    用)—— 跟 `ImportTransaction` 側車 side-effect 建立帳戶不同,這是使用者
+    上傳「帳戶範本」CSV/Excel 直接建立帳戶列表。"""
+
     name: str
     type: str | None = None
     currency: str | None = None
+    initial_balance: float | None = None
+    # 主帳戶(合併帳單)名稱 —— 必須是同一份檔案裡更早出現的一列,或帳本裡
+    # 已存在的 account_group;解析時只記名稱,execute 階段才解析成 syncId。
+    parent_account_name: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = None
+    payment_due_day: int | None = None
+    # 原始檔案行號(從 header+1 開始),錯誤時定位用
+    source_row_number: int = 0
 
 
 @dataclass
 class ImportCategory:
+    """分類匯入(2026-08 新增)。`parent_name` 必須是同一份檔案裡更早出現的
+    同 kind 分類,或帳本裡已存在的一級分類。"""
+
     name: str
-    kind: Literal["expense", "income", "transfer"]
+    kind: Literal["expense", "income"]
     parent_name: str | None = None
     level: int = 1
+    source_row_number: int = 0
 
 
 @dataclass

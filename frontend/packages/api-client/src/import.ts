@@ -240,3 +240,177 @@ export async function* streamExecuteImport(
 export async function cancelImport(token: string, importToken: string): Promise<void> {
   await authedDelete(`/import/${encodeURIComponent(importToken)}`, token)
 }
+
+// ──────────────── 分類 / 帳戶匯入(2026-08 新增) ────────────────
+//
+// 跟交易匯入不同:範本格式固定,upload 直接回傳可執行的 preview(有效筆數 +
+// 逐行錯誤),沒有欄位對應(field mapping)這層,少一個 preview 步驟。
+
+export type SimpleImportEntityType = 'categories' | 'accounts'
+
+export type SimpleImportRowError = {
+  code: string
+  row_number: number
+  message: string
+  field_name: string | null
+}
+
+export type SimpleImportSummary = {
+  import_token: string
+  entity_type: SimpleImportEntityType
+  target_ledger_id: string
+  total_rows: number
+  valid_rows: number
+  errors: SimpleImportRowError[]
+  sample: Array<Record<string, unknown>>
+}
+
+export type SimpleImportSseEvent =
+  | { event: 'stage'; data: { stage: string; done: number; total: number } }
+  | { event: 'complete'; data: { created_count: number; new_change_id: number } }
+  | { event: 'error'; data: { code: string; row_number: number; message: string } }
+
+async function uploadSimpleImport(
+  token: string,
+  entityType: SimpleImportEntityType,
+  options: { file: File; targetLedgerId: string },
+): Promise<SimpleImportSummary> {
+  const form = new FormData()
+  form.append('file', options.file)
+  form.append('target_ledger_id', options.targetLedgerId)
+  const response = await fetch(`${API_BASE}/import/${entityType}/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  if (!response.ok) throw await extractApiError(response)
+  return (await response.json()) as SimpleImportSummary
+}
+
+export function uploadCategoriesImport(
+  token: string,
+  options: { file: File; targetLedgerId: string },
+): Promise<SimpleImportSummary> {
+  return uploadSimpleImport(token, 'categories', options)
+}
+
+export function uploadAccountsImport(
+  token: string,
+  options: { file: File; targetLedgerId: string },
+): Promise<SimpleImportSummary> {
+  return uploadSimpleImport(token, 'accounts', options)
+}
+
+async function* streamExecuteSimpleImport(
+  token: string,
+  entityType: SimpleImportEntityType,
+  importToken: string,
+): AsyncGenerator<SimpleImportSseEvent> {
+  const response = await fetch(
+    `${API_BASE}/import/${entityType}/${encodeURIComponent(importToken)}/execute`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } },
+  )
+  if (!response.ok) throw await extractApiError(response)
+  if (!response.body) {
+    throw new ApiError('response body missing', { status: response.status, code: 'IMPORT_NO_BODY' })
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let sepIdx: number
+      while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+        const raw = buffer.slice(0, sepIdx)
+        buffer = buffer.slice(sepIdx + 2)
+        let eventName = ''
+        let dataPayload = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataPayload += line.slice(5).trim()
+        }
+        if (!eventName) continue
+        try {
+          const parsed = JSON.parse(dataPayload) as SimpleImportSseEvent['data']
+          const evt = { event: eventName, data: parsed } as SimpleImportSseEvent
+          yield evt
+          if (eventName === 'complete' || eventName === 'error') return
+        } catch {
+          // 半截 chunk,跳过
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+export function streamExecuteCategoriesImport(
+  token: string,
+  importToken: string,
+): AsyncGenerator<SimpleImportSseEvent> {
+  return streamExecuteSimpleImport(token, 'categories', importToken)
+}
+
+export function streamExecuteAccountsImport(
+  token: string,
+  importToken: string,
+): AsyncGenerator<SimpleImportSseEvent> {
+  return streamExecuteSimpleImport(token, 'accounts', importToken)
+}
+
+export async function cancelSimpleImport(token: string, importToken: string): Promise<void> {
+  await authedDelete(`/import/simple/${encodeURIComponent(importToken)}`, token)
+}
+
+// ──────────────── 範本下載(2026-08 新增) ────────────────
+
+function parseSimpleFilenameFromDisposition(value: string): string | null {
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(value)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      // ignore,落 plain
+    }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(value)
+  return plain ? plain[1].trim() : null
+}
+
+export async function downloadImportTemplate(
+  token: string,
+  options: {
+    entityType: 'transactions' | 'categories' | 'accounts'
+    format: 'csv' | 'xlsx'
+    lang?: string
+  },
+): Promise<void> {
+  const query = new URLSearchParams()
+  query.set('entity_type', options.entityType)
+  query.set('format', options.format)
+  if (options.lang) query.set('lang', options.lang)
+  const response = await fetch(`${API_BASE}/import/template?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw await extractApiError(response)
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const filename =
+    parseSimpleFilenameFromDisposition(disposition) ||
+    `beecount-${options.entityType}-template.${options.format}`
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}

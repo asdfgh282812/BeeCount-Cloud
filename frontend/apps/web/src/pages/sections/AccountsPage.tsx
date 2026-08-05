@@ -101,6 +101,11 @@ export function AccountsPage() {
   // 删除前的待确认账户。null = 无 pending。WorkspaceAccount 带 tx_count 字段,
   // confirm dialog 直接读它,不再发额外请求。
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
+  // 帳戶級聯刪除(2026-08 新增):tx_count > 0 時需要兩段式確認,這個旗標
+  // 標記是否已經按過第一段「繼續」。false = 顯示第一段警示;true = 顯示
+  // 第二段更強烈的最終確認。tx_count === 0 時完全不使用這個旗標(維持原本
+  // 單步確認)。
+  const [cascadeConfirming, setCascadeConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   // 分币种明细 dialog(折算汇总卡的「详情」入口;单币种时该卡不出详情按钮)。
@@ -380,10 +385,20 @@ export function AccountsPage() {
     }
   }
 
-  // 删除流程:点删除按钮 → 弹 ConfirmDialog,dialog 里根据 tx_count 决定文案。
-  // 跟 mobile account_edit_page._delete 对齐:有交易则警示总条数 + 红色按钮。
+  // 删除流程(2026-08 改版为级联删除):点删除按钮 → tx_count === 0 时跟原本
+  // 一样单步确认;tx_count > 0 时两段式确认 —— 第一段只是把 cascadeConfirming
+  // 翻真、不发请求,第二段才真正带 cascade:true 调用 deleteAccount。结构性
+  // 引用(周期性收支/分期/范本/回馈规则/自动扣缴来源)不论 cascade 与否一律
+  // 被后端拒绝,这里维持原本的 notifyError 展示(跟其它 write validation 报错
+  // 同一套文案机制)。
+  const pendingTxCount = pendingDelete?.tx_count ?? 0
+  const needsCascadeConfirm = pendingTxCount > 0
   const onConfirmDelete = async () => {
     if (!pendingDelete) return
+    if (needsCascadeConfirm && !cascadeConfirming) {
+      setCascadeConfirming(true)
+      return
+    }
     if (!activeLedgerId) {
       toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
       return
@@ -391,11 +406,18 @@ export function AccountsPage() {
     setDeleting(true)
     try {
       await retryOnConflict(activeLedgerId, (base) =>
-        deleteAccount(token, activeLedgerId, pendingDelete.id, base),
+        deleteAccount(token, activeLedgerId, pendingDelete.id, base, {
+          cascade: needsCascadeConfirm,
+        }),
       )
       setPendingDelete(null)
+      setCascadeConfirming(false)
       await refresh()
-      notifySuccess(t('notice.accountDeleted'))
+      notifySuccess(
+        needsCascadeConfirm
+          ? t('notice.accountDeletedCascade', { count: pendingTxCount })
+          : t('notice.accountDeleted'),
+      )
     } catch (err) {
       if (isWriteConflict(err)) {
         await refresh()
@@ -641,41 +663,59 @@ export function AccountsPage() {
           dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' })
         }
         onDelete={(row) => {
-          // 严格策略:有关联交易直接拒绝,不弹"是否强制删除"。先要求用户在
-          // 详情页/交易页把这些交易改/删/迁走,账户回到 0 笔再来删。比 mobile
-          // 现在的"warn + allow orphan"更严格 —— 避免误删导致一堆 ungrouped
-          // 交易污染 ledger。
+          // 帳戶級聯刪除(2026-08 改版):不再直接拒絕有交易的帳戶,改成打開
+          // 兩段式確認對話框(見下方 ConfirmDialog,依 tx_count 決定顯示第
+          // 一段警示還是原本的單步確認)。結構性引用(週期性收支/分期/範本/
+          // 回饋規則/自動扣繳來源)仍由後端 snapshot_mutator.delete_account
+          // 一律擋下,錯誤走 onConfirmDelete 的 notifyError 分支呈現。
           const ws = rows.find((r) => r.id === row.id) || (row as WorkspaceAccount)
-          if ((ws.tx_count ?? 0) > 0) {
-            toast.error(
-              t('accounts.delete.blockedByTransactions', {
-                name: ws.name,
-                count: ws.tx_count ?? 0,
-              }),
-              t('notice.error'),
-            )
-            return
-          }
+          setCascadeConfirming(false)
           setPendingDelete(ws)
         }}
       />
       {/* AccountDetailDialog 已迁到 GlobalEntityDialogs */}
-      {/* 删除确认 — 有 tx 时显示 warning 文案 + count(对齐 mobile);无 tx
-          就普通确认。dialog confirm 后调 deleteAccount,server 端会 silent
-          orphan 关联交易(snapshot_mutator.delete_account 已实现 strip
-          accountName)—— 跟 mobile 同款语义。 */}
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        onCancel={() => {
-          if (!deleting) setPendingDelete(null)
-        }}
-        onConfirm={() => void onConfirmDelete()}
-        loading={deleting}
-        title={t('dialog.confirm')}
-        description={t('accounts.delete.confirmMessage', { name: pendingDelete?.name || '' })}
-        confirmText={t('common.delete')}
-        confirmVariant="destructive"
-      />
+      {/* 删除确认(2026-08 改版为级联删除):
+          - tx_count === 0:维持原本单步确认,行为不变。
+          - tx_count > 0:两段式 —— 先警示会连带删除的交易笔数(cascadeConfirming
+            = false),按继续才进入第二段更强烈的最终确认(cascadeConfirming =
+            true),第二段按下才真正调用带 cascade:true 的 deleteAccount。 */}
+      {pendingDelete && needsCascadeConfirm && !cascadeConfirming ? (
+        <ConfirmDialog
+          open
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => void onConfirmDelete()}
+          title={t('accounts.delete.cascadeWarningTitle')}
+          description={t('accounts.delete.cascadeWarningMessage', {
+            name: pendingDelete.name,
+            count: pendingTxCount,
+          })}
+          confirmText={t('common.next')}
+          confirmVariant="destructive"
+        />
+      ) : (
+        <ConfirmDialog
+          open={pendingDelete !== null}
+          onCancel={() => {
+            if (!deleting) {
+              setPendingDelete(null)
+              setCascadeConfirming(false)
+            }
+          }}
+          onConfirm={() => void onConfirmDelete()}
+          loading={deleting}
+          title={t('dialog.confirm')}
+          description={
+            needsCascadeConfirm
+              ? t('accounts.delete.cascadeFinalMessage', {
+                  name: pendingDelete?.name || '',
+                  count: pendingTxCount,
+                })
+              : t('accounts.delete.confirmMessage', { name: pendingDelete?.name || '' })
+          }
+          confirmText={t('common.delete')}
+          confirmVariant="destructive"
+        />
+      )}
       {/* 分币种明细 dialog —— 折算汇总卡(多币种态)的「详情」入口,复用
           CurrencyAssetCard 按网格逐币种渲染(含缺失汇率币种,原样不折算)。
           needsBase / 单币种态不会打开此 dialog。 */}
