@@ -308,7 +308,7 @@ export const accountDefaults = (): AccountForm => ({
   editingOwnerUserId: '',
   name: '',
   account_type: 'cash',
-  currency: 'CNY',
+  currency: 'TWD',
   initial_balance: '0',
   note: '',
   credit_limit: '',

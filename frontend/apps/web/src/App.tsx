@@ -26,6 +26,11 @@ const AdminDataCleanupPage = lazy(() =>
     default: m.AdminDataCleanupPage,
   })),
 )
+const AdminScheduledJobsPage = lazy(() =>
+  import('./pages/sections/AdminScheduledJobsPage').then((m) => ({
+    default: m.AdminScheduledJobsPage,
+  })),
+)
 const AdminUsersPage = lazy(() =>
   import('./pages/sections/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })),
 )
@@ -335,6 +340,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <AdminDataCleanupPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/scheduled-jobs"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminScheduledJobsPage />
             </Suspense>
           }
         />

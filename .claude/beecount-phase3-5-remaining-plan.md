@@ -1,5 +1,10 @@
 # Phase 3~5 待辦計畫(接續 Phase 1/2 之後)
 
+## 狀態:全部 5 個 Phase 已完成(2026-08-07)
+
+Phase 1~5 都已完成 + pytest 全過 + 瀏覽器驗證通過,詳見下方各 Phase 小節。
+這份文件保留給未來需要回頭查閱這批改動細節的 session 參考,不再是待辦清單。
+
 ## 背景
 
 原始五項需求的完整計畫在 `flickering-knitting-firefly.md`。Phase 1(帳戶級聯刪除)、
@@ -247,6 +252,42 @@ skipped_by_update_from`,date-sensitive,不用管)→ `make dev-api` +
 
 ---
 
+## Phase 3~5 執行紀錄(2026-08-07,供未來查閱)
+
+**全部完成**:Phase 3(銀行卡→銀行改名 + TWD 預設)、Phase 4(銀行帳戶掛靠
+主帳戶群組)、Phase 5(背景排程管理後台)依序做完,每項都跑過 `pytest
+tests/ -q` 全量 + `pnpm build`/`pnpm test:unit` + 瀏覽器實際點擊操作驗證。
+
+- **Phase 3**:三語系 `accountType.bank_card` 改名、`forms.ts::
+  accountDefaults()` 與 `LedgersPage.tsx`/`LedgersSection.tsx`/
+  `AccountsPanel.tsx` 裡的空白表單幣別預設改 `TWD`(existing-entity 的
+  currency fallback 維持不動,沒有動)。`src/schemas.py::
+  WriteLedgerCreateRequest.currency` 後端預設**沒有改**(mobile repo 這個
+  session 拿不到,無法確認 mobile 是否依賴這個預設,依計畫指示保守處理)。
+- **Phase 4**:`AccountsPanel.tsx` 開放 `bank_card` 掛靠主帳戶群組的下拉
+  顯示條件 + 清空邏輯;`accountType.account_group`/`accounts.field.
+  parentAccount` 三語系標籤改成「主帳戶(群組)」。**手測時發現一個真實
+  bug**:`AccountsPage.tsx` 送出 payload 時 `parent_account_id` 只在
+  `isCreditCard` 為真時才帶出去,bank_card 選了主帳戶但實際沒存進去——
+  已修正為 `isCreditCard || account_type === 'bank_card'`,修完後瀏覽器
+  重新測試聚合邏輯(餘額/收支正確 roll up 到群組卡片)確認無誤。新增
+  `tests/test_credit_card.py::test_web_update_account_parent_account_id_
+  accepts_bank_card_child` 鎖住行為。
+- **Phase 5**:新增 `ScheduledJobConfig` model + migration
+  `0036_scheduled_job_configs`(seed 7 筆)、`src/services/scheduled_jobs.py`
+  (`JOB_REGISTRY`/`run_job`/`run_due_jobs`/`ensure_default_configs`)、
+  `src/routers/admin_scheduled_jobs.py`、`main.py` 把原本 4 條迴圈合併成
+  `_start_scheduled_jobs_loop`(60 秒輪詢)。前端新增
+  `AdminScheduledJobsPage.tsx` + 路由/nav/api-client 方法。**過程中犯了
+  一次 Edit 工具誤用的錯**:改 `models.py` 時 `old_string` 沒包含
+  `BackupRunTarget` 最後一行 `error_message` 欄位,導致該行被錯位挪到
+  `ScheduledJobConfig` 類別尾端——`Base.metadata.create_all`(pytest 用)
+  不會暴露這個問題,只有連到真實 `beecount.db`(migration 建的 schema)
+  才會噴 `no such column` 500 錯誤,瀏覽器手測時才抓到、已修正。**教訓**:
+  改多欄位 model 類別時,Edit 的 `old_string` 結尾要確認真的是該類別的
+  最後一個欄位,不要只看 `Read` 顯示的最後一行就假設沒有更多內容被截斷。
+  新增 `tests/test_scheduled_jobs.py`(12 例)。
+
 ## 共用注意事項(套用到每個 Phase)
 
 - 每個 Phase 做完都要跑 `pytest tests/ -q`(全量,不只新測試)+ 有牽動
@@ -257,10 +298,11 @@ skipped_by_update_from`,date-sensitive,不用管)→ `make dev-api` +
   純前端 bug)。
 - 若手測結果跟預期不符,先確認 `uvicorn --reload`/前端 dev server 是否
   真的重新載入了新程式碼,再懷疑邏輯本身有問題。
-- 這個 session 結束時本機還跑著:backend `uvicorn` (port 8080,`--reload`)
-  + frontend `vite dev` (port 5175,因為 5173/5174 都已被佔用)。新
-  session 如果要繼續瀏覽器手測,可以先確認這兩個 process 是否還活著,
-  活著就直接重用,不需要重新 `make dev-api`/`make dev-web`。測試帳號:
-  `browsertest1@example.com` / `Pa$$word1!`(已建立測試帳本「測試帳本」,
-  幣別 CNY,注意 Phase 3 做完後這個舊帳本的幣別不會自動變成 TWD,只有
-  「新建」帳本才會套用新預設)。
+- **2026-08-07 更新**:上次 session 記錄的 `browsertest1@example.com` 測試
+  帳號在目前的 `beecount.db` 裡已經不存在(可能是資料庫在兩次 session 之間
+  被重置過),改用 `owner@example.com`(admin 帳號)測試,密碼被本次 session
+  重設為 `TestPass123!`(舊密碼未知、無法還原,這是一次性 hash 覆蓋——若
+  這是需要保留的正式帳號密碼,請告知使用者需要另外處理)。本機目前跑著:
+  backend `uvicorn`(port 8080,`--reload`,PID 96558)+ frontend `vite dev`
+  (port 5173,PID 96532,不是舊筆記寫的 5175——5173 目前是空的)。新
+  session 接手前建議先確認這兩個 process 是否還活著。

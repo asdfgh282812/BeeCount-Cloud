@@ -256,6 +256,36 @@ def test_web_update_account_parent_account_id_accepts_valid_group_parent():
         app.dependency_overrides.clear()
 
 
+def test_web_update_account_parent_account_id_accepts_bank_card_child():
+    """§2.9 Phase 4 前端擴充(2026-08):銀行帳戶(bank_card)也可以掛靠
+    account_group 主帳戶,不再只限信用卡——後端本來就是 type-agnostic,
+    這條測試鎖住這個行為避免退化。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccbank1@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccbank1@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _push(client, hdr_app, "lgbank1", "ledger", "lgbank1",
+              {"syncId": "lgbank1", "ledgerName": "账本", "currency": "TWD"}, device_id="d-app")
+        _push(client, hdr_app, "lgbank1", "account", "acc-group",
+              {"syncId": "acc-group", "name": "銀行群組", "type": "account_group", "currency": "TWD"},
+              device_id="d-app")
+        _push(client, hdr_app, "lgbank1", "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行帳戶", "type": "bank_card", "currency": "TWD"},
+              device_id="d-app")
+
+        r = client.patch(
+            "/api/v1/write/ledgers/lgbank1/accounts/acc-bank",
+            headers=hdr_web, json={"base_change_id": 0, "parent_account_id": "acc-group"},
+        )
+        assert r.status_code == 200, r.text
+        row = _account_row(TS, "ccbank1@t.com", "acc-bank")
+        assert row.parent_account_id == "acc-group"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_web_update_account_parent_account_id_rejects_non_group_parent():
     """新規則:parent 必須是 account_type == "account_group",隨便一張
     信用卡不能再被拿來當主帳戶(這是這次改版的核心 —— 使用者反馈主帳戶

@@ -5,6 +5,7 @@ import {
   Bot,
   Brush,
   CalendarClock,
+  Clock,
   CreditCard,
   FileStack,
   HandCoins,
@@ -218,6 +219,13 @@ export function AvatarDropdown({
                 onClick={() => onNavigate('admin-data-cleanup')}
               >
                 {t('nav.dataCleanup')}
+              </MenuButton>
+              <MenuButton
+                icon={Clock}
+                active={currentSection === 'admin-scheduled-jobs'}
+                onClick={() => onNavigate('admin-scheduled-jobs')}
+              >
+                {t('nav.scheduledJobs')}
               </MenuButton>
             </>
           ) : null}

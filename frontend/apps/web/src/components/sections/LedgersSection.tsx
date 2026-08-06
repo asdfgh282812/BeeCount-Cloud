@@ -423,7 +423,7 @@ export function LedgerEditDialog({
   const { token } = useAuth()
   const [submitting, setSubmitting] = useState(false)
   // v30 多币种:币种选择弹窗展示各币种对账本主币种的汇率(1 该币种 ≈ x 主币种,含手动 override)。
-  const rateBase = (form.currency || 'CNY').toUpperCase()
+  const rateBase = (form.currency || 'TWD').toUpperCase()
   const [ratesToBase, setRatesToBase] = useState<Record<string, number>>({})
   useEffect(() => {
     if (!open || !token) return
@@ -466,7 +466,7 @@ export function LedgerEditDialog({
           <div className="space-y-1">
             <Label>{t('ledgers.field.currency')}</Label>
             <CurrencySelectorTrigger
-              value={form.currency || 'CNY'}
+              value={form.currency || 'TWD'}
               onChange={(code) => onChange({ ...form, currency: code })}
               ratesToBase={ratesToBase}
               rateBase={rateBase}

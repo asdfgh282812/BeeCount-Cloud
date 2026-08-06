@@ -20,7 +20,7 @@ import { useLedgers } from '../../context/LedgersContext'
 import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
-const defaultForm: LedgerForm = { ledger_name: '', currency: 'CNY', month_start_day: 1 }
+const defaultForm: LedgerForm = { ledger_name: '', currency: 'TWD', month_start_day: 1 }
 
 /**
  * 账本列表页 ——
@@ -97,7 +97,7 @@ export function LedgersPage() {
     try {
       await createLedger(token, {
         ledger_name: createForm.ledger_name.trim(),
-        currency: createForm.currency || 'CNY',
+        currency: createForm.currency || 'TWD',
         month_start_day: createForm.month_start_day || 1,
       })
       notifySuccess(t('ledgers.notice.created'))

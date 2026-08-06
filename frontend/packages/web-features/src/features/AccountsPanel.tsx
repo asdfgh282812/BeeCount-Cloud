@@ -1228,9 +1228,13 @@ export function AccountsPanel({
                       next.billing_day = ''
                       next.payment_due_day = ''
                     }
-                    // 离开 credit_card → 清空「掛靠主帳戶」选择(只有信用卡
-                    // 会掛靠群組)。
-                    if (form.account_type === 'credit_card' && value !== 'credit_card') {
+                    // 离开 credit_card / bank_card → 清空「掛靠主帳戶」选择
+                    // (信用卡与银行账户都可以掛靠群組)。
+                    if (
+                      (form.account_type === 'credit_card' || form.account_type === 'bank_card') &&
+                      value !== 'credit_card' &&
+                      value !== 'bank_card'
+                    ) {
                       next.parent_account_id = ''
                     }
                     // 离开 bank_card / credit_card / account_group → 清空银行卡元信息
@@ -1276,7 +1280,7 @@ export function AccountsPanel({
                     页面层(AccountsPage)负责"已有交易则锁定币种"的判断,这里
                     只是个普通选择器。 */}
                 <CurrencySelectorTrigger
-                  value={form.currency || 'CNY'}
+                  value={form.currency || 'TWD'}
                   onChange={(code) => onFormChange({ ...form, currency: code })}
                 />
               </div>
@@ -1413,9 +1417,9 @@ export function AccountsPanel({
               </div>
             ) : null}
 
-            {/* 信用卡:掛靠主帳戶(§2.9 Phase 4 群組模型)——只能選
-                account_group 类型的帳戶,信用卡自己不能再被拿来当主帳戶。 */}
-            {form.account_type === 'credit_card' ? (
+            {/* 信用卡 / 銀行帳戶:掛靠主帳戶(§2.9 Phase 4 群組模型)——只能選
+                account_group 类型的帳戶,信用卡/銀行帳戶自己不能再被拿来当主帳戶。 */}
+            {form.account_type === 'credit_card' || form.account_type === 'bank_card' ? (
               <div className="space-y-1">
                 <Label>{t('accounts.field.parentAccount')}</Label>
                 <Select

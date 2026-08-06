@@ -1270,3 +1270,29 @@ class BackupRunTarget(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bytes_transferred: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ScheduledJobConfig(Base):
+    """背景排程管理後台(§ 排程管理 Phase 5)——把 `main.py` 裡原本散落在 4 條
+    各自獨立 asyncio 迴圈的 7 個排程動作(mcp 日誌清理 / 週期性收支物化 /
+    借還款提醒 / 信用卡繳款提醒 / 自動扣繳 / 信用卡紅利回饋入帳)收斂成一張
+    設定表 + 統一的 60 秒輪詢迴圈(`main.py::_start_scheduled_jobs_loop`),
+    讓 admin 可以在後台調整頻率/停用/立即執行,不需要改代碼重新部署。
+    `job_key` 對應 `services/scheduled_jobs.py::JOB_REGISTRY` 的 key,是全域
+    單例設定(不分 user),比照 `internal_tasks.py` 既有手動觸發端點一樣
+    是運維層級操作。"""
+
+    __tablename__ = "scheduled_job_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_run_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

@@ -1889,6 +1889,30 @@ class BackupScheduleOut(BaseModel):
     created_at: datetime
 
 
+class ScheduledJobConfigUpdateRequest(BaseModel):
+    interval_seconds: int | None = Field(default=None, ge=60, le=7 * 24 * 3600)
+    enabled: bool | None = None
+
+
+class ScheduledJobConfigOut(BaseModel):
+    job_key: str
+    interval_seconds: int
+    enabled: bool
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_message: str | None = None
+
+
+class ScheduledJobRunNowOut(BaseModel):
+    job_key: str
+    status: str
+    message: str | None = None
+    summary: dict
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+
+
 class BackupRunTargetOut(BaseModel):
     id: int
     remote_id: int

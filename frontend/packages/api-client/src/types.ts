@@ -554,6 +554,25 @@ export type DataCleanupResult = {
   failures: DataCleanupFailure[]
 }
 
+export type ScheduledJobConfig = {
+  job_key: string
+  interval_seconds: number
+  enabled: boolean
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_run_status?: string | null
+  last_run_message?: string | null
+}
+
+export type ScheduledJobRunNowResult = {
+  job_key: string
+  status: string
+  message?: string | null
+  summary: Record<string, unknown>
+  last_run_at?: string | null
+  next_run_at?: string | null
+}
+
 export type AdminSyncErrorItem = {
   id: number
   action: string

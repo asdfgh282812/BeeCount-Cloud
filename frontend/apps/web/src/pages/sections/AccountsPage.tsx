@@ -326,10 +326,13 @@ export function AccountsPage() {
         payment_due_day: hasBillingFields ? paymentDueDayNum : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
-        // 掛靠主帳戶(§2.9 Phase 4):仅 credit_card 类型有意义,离开
-        // credit_card 时(onFormChange 已清空 form.parent_account_id)显式传
-        // null 解除掛靠。
-        parent_account_id: isCreditCard ? form.parent_account_id.trim() || null : null,
+        // 掛靠主帳戶(§2.9 Phase 4,前端擴充至 bank_card):credit_card /
+        // bank_card 类型才有意义,离开这两种类型时(onFormChange 已清空
+        // form.parent_account_id)显式传 null 解除掛靠。
+        parent_account_id:
+          isCreditCard || form.account_type === 'bank_card'
+            ? form.parent_account_id.trim() || null
+            : null,
         // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
         hidden: form.hidden,
         // 自動扣繳(§2.9,2026-08-04 改版):非 billing-root 类型显式传

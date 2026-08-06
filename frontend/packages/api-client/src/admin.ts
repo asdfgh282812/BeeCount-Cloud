@@ -11,6 +11,8 @@ import type {
   DataCleanupRecord,
   DataCleanupResult,
   DataCleanupScanReport,
+  ScheduledJobConfig,
+  ScheduledJobRunNowResult,
   UserAdmin,
   UserAdminCreatePayload,
   UserAdminList
@@ -118,6 +120,33 @@ export async function executeDataCleanup(
   return authedPost<DataCleanupResult>('/admin/data-cleanup/clean', token, {
     records,
   })
+}
+
+export async function fetchScheduledJobs(token: string): Promise<ScheduledJobConfig[]> {
+  return authedGet<ScheduledJobConfig[]>('/admin/scheduled-jobs', token)
+}
+
+export async function updateScheduledJob(
+  token: string,
+  jobKey: string,
+  payload: { interval_seconds?: number; enabled?: boolean },
+): Promise<ScheduledJobConfig> {
+  return authedPatch<ScheduledJobConfig>(
+    `/admin/scheduled-jobs/${encodeURIComponent(jobKey)}`,
+    token,
+    payload,
+  )
+}
+
+export async function runScheduledJobNow(
+  token: string,
+  jobKey: string,
+): Promise<ScheduledJobRunNowResult> {
+  return authedPost<ScheduledJobRunNowResult>(
+    `/admin/scheduled-jobs/${encodeURIComponent(jobKey)}/run-now`,
+    token,
+    {},
+  )
 }
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {

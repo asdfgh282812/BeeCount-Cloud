@@ -20,6 +20,7 @@ export type AppSection =
   | 'admin-users'
   | 'admin-backup'
   | 'admin-data-cleanup'
+  | 'admin-scheduled-jobs'
   | 'import'
 
 export type NavItem = {

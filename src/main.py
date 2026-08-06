@@ -24,7 +24,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, write, ws
-from .routers import admin_backup, internal_tasks, mcp_calls, two_factor
+from .routers import admin_backup, admin_scheduled_jobs, internal_tasks, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
 from .routers import invites as invites_router
@@ -154,6 +154,11 @@ app.include_router(
     admin_backup.router,
     prefix=f"{settings.api_prefix}/admin/backup",
     tags=["admin-backup"],
+)
+app.include_router(
+    admin_scheduled_jobs.router,
+    prefix=f"{settings.api_prefix}/admin/scheduled-jobs",
+    tags=["admin-scheduled-jobs"],
 )
 app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["read"])
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
@@ -294,233 +299,60 @@ async def _stop_mcp_streamable() -> None:  # noqa: B008
 
 
 # ============================================================================
-# MCP call log retention — 每 24h 清一次 > 30 天的行,跟 APScheduler 解耦,
-# 用纯 asyncio loop 避免额外依赖。loop 首次睡 24h 再跑,意味着冷启动后第一
-# 次清理是次日;不影响测试(test 进程秒级退出,任务永远不触发)。
-# ============================================================================
-
-
-_MCP_LOG_RETENTION_DAYS = 30
-
-
-@app.on_event("startup")
-async def _start_mcp_log_retention() -> None:  # noqa: B008
-    import asyncio
-
-    async def _loop() -> None:
-        while True:
-            await asyncio.sleep(24 * 3600)
-            try:
-                await asyncio.to_thread(_prune_mcp_logs)
-            except Exception:
-                logging.getLogger(__name__).exception("mcp log retention failed")
-
-    app.state.mcp_log_retention_task = asyncio.create_task(_loop())
-
-
-def _prune_mcp_logs() -> None:
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import delete
-
-    from .models import MCPCallLog
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_MCP_LOG_RETENTION_DAYS)
-    with SessionLocal() as db:
-        result = db.execute(delete(MCPCallLog).where(MCPCallLog.called_at < cutoff))
-        db.commit()
-        deleted = result.rowcount or 0
-        if deleted:
-            logging.getLogger(__name__).info("mcp: retention deleted %d old call logs", deleted)
-
-
-@app.on_event("shutdown")
-async def _stop_mcp_log_retention() -> None:  # noqa: B008
-    task = getattr(app.state, "mcp_log_retention_task", None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
-# ============================================================================
-# Recurring rule 視窗續產生(MOZE_FEATURE_GAP_SD.md §2.2 / Phase 1.5 修正版
-# §2.12.2)—— 纯 asyncio loop,不依赖 APScheduler,跟 mcp log retention 同款
-# 写法。Phase 1.5 之后规则建立当下就已经批次生成过一个视窗,这个 loop 只
-# 负责给"没设 end_at 的长期规则"低频续产生下一段视窗,所以从 15 分钟改成
-# 每天一次;首次冷启动等 24 小时才跑第一次,不影响测试(test 进程秒级退出,
-# 任务永远不触发)。想立即触发一次(手动 / 外部 cron)走 POST
-# /api/v1/internal/tasks/materialize-recurring。分期付款不再需要任何排程
-# (建计画/rebalance/payoff 等写入口当下就算完全部期数)。
-# ============================================================================
-
-
-_RECURRING_MATERIALIZE_INTERVAL_SECONDS = 24 * 60 * 60
-
-
-@app.on_event("startup")
-async def _start_recurring_materializer() -> None:  # noqa: B008
-    import asyncio
-
-    async def _loop() -> None:
-        while True:
-            await asyncio.sleep(_RECURRING_MATERIALIZE_INTERVAL_SECONDS)
-            try:
-                await asyncio.to_thread(_run_materialize_once)
-            except Exception:
-                logging.getLogger(__name__).exception("recurring materializer loop failed")
-
-    app.state.recurring_materializer_task = asyncio.create_task(_loop())
-
-
-def _run_materialize_once() -> None:
-    from .services import recurring_materializer
-
-    with SessionLocal() as db:
-        result = recurring_materializer.materialize_all_due(db)
-        if result["recurring_transactions"]:
-            logging.getLogger(__name__).info(
-                "recurring materializer: recurring=%d", result["recurring_transactions"],
-            )
-
-
-@app.on_event("shutdown")
-async def _stop_recurring_materializer() -> None:  # noqa: B008
-    task = getattr(app.state, "recurring_materializer_task", None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
-# ============================================================================
-# 借還款追蹤(§2.5 Phase 3)到期提醒 —— 独立低频 loop,不再挂在上面 recurring
-# materializer 的 24 小时 loop 上。之前两者共用同一个 loop(interval 也是 24
-# 小时),这在 recurring rule 上没问题(建规则当下就已经批次生成过窗口,daily
-# 续窗纯粹是长尾兜底),但对 debt 到期提醒是错的:提醒是"这笔债务快到期/已
-# 逾期"这种时效性信息,共用 24 小时 interval 意味着冷启动的服务器要等满 24
-# 小时才会发出第一批提醒(而且 recurring materializer 的 loop 是先 sleep 再
-# 跑,等待时间还会更长)。改成独立 loop:启动时立即跑一次,之后每 15 分钟跑
-# 一次,跟 debt_reminders.py 模块说明里原本设计的"15 分钟"频率对齐。
-# 2026-08-02 補:信用卡繳款到期提醒、自動扣繳(transfer 週期性收支)到期
-# 生成 + 餘額檢查,同样是时效性操作,也都併到这个 loop(理由同上——不能等
-# 24 小时)。2026-08-04 補:信用卡「自動扣繳」改版成帳戶級開關(不再借用
-# 週期性收支規則,見 `services.credit_card_autopay` 模块说明),同样挂在
-# 这个 loop 上;上面那条 transfer 週期性收支的餘額檢查是給"一般排程轉帳"
-# 用的通用機制,两者是各自独立的功能,不是取代关系。
-# ============================================================================
-
-
-_DEBT_REMINDER_INTERVAL_SECONDS = 15 * 60
-
-
-@app.on_event("startup")
-async def _start_debt_reminder_loop() -> None:  # noqa: B008
-    import asyncio
-
-    async def _loop() -> None:
-        while True:
-            try:
-                await asyncio.to_thread(_run_debt_reminders_once)
-            except Exception:
-                logging.getLogger(__name__).exception("debt reminder loop failed")
-            await asyncio.sleep(_DEBT_REMINDER_INTERVAL_SECONDS)
-
-    app.state.debt_reminder_task = asyncio.create_task(_loop())
-
-
-def _run_debt_reminders_once() -> None:
-    from .services import credit_card_autopay, credit_card_reminders, debt_reminders
-
-    with SessionLocal() as db:
-        debt_reminder_count = debt_reminders.send_due_debt_reminders(db)
-        if debt_reminder_count:
-            db.commit()
-            logging.getLogger(__name__).info(
-                "debt reminders: sent=%d", debt_reminder_count,
-            )
-        # 信用卡繳款到期提醒(§2.9 Phase 4,2026-08-02 補):挂在同一个 15
-        # 分钟 loop 上,跟 debt reminders 同样的"时效性提醒不能等 24 小时"
-        # 理由(见上方 loop 说明)。
-        card_reminder_count = credit_card_reminders.send_due_card_reminders(db)
-        if card_reminder_count:
-            db.commit()
-            logging.getLogger(__name__).info(
-                "card reminders: sent=%d", card_reminder_count,
-            )
-        # 自動扣繳(tx_type=="transfer" 的週期性收支规则,2026-08-02 補):
-        # 到期才逐笔生成 + 查来源帐户当下余额,同样是时效性操作,挂在这个
-        # 15 分钟 loop 上(不是 recurring_materializer 自己那个 24 小时 loop
-        # ——那个 loop 处理的是"没设 end_at 的长期规则提前续窗",跟这里
-        # "到期当下才检查余额"是两回事,见 recurring_materializer.py 模块
-        # 说明)。
-        from .services import recurring_materializer
-
-        transfer_result = recurring_materializer.materialize_due_transfer_rules(db)
-        if transfer_result["materialized"] or transfer_result["skipped_insufficient"]:
-            db.commit()
-            logging.getLogger(__name__).info(
-                "recurring transfer rules: materialized=%d skipped_insufficient=%d",
-                transfer_result["materialized"], transfer_result["skipped_insufficient"],
-            )
-        # 信用卡自動扣繳(§2.9,2026-08-04 改版:帳戶級開關,見
-        # services.credit_card_autopay 模块说明),同样挂在这个 15 分钟 loop。
-        autopay_result = credit_card_autopay.materialize_due_card_autopay(db)
-        if autopay_result["executed"] or autopay_result["skipped_insufficient"]:
-            db.commit()
-            logging.getLogger(__name__).info(
-                "credit card autopay: executed=%d skipped_insufficient=%d",
-                autopay_result["executed"], autopay_result["skipped_insufficient"],
-            )
-
-
-@app.on_event("shutdown")
-async def _stop_debt_reminder_loop() -> None:  # noqa: B008
-    task = getattr(app.state, "debt_reminder_task", None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
-# ============================================================================
-# 信用卡紅利回饋自動入帳(§2.9.5.4)—— 2026-08-04 使用者反饋:回饋金入帳的
-# 時效性比 debt/card 提醒、autopay 更高(逐筆結算規則的使用者期待「消費後
-# 沒多久就看到回饋入帳」),原本借用上面 debt reminder 的 15 分鐘 loop 太慢,
-# 拆成獨立的 5 分鐘 loop,不再跟 debt/card reminders/autopay 共用同一個
-# interval——這樣之後想再調整回饋入帳的頻率,也不會牽動其它幾個功能的排程。
+# 背景排程管理後台(§ 排程管理 Phase 5)—— 原本这里是 4 條各自獨立的 asyncio
+# 迴圈(mcp 日誌清理 24h / recurring materializer 24h / debt+card+transfer+
+# autopay 15min / card reward payout 5min),2026-08 收斂成一張
+# `ScheduledJobConfig` 設定表(`services/scheduled_jobs.py`)+ 這一條 60 秒
+# 輪詢迴圈,讓 admin 可以在 `/admin/scheduled-jobs` 後台調整頻率/停用/立即
+# 執行,不需要改代碼重新部署。順便修掉舊 mcp_log_retention/recurring_
+# materializer 迴圈「先 sleep 才跑」的冷啟動延遲寫法——新迴圈先跑
+# `run_due_jobs`(只有到期的 job 才會真的執行)再 sleep,`next_run_at` 由
+# `run_job` 自己維護,不受迴圈本身的 sleep 順序影響。
 # 手動觸發仍沿用既有的 `POST /internal/tasks/materialize-recurring`
-# (admin scope,`internal_tasks.py` 直接呼叫,不經過這個 loop)。
+# (`internal_tasks.py`,直接呼叫同一批底層函式,兩邊互不干擾)。
 # ============================================================================
 
 
-_CARD_REWARD_PAYOUT_INTERVAL_SECONDS = 5 * 60
+_SCHEDULED_JOBS_POLL_INTERVAL_SECONDS = 60
 
 
 @app.on_event("startup")
-async def _start_card_reward_payout_loop() -> None:  # noqa: B008
+async def _start_scheduled_jobs_loop() -> None:  # noqa: B008
     import asyncio
+
+    from .services import scheduled_jobs
+
+    # 補齊缺失的 job_key 預設列(生產環境靠 migration seed;這裡是升級後
+    # 新增 job_key 時舊部署 DB 的第二道保險,幂等、開銷是一次 SELECT)。
+    with SessionLocal() as db:
+        scheduled_jobs.ensure_default_configs(db)
 
     async def _loop() -> None:
         while True:
             try:
-                await asyncio.to_thread(_run_card_reward_payout_once)
+                await asyncio.to_thread(_run_due_scheduled_jobs_once)
             except Exception:
-                logging.getLogger(__name__).exception("card reward payout loop failed")
-            await asyncio.sleep(_CARD_REWARD_PAYOUT_INTERVAL_SECONDS)
+                logging.getLogger(__name__).exception("scheduled jobs loop failed")
+            await asyncio.sleep(_SCHEDULED_JOBS_POLL_INTERVAL_SECONDS)
 
-    app.state.card_reward_payout_task = asyncio.create_task(_loop())
+    app.state.scheduled_jobs_task = asyncio.create_task(_loop())
 
 
-def _run_card_reward_payout_once() -> None:
-    from .services import card_reward_payout
+def _run_due_scheduled_jobs_once() -> None:
+    from .services import scheduled_jobs
 
     with SessionLocal() as db:
-        reward_payout_result = card_reward_payout.materialize_due_card_reward_payouts(db)
-        if reward_payout_result["tx_payouts"] or reward_payout_result["period_payouts"]:
-            db.commit()
+        results = scheduled_jobs.run_due_jobs(db)
+        for r in results:
             logging.getLogger(__name__).info(
-                "card reward payouts: tx=%d period=%d",
-                reward_payout_result["tx_payouts"], reward_payout_result["period_payouts"],
+                "scheduled job ran: job_key=%s status=%s message=%s",
+                r["job_key"], r["status"], r["message"],
             )
 
 
 @app.on_event("shutdown")
-async def _stop_card_reward_payout_loop() -> None:  # noqa: B008
-    task = getattr(app.state, "card_reward_payout_task", None)
+async def _stop_scheduled_jobs_loop() -> None:  # noqa: B008
+    task = getattr(app.state, "scheduled_jobs_task", None)
     if task is not None and not task.done():
         task.cancel()
 
