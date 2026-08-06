@@ -410,17 +410,22 @@ async def _do_execute_accounts(*, db: Session, user_id: str, ledger: Ledger, row
     prev = _deep_copy_snapshot(snapshot)
     actor_base = _payload_with_actor({}, _user_stub(user_id))
 
-    # 主帳戶(群組)可能是這份檔案裡更早的一列,也可能是帳本裡已存在的帳戶 ——
-    # 用 name(小寫)→syncId 表統一解析,邊建立邊往裡面加新帳戶。
+    # 已存在與新建立帳戶的名稱到 ID 映射字典
     name_to_id: dict[str, str] = {
         str(a.get("name") or "").strip().lower(): str(a.get("syncId"))
         for a in (snapshot.get("accounts") or [])
         if isinstance(a, dict) and a.get("name")
     }
 
+    # 拓撲排序：主帳戶/無父帳戶者優先處理 (key=0)，有指定父帳戶者後處理 (key=1)
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: 1 if r.parent_account_name and r.parent_account_name.strip() else 0
+    )
+
     try:
-        total = len(rows)
-        for i, row in enumerate(rows, 1):
+        total = len(sorted_rows)
+        for i, row in enumerate(sorted_rows, 1):
             payload: dict[str, object] = {
                 **actor_base,
                 "name": row.name,
@@ -434,16 +439,37 @@ async def _do_execute_accounts(*, db: Session, user_id: str, ledger: Ledger, row
                 payload["billing_day"] = row.billing_day
             if row.payment_due_day is not None:
                 payload["payment_due_day"] = row.payment_due_day
+
             if row.parent_account_name:
-                parent_id = name_to_id.get(row.parent_account_name.strip().lower())
+                p_name = row.parent_account_name.strip()
+                p_key = p_name.lower()
+                parent_id = name_to_id.get(p_key)
+
+                # 若指定了主帳戶名稱，但系統與 CSV 中均未建立，則動態自動建立該「帳戶群組」
                 if not parent_id:
-                    raise _SimpleImportFailed(
-                        code="IMPORT_PARENT_ACCOUNT_NOT_FOUND", row_number=row.source_row_number,
-                        message=(
-                            f"帳戶「{row.name}」指定的主帳戶「{row.parent_account_name}」找不到,"
-                            "請確認主帳戶名稱正確、且在檔案中排在更前面(或帳本裡已存在)"
-                        ),
-                    )
+                    parent_payload: dict[str, object] = {
+                        **actor_base,
+                        "name": p_name,
+                        "account_type": "account_group",
+                        "currency": row.currency,
+                        "initial_balance": 0.0,
+                    }
+                    if row.credit_limit is not None:
+                        parent_payload["credit_limit"] = row.credit_limit
+                    if row.billing_day is not None:
+                        parent_payload["billing_day"] = row.billing_day
+                    if row.payment_due_day is not None:
+                        parent_payload["payment_due_day"] = row.payment_due_day
+
+                    try:
+                        snapshot, parent_id = create_account(snapshot, parent_payload)
+                        name_to_id[p_key] = parent_id
+                    except Exception as exc:
+                        raise _SimpleImportFailed(
+                            code="IMPORT_PARENT_ACCOUNT_NOT_FOUND", row_number=row.source_row_number,
+                            message=f"自動建立主帳戶「{p_name}」失敗: {exc}",
+                        )
+
                 payload["parent_account_id"] = parent_id
 
             try:

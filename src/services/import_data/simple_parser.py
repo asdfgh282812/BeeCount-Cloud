@@ -24,11 +24,12 @@ _KIND_INCOME = {"收入", "income", "收", "+", "入"}
 
 # 帳戶類型:同時接受三語系 UI 顯示標籤(zh-TW/zh-CN/en)跟內部值,盡量寬容。
 _ACCOUNT_TYPE_ALIASES: dict[str, str] = {
-    "现金": "cash", "現金": "cash", "cash": "cash",
+"现金": "cash", "現金": "cash", "cash": "cash",
     "银行卡": "bank_card", "銀行卡": "bank_card", "银行": "bank_card", "銀行": "bank_card",
     "bank card": "bank_card", "bank_card": "bank_card", "bank": "bank_card",
     "信用卡": "credit_card", "credit card": "credit_card", "credit_card": "credit_card",
     "主账户": "account_group", "主帳戶": "account_group",
+    "帳戶群組": "account_group", "帳戶群組": "account_group", "群組": "account_group", "組": "account_group",
     "主账户(合并账单)": "account_group", "主帳戶(合併帳單)": "account_group",
     "主帳戶(群組)": "account_group", "主账户(群组)": "account_group",
     "parent account (merged billing)": "account_group", "account_group": "account_group",
@@ -72,10 +73,18 @@ def _read_rows_2d(payload: bytes, filename: str) -> list[list[str]]:
             rows.append(cells)
         wb.close()
         return rows
-    try:
-        text = payload.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = payload.decode("gbk")
+
+    # 多重文字編碼嘗試機制 (UTF-8-SIG -> UTF-8 -> CP950/Big5 -> GB18030/GBK -> Replace)
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp950", "big5", "gb18030", "gbk"):
+        try:
+            text = payload.decode(enc)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if text is None:
+        text = payload.decode("utf-8", errors="replace")
+
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if not text.strip():
         return []
