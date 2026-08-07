@@ -745,6 +745,7 @@ const zhTW = {
   'cardRewards.confirmDelete': '確定要刪除這條回饋規則嗎？',
   'cardRewards.status.noBillingSchedule': '此帳戶尚未設定帳單日/繳款日,無法按帳單週期計算',
   'cardRewards.status.expired': '規則已停用或不在生效期間',
+  'cardRewards.status.expiredForPeriod': '此帳單週期（{start} ~ {end}）規則尚未啟用或不在活動期間內，非規則目前的即時狀態',
   'cardRewards.summary.percentage': '{rate}% 回饋',
   'cardRewards.summary.fixedAmount': '每筆固定回饋 {amount}',
   'cardRewards.summary.cap': '上限 {cap}',

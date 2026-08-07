@@ -203,6 +203,40 @@ def test_immediate_after_tx_pays_only_after_settlement_days_and_dedups():
         app.dependency_overrides.clear()
 
 
+def test_immediate_after_tx_applies_total_rounding_to_final_payout():
+    """2026-08 使用者反饋 bug #1:選了「總額四捨五入」,逐筆結算的實際入帳
+    金額依舊帶小數(例如 13.95 而非 14)——`_materialize_per_tx` 原本完全
+    沒有套用 `rule.total_rounding`,只有預覽畫面
+    (`card_rewards.compute_account_card_rewards`)有套用,造成預覽跟實際
+    入帳金額對不上,使用者以為「四捨五入」設定沒生效。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-round@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-round", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-round",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+            rate_value=5.0, total_rounding="round",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgp-round", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 279.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        now = tx_day + timedelta(days=1)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 1
+        # 279 * 5% = 13.95,total_rounding="round" 應該取整到整數 14,不是 13.95。
+        assert incomes[0].amount == 14.0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_immediate_after_tx_reward_tx_gets_category_and_source_link():
     """§2.9.5.4 補強(2026-08-04 使用者反饋):①回饋 income 交易自動帶固定
     的「回饋金」分類(不然空白分類很奇怪);②反查 `reward_source_tx_id`

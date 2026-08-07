@@ -843,10 +843,16 @@ export function TransactionsPanel({
             {/* 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記交易時手動
                 勾選這筆消費要走哪幾條回饋規則(可複選)——系統不再依 category/
                 金額自動判斷,只在 expense + 選中帳戶是信用卡時顯示。
-                §2.9.5.4 補強:只顯示「目前生效中」的規則(enabled 且在
-                starts_at/ends_at 區間內),但如果這條規則已經被這筆交易
-                勾選過,即使後來失效了也要保留顯示,讓使用者可以取消勾選
-                (跟已停用規則若曾被勾選仍要顯示同一個既有慣例)。 */}
+                §2.9.5.4 補強:只顯示規則生效中的選項。
+                2026-08-07 使用者反饋:原本拿「現在的時間(Date.now())」跟
+                starts_at/ends_at 比,而不是拿「這筆交易自己的時間」比——結果
+                補記一筆已過期活動期間的舊交易時,清單只看記錄當下規則還在
+                不在,過期規則會一路留在清單裡讓使用者誤勾,越積越多。改成
+                拿 `form.happened_at`(這筆交易的時間,使用者改時間欄位時
+                即時重新過濾)去跟規則的生效窗比對,不在窗內就不出現在候選
+                清單——但如果這條規則已經被這筆交易勾選過,即使已經不在窗內
+                也要保留顯示,讓使用者可以取消勾選(跟已停用規則若曾被勾選
+                仍要顯示同一個既有慣例)。 */}
             {form.tx_type === 'expense' &&
             accounts.find(
               (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
@@ -859,9 +865,9 @@ export function TransactionsPanel({
                     .filter((rule) => {
                       if (form.reward_rule_ids.includes(rule.id)) return true
                       if (!rule.enabled) return false
-                      const now = Date.now()
-                      if (rule.starts_at && new Date(rule.starts_at).getTime() > now) return false
-                      if (rule.ends_at && new Date(rule.ends_at).getTime() < now) return false
+                      const txTime = forceUtcTimestamp(form.happened_at)
+                      if (rule.starts_at && forceUtcTimestamp(rule.starts_at) > txTime) return false
+                      if (rule.ends_at && forceUtcTimestamp(rule.ends_at) < txTime) return false
                       return true
                     })
                     .map((rule) => {
@@ -1408,4 +1414,14 @@ function datetimeLocalToIso(local: string, fallback: string): string {
   const d = new Date(local)
   if (Number.isNaN(d.getTime())) return fallback
   return d.toISOString()
+}
+
+/** 後端部分欄位(card_reward_rule.starts_at/ends_at)回傳的可能是不帶時區
+ *  位移的 naive datetime 字串,缺位移標記時強制當 UTC 解析,不然 UTC+8
+ *  使用者這裡會把生效窗判斷提早/延後 8 小時(跟 apps/web 那邊
+ *  `CardRewardRulesSection.tsx` 的 `forceUtcTimestamp` 同一個理由)。 */
+function forceUtcTimestamp(iso: string): number {
+  if (!iso) return NaN
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  return new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso).getTime()
 }

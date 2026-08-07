@@ -497,8 +497,17 @@ function SingleCardCardRewards({
               {t('cardRewards.status.noBillingSchedule')}
             </div>
           ) : usage.status === 'expired' ? (
+            // 2026-08 使用者反饋:這裡顯示的「規則已停用或不在生效期間」
+            // 講的是「這一期帳單週期」,不是規則現在的整體啟用狀態——沒帶
+            // 週期範圍時,使用者拿它跟上面剛顯示的「活動期間」欄位對照會
+            // 覺得矛盾(規則明明還在活動期間內,為什麼顯示未生效?其實是
+            // 因為這裡預設看的是上一期已結束的帳單,不是「現在」)。補上這
+            // 個週期的起訖日避免誤解。
             <div className="mt-1 text-[11px] text-muted-foreground">
-              {t('cardRewards.status.expired')}
+              {t('cardRewards.status.expiredForPeriod', {
+                start: isoToDateInput(usage.period_start),
+                end: isoToDateInput(usage.period_end),
+              })}
             </div>
           ) : (
             <div className="mt-2 flex items-center justify-between">
@@ -1357,26 +1366,37 @@ function CardRewardRuleTransactionsDialog({
               {t('cardRewards.detail.retry')}
             </button>
           </div>
-        ) : !detail || detail.status !== 'ok' ? (
-          <div className="text-xs text-muted-foreground">
-            {detail?.status === 'expired'
-              ? t('cardRewards.status.expired')
-              : t('cardRewards.status.noBillingSchedule')}
-          </div>
+        ) : !detail || detail.status === 'no_billing_schedule' ? (
+          <div className="text-xs text-muted-foreground">{t('cardRewards.status.noBillingSchedule')}</div>
         ) : (
           <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">
-                {t('cardRewards.detail.capped')}: {fmt(detail.capped_reward)}
-              </span>
-              <span className="font-medium">
-                {detail.remaining_reward_room == null
-                  ? t('cardRewards.detail.uncapped')
-                  : detail.remaining_reward_room <= 0
-                    ? t('cardRewards.detail.capReached')
-                    : t('cardRewards.detail.remainingRoom', { amount: fmt(detail.remaining_reward_room) })}
-              </span>
-            </div>
+            {detail.status === 'expired' ? (
+              // 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,
+              // 原本整段連交易明細一起被藏起來,使用者連「這期到底有什麼
+              // 消費」都查不到。改成上面照舊顯示提示文案(帶上這個週期的
+              // 起訖日,避免跟規則本身的「活動期間」欄位混淆),下面仍然
+              // 列出這個週期符合條件的消費(回饋金一律 0,因為規則當時未
+              // 生效,純粹給使用者對照用)。
+              <div className="rounded-md border border-dashed border-border p-2 text-xs text-muted-foreground">
+                {t('cardRewards.status.expiredForPeriod', {
+                  start: isoToDateInput(detail.period_start),
+                  end: isoToDateInput(detail.period_end),
+                })}
+              </div>
+            ) : (
+              <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">
+                  {t('cardRewards.detail.capped')}: {fmt(detail.capped_reward)}
+                </span>
+                <span className="font-medium">
+                  {detail.remaining_reward_room == null
+                    ? t('cardRewards.detail.uncapped')
+                    : detail.remaining_reward_room <= 0
+                      ? t('cardRewards.detail.capReached')
+                      : t('cardRewards.detail.remainingRoom', { amount: fmt(detail.remaining_reward_room) })}
+                </span>
+              </div>
+            )}
             <div className="max-h-[50vh] space-y-2 overflow-y-auto">
               {detail.items.length === 0 ? (
                 <div className="text-xs text-muted-foreground">{t('cardRewards.detail.empty')}</div>

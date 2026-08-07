@@ -619,6 +619,61 @@ def test_card_rewards_calendar_month_interval():
         app.dependency_overrides.clear()
 
 
+def test_card_rewards_excludes_tx_before_rule_starts_at_even_in_same_period():
+    """2026-08 使用者反饋:消費發生在 8/5,規則活動期間是 8/6 起,卻依舊被
+    算出回饋——根因是 `_rule_active_in_period` 只檢查規則生效窗跟「整個
+    帳單週期」(這裡是 8/1~8/31 的 calendar_month)有沒有重疊,判定「這期
+    規則有效」之後,`_qualifying_transactions` 從沒逐筆比對交易當下規則
+    是否真的已經生效,只要交易落在同一個週期內、且勾了這條規則就照算。
+    修好後:同一週期內,規則生效日之前的交易不該再被算入回饋。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr10b@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr10b@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        now = datetime.now(timezone.utc)
+        _seed_ledger_and_card(client, hdr_app, "lgr10b")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr10b/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "隔天才開始", "rate_type": "percentage",
+                "rate_value": 5.0, "interval": "calendar_month",
+                "starts_at": _iso(now + timedelta(days=1)),
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        # 交易發生在規則生效日的前一刻,但跟規則生效日仍落在同一個 calendar
+        # month 週期內。
+        _push(client, hdr_app, "lgr10b", "transaction", "tx-before-start",
+              {"syncId": "tx-before-start", "type": "expense", "amount": 279.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+
+        rr = client.get(
+            "/api/v1/read/ledgers/lgr10b/accounts/acc-card1/card-rewards", headers=hdr_web,
+        )
+        assert rr.status_code == 200, rr.text
+        item = rr.json()["items"][0]
+        # 修好之前:status == "ok" 且 raw_reward == 13.95(279 * 5%),規則
+        # 都還沒生效卻已經算出回饋。
+        assert item["raw_reward"] == 0.0
+        assert item["qualifying_spend"] == 0.0
+
+        detail = client.get(
+            f"/api/v1/read/ledgers/lgr10b/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        )
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["items"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_card_rewards_single_tx_can_tag_multiple_rules():
     """使用者反馈:一笔交易可以複选多条回饋规则(例如「網購 2%」+
     「滿百送15」疊加),不是单选一条。"""
@@ -1162,6 +1217,61 @@ def test_get_card_reward_rule_transactions_endpoint():
         assert data["raw_reward"] == 15.0
         assert data["capped_reward"] == 15.0
         assert data["remaining_reward_room"] == 5.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_card_reward_rule_transactions_still_lists_items_when_rule_inactive_for_period():
+    """2026-08 使用者反饋 bug #2:規則在使用者查詢的這個週期未生效(例如
+    `ends_at` 已經過了那個週期)時,原本明細彈窗連交易清單都被清空,使用者
+    完全查不到「這期到底有什麼消費」——即使規則本身沒有停用、也還沒真的
+    整體過期。改成規則在該週期未生效時,仍列出這個週期符合分類條件的交易
+    (`reward_amount` 一律 0,因為當時規則沒生效沒真的賺到回饋),`status`
+    維持 `expired` 讓前端照舊顯示提示文案。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr23b@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr23b@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        now = datetime.now(timezone.utc)
+        # ends_at 要落在「本月」開始之前(比照 calendar_month 週期解析,見
+        # `card_rewards._calendar_month_containing`),確保這條規則在本次
+        # 查詢的預設週期(period_offset=0 = 本月)裡「不在生效期間」,不受
+        # `now` 落在月初/月底的邊界影響。
+        first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        _seed_ledger_and_card(client, hdr_app, "lgr23b")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr23b/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "已過期規則", "rate_type": "percentage", "rate_value": 5.0,
+                "interval": "calendar_month",
+                "ends_at": _iso(first_of_month - timedelta(seconds=1)),
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        _push(client, hdr_app, "lgr23b", "transaction", "tx-inactive1",
+              {"syncId": "tx-inactive1", "type": "expense", "amount": 100.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡", "note": "過期規則消費",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+
+        detail = client.get(
+            f"/api/v1/read/ledgers/lgr23b/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        )
+        assert detail.status_code == 200, detail.text
+        data = detail.json()
+        assert data["status"] == "expired"
+        # 修好之前:items 一律清空,連查了什麼消費都看不到。
+        tx_ids = {item["tx_id"] for item in data["items"]}
+        assert tx_ids == {"tx-inactive1"}
+        assert data["items"][0]["reward_amount"] == 0.0
+        assert data["raw_reward"] == 0.0
+        assert data["capped_reward"] == 0.0
     finally:
         app.dependency_overrides.clear()
 

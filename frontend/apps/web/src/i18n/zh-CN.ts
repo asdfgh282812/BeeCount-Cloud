@@ -238,6 +238,7 @@ const zhCN = {
   'cardRewards.confirmDelete': '确定要删除这条回馈规则吗？',
   'cardRewards.status.noBillingSchedule': '该账户尚未设置账单日/还款日,无法按账单周期计算',
   'cardRewards.status.expired': '规则已停用或不在生效期间',
+  'cardRewards.status.expiredForPeriod': '此账单周期（{start} ~ {end}）规则尚未启用或不在活动期间内，非规则目前的即时状态',
   'cardRewards.summary.percentage': '{rate}% 回馈',
   'cardRewards.summary.fixedAmount': '每笔固定回馈 {amount}',
   'cardRewards.summary.cap': '上限 {cap}',

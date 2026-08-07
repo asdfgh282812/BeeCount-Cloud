@@ -273,7 +273,16 @@ export function AccountStatementSection({
   const handleEdit = async (tx: StatementTransaction) => {
     if (!token) return
     try {
-      const page = await fetchWorkspaceTransactions(token, { ledgerId: activeLedgerId, txSyncId: tx.id, limit: 1 })
+      // 使用者反饋(2026-08,對帳模式編輯回饋金額失敗):回饋方案列的 `tx.id`
+      // 是後端合成的 `reward-group:{rule_id}` 字串(見
+      // `read/ledgers.py::get_account_statement` 合併同一規則多筆回饋入帳
+      // 交易的邏輯),不是真正的交易 sync_id,拿去查一定查不到而顯示「載入
+      // 失敗」。這一列只有一筆成員(memberCount<=1,`editable` 才會是
+      // true)時,`member_tx_ids[0]` 才是真正對應的那筆回饋交易 sync_id,
+      // 要用它去查/開編輯彈窗;memberCount > 1 時 `editable` 本來就是
+      // false,不會走到這裡。
+      const targetTxId = tx.member_tx_ids && tx.member_tx_ids.length === 1 ? tx.member_tx_ids[0] : tx.id
+      const page = await fetchWorkspaceTransactions(token, { ledgerId: activeLedgerId, txSyncId: targetTxId, limit: 1 })
       const full = page.items[0]
       if (!full) {
         toast.error(t('statement.error'), t('notice.error'))

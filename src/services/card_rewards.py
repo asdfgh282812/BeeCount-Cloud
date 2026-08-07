@@ -269,6 +269,7 @@ def _qualifying_transactions(
     rule: ReadCardRewardRuleProjection,
     period_start: date | None,
     period_end: date | None,
+    enforce_active_window: bool = True,
 ) -> list[QualifyingTx]:
     """規則 + (可選)期間 → 符合條件交易 + 各自回饋金額,依 happened_at
     升序排列。`period_start`/`period_end` 皆為 `None` 時不限期間(§2.9.5.4
@@ -276,6 +277,11 @@ def _qualifying_transactions(
     `compute_account_card_rewards`(聚合顯示)、`list_rule_qualifying_
     transactions`(§2.9.5.3 明細彈窗)、payout 引擎三處共用,避免第三次
     複製同一段 LIKE 粗篩 + JSON membership + min_tx_amount 過濾邏輯。
+
+    `enforce_active_window=False` 只給 `list_rule_qualifying_transactions`
+    的「規則這期未生效」備援分支用——那裡是刻意要列出「這期到底有什麼
+    消費」讓使用者對照(reward_amount 由呼叫端強制歸零),不該再套用單筆
+    交易層級的生效窗過濾,否則規則整期都沒生效時又會變回清單一律清空。
 
     2026-08-04 使用者反饋(退款沖銷回饋):已經被退款的消費(有另一筆交易的
     `refund_of_sync_id` 指向它)一律排除,不管排程有沒有結算過——還沒結算
@@ -314,6 +320,17 @@ def _qualifying_transactions(
             continue
         if end_dt is not None and attributed > end_dt:
             continue
+        # 2026-08 使用者反饋:消費發生在 8/5,規則活動期間 8/6 起,卻依舊算出
+        # 回饋——`_rule_active_in_period` 只檢查規則的生效窗跟「整個帳單週期」
+        # 有沒有重疊(週期是 8/1~8/31,規則 8/6 開始沒有 > period_end,判定整
+        # 期都算「規則有效」),從沒逐筆比對「這筆交易當下規則是否已經生效/
+        # 還沒過期」。這裡補上單筆交易層級的邊界檢查,把落在規則生效窗之外
+        # 的交易剔除,即使它們仍落在同一個帳單週期內。
+        if enforce_active_window:
+            if rule.starts_at is not None and attributed.date() < rule.starts_at.date():
+                continue
+            if rule.ends_at is not None and attributed.date() > rule.ends_at.date():
+                continue
         try:
             tagged_rule_ids = json.loads(tx.reward_rule_sync_ids_json or "[]")
         except (TypeError, ValueError):
@@ -600,11 +617,25 @@ def list_rule_qualifying_transactions(
         }
     period_start, period_end = period
     if not _rule_active_in_period(rule, period_start, period_end):
+        # 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,原本整段
+        # 交易明細都被清空,使用者完全看不到「這期到底有什麼消費」,連
+        # 排查都做不到。改成仍然列出這個週期裡符合分類/金額條件的交易(視覺
+        # 上供對照用),只是 reward_amount 一律歸零——這些消費從未真正賺到
+        # 回饋,`status` 維持 "expired" 讓前端照舊顯示提示文案,只是不再連
+        # 明細一起藏起來。
+        items = [
+            {**item, "reward_amount": 0.0}
+            for item in _qualifying_transactions(
+                db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
+                enforce_active_window=False,
+            )
+        ]
+        qualifying_spend = sum(item["tx"].amount for item in items)
         return {
             "rule": rule, "period_start": period_start, "period_end": period_end,
-            "status": "expired", "qualifying_spend": 0.0,
+            "status": "expired", "qualifying_spend": round(qualifying_spend, 2),
             "raw_reward": 0.0, "capped_reward": 0.0,
-            "remaining_reward_room": rule.cap_amount, "items": [],
+            "remaining_reward_room": rule.cap_amount, "items": items,
         }
 
     items = _qualifying_transactions(

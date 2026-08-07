@@ -746,6 +746,7 @@ const en = {
   'cardRewards.confirmDelete': 'Delete this reward rule?',
   'cardRewards.status.noBillingSchedule': 'This account has no billing day / due day configured, so the billing-cycle period cannot be calculated',
   'cardRewards.status.expired': 'Rule is disabled or outside its effective window',
+  'cardRewards.status.expiredForPeriod': 'The rule was not active during this billing period ({start} – {end}). This is not the rule’s current live status.',
   'cardRewards.summary.percentage': '{rate}% back',
   'cardRewards.summary.fixedAmount': 'Fixed {amount} per transaction',
   'cardRewards.summary.cap': 'cap {cap}',

@@ -342,7 +342,15 @@ def _materialize_per_tx(
         if settlement_date is None or now.date() < settlement_date:
             continue  # 還沒到入帳日,留到下次 tick 重試,不記去重
 
-        reward_amount = item["reward_amount"]
+        # Phase 8 #4 補漏(2026-08 使用者反饋:選了「總額四捨五入」實際入帳
+        # 還是有小數):逐筆結算沒有「多筆加總」的階段,`compute_account_
+        # card_rewards` 的 total_rounding 只套用在預覽/彙總畫面,實際入帳
+        # 這裡完全沒有套用過。逐筆結算下每一筆payout本身就是它自己的
+        # 「最終總額」,所以在真正落袋(emit)前一樣要依 rule.total_rounding
+        # 取整一次,讓預覽跟實際入帳金額對得上。
+        reward_amount = card_rewards._round_amount(
+            item["reward_amount"], rule.total_rounding, to_integer=True,
+        )
         if rule.cap_amount is not None:
             period = card_rewards._resolve_period(
                 db, account=account, rule=rule, now=tx.happened_at.date(), period_offset=0,
