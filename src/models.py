@@ -510,6 +510,8 @@ class ReadTxProjection(Base):
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
+    merchant: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 外键引用都存 sync_id,rename 时只改 *_name 列,id 不动。
     category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     category_name: Mapped[str | None] = mapped_column(Text, nullable=True)

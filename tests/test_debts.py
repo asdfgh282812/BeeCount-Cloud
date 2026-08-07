@@ -621,3 +621,121 @@ def test_send_due_debt_reminders_skips_settled_debt():
             db.close()
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# 欠還款交易自動帶備註/分類(需求 #6, Phase 9)
+# ---------------------------------------------------------------------------
+
+
+def test_debt_tx_receivable_auto_fills_category_and_note():
+    """對方欠我(receivable)的還款交易:沒填分類/備註時自動歸類「收款」,
+    備註帶入「{對方} 還款」。"""
+    client, _TS, token, hdr, ledger_id = _setup("debt16@example.com")
+    try:
+        res = _create_debt(
+            client, hdr, ledger_id, token,
+            direction="receivable", counterparty_name="老李", principal_amount=500.0,
+        )
+        debt_id = res.json()["entity_id"]
+        tx_res = _create_tx(client, hdr, ledger_id, token, tx_type="income", amount=200.0, debt_id=debt_id)
+        assert tx_res.status_code == 200, tx_res.text
+        tx_id = tx_res.json()["entity_id"]
+
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        assert r.status_code == 200, r.text
+        row = {row["id"]: row for row in r.json()}[tx_id]
+        assert row["category_name"] == "收款"
+        assert row["note"] == "老李 還款"
+    finally:
+        client.close()
+
+
+def test_debt_tx_payable_auto_fills_category_and_note():
+    """我欠對方(payable)的還款交易:沒填分類/備註時自動歸類「還款」,備註
+    帶入「向{對方}借款」。"""
+    client, _TS, token, hdr, ledger_id = _setup("debt17@example.com")
+    try:
+        res = _create_debt(
+            client, hdr, ledger_id, token,
+            direction="payable", counterparty_name="小美", principal_amount=300.0,
+        )
+        debt_id = res.json()["entity_id"]
+        tx_res = _create_tx(client, hdr, ledger_id, token, tx_type="expense", amount=100.0, debt_id=debt_id)
+        assert tx_res.status_code == 200, tx_res.text
+        tx_id = tx_res.json()["entity_id"]
+
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        assert r.status_code == 200, r.text
+        row = {row["id"]: row for row in r.json()}[tx_id]
+        assert row["category_name"] == "還款"
+        assert row["note"] == "向小美借款"
+    finally:
+        client.close()
+
+
+def test_debt_tx_reuses_same_category_across_multiple_repayments():
+    """同一個使用者多筆還款交易應該共用同一個自建分類(冪等),不會每筆都
+    新建一個同名分類。"""
+    client, _TS, token, hdr, ledger_id = _setup("debt18@example.com")
+    try:
+        res = _create_debt(
+            client, hdr, ledger_id, token,
+            direction="receivable", counterparty_name="小張", principal_amount=1000.0,
+        )
+        debt_id = res.json()["entity_id"]
+        tx1 = _create_tx(client, hdr, ledger_id, token, tx_type="income", amount=100.0, debt_id=debt_id)
+        tx2 = _create_tx(client, hdr, ledger_id, token, tx_type="income", amount=200.0, debt_id=debt_id)
+        assert tx1.status_code == 200, tx1.text
+        assert tx2.status_code == 200, tx2.text
+
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        tx_ids = {tx1.json()["entity_id"], tx2.json()["entity_id"]}
+        category_ids = {row["category_id"] for row in rows if row["id"] in tx_ids}
+        assert len(category_ids) == 1
+    finally:
+        client.close()
+
+
+def test_debt_tx_does_not_override_user_supplied_category_and_note():
+    """使用者自己填了分類/備註時,不套用自動預設值(只在留空時才帶入)。"""
+    client, _TS, token, hdr, ledger_id = _setup("debt19@example.com")
+    try:
+        res = _create_debt(
+            client, hdr, ledger_id, token,
+            direction="receivable", counterparty_name="老王", principal_amount=500.0,
+        )
+        debt_id = res.json()["entity_id"]
+        tx_res = _create_tx(
+            client, hdr, ledger_id, token, tx_type="income", amount=200.0, debt_id=debt_id,
+            category_name="自訂分類", note="自訂備註",
+        )
+        assert tx_res.status_code == 200, tx_res.text
+        tx_id = tx_res.json()["entity_id"]
+
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        assert r.status_code == 200, r.text
+        row = {row["id"]: row for row in r.json()}[tx_id]
+        assert row["category_name"] == "自訂分類"
+        assert row["note"] == "自訂備註"
+    finally:
+        client.close()
+
+
+def test_debt_tx_without_debt_id_unaffected():
+    """沒有 debt_id 的一般交易不受影響,分類/備註維持原樣(可為空)。"""
+    client, _TS, token, hdr, ledger_id = _setup("debt20@example.com")
+    try:
+        tx_res = _create_tx(client, hdr, ledger_id, token, tx_type="expense", amount=50.0)
+        assert tx_res.status_code == 200, tx_res.text
+        tx_id = tx_res.json()["entity_id"]
+
+        r = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=hdr)
+        assert r.status_code == 200, r.text
+        row = {row["id"]: row for row in r.json()}[tx_id]
+        assert row["category_name"] is None
+        assert row["note"] is None
+    finally:
+        client.close()

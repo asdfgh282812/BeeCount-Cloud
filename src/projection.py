@@ -311,6 +311,7 @@ def upsert_tx(
             payload.get("happenedAt") or payload.get("happened_at")
         ),
         "note": _as_str(payload.get("note")),
+        "merchant": _as_str(payload.get("merchant")),
         "category_sync_id": _as_str(payload.get("categoryId")),
         "category_name": _as_str(payload.get("categoryName")),
         "category_kind": _as_str(payload.get("categoryKind")),

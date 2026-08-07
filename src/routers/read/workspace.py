@@ -119,6 +119,7 @@ def list_workspace_transactions(
         pattern = f"%{q}%"
         query = query.where(or_(
             ReadTxProjection.note.ilike(pattern),
+            ReadTxProjection.merchant.ilike(pattern),
             ReadTxProjection.category_name.ilike(pattern),
             ReadTxProjection.account_name.ilike(pattern),
             ReadTxProjection.from_account_name.ilike(pattern),
@@ -252,6 +253,7 @@ def list_workspace_transactions(
                 amount=row.amount,
                 happened_at=_to_utc(row.happened_at),
                 note=row.note,
+                merchant=row.merchant,
                 category_name=row.category_name,
                 category_kind=row.category_kind,
                 account_name=row.account_name,
@@ -480,6 +482,7 @@ def export_workspace_transactions_csv(
             pattern = f"%{q}%"
             query = query.where(or_(
                 ReadTxProjection.note.ilike(pattern),
+                ReadTxProjection.merchant.ilike(pattern),
                 ReadTxProjection.category_name.ilike(pattern),
                 ReadTxProjection.account_name.ilike(pattern),
                 ReadTxProjection.from_account_name.ilike(pattern),

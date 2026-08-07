@@ -64,6 +64,15 @@ _REWARD_CATEGORY_DEVICE_ID = "server-card-reward-payout"
 REFUND_CATEGORY_NAME = "退款"
 _REFUND_CATEGORY_DEVICE_ID = "server-refund"
 
+# 欠還款交易自动带分类/备注(使用者反馈 #6,2026-08):`debt_id` 有值且用户
+# 没自己填分类/备注时,依 debt.direction 自动归类——`receivable`(别人欠我)
+# 的还款是钱进来,归「收款」/income;`payable`(我欠别人)的还款是钱出去,归
+# 「还款」/income 各自幂等建一次(同 REFUND 模式,一个 device id 涵盖两个
+# kind 各一份分类行)。
+RECEIVABLE_CATEGORY_NAME = "收款"
+PAYABLE_CATEGORY_NAME = "還款"
+_DEBT_CATEGORY_DEVICE_ID = "server-debt"
+
 
 def _ensure_user_global_category(
     db: Session, *, user_id: str, name: str, kind: str, device_id: str,
@@ -132,6 +141,33 @@ def ensure_refund_category(db: Session, *, user_id: str, kind: str) -> str:
         db, user_id=user_id, name=REFUND_CATEGORY_NAME, kind=kind,
         device_id=_REFUND_CATEGORY_DEVICE_ID,
     )
+
+
+def debt_category_name(direction: str) -> str:
+    return RECEIVABLE_CATEGORY_NAME if direction == "receivable" else PAYABLE_CATEGORY_NAME
+
+
+def debt_category_kind(direction: str) -> str:
+    return "income" if direction == "receivable" else "expense"
+
+
+def ensure_debt_category(db: Session, *, user_id: str, direction: str) -> str:
+    """欠還款交易(§2.5,需求 #6)沒有自己選分類時,依 `direction` 自建/複用
+    「收款」(對方欠我,還款是 income)或「還款」(我欠對方,還款是 expense)
+    分類,不再讓使用者自己空著或亂挑一個不相關的既有分類凑数。"""
+    return _ensure_user_global_category(
+        db, user_id=user_id, name=debt_category_name(direction),
+        kind=debt_category_kind(direction), device_id=_DEBT_CATEGORY_DEVICE_ID,
+    )
+
+
+def debt_default_note(*, direction: str, counterparty_name: str) -> str:
+    """欠還款交易的預設備註(需求 #6),依方向對應不同文字,讓使用者一眼看出
+    是誰在還誰錢:`receivable`(對方欠我)顯示「{對方} 還款」,`payable`
+    (我欠對方)顯示「向{對方}借款」。"""
+    if direction == "receivable":
+        return f"{counterparty_name} 還款"
+    return f"向{counterparty_name}借款"
 
 
 def _attribution_date(tx: ReadTxProjection) -> datetime:

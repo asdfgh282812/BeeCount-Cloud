@@ -179,6 +179,8 @@ export type ReadTransaction = {
    *  確認過這筆交易。 */
   reconciled_at?: string | null
   note: string | null
+  /** 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。 */
+  merchant?: string | null
   category_name: string | null
   category_kind: string | null
   category_id?: string | null
@@ -646,6 +648,9 @@ export type TxPayload = {
    *  `updateTransaction` 帶這個欄位完成,不是專門的 write endpoint。 */
   reconciled_at?: string | null
   note?: string | null
+  /** 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
+   *  create 不傳 = 未設定;update 不傳 = 不改,傳字串 = 設置,傳 null = 清空。 */
+  merchant?: string | null
   category_name?: string | null
   category_kind?: 'expense' | 'income' | 'transfer' | null
   category_id?: string | null

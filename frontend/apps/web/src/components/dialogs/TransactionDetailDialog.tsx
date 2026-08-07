@@ -17,7 +17,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, RotateCcw, Tag, User, Wallet, X } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -296,6 +296,15 @@ export function TransactionDetailDialog({
                       <span>{t('detail.transaction.rewardSourceLink')}</span>
                     )
                   }
+                />
+              ) : null}
+              {/* 商店(需求 #11,Phase 11):選填,純展示用途,只在有值時顯示
+                  一行,不常用不占版面(同 note/deferred_posting_at 既有慣例)。 */}
+              {tx.merchant ? (
+                <DetailRow
+                  icon={<Store className="h-4 w-4" />}
+                  label={t('detail.transaction.merchant')}
+                  value={tx.merchant}
                 />
               ) : null}
               {tx.note ? (

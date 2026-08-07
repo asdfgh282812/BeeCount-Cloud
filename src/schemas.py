@@ -528,6 +528,8 @@ class ReadTransactionOut(BaseModel):
     amount: float
     happened_at: datetime
     note: str | None
+    # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
+    merchant: str | None = None
     category_name: str | None
     category_kind: str | None
     account_name: str | None
@@ -1327,6 +1329,8 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     amount: float
     happened_at: datetime
     note: str | None = None
+    # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
+    merchant: str | None = None
     category_name: str | None = None
     category_kind: Literal["expense", "income", "transfer"] | None = None
     account_name: str | None = None
@@ -1375,6 +1379,8 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     amount: float | None = None
     happened_at: datetime | None = None
     note: str | None = None
+    # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
+    merchant: str | None = None
     category_name: str | None = None
     category_kind: Literal["expense", "income", "transfer"] | None = None
     account_name: str | None = None

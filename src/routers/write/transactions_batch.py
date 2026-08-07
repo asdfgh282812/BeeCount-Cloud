@@ -63,6 +63,7 @@ class BatchTransactionItem(BaseModel):
     amount: float
     happened_at: datetime
     note: str | None = None
+    merchant: str | None = None
     category_name: str | None = None
     category_kind: str | None = None
     account_name: str | None = None
@@ -376,6 +377,7 @@ def _build_tx_payload(
         "amount": item.amount,
         "happened_at": item.happened_at.isoformat(),
         "note": item.note,
+        "merchant": item.merchant,
         "category_name": item.category_name,
         "category_kind": item.category_kind,
         "account_name": item.account_name,

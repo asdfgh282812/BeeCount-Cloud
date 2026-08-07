@@ -301,6 +301,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("amount", "amount"),
         ("happenedAt", "happened_at", _isoformat_or_none),
         ("note", "note"),
+        ("merchant", "merchant"),
         ("categoryId", "category_sync_id"),
         ("categoryName", "category_name"),
         ("categoryKind", "category_kind"),

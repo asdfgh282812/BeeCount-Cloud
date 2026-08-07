@@ -23,6 +23,9 @@ type TagPickerDialogProps = {
   title?: string
   /** "清空所有标签"按钮,允许快捷重置。不传则不显示。 */
   onClearAll?: () => void
+  /** 表單內直接新增(需求 #10,Phase 11):透传给 `TagSelector`,不传则不
+   *  显示内嵌新增入口。 */
+  onCreateNew?: (name: string) => void | Promise<void>
 }
 
 /**
@@ -38,6 +41,7 @@ export function TagPickerDialog({
   onChange,
   title,
   onClearAll,
+  onCreateNew,
 }: TagPickerDialogProps) {
   const t = useT()
   return (
@@ -47,7 +51,12 @@ export function TagPickerDialog({
           <DialogTitle>{title ?? t('tags.title')}</DialogTitle>
         </DialogHeader>
         <div className="max-h-[60vh] overflow-y-auto">
-          <TagSelector tags={tags} selectedNames={selectedNames} onChange={onChange} />
+          <TagSelector
+            tags={tags}
+            selectedNames={selectedNames}
+            onChange={onChange}
+            onCreateNew={onCreateNew}
+          />
         </div>
         <DialogFooter>
           {onClearAll ? (

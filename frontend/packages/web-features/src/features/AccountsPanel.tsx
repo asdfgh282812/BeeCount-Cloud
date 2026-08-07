@@ -21,6 +21,13 @@ import {
 import type { ReadAccount } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import {
+  AccountListRow,
+  accountTypeLabel,
+  buildAccountChildrenMap,
+  TYPE_COLORS,
+  TypeIcon
+} from '../components/AccountListRow'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
@@ -94,6 +101,16 @@ function MobileStyleAssets({
       return next
     })
 
+  // 帳戶群組巢狀(需求 #8,2026-08):`parent_account_id` 指向某個
+  // account_group 的子帳戶(信用卡/銀行卡都可能掛靠),縮排渲染在主帳戶列
+  // 下方,不再跟其它同類型帳戶並列在同一層——`listGroups` 是跨幣別按
+  // account_type 分好的桶,子帳戶原本會出現在自己 type 的桶裡(例如信用卡桶),
+  // 這裡把它們從所有桶的第一層拿掉,只保留在主帳戶列的巢狀清單裡渲染一次。
+  const { childrenByParent, childIds } = useMemo(
+    () => buildAccountChildrenMap(listGroups),
+    [listGroups]
+  )
+
   return (
     <div className="space-y-4">
       {/* 第一行的资产概览(单币种 hero+饼图 / 多币种每币种一张卡)。
@@ -128,6 +145,13 @@ function MobileStyleAssets({
       <div className="space-y-4">
         {listGroups.map((group) => {
           const isCollapsed = collapsed.has(group.type)
+          // 徽章数字要跟这个分组实际渲染出来的顶层列数一致 —— 掛靠到别的
+          // account_group 底下、缩排渲染在别处的子帳戶不算在这个分组头上,
+          // 否则会出现「信用卡(2)」但只看到 1 行的落差。
+          const topLevelCount = group.rows.filter((row) => !childIds.has(row.id)).length
+          // 这个 type 桶里的帳戶全部是別的 account_group 的子帳戶(縮排渲染
+          // 在别处)时,顶层空了,整个分组头就没必要再出现一个空殼。
+          if (topLevelCount === 0) return null
           return (
             <div
               key={group.type}
@@ -154,7 +178,7 @@ function MobileStyleAssets({
                     <div className="flex items-center gap-2">
                       <span className="text-[15px] font-semibold">{group.label}</span>
                       <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {group.rows.length}
+                        {topLevelCount}
                       </span>
                       {group.isLiability ? (
                         <span className="rounded-md border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] leading-none text-destructive">
@@ -194,20 +218,23 @@ function MobileStyleAssets({
                 </div>
               </button>
               {!isCollapsed ? (
-                <div className="grid gap-2 p-3 pt-0 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-                  {group.rows.map((row) => (
-                    <BankCardTile
-                      key={row.id}
-                      row={row}
-                      color={group.color}
-                      isLiability={group.isLiability}
-                      canManage={canManage}
-                      onEdit={() => onEdit(row)}
-                      onDelete={onDelete ? () => onDelete(row) : undefined}
-                      onClick={onClickAccount ? () => onClickAccount(row) : undefined}
-                      avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
-                    />
-                  ))}
+                <div className="divide-y divide-border/40 border-t border-border/40">
+                  {group.rows
+                    .filter((row) => !childIds.has(row.id))
+                    .map((row) => (
+                      <AccountListRow
+                        key={row.id}
+                        row={row}
+                        color={group.color}
+                        isLiability={group.isLiability}
+                        canManage={canManage}
+                        onEdit={onEdit}
+                        onDelete={onDelete}
+                        onClick={onClickAccount}
+                        avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
+                        childRows={childrenByParent.get(row.id)}
+                      />
+                    ))}
                 </div>
               ) : null}
             </div>
@@ -535,314 +562,6 @@ export function AssetsCompositionMini({
   )
 }
 
-/**
- * 单个账户的"银行卡"风格卡片：渐变底 + 装饰花纹。布局对齐 mobile
- * `_AccountCard`：
- *  - 顶部：类型图标 + 账户名 + 币种 pill + 操作入口。
- *  - 正文：按账户类型分支
- *      - 估值账户（real_estate/vehicle/investment/…/loan）：单行大号"当前估值 / 当前欠款"。
- *      - 其它可交易账户：余额 / 收入 / 支出 三列。
- *    没有 stats（老接口 / 空账户）时回退到只展示初始余额。
- */
-const VALUATION_TYPES_SET = new Set([
-  'real_estate',
-  'vehicle',
-  'investment',
-  'insurance',
-  'social_fund',
-  'loan'
-])
-
-type AccountStats = {
-  balance?: number | null
-  income_total?: number | null
-  expense_total?: number | null
-}
-
-function BankCardTile({
-  row,
-  color,
-  isLiability,
-  canManage,
-  onEdit,
-  onDelete,
-  onClick,
-  avatarPreviewUrlByFileId
-}: {
-  row: ReadAccount & AccountStats
-  color: string
-  isLiability: boolean
-  canManage: boolean
-  onEdit: () => void
-  onDelete?: () => void
-  onClick?: () => void
-  avatarPreviewUrlByFileId?: Record<string, string>
-}) {
-  const t = useT()
-  const currency = row.currency || 'CNY'
-  const accountType = row.account_type || 'other'
-  const isValuation = VALUATION_TYPES_SET.has(accountType)
-  const hasStats =
-    row.balance !== null &&
-    row.balance !== undefined &&
-    typeof row.balance === 'number'
-  // 展示余额：优先用 stats.balance（考虑所有交易后的结果），否则 initial_balance。
-  const displayBalance = hasStats ? (row.balance as number) : row.initial_balance ?? 0
-  // 估值账户：负债显示绝对值欠款，资产显示当前估值。
-  const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
-  // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
-  // account_group(主帳戶)未来也会挂靠银行帐户群组，不是天生就该走信用卡样式——
-  // 用「自己身上是否设了额度/帳單日/還款日」这个既有的 credit-billing-root 信号
-  // 来分辨这个群组具体是信用卡群组还是别的，不看 account_type 本身。
-  const isCreditStyleGroup =
-    accountType === 'account_group' &&
-    (typeof row.credit_limit === 'number' || Boolean(row.billing_day) || Boolean(row.payment_due_day))
-  const isCreditCard = accountType === 'credit_card' || isCreditStyleGroup
-  const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
-  const ccOwed = Math.max(0, -displayBalance)
-  const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
-  // 「可繳款」提醒(§2.9 補強,2026-08-02):server 只在 billing-root 且真的
-  // 欠款(> 0)時才回這两个字段,不用在这里重新判断是不是信用卡/群组。
-  const dueBadgeDate =
-    typeof row.billing_remaining_due === 'number' && row.billing_remaining_due > 0 && row.billing_due_date
-      ? row.billing_due_date.slice(5, 10).replace('-', '/')
-      : null
-
-  // 帳戶頭像(2026-08-02 補強):使用者反饋光靠文字看不出是哪張卡 —— 有自訂
-  // 頭像時整張卡改用照片當背景(貼近真實卡面/Moze 的做法),疊一層深色漸層
-  // 保证文字可读;没有头像时维持原本的纯色渐变卡面(零影响)。
-  const avatarFileId = row.avatar_cloud_file_id?.trim() || ''
-  const avatarUrl = avatarFileId ? avatarPreviewUrlByFileId?.[avatarFileId] : undefined
-
-  return (
-    <div
-      className={`group relative overflow-hidden rounded-xl text-white shadow-md transition-all hover:-translate-y-0.5 hover:shadow-lg ${
-        onClick ? 'cursor-pointer' : ''
-      }`}
-      style={{
-        // 比 16:10 稍高一点，正文能放三列 stats 不挤。
-        aspectRatio: '16 / 11',
-        background: avatarUrl
-          ? `linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.55) 100%), url(${avatarUrl}) center/cover no-repeat`
-          : `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
-        boxShadow: `0 4px 12px -4px ${color}66, 0 1px 2px rgba(0,0,0,0.06)`
-      }}
-      onClick={onClick}
-    >
-      {/* 装饰 1：右上大圆（mobile 同款） */}
-      <div
-        className="pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full bg-white/15"
-        aria-hidden
-      />
-      {/* 装饰 2：左下小圆，对角呼应 */}
-      <div
-        className="pointer-events-none absolute -left-6 -bottom-10 h-20 w-20 rounded-full bg-white/10"
-        aria-hidden
-      />
-      {/* 装饰 3：radial highlight */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-60"
-        style={{
-          background:
-            'radial-gradient(circle at 30% 20%, rgba(255,255,255,0.22) 0%, transparent 55%)'
-        }}
-        aria-hidden
-      />
-      {/* 装饰 4：斜向细纹（激光蚀刻花纹） */}
-      <svg
-        className="pointer-events-none absolute inset-0 h-full w-full opacity-[0.12] mix-blend-overlay"
-        viewBox="0 0 160 110"
-        preserveAspectRatio="none"
-        aria-hidden
-      >
-        <defs>
-          <pattern
-            id={`card-grid-${row.id}`}
-            width="12"
-            height="12"
-            patternUnits="userSpaceOnUse"
-            patternTransform="rotate(25)"
-          >
-            <path d="M0 0 L12 0" stroke="#fff" strokeWidth="0.5" opacity="0.6" />
-          </pattern>
-        </defs>
-        <rect width="160" height="110" fill={`url(#card-grid-${row.id})`} />
-      </svg>
-      {/* 装饰 5：斜向磨砂反光条 */}
-      <div
-        className="pointer-events-none absolute -left-1/4 top-0 h-full w-1/2 opacity-30"
-        style={{
-          background:
-            'linear-gradient(100deg, transparent 0%, rgba(255,255,255,0.25) 50%, transparent 100%)'
-        }}
-        aria-hidden
-      />
-
-      <div className="relative flex h-full flex-col p-2.5">
-        {/* 顶部：类型图标 + 账户名 + 币种 pill */}
-        <div className="flex items-center gap-1.5">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/95 shadow-sm ring-1 ring-white/50">
-            <TypeIcon type={accountType} size={16} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-semibold leading-tight drop-shadow-sm">
-              {row.name}
-            </div>
-          </div>
-          <span className="shrink-0 rounded bg-white/25 px-1 py-[1px] text-[9px] font-semibold tracking-wider">
-            {currency}
-          </span>
-        </div>
-
-        {/* 「可繳款」提醒(§2.9 補強,2026-08-02):不用點開詳情就能看到快到
-            期/已到期的帳單,對齊 Moze 參考截圖的信用卡卡片互動。 */}
-        {dueBadgeDate ? (
-          <div className="mt-1 self-start rounded-full bg-amber-400/90 px-2 py-[1px] text-[9px] font-semibold text-amber-950 shadow-sm">
-            {t('cardBilling.dueBadge', { date: dueBadgeDate })}
-          </div>
-        ) : null}
-
-        {/* 正文：按类型切换布局 */}
-        {isValuation ? (
-          <div className="mt-auto">
-            <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-              {isLiability ? t('accounts.bankcard.currentOwed') : t('accounts.bankcard.currentValue')}
-            </div>
-            <Amount
-              value={valuationValue}
-              currency={currency}
-              showCurrency
-              bold
-              className="mt-0.5 block text-[18px] leading-tight drop-shadow text-white"
-            />
-          </div>
-        ) : isCreditCard ? (
-          ccLimit !== null ? (
-            <div className="mt-auto grid grid-cols-3 gap-1 rounded-md bg-black/15 px-2 py-1.5 backdrop-blur-[1px]">
-              <StatCell
-                label={t('accounts.field.creditLimit')}
-                value={ccLimit}
-                currency={currency}
-              />
-              <StatCell
-                label={t('accounts.bankcard.creditUsed')}
-                value={ccOwed}
-                currency={currency}
-              />
-              <StatCell
-                label={t('accounts.bankcard.creditAvailable')}
-                value={ccAvailable as number}
-                currency={currency}
-              />
-            </div>
-          ) : (
-            <div className="mt-auto">
-              <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-                {t('accounts.bankcard.currentOwed')}
-              </div>
-              <Amount
-                value={ccOwed}
-                currency={currency}
-                showCurrency
-                bold
-                className="mt-0.5 block text-[18px] leading-tight drop-shadow text-white"
-              />
-            </div>
-          )
-        ) : hasStats ? (
-          <div className="mt-auto grid grid-cols-3 gap-1 rounded-md bg-black/15 px-2 py-1.5 backdrop-blur-[1px]">
-            <StatCell
-              label={t('accounts.bankcard.balance')}
-              value={displayBalance}
-              currency={currency}
-              tone={displayBalance < 0 ? 'warn' : 'default'}
-            />
-            <StatCell
-              label={t('accounts.bankcard.income')}
-              value={row.income_total ?? 0}
-              currency={currency}
-            />
-            <StatCell
-              label={t('accounts.bankcard.expense')}
-              value={row.expense_total ?? 0}
-              currency={currency}
-            />
-          </div>
-        ) : (
-          <div className="mt-auto">
-            <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-              {isLiability ? t('accounts.bankcard.owedLabel') : t('accounts.bankcard.balanceLabel')}
-            </div>
-            <Amount
-              value={displayBalance}
-              currency={currency}
-              showCurrency
-              bold
-              className="mt-0.5 block text-[16px] leading-tight drop-shadow text-white"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* hover 操作按钮浮层（右上角，避开正文 stats） */}
-      <div className="absolute right-1.5 top-9 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-        <button
-          type="button"
-          disabled={!canManage}
-          onClick={(event) => {
-            event.stopPropagation()
-            onEdit()
-          }}
-          className="rounded bg-black/35 px-1.5 py-0.5 text-[10px] text-white backdrop-blur hover:bg-primary/80"
-        >
-          {t('common.edit')}
-        </button>
-        {onDelete ? (
-          <button
-            type="button"
-            disabled={!canManage}
-            onClick={(event) => {
-              event.stopPropagation()
-              onDelete()
-            }}
-            className="rounded bg-black/35 px-1.5 py-0.5 text-[10px] text-white backdrop-blur hover:bg-destructive/60"
-          >
-            {t('common.delete')}
-          </button>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function StatCell({
-  label,
-  value,
-  currency,
-  tone = 'default'
-}: {
-  label: string
-  value: number
-  currency: string
-  tone?: 'default' | 'warn'
-}) {
-  return (
-    <div className="flex min-w-0 flex-col items-start gap-[1px]">
-      <span className="text-[9px] uppercase tracking-wider text-white/70">{label}</span>
-      <Amount
-        value={value}
-        currency={currency}
-        showCurrency={false}
-        bold
-        size="xs"
-        className={`leading-tight drop-shadow-sm ${
-          tone === 'warn' ? 'text-amber-100' : 'text-white'
-        }`}
-      />
-    </div>
-  )
-}
-
 // 与 mobile 端 accounts_page.dart / account_edit_page.dart 对齐的账户类型分组。
 // label 由 accountTypeLabel() 走 i18n 查 accountType.<value>,这里只保留 value
 // 顺序——顺序决定了分组/下拉里的展示顺序。
@@ -863,70 +582,6 @@ const VALUATION_TYPES: { value: string }[] = [
   { value: 'social_fund' },
   { value: 'loan' }
 ]
-
-// 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
-// 拷到 `web/public/icons/account/`，公共资源目录直接通过 URL 访问即可（不用
-// 打包到 bundle）。`other` 回退到 `other_account.svg`，其它直接同名。
-const TYPE_ICON_URL: Record<string, string> = {
-  cash: '/icons/account/cash.svg',
-  bank_card: '/icons/account/bank_card.svg',
-  credit_card: '/icons/account/credit_card.svg',
-  // 主帳戶(合併帳單,§2.9 Phase 4)是純管理容器,沒有专属图标素材,借用
-  // bank_card 的图标(视觉上都是"机构/账户群组"的意象)。
-  account_group: '/icons/account/bank_card.svg',
-  alipay: '/icons/account/alipay.svg',
-  wechat: '/icons/account/wechat.svg',
-  other: '/icons/account/other_account.svg',
-  real_estate: '/icons/account/real_estate.svg',
-  vehicle: '/icons/account/vehicle.svg',
-  investment: '/icons/account/investment.svg',
-  insurance: '/icons/account/insurance.svg',
-  social_fund: '/icons/account/social_fund.svg',
-  loan: '/icons/account/loan.svg'
-}
-
-function TypeIcon({ type, size = 28 }: { type: string; size?: number }) {
-  const src = TYPE_ICON_URL[type] || TYPE_ICON_URL.other
-  return (
-    <img
-      src={src}
-      alt=""
-      width={size}
-      height={size}
-      className="block select-none"
-      draggable={false}
-    />
-  )
-}
-
-// 每种账户类型对应的品牌色，用于卡片边框/渐变。与 AssetCompositionDonut
-// 的配色保持一致，这样 overview 的饼图和这里的分组颜色呼应。
-const TYPE_COLORS: Record<string, string> = {
-  cash: '#10b981',
-  bank_card: '#3b82f6',
-  credit_card: '#ef4444',
-  account_group: '#6366f1',
-  alipay: '#06b6d4',
-  wechat: '#22c55e',
-  other: '#64748b',
-  real_estate: '#8b5cf6',
-  vehicle: '#f59e0b',
-  investment: '#ec4899',
-  insurance: '#14b8a6',
-  social_fund: '#84cc16',
-  loan: '#dc2626'
-}
-
-/** 账户类型 label i18n 查找:先看 accountType.<value> key,回退到原始 value。
- *  参数 tt 是 useT() 返回的查找函数。 */
-function accountTypeLabel(tt: (k: string) => string, value?: string | null): string {
-  if (!value) return '-'
-  const key = `accountType.${value}`
-  const translated = tt(key)
-  // useT 没命中的 key 会把 key 原样返回,说明当前 locale 没定义
-  if (translated === key) return value
-  return translated
-}
 
 // ── 多币种聚合 ────────────────────────────────────────────────────────────
 // 铁律:资产统计绝不跨币种相加($1000 不是 ¥1000)。所有汇总先按币种切分再各算各

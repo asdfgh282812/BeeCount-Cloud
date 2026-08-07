@@ -145,6 +145,7 @@ async def create_tx(
                 "amount": req.amount,
                 "happened_at": occ,
                 "note": req.note,
+                "merchant": req.merchant,
                 "category_id": req.category_id,
                 "category_name": req.category_name,
                 "category_kind": req.category_kind,

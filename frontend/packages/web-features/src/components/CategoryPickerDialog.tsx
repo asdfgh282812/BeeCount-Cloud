@@ -35,6 +35,9 @@ type CategoryPickerDialogProps = {
   emptyText?: string
   /** 网格列数,默认 4。 */
   columns?: number
+  /** 表單內直接新增(需求 #10,Phase 11):透传给 `CategorySelector`,不传
+   *  则不显示内嵌新增入口。 */
+  onCreateNew?: (name: string) => void | Promise<void>
 }
 
 /**
@@ -60,6 +63,7 @@ export function CategoryPickerDialog({
   clearLabel,
   emptyText,
   columns = 4,
+  onCreateNew,
 }: CategoryPickerDialogProps) {
   const t = useT()
   return (
@@ -81,6 +85,7 @@ export function CategoryPickerDialog({
             iconPreviewUrlByFileId={iconPreviewUrlByFileId}
             columns={columns}
             emptyText={emptyText}
+            onCreateNew={onCreateNew}
             onSelect={(cat) => {
               onSelect(cat)
               onClose()

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { Input, useT } from '@beecount/ui'
 import type { WorkspaceCategory } from '@beecount/api-client'
 
 import { CategoryIcon } from './CategoryIcon'
@@ -25,6 +26,15 @@ type CategorySelectorProps = {
   /** 网格列数,默认 4。windows 大点的可传 6/8 摆得密一些。 */
   columns?: number
   className?: string
+  /** 搜尋輸入框(需求 #10,Phase 11):分類數量多時用來快速定位,大小寫不
+   *  敏感子串匹配頂級 + 子級分類名。默认開,列表為空(還沒拉到字典)時無
+   *  意義但不影響渲染。 */
+  showSearch?: boolean
+  /** 表單內直接新增(需求 #10,Phase 11):傳入時,搜尋關鍵字在現有分類裡
+   *  找不到完全同名(大小寫不敏感)的項目時,顯示「新增 "xxx"」內嵌入口,
+   *  點擊呼叫這個 callback(建立 + 選中的完整邏輯由呼叫方實作,同 create
+   *  中呼叫方傳入即代表允許,不傳則不顯示新增入口)。 */
+  onCreateNew?: (name: string) => void | Promise<void>
 }
 
 /**
@@ -52,9 +62,14 @@ export function CategorySelector({
   emptyText,
   columns = 4,
   className,
+  showSearch = true,
+  onCreateNew,
 }: CategorySelectorProps) {
+  const t = useT()
   // 内部展开状态 —— 只有点击的父级允许同时展开 1 个,跟 mobile 一致。
   const [expandedParentId, setExpandedParentId] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [creating, setCreating] = useState(false)
 
   // 选中的分类如果是 level=2,自动展开它的父级,否则保持当前展开状态。仅在
   // selectedId 变化(外部 set)时跑一次,内部点击后用户可能手动折叠。
@@ -107,10 +122,97 @@ export function CategorySelector({
     if (parentRow?.id) setExpandedParentId(parentRow.id)
   }, [selectedRow, selectedId, rows, kind])
 
+  // 搜尋(需求 #10,Phase 11):按 kind 篩過的全量分類(頂級 + 子級一起搜),
+  // 大小寫不敏感子串匹配;有搜尋字時放棄父子分组/展开,直接攤平成一個網格,
+  // 找特定分類時分组反而增加视觉扫描成本(同 AccountPickerDialog 搜尋模式)。
+  const normalizedQuery = query.trim().toLowerCase()
+  const flatInKind = useMemo(() => rows.filter((row) => row.kind === kind), [rows, kind])
+  const searchResults = useMemo(() => {
+    if (!normalizedQuery) return null
+    return flatInKind
+      .filter((row) => (row.name || '').toLowerCase().includes(normalizedQuery))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  }, [flatInKind, normalizedQuery])
+  const exactMatchExists = useMemo(
+    () =>
+      !normalizedQuery ||
+      flatInKind.some((row) => (row.name || '').trim().toLowerCase() === normalizedQuery),
+    [flatInKind, normalizedQuery]
+  )
+  const showCreateButton = Boolean(onCreateNew) && normalizedQuery.length > 0 && !exactMatchExists
+
+  const handleCreateNew = async () => {
+    if (!onCreateNew || creating) return
+    const name = query.trim()
+    if (!name) return
+    setCreating(true)
+    try {
+      await onCreateNew(name)
+      setQuery('')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // CSS grid template:用 `--cols` CSS 变量驱动 grid-template-columns,避免 tailwind
+  // 任意值生成器在生产构建时不被 purge 误删。
+  const gridStyle = { ['--cols' as string]: String(columns) }
+  const gridClass =
+    'grid gap-3 [grid-template-columns:repeat(var(--cols),minmax(0,1fr))]'
+
+  const searchBar = showSearch ? (
+    <Input
+      placeholder={t('categories.picker.searchPlaceholder')}
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+    />
+  ) : null
+
+  const createButton = showCreateButton ? (
+    <button
+      type="button"
+      disabled={creating}
+      onClick={() => void handleCreateNew()}
+      className="flex w-full items-center gap-2 rounded-lg border border-dashed border-primary/50 px-3 py-2 text-sm text-primary transition-colors hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-50"
+    >
+      <span aria-hidden>+</span>
+      <span className="truncate">{t('categories.picker.createNew', { name: query.trim() })}</span>
+    </button>
+  ) : null
+
+  if (normalizedQuery) {
+    return (
+      <div className={`space-y-3 ${className || ''}`.trim()}>
+        {searchBar}
+        {createButton}
+        {searchResults && searchResults.length > 0 ? (
+          <div className={gridClass} style={gridStyle}>
+            {searchResults.map((cat) => (
+              <CategoryCell
+                key={cat.id}
+                category={cat}
+                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                selected={selectedId === cat.id}
+                onTap={() => onSelect(cat)}
+              />
+            ))}
+          </div>
+        ) : !createButton ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">
+            {emptyText ?? t('common.noResults')}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   if (topLevels.length === 0) {
     return (
-      <div className={`py-8 text-center text-sm text-muted-foreground ${className || ''}`.trim()}>
-        {emptyText ?? '暂无分类'}
+      <div className={`space-y-3 ${className || ''}`.trim()}>
+        {searchBar}
+        <div className="py-8 text-center text-sm text-muted-foreground">
+          {emptyText ?? '暂无分类'}
+        </div>
       </div>
     )
   }
@@ -121,12 +223,6 @@ export function CategorySelector({
   for (let i = 0; i < topLevels.length; i += columns) {
     rowsOfTops.push(topLevels.slice(i, i + columns))
   }
-
-  // CSS grid template:用 `--cols` CSS 变量驱动 grid-template-columns,避免 tailwind
-  // 任意值生成器在生产构建时不被 purge 误删。
-  const gridStyle = { ['--cols' as string]: String(columns) }
-  const gridClass =
-    'grid gap-3 [grid-template-columns:repeat(var(--cols),minmax(0,1fr))]'
 
   const handleParentTap = (top: WorkspaceCategory) => {
     const childList = childrenByParentName[(top.name || '').toLowerCase()]
@@ -142,6 +238,7 @@ export function CategorySelector({
 
   return (
     <div className={`space-y-3 ${className || ''}`.trim()}>
+      {searchBar}
       {rowsOfTops.map((row, rowIdx) => {
         const expandedInRow = row.find((c) => c.id === expandedParentId)
         const expandedChildren = expandedInRow

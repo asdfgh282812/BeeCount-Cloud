@@ -1,0 +1,340 @@
+import { useState } from 'react'
+
+import { useT } from '@beecount/ui'
+
+import type { ReadAccount } from '@beecount/api-client'
+
+import { Amount } from './Amount'
+import { LIABILITY_TYPES, type AssetGroup } from '../lib/assetAggregation'
+
+export const VALUATION_TYPES_SET = new Set([
+  'real_estate',
+  'vehicle',
+  'investment',
+  'insurance',
+  'social_fund',
+  'loan'
+])
+
+export type AccountStats = {
+  balance?: number | null
+  income_total?: number | null
+  expense_total?: number | null
+}
+
+// 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
+// 拷到 `web/public/icons/account/`，公共资源目录直接通过 URL 访问即可（不用
+// 打包到 bundle）。`other` 回退到 `other_account.svg`，其它直接同名。
+export const TYPE_ICON_URL: Record<string, string> = {
+  cash: '/icons/account/cash.svg',
+  bank_card: '/icons/account/bank_card.svg',
+  credit_card: '/icons/account/credit_card.svg',
+  // 主帳戶(合併帳單,§2.9 Phase 4)是純管理容器,沒有专属图标素材,借用
+  // bank_card 的图标(视觉上都是"机构/账户群组"的意象)。
+  account_group: '/icons/account/bank_card.svg',
+  alipay: '/icons/account/alipay.svg',
+  wechat: '/icons/account/wechat.svg',
+  other: '/icons/account/other_account.svg',
+  real_estate: '/icons/account/real_estate.svg',
+  vehicle: '/icons/account/vehicle.svg',
+  investment: '/icons/account/investment.svg',
+  insurance: '/icons/account/insurance.svg',
+  social_fund: '/icons/account/social_fund.svg',
+  loan: '/icons/account/loan.svg'
+}
+
+// 每种账户类型对应的品牌色，用于卡片边框/渐变。与 AssetCompositionDonut
+// 的配色保持一致，这样 overview 的饼图和这里的分组颜色呼应。
+export const TYPE_COLORS: Record<string, string> = {
+  cash: '#10b981',
+  bank_card: '#3b82f6',
+  credit_card: '#ef4444',
+  account_group: '#6366f1',
+  alipay: '#06b6d4',
+  wechat: '#22c55e',
+  other: '#64748b',
+  real_estate: '#8b5cf6',
+  vehicle: '#f59e0b',
+  investment: '#ec4899',
+  insurance: '#14b8a6',
+  social_fund: '#84cc16',
+  loan: '#dc2626'
+}
+
+export function TypeIcon({ type, size = 28 }: { type: string; size?: number }) {
+  const src = TYPE_ICON_URL[type] || TYPE_ICON_URL.other
+  return (
+    <img
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      className="block select-none"
+      draggable={false}
+    />
+  )
+}
+
+/** 账户类型 label i18n 查找:先看 accountType.<value> key,回退到原始 value。
+ *  参数 tt 是 useT() 返回的查找函数。 */
+export function accountTypeLabel(tt: (k: string) => string, value?: string | null): string {
+  if (!value) return '-'
+  const key = `accountType.${value}`
+  const translated = tt(key)
+  // useT 没命中的 key 会把 key 原样返回,说明当前 locale 没定义
+  if (translated === key) return value
+  return translated
+}
+
+/**
+ * 帳戶群組巢狀(需求 #8,2026-08):把 `listGroups` 裡帶 `parent_account_id`
+ * 的子帳戶抽出來,按父帳戶 id 分桶——用於在父帳戶列下方縮排渲染,而不是跟其它
+ * 同類型帳戶並列在同一層。`AccountsPanel`(資產頁列表)與 `AccountPickerDialog`
+ * (交易表單帳戶選擇彈窗)共用同一份分桶邏輯,保持巢狀規則一致。
+ */
+export function buildAccountChildrenMap(groups: AssetGroup[]): {
+  childrenByParent: Map<string, ReadAccount[]>
+  childIds: Set<string>
+} {
+  const childrenByParent = new Map<string, ReadAccount[]>()
+  for (const group of groups) {
+    for (const row of group.rows) {
+      if (!row.parent_account_id) continue
+      const arr = childrenByParent.get(row.parent_account_id)
+      if (arr) arr.push(row)
+      else childrenByParent.set(row.parent_account_id, [row])
+    }
+  }
+  const childIds = new Set<string>()
+  for (const rows of childrenByParent.values()) {
+    for (const row of rows) childIds.add(row.id)
+  }
+  return { childrenByParent, childIds }
+}
+
+/**
+ * 緊湊清單列(需求 #8,2026-08):取代舊的漸層銀行卡網格,對齊 Moze 截圖「圖示 +
+ * 名稱 + 金額」單行列表樣式。`childRows` 有值時渲染成可收合的主帳戶列(名稱旁
+ * 徽章顯示子帳戶數),子帳戶縮排在下方巢狀清單裡渲染,不再各自佔一整張卡片、
+ * 也不再跟其它同類型帳戶並列在同一層。
+ *
+ * `selectMode`(Phase 11 新增,帳戶選擇彈窗重用):隱藏編輯/刪除按鈕(不傳
+ * `onEdit` 即可,行為零改動);`account_group`(純管理容器)類型的列在此模式
+ * 下點擊只會展開/收合子帳戶,不會觸發 `onClick` 選中(容器本身不能被記帳
+ * 選中,呼叫方仍可放心把它當一般 row 傳進來渲染巢狀結構)。
+ */
+export function AccountListRow({
+  row,
+  color,
+  isLiability,
+  canManage,
+  onEdit,
+  onDelete,
+  onClick,
+  avatarPreviewUrlByFileId,
+  childRows,
+  depth = 0,
+  selectMode = false,
+  hiddenBadge = false
+}: {
+  row: ReadAccount & AccountStats
+  color: string
+  isLiability: boolean
+  canManage: boolean
+  onEdit?: (row: ReadAccount) => void
+  onDelete?: (row: ReadAccount) => void
+  onClick?: (row: ReadAccount) => void
+  avatarPreviewUrlByFileId?: Record<string, string>
+  childRows?: ReadAccount[]
+  depth?: number
+  selectMode?: boolean
+  hiddenBadge?: boolean
+}) {
+  const t = useT()
+  const [expanded, setExpanded] = useState(true)
+  const currency = row.currency || 'CNY'
+  const accountType = row.account_type || 'other'
+  const isValuation = VALUATION_TYPES_SET.has(accountType)
+  const hasStats =
+    row.balance !== null &&
+    row.balance !== undefined &&
+    typeof row.balance === 'number'
+  // 展示余额：优先用 stats.balance（考虑所有交易后的结果），否则 initial_balance。
+  const displayBalance = hasStats ? (row.balance as number) : row.initial_balance ?? 0
+  // 估值账户：负债显示绝对值欠款，资产显示当前估值。
+  const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
+  // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
+  // account_group(主帳戶)未来也会挂靠银行帐户群组，不是天生就该走信用卡样式——
+  // 用「自己身上是否设了额度/帳單日/還款日」这个既有的 credit-billing-root 信号
+  // 来分辨这个群组具体是信用卡群组还是别的，不看 account_type 本身。
+  const isCreditStyleGroup =
+    accountType === 'account_group' &&
+    (typeof row.credit_limit === 'number' || Boolean(row.billing_day) || Boolean(row.payment_due_day))
+  const isCreditCard = accountType === 'credit_card' || isCreditStyleGroup
+  const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
+  const ccOwed = Math.max(0, -displayBalance)
+  const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
+  // 「可繳款」提醒(§2.9 補強,2026-08-02):server 只在 billing-root 且真的
+  // 欠款(> 0)時才回這两个字段,不用在这里重新判断是不是信用卡/群组。
+  const dueBadgeDate =
+    typeof row.billing_remaining_due === 'number' && row.billing_remaining_due > 0 && row.billing_due_date
+      ? row.billing_due_date.slice(5, 10).replace('-', '/')
+      : null
+
+  // 帳戶頭像(2026-08-02 補強):使用者反饋光靠文字看不出是哪張卡 —— 有自訂
+  // 頭像時圓形頭像取代類型圖示;没有头像时维持原本的类型 icon。
+  const avatarFileId = row.avatar_cloud_file_id?.trim() || ''
+  const avatarUrl = avatarFileId ? avatarPreviewUrlByFileId?.[avatarFileId] : undefined
+
+  const hasChildren = Boolean(childRows && childRows.length > 0)
+  // 一行只留一个「主要金额」:估值账户看估值/欠款,信用卡(含主帳戶群组)看
+  // 欠款,其余可交易账户看余额——跟旧 BankCardTile 的主要数字口径一致。
+  const primaryValue = isValuation ? valuationValue : isCreditCard ? ccOwed : displayBalance
+  const primaryTone: 'default' | 'negative' | 'positive' = isCreditCard
+    ? ccOwed > 0
+      ? 'negative'
+      : 'positive'
+    : isLiability && valuationValue > 0
+      ? 'negative'
+      : 'default'
+
+  // 主帳戶列(有子帳戶且設了額度)顯示「可用額度」;子帳戶顯示卡號末四碼 ——
+  // 两者互斥,不会同一列都出现。
+  const showAvailableCredit = hasChildren && ccLimit !== null && ccAvailable !== null
+  const showLastFour = !showAvailableCredit && Boolean(row.card_last_four)
+
+  // 選擇模式下,account_group(純管理容器)不可被選中——只能點右側箭頭展開
+  // 看子帳戶,對齊後端 `_assert_account_not_group` 的既有限制。
+  const isSelectableBlocked = selectMode && accountType === 'account_group'
+  const handleRowClick = onClick && !isSelectableBlocked ? () => onClick(row) : undefined
+
+  return (
+    <div>
+      <div
+        className="group flex items-center justify-between gap-3 py-2.5 pr-3 transition-colors hover:bg-muted/20"
+        style={{ paddingLeft: `${14 + depth * 22}px` }}
+      >
+        <button
+          type="button"
+          onClick={handleRowClick}
+          disabled={!handleRowClick}
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left disabled:cursor-default"
+        >
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt=""
+              className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-border/50"
+            />
+          ) : (
+            <div
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+              style={{ background: `${color}18`, border: `1px solid ${color}40` }}
+            >
+              <TypeIcon type={accountType} size={18} />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-medium">{row.name}</span>
+              {hasChildren ? (
+                <span className="shrink-0 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {childRows!.length}
+                </span>
+              ) : null}
+              {hiddenBadge && row.hidden ? (
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {t('accounts.hidden.optionSuffix')}
+                </span>
+              ) : null}
+              {dueBadgeDate ? (
+                <span className="shrink-0 rounded-full bg-amber-400/90 px-1.5 py-[1px] text-[9px] font-semibold text-amber-950">
+                  {t('cardBilling.dueBadge', { date: dueBadgeDate })}
+                </span>
+              ) : null}
+            </div>
+            {showAvailableCredit ? (
+              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+                <span>{t('accounts.bankcard.availableCreditInline')}</span>
+                <Amount
+                  value={ccAvailable as number}
+                  currency={currency}
+                  showCurrency={false}
+                  size="xs"
+                  className="text-muted-foreground"
+                />
+              </div>
+            ) : showLastFour ? (
+              <div className="mt-0.5 text-[11px] text-muted-foreground">•••• {row.card_last_four}</div>
+            ) : null}
+          </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Amount value={primaryValue} currency={currency} tone={primaryTone} bold size="sm" />
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((prev) => !prev)}
+              className="text-base text-muted-foreground"
+            >
+              <span
+                className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}
+                aria-hidden
+              >
+                ›
+              </span>
+            </button>
+          ) : null}
+          {!selectMode && onEdit ? (
+            <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <button
+                type="button"
+                disabled={!canManage}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onEdit(row)
+                }}
+                className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                {t('common.edit')}
+              </button>
+              {onDelete ? (
+                <button
+                  type="button"
+                  disabled={!canManage}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onDelete(row)
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {t('common.delete')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {hasChildren && expanded ? (
+        <div className="divide-y divide-border/30 border-t border-dashed border-border/30">
+          {childRows!.map((child) => (
+            <AccountListRow
+              key={child.id}
+              row={child}
+              color={TYPE_COLORS[child.account_type || 'other'] || color}
+              isLiability={LIABILITY_TYPES.has(child.account_type || '')}
+              canManage={canManage}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onClick={onClick}
+              avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
+              depth={depth + 1}
+              selectMode={selectMode}
+              hiddenBadge={hiddenBadge}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}

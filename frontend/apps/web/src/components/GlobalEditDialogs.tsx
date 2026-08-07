@@ -4,6 +4,7 @@ import {
   createCategory,
   createDebt,
   createInstallmentPlan,
+  createTag,
   createTransaction,
   fetchCardRewardRules,
   fetchReadDebts,
@@ -29,6 +30,7 @@ import {
   validateTxSplits,
   CategoriesPanel,
   categoryDefaults,
+  pickRandomTagColor,
   TransactionsPanel,
   txDefaults,
   type CategoryForm,
@@ -193,6 +195,82 @@ export function GlobalEditDialogs() {
     [token, notifyError],
   )
 
+  // 表單內直接新增分類/標籤(需求 #10,Phase 11):同 TransactionsPage.tsx 的
+  // onCreateTxCategory/onCreateTxTag ——建在目前編輯交易所在的帳本
+  // (`editTxLedgerId`),成功後樂觀 append 進 `editTxCategories`/`editTxTags`,
+  // 不必等下一輪 loadRefsForLedger 才能反查到剛建立的這筆。
+  const onCreateTxCategory = useCallback(
+    async (name: string, kind: 'expense' | 'income'): Promise<WorkspaceCategory | null> => {
+      const ledgerId = editTxLedgerId.trim()
+      if (!ledgerId) return null
+      try {
+        const res = await retryOnConflict(ledgerId, (base) =>
+          createCategory(token, ledgerId, base, {
+            name,
+            kind,
+            level: 1,
+            sort_order: null,
+            icon: null,
+            icon_type: null,
+            custom_icon_path: null,
+            icon_cloud_file_id: null,
+            icon_cloud_sha256: null,
+            parent_name: null,
+          }),
+        )
+        const created: WorkspaceCategory = {
+          id: res.entity_id || '',
+          name,
+          kind,
+          level: 1,
+          sort_order: null,
+          icon: null,
+          icon_type: null,
+          parent_name: null,
+          last_change_id: res.new_change_id,
+          ledger_id: ledgerId,
+          ledger_name: null,
+          created_by_user_id: null,
+          created_by_email: null,
+        }
+        setEditTxCategories((prev) => [...prev, created])
+        return created
+      } catch (err) {
+        notifyError(err)
+        return null
+      }
+    },
+    [editTxLedgerId, retryOnConflict, token, notifyError],
+  )
+
+  const onCreateTxTag = useCallback(
+    async (name: string): Promise<{ id: string; name: string } | null> => {
+      const ledgerId = editTxLedgerId.trim()
+      if (!ledgerId) return null
+      try {
+        const res = await retryOnConflict(ledgerId, (base) =>
+          createTag(token, ledgerId, base, { name, color: pickRandomTagColor() }),
+        )
+        const created = { id: res.entity_id || '', name }
+        const createdTag: WorkspaceTag = {
+          ...created,
+          color: null,
+          last_change_id: res.new_change_id,
+          ledger_id: ledgerId,
+          ledger_name: null,
+          created_by_user_id: null,
+          created_by_email: null,
+        }
+        setEditTxTags((prev) => [...prev, createdTag])
+        return created
+      } catch (err) {
+        notifyError(err)
+        return null
+      }
+    },
+    [editTxLedgerId, retryOnConflict, token, notifyError],
+  )
+
   // 监听全局 openEditTx 事件 — 任何页 dispatch 都会被这里接住
   // 先 await fetch refs 再 open dialog,避免下拉空数据闪现
   useEffect(() => {
@@ -218,9 +296,11 @@ export function GlobalEditDialogs() {
         currency: (tx.currency_code || '').toUpperCase(),
         original_currency: (tx.currency_code || '').toUpperCase(),
         note: tx.note || '',
+        merchant: tx.merchant || '',
         category_name: tx.category_name || '',
         category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
         account_name: tx.account_name || '',
+        original_account_name: tx.account_name || '',
         from_account_name: tx.from_account_name || '',
         to_account_name: tx.to_account_name || '',
         tags:
@@ -373,6 +453,18 @@ export function GlobalEditDialogs() {
       notifyError(new Error(t('transactions.error.splitRefundNotSupported')))
       return false
     }
+    // 帳戶必選(需求 #9,Phase 11):同 TransactionsPage.onSaveTransaction ——
+    // 新建 或 使用者主動變更過帳戶欄位時才強制必選,既有 mobile 匯入的無
+    // 帳戶交易只改其它欄位時放行。
+    if (
+      editTxForm.tx_type !== 'transfer' &&
+      !editTxForm.account_name.trim() &&
+      (!editTxForm.editingId ||
+        editTxForm.account_name.trim() !== editTxForm.original_account_name.trim())
+    ) {
+      notifyError(new Error(t('transactions.error.accountRequired')))
+      return false
+    }
 
     // v30 多币种:共享 helper(override 口径/编辑防漂移/改回本位币),与
     // TransactionsPage 提交完全同一实现。
@@ -455,6 +547,7 @@ export function GlobalEditDialogs() {
         ? dateInputToIsoUtc(editTxForm.deferred_posting_at)
         : null,
       note: editTxForm.note.trim() || null,
+      merchant: editTxForm.merchant.trim() || null,
       category_name:
         editTxForm.tx_type === 'transfer' || editTxForm.split_enabled
           ? null
@@ -667,6 +760,8 @@ export function GlobalEditDialogs() {
       debts={editTxDebts}
       canCreateDebt={editTxCanCreateDebt}
       rewardRules={editTxRewardRules}
+      onCreateCategory={onCreateTxCategory}
+      onCreateTag={onCreateTxTag}
       ledgerOptions={ledgerOptions}
       writeLedgerId={editTxLedgerId}
       onWriteLedgerIdChange={handleLedgerChange}

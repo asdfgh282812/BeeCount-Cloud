@@ -403,6 +403,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
     if payload.get("note") is not None:
         item["note"] = str(payload.get("note"))
+    if payload.get("merchant") is not None:
+        item["merchant"] = str(payload.get("merchant"))
     if payload.get("category_name") is not None:
         item["categoryName"] = str(payload.get("category_name"))
     if payload.get("category_kind") is not None:
@@ -526,6 +528,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
 
     mapping = {
         "note": "note",
+        "merchant": "merchant",
         "category_name": "categoryName",
         "category_kind": "categoryKind",
         "category_id": "categoryId",

@@ -654,22 +654,24 @@ def _assert_refund_target_not_already_refunded(
         )
 
 
-def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> None:
+def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> ReadDebtProjection:
     """借還款追蹤(§2.5 Phase 3):`debt_id` 必须指向该账本下真实存在的一笔
     欠款,否则一笔"还款交易"会挂一个查无对应债务的孤儿反查字段,读路径
     `list_debts` 反查 sum 永远算不到它。不像退款那样查重(债务允许多笔部分
-    还款,不是"只能被引用一次"),这里只做存在性检查。"""
-    exists = db.scalar(
-        select(ReadDebtProjection.sync_id).where(
+    还款,不是"只能被引用一次"),这里只做存在性检查。返回 debt row(而非仅
+    `None`)是给需求 #6 的自动分类/备注用——呼叫端不需要就直接忽略回傳值。"""
+    debt = db.scalar(
+        select(ReadDebtProjection).where(
             ReadDebtProjection.ledger_id == ledger_id,
             ReadDebtProjection.sync_id == debt_id,
         ).limit(1)
     )
-    if exists is None:
+    if debt is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="debt not found",
         )
+    return debt
 
 
 def _assert_reward_rules_valid(
@@ -889,7 +891,22 @@ async def _commit_create_tx_fast(
                     mutate_payload["category_kind"] = refund_tx_type
         debt_id = mutate_payload.get("debt_id")
         if debt_id:
-            _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+            debt_row = _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+            # 欠還款交易自動帶分類/備註(使用者反饋 #6,2026-08):沒自己填
+            # 分類/備註時,依 debt.direction 自動歸類(同退款分類的既有
+            # 「sync push 等价」旁路模式),使用者自己填的內容不覆蓋。
+            from ...services import card_rewards as _card_rewards
+            if not mutate_payload.get("category_id") and not mutate_payload.get("category_name"):
+                mutate_payload["category_id"] = _card_rewards.ensure_debt_category(
+                    db, user_id=ledger.user_id, direction=debt_row.direction,
+                )
+                mutate_payload["category_name"] = _card_rewards.debt_category_name(debt_row.direction)
+                mutate_payload["category_kind"] = _card_rewards.debt_category_kind(debt_row.direction)
+            if not mutate_payload.get("note"):
+                mutate_payload["note"] = _card_rewards.debt_default_note(
+                    direction=debt_row.direction,
+                    counterparty_name=debt_row.counterparty_name,
+                )
         reward_rule_ids = mutate_payload.get("reward_rule_ids")
         if reward_rule_ids:
             _assert_reward_rules_valid(
@@ -1341,6 +1358,8 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     }
     if row.note is not None:
         item["note"] = row.note
+    if row.merchant is not None:
+        item["merchant"] = row.merchant
     if row.category_sync_id:
         item["categoryId"] = row.category_sync_id
     if row.category_name:

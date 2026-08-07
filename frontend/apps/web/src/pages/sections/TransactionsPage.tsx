@@ -63,7 +63,9 @@ import {
   type WorkspaceTag,
   type ProfileMe,
   deleteLedger,
+  createCategory,
   createDebt,
+  createTag,
   createTransaction,
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
@@ -99,6 +101,7 @@ import {
   TransactionsPanel,
   canManageLedger,
   canWriteTransactions,
+  pickRandomTagColor,
   txDefaults,
   type TxForm
 } from '@beecount/web-features'
@@ -1210,6 +1213,80 @@ export function TransactionsPage() {
     }
   }
 
+  // 表單內直接新增分類/標籤(需求 #10,Phase 11):建在目前寫入帳本
+  // (`txWriteLedgerId`,跟這筆交易本身走同一條 ledger-scoped 寫入路徑)。
+  // 成功後樂觀地把新行 append 進 `txDictionaryCategories`/`txDictionaryTags`
+  // (不等下一輪全量 fetch),讓 CategorySelector/TagSelector 立刻能反查到
+  // 剛建立的這筆、也讓其它交易接下來能直接選用。
+  const onCreateTxCategory = async (
+    name: string,
+    kind: 'expense' | 'income'
+  ): Promise<WorkspaceCategory | null> => {
+    const ledgerId = txWriteLedgerId.trim()
+    if (!ledgerId) {
+      setErrorNotice(t('shell.selectLedgerFirst'))
+      return null
+    }
+    try {
+      const res = await retryOnConflict(ledgerId, (base) =>
+        createCategory(token, ledgerId, base, {
+          name,
+          kind,
+          level: 1,
+          sort_order: null,
+          icon: null,
+          icon_type: null,
+          custom_icon_path: null,
+          icon_cloud_file_id: null,
+          icon_cloud_sha256: null,
+          parent_name: null
+        })
+      )
+      const created: WorkspaceCategory = {
+        id: res.entity_id || '',
+        name,
+        kind,
+        level: 1,
+        sort_order: null,
+        icon: null,
+        icon_type: null,
+        parent_name: null,
+        last_change_id: res.new_change_id,
+        ledger_id: ledgerId,
+        ledger_name: null,
+        created_by_user_id: null,
+        created_by_email: null
+      }
+      setTxDictionaryCategories((prev) => [...prev, created])
+      return created
+    } catch (err) {
+      setErrorNotice(renderError(err))
+      return null
+    }
+  }
+
+  const onCreateTxTag = async (name: string): Promise<{ id: string; name: string } | null> => {
+    const ledgerId = txWriteLedgerId.trim()
+    if (!ledgerId) {
+      setErrorNotice(t('shell.selectLedgerFirst'))
+      return null
+    }
+    try {
+      const res = await retryOnConflict(ledgerId, (base) =>
+        createTag(token, ledgerId, base, { name, color: pickRandomTagColor() })
+      )
+      const created = { id: res.entity_id || '', name }
+      setTxDictionaryTags((prev) => [
+        ...prev,
+        { ...created, color: null, last_change_id: res.new_change_id }
+      ])
+      return created
+    } catch (err) {
+      setErrorNotice(renderError(err))
+      return null
+    }
+  }
+
   const renderError = (err: unknown): string => localizeError(err, t)
 
   const fetchBaseChangeId = async (ledgerId: string): Promise<number> => {
@@ -1616,8 +1693,17 @@ export function TransactionsPage() {
         return false
       }
     }
-    // 非转账交易允许不选账户（mobile 端 accountId 本来就是 nullable），之前 web
-    // 强制校验导致 mobile 导入的无账户交易在 web 上无法编辑。
+    // 帳戶必選(需求 #9,Phase 11):新建交易 或 使用者主動變更過帳戶欄位時
+    // 強制必選;既有 mobile 匯入的無帳戶交易只改其它欄位(帳戶欄位維持
+    // 打開表單當下的原樣)時放行,避免被迫補選帳戶才能存檔其它欄位。
+    if (
+      txForm.tx_type !== 'transfer' &&
+      !txForm.account_name.trim() &&
+      (!txForm.editingId || txForm.account_name.trim() !== txForm.original_account_name.trim())
+    ) {
+      setErrorNotice(t('transactions.error.accountRequired'))
+      return false
+    }
 
     try {
       const isTransfer = txForm.tx_type === 'transfer'
@@ -1691,6 +1777,7 @@ export function TransactionsPage() {
           ? dateInputToIsoUtc(txForm.deferred_posting_at)
           : null,
         note: txForm.note || null,
+        merchant: txForm.merchant || null,
         category_name: isTransfer || txForm.split_enabled ? null : categoryName || null,
         category_kind: isTransfer ? null : categoryKind || null,
         category_id: isTransfer || txForm.split_enabled ? null : resolvedCategoryId,
@@ -2266,6 +2353,8 @@ export function TransactionsPage() {
                 debts={txDictionaryDebts}
                 canCreateDebt={txCanCreateDebt}
                 rewardRules={txFormRewardRules}
+                onCreateCategory={onCreateTxCategory}
+                onCreateTag={onCreateTxTag}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}
@@ -2316,9 +2405,11 @@ export function TransactionsPage() {
                     happened_at: tx.happened_at,
                     deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
                     note: tx.note || '',
+                    merchant: tx.merchant || '',
                     category_name: tx.category_name || '',
                     category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
                     account_name: tx.account_name || '',
+                    original_account_name: tx.account_name || '',
                     from_account_name: tx.from_account_name || '',
                     to_account_name: tx.to_account_name || '',
                     currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency

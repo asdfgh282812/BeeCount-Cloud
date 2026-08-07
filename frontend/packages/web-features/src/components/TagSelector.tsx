@@ -22,6 +22,12 @@ type TagSelectorProps = {
   /** 没有标签时的占位文案。 */
   emptyText?: string
   className?: string
+  /** 表單內直接新增(需求 #10,Phase 11,2026-08 使用者明確要求):搜尋關鍵字
+   *  在現有標籤裡找不到完全同名(大小寫不敏感)的項目時,顯示「新增 "xxx"」
+   *  內嵌入口,點擊呼叫這個 callback。舊版設計是刻意不做內嵌新增、逼用戶去
+   *  標籤管理頁(見下方歷史記錄),這次使用者反饋要求改成表單內直接建立,
+   *  不再要求跳頁。 */
+  onCreateNew?: (name: string) => void | Promise<void>
 }
 
 /**
@@ -30,9 +36,7 @@ type TagSelectorProps = {
  * - 每个 chip 用 tag.color 当背景,选中态边框 ring 主题色 + 勾标
  * - 点击 toggle 选中/反选
  * - 支持搜索(showSearch=true 时顶上加搜索框,大小写不敏感子串匹配)
- *
- * 设计:不内嵌"创建新标签"按钮 —— 用户应在 TagsPage 单独管理,picker 只
- * 负责选已有的。跟 mobile 一致。
+ * - 支持表單內直接新增(`onCreateNew`,Phase 11 新增,見上方 prop 註解)
  */
 export function TagSelector({
   tags,
@@ -41,9 +45,11 @@ export function TagSelector({
   showSearch = true,
   emptyText,
   className,
+  onCreateNew,
 }: TagSelectorProps) {
   const t = useT()
   const [query, setQuery] = useState('')
+  const [creating, setCreating] = useState(false)
 
   const selectedSet = useMemo(() => {
     const set = new Set<string>()
@@ -88,6 +94,25 @@ export function TagSelector({
     onChange(Array.from(next))
   }
 
+  const normalizedQuery = query.trim().toLowerCase()
+  const exactMatchExists = tags.some(
+    (tag) => (tag.name || '').trim().toLowerCase() === normalizedQuery,
+  )
+  const showCreateButton = Boolean(onCreateNew) && normalizedQuery.length > 0 && !exactMatchExists
+
+  const handleCreateNew = async () => {
+    if (!onCreateNew || creating) return
+    const name = query.trim()
+    if (!name) return
+    setCreating(true)
+    try {
+      await onCreateNew(name)
+      setQuery('')
+    } finally {
+      setCreating(false)
+    }
+  }
+
   return (
     <div className={`space-y-3 ${className || ''}`.trim()}>
       {showSearch ? (
@@ -96,6 +121,18 @@ export function TagSelector({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+      ) : null}
+
+      {showCreateButton ? (
+        <button
+          type="button"
+          disabled={creating}
+          onClick={() => void handleCreateNew()}
+          className="flex w-full items-center gap-2 rounded-lg border border-dashed border-primary/50 px-3 py-2 text-sm text-primary transition-colors hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-50"
+        >
+          <span aria-hidden>+</span>
+          <span className="truncate">{t('categories.picker.createNew', { name: query.trim() })}</span>
+        </button>
       ) : null}
 
       {filtered.length === 0 ? (

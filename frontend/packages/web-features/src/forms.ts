@@ -17,11 +17,19 @@ export type TxForm = {
   amount: string
   happened_at: string
   note: string
+  /** 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。 */
+  merchant: string
   category_name: string
   category_kind: 'expense' | 'income' | 'transfer'
   account_name: string
   from_account_name: string
   to_account_name: string
+  /** 帳戶必選(需求 #9,Phase 11):編輯既有交易時,記錄打開表單當下的原始
+   *  `account_name`(新建=''),用來判斷使用者是否「主動變更」過帳戶欄位。
+   *  只有新建 或 使用者主動變更過帳戶時才強制必選,避免舊有 mobile 匯入的
+   *  無帳戶交易被迫在 web 端補選帳戶才能存檔其它欄位的編輯(比照
+   *  `original_currency` 同款「開表單時的快照」模式)。 */
+  original_account_name: string
   tags: string[]
   attachments: AttachmentRef[]
   /** 交易币种(v30 多币种):'' = 跟随账户/账本本位币;显式值 = 用户手选。
@@ -267,11 +275,13 @@ export const txDefaults = (): TxForm => ({
   amount: '',
   happened_at: new Date().toISOString(),
   note: '',
+  merchant: '',
   category_name: '',
   category_kind: 'expense',
   account_name: '',
   from_account_name: '',
   to_account_name: '',
+  original_account_name: '',
   tags: [],
   attachments: [],
   currency: '',

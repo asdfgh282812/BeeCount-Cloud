@@ -30,6 +30,7 @@ import type {
   WorkspaceCategory,
 } from '@beecount/api-client'
 
+import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
@@ -64,6 +65,12 @@ type TransactionsPanelProps = {
    *  credit_card 類型)名下的回饋規則,給「勾選要走哪幾條規則」的多選用。
    *  呼叫方按 `form.account_name` 對應的帳戶單獨拉,非信用卡帳戶传空数组。 */
   rewardRules?: ReadCardRewardRule[]
+  /** 表單內直接新增分類/標籤(需求 #10,Phase 11):不傳則分類/標籤選擇彈窗
+   *  不顯示「新增 "xxx"」內嵌入口。建立成功後回傳新分類/標籤(用來直接寫回
+   *  `form.category_name`/`form.tags`,不必等下一輪 dictionaries 刷新才能
+   *  選中它),失敗回傳 null(呼叫方已自行 toast 提示錯誤)。 */
+  onCreateCategory?: (name: string, kind: 'expense' | 'income') => Promise<WorkspaceCategory | null>
+  onCreateTag?: (name: string) => Promise<{ id: string; name: string } | null>
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -262,6 +269,8 @@ export function TransactionsPanel({
   debts = [],
   canCreateDebt = false,
   rewardRules = [],
+  onCreateCategory,
+  onCreateTag,
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -299,40 +308,58 @@ export function TransactionsPanel({
   // 拆帳(§2.4):null = 分类 picker 打开时选的是主分类字段;数字 = 选的是
   // splits[index] 那一行,同一个 CategoryPickerDialog 实例按这个分流 onSelect。
   const [splitPickerIndex, setSplitPickerIndex] = useState<number | null>(null)
+  // 表單內直接新增分類(需求 #10,Phase 11):建立成功後直接寫回 form,不必
+  // 等下一輪 dictionaries 刷新——分流邏輯跟上面既有的 onSelect(splitPickerIndex
+  // 非 null 时写 splits[index],否则写主 category_name)完全一致。
+  const handleCreateCategory = onCreateCategory
+    ? async (name: string) => {
+        const created = await onCreateCategory(name, form.tx_type === 'income' ? 'income' : 'expense')
+        if (!created) return
+        if (splitPickerIndex !== null) {
+          const next = form.splits.slice()
+          const idx = splitPickerIndex
+          if (next[idx]) {
+            next[idx] = { ...next[idx], category_id: created.id, category_name: created.name.trim() }
+            onFormChange({ ...form, splits: next })
+          }
+          return
+        }
+        onFormChange({ ...form, category_name: created.name.trim(), category_kind: form.tx_type })
+      }
+    : undefined
+  // 表單內直接新增標籤(需求 #10,Phase 11):建立成功後直接勾選進
+  // `form.tags`,避免同名重複勾选。
+  const handleCreateTag = onCreateTag
+    ? async (name: string) => {
+        const created = await onCreateTag(name)
+        if (!created) return
+        const trimmed = created.name.trim()
+        if (form.tags.some((tagName) => tagName.trim().toLowerCase() === trimmed.toLowerCase())) return
+        onFormChange({ ...form, tags: [...form.tags, trimmed] })
+      }
+    : undefined
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
     'text-sm text-destructive underline-offset-4 hover:text-destructive/90 hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
 
-  const dedupSortNames = (names: string[]) =>
-    names
-      .filter((name) => name.length > 0)
-      .filter((name, index, self) => self.indexOf(name) === index)
-      .sort((a, b) => a.localeCompare(b))
-  // 账户隐藏(issue #240):记账/转账选择器排除隐藏账户 —— 不能再往它记新账。
-  const hiddenAccountNames = new Set(
-    accounts.filter((row) => row.hidden).map((row) => row.name.trim())
-  )
-  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
-  // 一般交易挂账(后端 _assert_account_not_group 会拒),选择器不该让它出现。
-  const groupAccountNames = new Set(
-    accounts.filter((row) => row.account_type === 'account_group').map((row) => row.name.trim())
-  )
-  const accountOptions = dedupSortNames(
-    accounts
-      .map((row) => row.name.trim())
-      .filter((name) => !hiddenAccountNames.has(name) && !groupAccountNames.has(name))
-  )
-  // E1 唯一例外:编辑一笔本就挂在某隐藏账户上的历史交易时,选择器钉住显示该
-  // 隐藏账户(带「已隐藏」灰标),让用户可原样保存;其它隐藏账户仍不出现。
-  // 一旦改选走其它选项,该隐藏名字就不会再被钉回来(下次渲染 currentValue 已变)。
-  const accountOptionsWithPinned = (currentValue: string) => {
-    const trimmed = currentValue.trim()
-    if (trimmed && hiddenAccountNames.has(trimmed)) {
-      return dedupSortNames([...accountOptions, trimmed])
-    }
-    return accountOptions
-  }
+  // 账户选择彈窗(需求 #9,Phase 11):候选行排除已隐藏帳戶 —— 不能再往它記
+  // 新帳,唯一例外是這三個欄位裡目前正選著的那個隱藏帳戶(编辑一笔本就挂在
+  // 某隐藏账户上的历史交易时钉住显示,带「已隐藏」灰标让用户可原样保存)。
+  // account_group(純管理容器)本身不可被選中,但仍保留在候選清單裡 ——
+  // AccountPickerDialog 需要它來渲染子帳戶的巢狀父列,選中判斷交給該元件
+  // 內部處理(點擊 account_group 列不觸發 onSelect)。
+  const pickerAccountRows = useMemo(() => {
+    const pinned = new Set(
+      [form.account_name, form.from_account_name, form.to_account_name]
+        .map((name) => name.trim().toLowerCase())
+        .filter((name) => name.length > 0)
+    )
+    return accounts.filter((row) => !row.hidden || pinned.has(row.name.trim().toLowerCase()))
+  }, [accounts, form.account_name, form.from_account_name, form.to_account_name])
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false)
+  const [fromAccountPickerOpen, setFromAccountPickerOpen] = useState(false)
+  const [toAccountPickerOpen, setToAccountPickerOpen] = useState(false)
   const categoryOptions = categories
     .filter((row) => row.kind === form.tx_type)
     .map((row) => row.name.trim())
@@ -678,89 +705,69 @@ export function TransactionsPanel({
               <>
                 <div className="space-y-1">
                   <Label>{t('transactions.placeholder.fromAccountName')}</Label>
-                  <Select
-                    value={form.from_account_name || undefined}
+                  <button
+                    type="button"
                     disabled={dictionariesLoading}
-                    onValueChange={(value) => onFormChange({ ...form, from_account_name: value })}
+                    onClick={() => setFromAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('transactions.placeholder.fromAccountName')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accountOptionsWithPinned(form.from_account_name).map((name) => (
-                        <SelectItem key={name} value={name}>
-                          {name}
-                          {hiddenAccountNames.has(name) ? (
-                            <span className="ml-1 text-xs text-muted-foreground">
-                              {t('accounts.hidden.optionSuffix')}
-                            </span>
-                          ) : null}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className={`flex-1 truncate ${form.from_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.from_account_name || t('transactions.placeholder.fromAccountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
                 </div>
                 <div className="space-y-1">
                   <Label>{t('transactions.placeholder.toAccountName')}</Label>
-                  <Select
-                    value={form.to_account_name || undefined}
+                  <button
+                    type="button"
                     disabled={dictionariesLoading}
-                    onValueChange={(value) => onFormChange({ ...form, to_account_name: value })}
+                    onClick={() => setToAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('transactions.placeholder.toAccountName')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accountOptionsWithPinned(form.to_account_name).map((name) => (
-                        <SelectItem key={name} value={name}>
-                          {name}
-                          {hiddenAccountNames.has(name) ? (
-                            <span className="ml-1 text-xs text-muted-foreground">
-                              {t('accounts.hidden.optionSuffix')}
-                            </span>
-                          ) : null}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className={`flex-1 truncate ${form.to_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.to_account_name || t('transactions.placeholder.toAccountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
                 </div>
               </>
             ) : (
               <div className="space-y-1">
                 <Label>{t('transactions.table.account')}</Label>
-                <Select
-                  // Radix SelectItem 不允许 value=""(undefined-state 由 placeholder
-                  // 渲染),所以用 sentinel "__none__" 表示"不选账户"。和 form 的
-                  // 真实空串状态在 value 和 onValueChange 两处来回翻译。
-                  value={form.account_name ? form.account_name : '__none__'}
+                <button
+                  type="button"
                   disabled={dictionariesLoading}
-                  onValueChange={(value) =>
-                    onFormChange({ ...form, account_name: value === '__none__' ? '' : value })
-                  }
+                  onClick={() => setAccountPickerOpen(true)}
+                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
-                      <span className="text-muted-foreground">
-                        {t('transactions.placeholder.noAccount')}
-                      </span>
-                    </SelectItem>
-                    {accountOptionsWithPinned(form.account_name).map((name) => (
-                      <SelectItem key={name} value={name}>
-                        {name}
-                        {hiddenAccountNames.has(name) ? (
-                          <span className="ml-1 text-xs text-muted-foreground">
-                            {t('accounts.hidden.optionSuffix')}
-                          </span>
-                        ) : null}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <span className={`flex-1 truncate ${form.account_name ? '' : 'text-muted-foreground'}`}>
+                    {form.account_name || t('transactions.placeholder.accountName')}
+                  </span>
+                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                </button>
               </div>
             )}
+
+            {/* 商店 + 備註(需求 #11,Phase 11):商店選填,純展示用途;備註從
+                原本緊鄰「實際入帳日」的位置往上移到帳戶/分類附近,兩者相鄰
+                放置,對齊使用者反饋的欄位順序需求。 */}
+            <div className="space-y-1">
+              <Label>{t('transactions.field.merchant')}</Label>
+              <Input
+                placeholder={t('transactions.placeholder.merchant')}
+                value={form.merchant}
+                onChange={(e) => onFormChange({ ...form, merchant: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>{t('transactions.table.note')}</Label>
+              <Input
+                placeholder={t('transactions.placeholder.note')}
+                value={form.note}
+                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
+              />
+            </div>
 
             {/* 借還款追蹤(§2.5 體驗補強):expense/income 都能掛欠款(跟退款
                 同样排除 transfer),不強制連動 tx_type,使用者自己判斷要記
@@ -952,14 +959,6 @@ export function TransactionsPanel({
                 沒有 UI 能再手動改它,對齊 Moze「退款關聯只能從發起流程建立」
                 的設計。 */}
 
-            <div className="space-y-1 md:col-span-2">
-              <Label>{t('transactions.table.note')}</Label>
-              <Input
-                placeholder={t('transactions.placeholder.note')}
-                value={form.note}
-                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
-              />
-            </div>
             {/* 延後入帳(§2.10 Phase 5):進階/選填欄位,不常用 —— 只在消費日
                 跟實際入帳日不同時填(比如信用卡商戶延遲請款),用於對帳 /
                 信用卡帳單週期歸屬。刻意放在筆記欄位旁,不做成顯眼的必填
@@ -1339,6 +1338,34 @@ export function TransactionsPanel({
         </DialogContent>
       </Dialog>
 
+      {/* 帳戶選擇彈窗(需求 #9,Phase 11):重用 Phase 10 帳戶列表頁的緊湊列樣式。
+          非轉帳單一帳戶欄位允許「不選帳戶」;轉帳轉出/轉入各自一個彈窗實例,
+          都不帶 allowNone(轉帳兩端必選,見下方 canSubmit 校驗)。 */}
+      <AccountPickerDialog
+        open={accountPickerOpen}
+        onClose={() => setAccountPickerOpen(false)}
+        accounts={pickerAccountRows}
+        value={form.account_name}
+        allowNone
+        onSelect={(row) => onFormChange({ ...form, account_name: row.id ? row.name.trim() : '' })}
+      />
+      <AccountPickerDialog
+        open={fromAccountPickerOpen}
+        onClose={() => setFromAccountPickerOpen(false)}
+        title={t('transactions.placeholder.fromAccountName')}
+        accounts={pickerAccountRows}
+        value={form.from_account_name}
+        onSelect={(row) => onFormChange({ ...form, from_account_name: row.name.trim() })}
+      />
+      <AccountPickerDialog
+        open={toAccountPickerOpen}
+        onClose={() => setToAccountPickerOpen(false)}
+        title={t('transactions.placeholder.toAccountName')}
+        accounts={pickerAccountRows}
+        value={form.to_account_name}
+        onSelect={(row) => onFormChange({ ...form, to_account_name: row.name.trim() })}
+      />
+
       {/* 标签 picker —— chip 多选,跟 TagsPanel 卡片视觉一致。 */}
       <TagPickerDialog
         open={tagPickerOpen}
@@ -1347,6 +1374,7 @@ export function TransactionsPanel({
         selectedNames={selectedTags}
         onChange={(names) => onFormChange({ ...form, tags: names })}
         onClearAll={() => onFormChange({ ...form, tags: [] })}
+        onCreateNew={handleCreateTag}
       />
 
       {/* 分类 picker —— 跟 mobile category_selector_dialog 同样的网格 + 子级
@@ -1368,6 +1396,7 @@ export function TransactionsPanel({
             : form.splits[splitPickerIndex]?.category_id || undefined
         }
         title={t('transactions.placeholder.categoryName')}
+        onCreateNew={handleCreateCategory}
         onSelect={(cat) => {
           // 拆帳(§2.4):splitPickerIndex 非 null = 这次选的是某个 split 行的
           // 分类,写回 form.splits[index] 而不是主 category 字段。
