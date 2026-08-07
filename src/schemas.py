@@ -638,10 +638,16 @@ class ReadAccountOut(BaseModel):
 
 class ReadAccountBillingMemberOut(BaseModel):
     """合併帳單(§2.9 Phase 4)裡單一成員帳戶(主卡自己或某張子卡)在當期
-    帳單裡的貢獻金額。"""
+    帳單裡的貢獻金額。`period_new_spend`/`remaining_due`(§2.9.6 Phase 7,
+    2026-08-07 使用者反饋補上)是這個成員**自己**的數字,供子卡詳情頁顯示
+    「自己的」金額,不用再借用整組合併數字——`period_new_spend` 對齊
+    `period_cycle_start`~`period_cycle_end` 這期窗口,`remaining_due` 是這
+    張卡自己的終身跑動餘額(下限 0,溢繳算在整組層級,不會讓單卡顯示負數)。"""
     account_id: str
     account_name: str
     cycle_spend: float
+    period_new_spend: float = 0.0
+    remaining_due: float = 0.0
 
 
 class ReadAccountBillingSummaryOut(BaseModel):
@@ -716,7 +722,10 @@ class ReadInterestFreeSuggestionOut(BaseModel):
 
 
 CardRewardRateType = Literal["percentage", "fixed_amount"]
-CardRewardRounding = Literal["floor", "round", "ceil"]
+# Phase 8 #4(2026-08 使用者反饋):新增 "keep"(保留小數,不取整)。
+# rounding = 單筆取整方式;total_rounding(見下方)= 總額取整方式,兩者共用
+# 同一組合法值。
+CardRewardRounding = Literal["floor", "round", "ceil", "keep"]
 # settlement_date 目前行为等同 transaction_date —— §2.10 延後入帳
 # (deferred_posting_at)还没实作,见 services/card_rewards.py 的
 # _attribution_date docstring。
@@ -740,6 +749,7 @@ class ReadCardRewardRuleOut(BaseModel):
     rate_type: CardRewardRateType
     rate_value: float
     rounding: CardRewardRounding
+    total_rounding: CardRewardRounding = "round"
     calc_basis: CardRewardCalcBasis
     interval: CardRewardInterval
     min_spend_threshold: float | None = None
@@ -750,9 +760,15 @@ class ReadCardRewardRuleOut(BaseModel):
     ends_at: datetime | None = None
     settlement_type: CardRewardSettlementType = "manual"
     settlement_days: int | None = None
+    settlement_month_offset: int | None = None
+    settlement_day_of_month: int | None = None
     reward_account_id: str | None = None
     note: str | None = None
     enabled: bool = True
+    # Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄
+    # 時鎖定(True)——計算相關欄位不能再改,只能調整 label/note/enabled/
+    # starts_at/ends_at,前端據此提前 disable 欄位(不用等 PATCH 422 才知道)。
+    locked: bool = False
     last_change_id: int
 
 
@@ -1678,6 +1694,7 @@ class WriteCardRewardRuleCreateRequest(WriteBaseRequest):
     rate_type: CardRewardRateType = "percentage"
     rate_value: float = Field(gt=0)
     rounding: CardRewardRounding = "round"
+    total_rounding: CardRewardRounding = "round"
     calc_basis: CardRewardCalcBasis = "transaction_date"
     interval: CardRewardInterval = "billing_cycle"
     min_spend_threshold: float | None = Field(default=None, gt=0)
@@ -1688,6 +1705,8 @@ class WriteCardRewardRuleCreateRequest(WriteBaseRequest):
     ends_at: datetime | None = None
     settlement_type: CardRewardSettlementType = "manual"
     settlement_days: int | None = Field(default=None, ge=0, le=365)
+    settlement_month_offset: int | None = Field(default=None, ge=0, le=11)
+    settlement_day_of_month: int | None = Field(default=None, ge=1, le=28)
     reward_account_id: str | None = None
     note: str | None = None
     enabled: bool = True
@@ -1700,6 +1719,7 @@ class WriteCardRewardRuleUpdateRequest(WriteBaseRequest):
     rate_type: CardRewardRateType | None = None
     rate_value: float | None = Field(default=None, gt=0)
     rounding: CardRewardRounding | None = None
+    total_rounding: CardRewardRounding | None = None
     calc_basis: CardRewardCalcBasis | None = None
     interval: CardRewardInterval | None = None
     min_spend_threshold: float | None = Field(default=None, gt=0)
@@ -1710,6 +1730,8 @@ class WriteCardRewardRuleUpdateRequest(WriteBaseRequest):
     ends_at: datetime | None = None
     settlement_type: CardRewardSettlementType | None = None
     settlement_days: int | None = Field(default=None, ge=0, le=365)
+    settlement_month_offset: int | None = Field(default=None, ge=0, le=11)
+    settlement_day_of_month: int | None = Field(default=None, ge=1, le=28)
     reward_account_id: str | None = None
     note: str | None = None
     enabled: bool | None = None

@@ -648,6 +648,19 @@ def test_billing_summary_merges_children_and_computes_due_amount():
         members_by_id = {m["account_id"]: m for m in data["members"]}
         assert members_by_id["acc-main"]["cycle_spend"] == 80.0
         assert members_by_id["acc-sub"]["cycle_spend"] == 50.0
+        # §2.9.6 Phase 7(2026-08-07 使用者反饋):每個 member 附上自己的本期
+        # 新增花費(period_new_spend)+ 自己的終身跑動餘額(remaining_due),
+        # 讓子卡詳情頁能顯示「自己的」數字,不用借用整組合併金額。period_
+        # cycle_start/end 跟上面 cycle_start/end(最近一次已結束的週期)是
+        # 同一期(cycle_offset 預設 0),所以主卡的 period_new_spend 應該等於
+        # 上面驗證過的 80(100 - 20 退款),子卡是 50。
+        assert members_by_id["acc-main"]["period_new_spend"] == 80.0
+        assert members_by_id["acc-sub"]["period_new_spend"] == 50.0
+        # 主卡自己終身欠款:tx-main-prev(999)+ tx-main-in(100)- tx-main-refund
+        # (20)- tx-payment(30,打在主卡身上)= 1049;子卡自己:50(沒有繳款打
+        # 在子卡身上)。兩者加總(1099)應該等於上面驗證過的整組 remaining_due。
+        assert members_by_id["acc-main"]["remaining_due"] == 1049.0
+        assert members_by_id["acc-sub"]["remaining_due"] == 50.0
         assert data["due_date"][:10] == credit_card.due_date_for_cycle_end(
             cycle_end, payment_due_day
         ).isoformat()

@@ -19,7 +19,8 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -29,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 from src.database import Base, get_db
 from src.main import app
 from src.models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, User
-from src.services import card_reward_payout
+from src.services import card_reward_payout, card_rewards
 
 
 def _make_client():
@@ -96,6 +97,38 @@ def _rule_row(TS, email, sync_id) -> ReadCardRewardRuleProjection:
         assert row is not None
         db.expunge(row)
         return row
+
+
+def _latest_change_id(client, hdr, ledger_id) -> int:
+    r = client.get(f"/api/v1/read/ledgers/{ledger_id}", headers=hdr)
+    assert r.status_code == 200, r.text
+    return int(r.json()["source_change_id"])
+
+
+def _income_tx_to(TS, account_id):
+    with TS() as db:
+        rows = db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.tx_type == "income",
+                ReadTxProjection.account_sync_id == account_id,
+            ).order_by(ReadTxProjection.happened_at.asc())
+        ).all()
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+
+def _payout_rows(TS, email, rule_id):
+    with TS() as db:
+        user_id = db.scalar(select(User.id).where(User.email == email))
+        rows = db.scalars(
+            select(CardRewardPayout).where(
+                CardRewardPayout.user_id == user_id, CardRewardPayout.rule_sync_id == rule_id,
+            )
+        ).all()
+        for row in rows:
+            db.expunge(row)
+        return rows
 
 
 def _seed_ledger_and_card(client, hdr_app, ledger_id, *, billing_day=None, payment_due_day=None):
@@ -269,6 +302,10 @@ def test_card_rewards_manual_tagging_and_threshold_gating():
             json={
                 "base_change_id": 0, "label": "餐饮 2%",
                 "rate_type": "percentage", "rate_value": 2.0, "rounding": "round",
+                # 这条测试关注门槛判定逻辑,不是取整——total_rounding 明确指定
+                # "keep"(不取整到整数),隔离掉 Phase 8 #4 两段式取整改版对
+                # 这里断言的影响。
+                "total_rounding": "keep",
                 "min_tx_amount": 50.0, "min_spend_threshold": 100.0,
             },
         )
@@ -1365,5 +1402,453 @@ def test_manual_payout_rejects_account_group_and_unknown_account():
             json={"base_change_id": change_id, "amount": 10.0, "reward_account_id": "acc-cash1"},
         )
         assert wrong_account.status_code == 400, wrong_account.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Phase 8(docs/PH6_USER_FEEDBACK_2026-08_SD.md):#4 兩段式取整 / #5 事後修改   #
+# 重算 / #5-1 時間對齊 / #15 週期結束回饋日期可設 / #16 規則鎖定+軟刪除       #
+# --------------------------------------------------------------------------- #
+
+
+def test_total_rounding_rounds_aggregate_to_integer_independently_per_rule():
+    """#4:單筆「保留小數」(keep)+ 總額分別用 round/floor,驗證兩條規則各自
+    的總額取整結果不同(同一批交易,證明 total_rounding 是逐規則獨立生效,
+    不是全域設定)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr27@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr27@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr27")
+
+        def _create(label, total_rounding):
+            r = client.post(
+                "/api/v1/write/ledgers/lgr27/accounts/acc-card1/card-reward-rules",
+                headers=hdr_web,
+                json={
+                    "base_change_id": 0, "label": label, "rate_type": "percentage", "rate_value": 2.0,
+                    "rounding": "keep", "total_rounding": total_rounding,
+                    # calendar_month 不需要帳戶配置 billing_day 就能算,避開
+                    # 這個測試無關的 no_billing_schedule 狀態。
+                    "interval": "calendar_month",
+                },
+            )
+            assert r.status_code == 200, r.text
+            return r.json()["entity_id"]
+
+        rule_round = _create("四捨五入總額", "round")
+        rule_floor = _create("無條件捨去總額", "floor")
+
+        now = datetime.now(timezone.utc)
+        # 100*2% + 30*2% = 2.0 + 0.6 = 2.6 -> round=3, floor=2。
+        _push(client, hdr_app, "lgr27", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_round, rule_floor]},
+              device_id="d-app")
+        _push(client, hdr_app, "lgr27", "transaction", "tx-2",
+              {"syncId": "tx-2", "type": "expense", "amount": 30.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_round, rule_floor]},
+              device_id="d-app")
+
+        rr = client.get(
+            "/api/v1/read/ledgers/lgr27/accounts/acc-card1/card-rewards", headers=hdr_web,
+        )
+        assert rr.status_code == 200, rr.text
+        by_rule = {item["rule_id"]: item for item in rr.json()["items"]}
+        assert by_rule[rule_round]["raw_reward"] == 3.0
+        assert by_rule[rule_round]["capped_reward"] == 3.0
+        assert by_rule[rule_floor]["raw_reward"] == 2.0
+        assert by_rule[rule_floor]["capped_reward"] == 2.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_compute_settlement_date_period_end_with_month_offset_and_day_of_month():
+    """#15:週期結束後一次結算,`settlement_month_offset`/`settlement_day_of_month`
+    皆設定時,依「期末日期所在月 + offset 個月」換算出目標月份,日期換成
+    `settlement_day_of_month`(含跨年份進位)。兩者皆為 None 時維持現況行為
+    (期間結束當天)。純函式,不需要 DB,直接用 SimpleNamespace 假造 rule。"""
+    period_end = date(2026, 1, 31)
+
+    # 當月第 5 天。
+    rule = SimpleNamespace(
+        settlement_type="period_end", settlement_month_offset=0, settlement_day_of_month=5,
+    )
+    assert card_rewards.compute_settlement_date(rule, period_end=period_end) == date(2026, 1, 5)
+
+    # 次月第 5 天。
+    rule = SimpleNamespace(
+        settlement_type="period_end", settlement_month_offset=1, settlement_day_of_month=5,
+    )
+    assert card_rewards.compute_settlement_date(rule, period_end=period_end) == date(2026, 2, 5)
+
+    # 跨年份進位:12 月 + 1 個月 = 次年 1 月。
+    rule = SimpleNamespace(
+        settlement_type="period_end", settlement_month_offset=1, settlement_day_of_month=5,
+    )
+    assert card_rewards.compute_settlement_date(
+        rule, period_end=date(2026, 12, 20),
+    ) == date(2027, 1, 5)
+
+    # 兩者皆為 None:維持現況行為(期間結束當天)。
+    rule = SimpleNamespace(
+        settlement_type="period_end", settlement_month_offset=None, settlement_day_of_month=None,
+    )
+    assert card_rewards.compute_settlement_date(rule, period_end=period_end) == period_end
+
+
+def test_combine_settlement_date_with_source_time_uses_source_time_of_day():
+    """#5-1:逐筆結算的回饋交易 happened_at 改用「結算日期 + 來源交易的
+    時:分:秒」,不再固定補 00:00:00(換算 UTC+8 顯示固定 08:00 的根因)。"""
+    settlement_date = date(2026, 3, 10)
+    source = datetime(2026, 3, 5, 21, 43, 7, tzinfo=timezone.utc)
+    combined = card_rewards.combine_settlement_date_with_source_time(settlement_date, source)
+    assert combined == datetime(2026, 3, 10, 21, 43, 7, tzinfo=timezone.utc)
+
+
+def test_settlement_month_offset_and_day_of_month_round_trip_and_validation():
+    """#15:建立/更新規則時 `settlement_month_offset`/`settlement_day_of_month`
+    正確落庫回傳;`settlement_day_of_month` 超出 1~28 範圍要被拒絕(避免月底
+    日期溢出)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr28@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr28@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr28")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr28/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "次月5號結算", "rate_type": "percentage", "rate_value": 1.0,
+                "settlement_type": "period_end", "reward_account_id": "acc-card1",
+                "settlement_month_offset": 1, "settlement_day_of_month": 5,
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        lst = client.get(
+            "/api/v1/read/ledgers/lgr28/accounts/acc-card1/card-reward-rules", headers=hdr_web,
+        )
+        item = next(i for i in lst.json() if i["id"] == rule_id)
+        assert item["settlement_month_offset"] == 1
+        assert item["settlement_day_of_month"] == 5
+
+        # 超出 1~28 範圍要被拒絕(pydantic Field 校驗,422)。
+        r_bad = client.post(
+            "/api/v1/write/ledgers/lgr28/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "非法日期", "rate_type": "percentage", "rate_value": 1.0,
+                "settlement_type": "period_end", "reward_account_id": "acc-card1",
+                "settlement_month_offset": 0, "settlement_day_of_month": 29,
+            },
+        )
+        assert r_bad.status_code == 422, r_bad.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_settlement_date_fields_partial_update_keeps_existing():
+    """CLAUDE.md SOP 第 7 點:partial update 只带其它字段(不带
+    `settlementMonthOffset`/`settlementDayOfMonth`/`totalRounding`)時,既有值
+    要保留,不能被静默沖成 null/默認值。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr29@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr29@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr29")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr29/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "既有設定", "rate_type": "percentage", "rate_value": 1.0,
+                "total_rounding": "floor", "settlement_type": "period_end",
+                "reward_account_id": "acc-card1",
+                "settlement_month_offset": 2, "settlement_day_of_month": 10,
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        # mobile push:只帶 label,不帶其它任何欄位。
+        _push(client, hdr_app, "lgr29", "card_reward_rule", rule_id,
+              {"syncId": rule_id, "label": "改個名字"}, device_id="d-app")
+
+        row = _rule_row(TS, "crr29@t.com", rule_id)
+        assert row.label == "改個名字"
+        assert row.total_rounding == "floor"
+        assert row.settlement_month_offset == 2
+        assert row.settlement_day_of_month == 10
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_card_reward_rule_locks_calc_fields_once_it_has_history():
+    """#16:規則有交易掛著之後,計算相關欄位 PATCH 一律 422;label/note/
+    enabled/starts_at/ends_at 仍可正常編輯。GET 回傳的 `locked` 旗標也要
+    正確反映有/沒有歷史兩種狀態。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr30@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr30@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr30")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr30/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "鎖定測試", "rate_type": "percentage", "rate_value": 10.0,
+                "settlement_type": "immediate_after_tx", "settlement_days": 0,
+                "reward_account_id": "acc-cash1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        lst_before = client.get(
+            "/api/v1/read/ledgers/lgr30/accounts/acc-card1/card-reward-rules", headers=hdr_web,
+        )
+        item_before = next(i for i in lst_before.json() if i["id"] == rule_id)
+        assert item_before["locked"] is False
+
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgr30", "transaction", "tx-lock-1",
+              {"syncId": "tx-lock-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card1", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+
+        lst_after = client.get(
+            "/api/v1/read/ledgers/lgr30/accounts/acc-card1/card-reward-rules", headers=hdr_web,
+        )
+        item_after = next(i for i in lst_after.json() if i["id"] == rule_id)
+        assert item_after["locked"] is True
+
+        base = _latest_change_id(client, hdr_web, "lgr30")
+        r_locked_field = client.patch(
+            f"/api/v1/write/ledgers/lgr30/accounts/acc-card1/card-reward-rules/{rule_id}",
+            headers=hdr_web,
+            json={"base_change_id": base, "rate_value": 20.0},
+        )
+        assert r_locked_field.status_code == 422, r_locked_field.text
+
+        base = _latest_change_id(client, hdr_web, "lgr30")
+        r_editable = client.patch(
+            f"/api/v1/write/ledgers/lgr30/accounts/acc-card1/card-reward-rules/{rule_id}",
+            headers=hdr_web,
+            json={"base_change_id": base, "label": "改個名字沒問題", "note": "備註"},
+        )
+        assert r_editable.status_code == 200, r_editable.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_card_reward_rule_delete_soft_deletes_when_it_has_history_else_hard_deletes():
+    """#16:規則有交易/入帳紀錄掛著時,刪除改成軟刪除(enabled=false,規則
+    仍在清單裡);完全沒有歷史的規則,刪除維持既有的物理刪除行為(從清單
+    消失),避免歷史交易的規則參照斷鏈,同時不改變無歷史規則的既有體驗。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr31@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr31@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr31")
+
+        r_with_history = client.post(
+            "/api/v1/write/ledgers/lgr31/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "有歷史", "rate_type": "percentage", "rate_value": 10.0,
+                "settlement_type": "immediate_after_tx", "settlement_days": 0,
+                "reward_account_id": "acc-cash1",
+            },
+        )
+        assert r_with_history.status_code == 200, r_with_history.text
+        rule_with_history = r_with_history.json()["entity_id"]
+
+        r_no_history = client.post(
+            "/api/v1/write/ledgers/lgr31/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={"base_change_id": 0, "label": "無歷史", "rate_type": "percentage", "rate_value": 5.0},
+        )
+        assert r_no_history.status_code == 200, r_no_history.text
+        rule_no_history = r_no_history.json()["entity_id"]
+
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgr31", "transaction", "tx-soft-1",
+              {"syncId": "tx-soft-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card1", "accountName": "信用卡", "rewardRuleIds": [rule_with_history]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+
+        base = _latest_change_id(client, hdr_web, "lgr31")
+        del_with_history = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/lgr31/accounts/acc-card1/card-reward-rules/{rule_with_history}",
+            headers=hdr_web,
+            json={"base_change_id": base},
+        )
+        assert del_with_history.status_code == 200, del_with_history.text
+
+        base = _latest_change_id(client, hdr_web, "lgr31")
+        del_no_history = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/lgr31/accounts/acc-card1/card-reward-rules/{rule_no_history}",
+            headers=hdr_web,
+            json={"base_change_id": base},
+        )
+        assert del_no_history.status_code == 200, del_no_history.text
+
+        lst = client.get(
+            "/api/v1/read/ledgers/lgr31/accounts/acc-card1/card-reward-rules", headers=hdr_web,
+        ).json()
+        by_id = {i["id"]: i for i in lst}
+        assert by_id[rule_with_history]["enabled"] is False
+        assert rule_no_history not in by_id
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reward_tx_happened_at_aligns_with_source_tx_time_of_day():
+    """#5-1:逐筆結算的回饋交易 `happened_at` 時分秒對齊來源交易,不是固定
+    00:00:00(換算 UTC+8 顯示固定 08:00 的既有 bug)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr32@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr32@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr32")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr32/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "時間對齊", "rate_type": "percentage", "rate_value": 10.0,
+                "settlement_type": "immediate_after_tx", "settlement_days": 0,
+                "reward_account_id": "acc-cash1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        tx_day = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+            hour=21, minute=43, second=7, microsecond=0,
+        )
+        _push(client, hdr_app, "lgr32", "transaction", "tx-time-1",
+              {"syncId": "tx-time-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card1", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db, now=tx_day)
+            db.commit()
+
+        incomes = _income_tx_to(TS, "acc-cash1")
+        assert len(incomes) == 1
+        reward_happened_at = incomes[0].happened_at
+        if reward_happened_at.tzinfo is None:
+            reward_happened_at = reward_happened_at.replace(tzinfo=timezone.utc)
+        assert reward_happened_at.hour == 21
+        assert reward_happened_at.minute == 43
+        assert reward_happened_at.second == 7
+        assert reward_happened_at.date() == tx_day.date()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_editing_source_tx_impactful_field_reverses_and_recomputes_reward():
+    """#5:交易日期/金額事後修改,已入帳的回饋要被沖銷(刪除),下一輪排程
+    用新欄位值重新計算補上正確的回饋;只改備註等不影響計算的欄位不觸發
+    沖銷。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr33@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr33@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        _seed_ledger_and_card(client, hdr_app, "lgr33")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr33/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "事後修改測試", "rate_type": "percentage", "rate_value": 10.0,
+                "settlement_type": "immediate_after_tx", "settlement_days": 0,
+                "reward_account_id": "acc-cash1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgr33", "transaction", "tx-edit-1",
+              {"syncId": "tx-edit-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card1", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+
+        incomes = _income_tx_to(TS, "acc-cash1")
+        assert len(incomes) == 1
+        assert incomes[0].amount == 10.0  # 100 * 10%
+        reward_tx_id = incomes[0].sync_id
+        payouts = _payout_rows(TS, "crr33@t.com", rule_id)
+        assert len(payouts) == 1
+
+        # 只改備註,不影響回饋計算欄位:不應觸發沖銷。
+        base = _latest_change_id(client, hdr_web, "lgr33")
+        res_note = client.patch(
+            "/api/v1/write/ledgers/lgr33/transactions/tx-edit-1",
+            headers=hdr_web,
+            json={"base_change_id": base, "note": "改個備註"},
+        )
+        assert res_note.status_code == 200, res_note.text
+        assert len(_payout_rows(TS, "crr33@t.com", rule_id)) == 1
+        assert len(_income_tx_to(TS, "acc-cash1")) == 1
+
+        # 改金額(影響回饋計算):應該沖銷(刪除)舊的回饋交易 + 去重記錄。
+        base = _latest_change_id(client, hdr_web, "lgr33")
+        res_amount = client.patch(
+            "/api/v1/write/ledgers/lgr33/transactions/tx-edit-1",
+            headers=hdr_web,
+            json={"base_change_id": base, "amount": 200.0},
+        )
+        assert res_amount.status_code == 200, res_amount.text
+
+        assert len(_payout_rows(TS, "crr33@t.com", rule_id)) == 0
+        assert len(_income_tx_to(TS, "acc-cash1")) == 0
+        with TS() as db:
+            reward_tx_still_exists = db.scalar(
+                select(ReadTxProjection).where(ReadTxProjection.sync_id == reward_tx_id)
+            )
+        assert reward_tx_still_exists is None
+
+        # 下一輪排程用新金額(200)重新計算補發:100*10%=10 -> 200*10%=20。
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        incomes_after = _income_tx_to(TS, "acc-cash1")
+        assert len(incomes_after) == 1
+        assert incomes_after[0].amount == 20.0
     finally:
         app.dependency_overrides.clear()

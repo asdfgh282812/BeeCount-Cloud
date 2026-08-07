@@ -54,6 +54,33 @@ def _assert_rule_belongs_to_account(db: Session, *, user_id: str, rule_id: str, 
         )
 
 
+# Phase 8 #16(2026-08 使用者反饋):規則底下已經有交易掛著或已有自動入帳
+# 紀錄之後,核心計算欄位不該再默默被改掉(否則等於竄改「已經算過」的規則
+# 基礎)。名稱/備註/啟用狀態/起訖日期不影響計算,維持可編輯。
+_CARD_REWARD_LOCKED_FIELDS = frozenset({
+    "rate_type", "rate_value", "rounding", "total_rounding", "calc_basis", "interval",
+    "category_ids", "min_spend_threshold", "min_tx_amount", "cap_amount", "cap_shared_key",
+    "settlement_type", "settlement_days", "settlement_month_offset", "settlement_day_of_month",
+    "reward_account_id",
+})
+
+
+def _assert_card_reward_rule_editable(db: Session, *, user_id: str, rule_id: str, payload: dict) -> None:
+    touched = _CARD_REWARD_LOCKED_FIELDS.intersection(payload.keys())
+    if not touched:
+        return
+    if not card_rewards.rule_has_history(db, user_id=user_id, rule_id=rule_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            "This card reward rule already has linked transactions or payouts; "
+            "only label/note/enabled/starts_at/ends_at can still be edited. "
+            "Delete it and create a new rule to change how it calculates."
+        ),
+    )
+
+
 @router.post(
     "/ledgers/{ledger_id}/accounts/{account_id}/card-reward-rules",
     response_model=WriteCommitMeta,
@@ -133,6 +160,7 @@ async def update_card_reward_rule_api(
     if replay:
         return replay
     _assert_rule_belongs_to_account(db, user_id=current_user.id, rule_id=rule_id, account_id=account_id)
+    _assert_card_reward_rule_editable(db, user_id=current_user.id, rule_id=rule_id, payload=payload)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
@@ -181,6 +209,23 @@ async def delete_card_reward_rule_api(
         return replay
     _assert_rule_belongs_to_account(db, user_id=current_user.id, rule_id=rule_id, account_id=account_id)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    # Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄時,
+    # 物理刪除會讓歷史交易的 rewardRuleIds 引用斷鏈——改成軟刪除(停用),
+    # 清單保留這條規則(前端收進「已結束的活動」折疊區),排程停止掃描它。
+    if card_rewards.rule_has_history(db, user_id=current_user.id, rule_id=rule_id):
+        disable_payload = {**mutate_payload, "enabled": False}
+        return await _commit_write(
+            request=request,
+            db=db,
+            current_user=current_user,
+            ledger=ledger,
+            base_change_id=req.base_change_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            device_id=device_id,
+            audit_action="web_card_reward_rule_soft_delete",
+            mutate=lambda snapshot: (update_card_reward_rule(snapshot, rule_id, disable_payload), rule_id),
+        )
     return await _commit_write(
         request=request,
         db=db,

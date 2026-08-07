@@ -37,6 +37,7 @@ _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("no outstanding balance to convert to installment", "INSTALLMENT_NO_OUTSTANDING_BALANCE"),
     ("total_amount exceeds outstanding balance", "INSTALLMENT_AMOUNT_EXCEEDS_BALANCE"),
     ("account belongs to a billing group", "INSTALLMENT_ACCOUNT_IS_GROUP_MEMBER"),
+    ("card reward rule already has linked transactions or payouts", "CARD_REWARD_RULE_LOCKED"),
     ("idempotency key reused with different payload", "IDEMPOTENCY_KEY_REUSED"),
     ("backup file is empty", "BACKUP_FILE_EMPTY"),
     ("backup upload too large", "BACKUP_UPLOAD_TOO_LARGE"),

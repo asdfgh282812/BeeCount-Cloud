@@ -1719,7 +1719,10 @@ def delete_tx_template(snapshot: dict, template_id: str, payload: dict | None = 
 # ============================================================================
 
 _CARD_REWARD_RATE_TYPES = {"percentage", "fixed_amount"}
-_CARD_REWARD_ROUNDINGS = {"floor", "round", "ceil"}
+# Phase 8 #4(2026-08 使用者反饋):新增 "keep"(保留小數,不取整),對齊
+# Moze「單筆保留小數、總額才取整」的兩段式設計。單筆(rounding)/總額
+# (total_rounding)共用同一組合法值。
+_CARD_REWARD_ROUNDINGS = {"floor", "round", "ceil", "keep"}
 _CARD_REWARD_CALC_BASES = {"transaction_date", "settlement_date"}
 _CARD_REWARD_INTERVALS = {"billing_cycle", "calendar_month"}
 _CARD_REWARD_SETTLEMENT_TYPES = {
@@ -1743,6 +1746,18 @@ def _assert_valid_reward_account(accounts: list[dict], reward_account_id: str | 
         )
 
 
+def _assert_valid_settlement_day_of_month(day: int | None) -> None:
+    """Phase 8 #15(2026-08 使用者反饋):週期結束後一次結算可設定回饋入帳日
+    (當月/次月...第 N 天)。限制在 1~28 之內,比照多數帳務系統的保守作法
+    避免月底日期溢出(2 月沒有 29~31 號)。"""
+    if day is None:
+        return
+    if not (1 <= day <= 28):
+        raise ValueError(
+            "write validation failed: settlement_day_of_month must be between 1 and 28"
+        )
+
+
 def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     rules = _ensure_list(target, "cardRewardRules")
@@ -1760,6 +1775,9 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
     rounding = str(payload.get("rounding") or "round")
     if rounding not in _CARD_REWARD_ROUNDINGS:
         raise ValueError("write validation failed: invalid rounding")
+    total_rounding = str(payload.get("total_rounding") or "round")
+    if total_rounding not in _CARD_REWARD_ROUNDINGS:
+        raise ValueError("write validation failed: invalid total_rounding")
     calc_basis = str(payload.get("calc_basis") or "transaction_date")
     if calc_basis not in _CARD_REWARD_CALC_BASES:
         raise ValueError("write validation failed: invalid calc_basis")
@@ -1777,6 +1795,13 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
             )
     else:
         settlement_days = None
+    settlement_month_offset = _to_optional_int(payload.get("settlement_month_offset"))
+    settlement_day_of_month = _to_optional_int(payload.get("settlement_day_of_month"))
+    if settlement_type != "period_end":
+        settlement_month_offset = None
+        settlement_day_of_month = None
+    else:
+        _assert_valid_settlement_day_of_month(settlement_day_of_month)
     reward_account_id = _to_optional_str(payload.get("reward_account_id"))
     if settlement_type != "manual":
         if not reward_account_id:
@@ -1795,6 +1820,7 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "rateType": rate_type,
         "rateValue": rate_value,
         "rounding": rounding,
+        "totalRounding": total_rounding,
         "calcBasis": calc_basis,
         "interval": interval,
         "settlementType": settlement_type,
@@ -1802,6 +1828,10 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
     }
     if settlement_days is not None:
         rule["settlementDays"] = settlement_days
+    if settlement_month_offset is not None:
+        rule["settlementMonthOffset"] = settlement_month_offset
+    if settlement_day_of_month is not None:
+        rule["settlementDayOfMonth"] = settlement_day_of_month
     if reward_account_id:
         rule["rewardAccountId"] = reward_account_id
     category_ids = payload.get("category_ids")
@@ -1855,6 +1885,11 @@ def update_card_reward_rule(snapshot: dict, rule_id: str, payload: dict) -> dict
         if value not in _CARD_REWARD_ROUNDINGS:
             raise ValueError("write validation failed: invalid rounding")
         rule["rounding"] = value
+    if "total_rounding" in payload:
+        value = str(payload.get("total_rounding") or "")
+        if value not in _CARD_REWARD_ROUNDINGS:
+            raise ValueError("write validation failed: invalid total_rounding")
+        rule["totalRounding"] = value
     if "calc_basis" in payload:
         value = str(payload.get("calc_basis") or "")
         if value not in _CARD_REWARD_CALC_BASES:
@@ -1908,12 +1943,29 @@ def update_card_reward_rule(snapshot: dict, rule_id: str, payload: dict) -> dict
         rule["settlementType"] = value
         if value not in ("immediate_after_tx", "after_posting_date"):
             rule.pop("settlementDays", None)
+        if value != "period_end":
+            rule.pop("settlementMonthOffset", None)
+            rule.pop("settlementDayOfMonth", None)
     if "settlement_days" in payload:
         value = payload.get("settlement_days")
         if value is None:
             rule.pop("settlementDays", None)
         else:
             rule["settlementDays"] = _to_optional_int(value)
+    if "settlement_month_offset" in payload:
+        value = payload.get("settlement_month_offset")
+        if value is None:
+            rule.pop("settlementMonthOffset", None)
+        else:
+            rule["settlementMonthOffset"] = _to_optional_int(value)
+    if "settlement_day_of_month" in payload:
+        value = payload.get("settlement_day_of_month")
+        if value is None:
+            rule.pop("settlementDayOfMonth", None)
+        else:
+            parsed_day = _to_optional_int(value)
+            _assert_valid_settlement_day_of_month(parsed_day)
+            rule["settlementDayOfMonth"] = parsed_day
     if "reward_account_id" in payload:
         value = payload.get("reward_account_id")
         if value is None:

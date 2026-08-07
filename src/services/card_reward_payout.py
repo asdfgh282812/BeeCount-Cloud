@@ -46,12 +46,15 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, UserAccountProjection
+from .. import projection
+from ..models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection
 from . import card_rewards
 from . import notifications as notification_service
 from .recurring_materializer import emit_tx, new_sync_id
 
 logger = logging.getLogger(__name__)
+
+_REWARD_PAYOUT_EDIT_DEVICE_ID = "server-card-reward-payout"
 
 
 def _resolve_ledger_id(db: Session, *, user_id: str, account_sync_id: str) -> str | None:
@@ -226,6 +229,73 @@ def reverse_card_reward_payouts_for_refund(
     return created
 
 
+def reverse_card_reward_payouts_for_edit(
+    db: Session, *, ledger_id: str, user_id: str, edited_tx_id: str, now: datetime,
+) -> list[str]:
+    """交易編輯後沖銷已入帳回饋(§2.9.5.4 補強,Phase 8 #5,2026-08 使用者
+    反饋):`CardRewardPayout.dedup_key` 是交易的 sync_id 且不會變,一旦這筆
+    交易的回饋已經逐筆結算入帳(`immediate_after_tx`/`after_posting_date`),
+    事後修改 `happened_at`/`amount`/`category_id`/`account_id` 這幾個會影響
+    回饋計算的欄位,原本已入帳的回饋金就跟修改後的交易脫鉤了(拿舊欄位值
+    算出來的金額/日期)。
+
+    比照使用者確認的方案:直接刪除舊的回饋交易 + 去重記錄(而不是新增一筆
+    反向沖正交易——歷史包袱最小),下一輪排程(`materialize_due_card_reward_
+    payouts`)掃到這筆交易時,`_already_paid_keys` 找不到它的 dedup_key,會
+    用新欄位值重新算一次補發正確金額。
+
+    呼叫點是 `routers/write/_shared.py` 更新交易的路徑,只有在合併後
+    happened_at/amount/category_id/account_id 任一實際變動時才呼叫(note/
+    商店等欄位編輯不觸發),原子性地跟這次交易更新一起 commit。
+
+    只處理逐筆結算(dedup_key == tx sync_id)——`period_end`(整期結算)沒有
+    單一對應紀錄可查,是已知限制(同 `reverse_card_reward_payouts_for_refund`
+    docstring 的既有限制,不在這裡額外處理)。
+
+    不會遞迴觸發沖銷:這裡刪除回饋交易走的是 `projection.delete_tx` +
+    `SyncChange` 直寫,不經過 `routers/write/_shared.py` 的更新分支;而且
+    `dedup_key` 存的是「來源消費交易」的 sync_id,不是回饋交易自己的
+    sync_id,所以就算使用者之後去編輯這筆回饋交易本身,也不會命中這裡的
+    查詢再次觸發沖銷。"""
+    payouts = db.scalars(
+        select(CardRewardPayout).where(
+            CardRewardPayout.user_id == user_id,
+            CardRewardPayout.dedup_key == edited_tx_id,
+        )
+    ).all()
+    if not payouts:
+        return []
+
+    deleted: list[str] = []
+    for payout in payouts:
+        if payout.payout_tx_sync_id is not None:
+            reward_tx = db.scalar(
+                select(ReadTxProjection).where(
+                    ReadTxProjection.ledger_id == ledger_id,
+                    ReadTxProjection.sync_id == payout.payout_tx_sync_id,
+                )
+            )
+            if reward_tx is not None:
+                change_row = SyncChange(
+                    user_id=user_id,
+                    ledger_id=ledger_id,
+                    scope="ledger",
+                    entity_type="transaction",
+                    entity_sync_id=reward_tx.sync_id,
+                    action="delete",
+                    payload_json={},
+                    updated_at=now,
+                    updated_by_device_id=_REWARD_PAYOUT_EDIT_DEVICE_ID,
+                    updated_by_user_id=user_id,
+                )
+                db.add(change_row)
+                db.flush()
+                projection.delete_tx(db, ledger_id=ledger_id, sync_id=reward_tx.sync_id)
+                deleted.append(reward_tx.sync_id)
+        db.delete(payout)
+    return deleted
+
+
 def _paid_in_period(
     db: Session, *, user_id: str, rule_sync_id: str, ledger_id: str, account_sync_id: str,
     period_start: date, period_end: date,
@@ -294,7 +364,9 @@ def _materialize_per_tx(
             assert rule.reward_account_id is not None  # 上層 WHERE 已过滤
             payout_tx_sync_id = _emit_reward_tx(
                 db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
-                happened_at=card_rewards._date_to_utc_dt(settlement_date),
+                happened_at=card_rewards.combine_settlement_date_with_source_time(
+                    settlement_date, tx.happened_at,
+                ),
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
                 note=f"信用卡回饋入帳：{rule.label}",
                 source_tx_id=tx.sync_id,

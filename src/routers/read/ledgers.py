@@ -547,11 +547,24 @@ def get_account_billing_summary(
         db, ledger_id=ledger.id, group=account, children=children, now=now,
     )
 
+    period = credit_card_billing.compute_cycle_period_billing(
+        db, ledger_id=ledger.id, group=account, children=children, now=now, cycle_offset=cycle_offset,
+    )
+    installment_summary = credit_card_billing.compute_installment_summary(
+        db, ledger_id=ledger.id, member_ids=member_ids,
+    )
+
+    # §2.9.6 Phase 7(2026-08-07 使用者反饋):每個 member 附上自己的本期新增
+    # 花費(period_new_spend,來自上面剛算好的 per_member_new_spend)+ 自己的
+    # 終身跑動餘額(remaining_due,來自 per_child_remaining_due)——子卡詳情
+    # 頁改顯示這兩個「自己的」數字,不再借用整組合併金額。
     members_out = [
         ReadAccountBillingMemberOut(
             account_id=row.sync_id,
             account_name=row.name or "",
             cycle_spend=round(billing["per_child_cycle_spend"].get(row.sync_id, 0.0), 2),
+            period_new_spend=round(period["per_member_new_spend"].get(row.sync_id, 0.0), 2),
+            remaining_due=round(billing["per_child_remaining_due"].get(row.sync_id, 0.0), 2),
         )
         for row in children
     ]
@@ -562,13 +575,6 @@ def get_account_billing_summary(
     # 的數字不變。
     credit_used = billing["credit_used"]
     available_credit = (account.credit_limit - credit_used) if account.credit_limit is not None else None
-
-    period = credit_card_billing.compute_cycle_period_billing(
-        db, ledger_id=ledger.id, group=account, children=children, now=now, cycle_offset=cycle_offset,
-    )
-    installment_summary = credit_card_billing.compute_installment_summary(
-        db, ledger_id=ledger.id, member_ids=member_ids,
-    )
 
     return ReadAccountBillingSummaryOut(
         account_id=account.sync_id,
@@ -671,7 +677,9 @@ def _get_own_credit_card_account(
     return account
 
 
-def _card_reward_rule_to_out(row: ReadCardRewardRuleProjection, *, last_change_id: int) -> ReadCardRewardRuleOut:
+def _card_reward_rule_to_out(
+    row: ReadCardRewardRuleProjection, *, last_change_id: int, db: Session,
+) -> ReadCardRewardRuleOut:
     category_ids: list[str] | None = None
     if row.category_sync_ids_json:
         try:
@@ -688,6 +696,7 @@ def _card_reward_rule_to_out(row: ReadCardRewardRuleProjection, *, last_change_i
         rate_type=cast("Any", row.rate_type or "percentage"),
         rate_value=row.rate_value,
         rounding=cast("Any", row.rounding or "round"),
+        total_rounding=cast("Any", row.total_rounding or "round"),
         calc_basis=cast("Any", row.calc_basis or "transaction_date"),
         interval=cast("Any", row.interval or "billing_cycle"),
         min_spend_threshold=row.min_spend_threshold,
@@ -698,9 +707,12 @@ def _card_reward_rule_to_out(row: ReadCardRewardRuleProjection, *, last_change_i
         ends_at=row.ends_at,
         settlement_type=cast("Any", row.settlement_type or "manual"),
         settlement_days=row.settlement_days,
+        settlement_month_offset=row.settlement_month_offset,
+        settlement_day_of_month=row.settlement_day_of_month,
         reward_account_id=row.reward_account_id,
         note=row.note,
         enabled=row.enabled,
+        locked=card_rewards.rule_has_history(db, user_id=row.user_id, rule_id=row.sync_id),
         last_change_id=last_change_id,
     )
 
@@ -730,7 +742,7 @@ def list_card_reward_rules(
             ReadCardRewardRuleProjection.account_sync_id == account_id,
         ).order_by(ReadCardRewardRuleProjection.sync_id.asc())
     ).all()
-    return [_card_reward_rule_to_out(row, last_change_id=source_change_id) for row in rows]
+    return [_card_reward_rule_to_out(row, last_change_id=source_change_id, db=db) for row in rows]
 
 
 @router.get(
@@ -758,7 +770,7 @@ def list_all_card_reward_rules(
             ReadCardRewardRuleProjection.user_id == current_user.id,
         ).order_by(ReadCardRewardRuleProjection.sync_id.asc())
     ).all()
-    return [_card_reward_rule_to_out(row, last_change_id=source_change_id) for row in rows]
+    return [_card_reward_rule_to_out(row, last_change_id=source_change_id, db=db) for row in rows]
 
 
 @router.get(

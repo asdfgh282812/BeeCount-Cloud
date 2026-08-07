@@ -1095,7 +1095,13 @@ class ReadCardRewardRuleProjection(Base):
     category_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     rate_type: Mapped[str] = mapped_column(String(16), default="percentage")
     rate_value: Mapped[float] = mapped_column(Float, default=0.0)
+    # 單筆取整方式(round/floor/ceil/keep,keep = 保留小數不取整,見
+    # services/card_rewards.py::_round_amount)。
     rounding: Mapped[str] = mapped_column(String(8), default="round")
+    # 總額取整方式(Phase 8 #4,2026-08 使用者反饋「四捨五入」實際還有小數):
+    # 對齊 Moze「單筆保留小數、總額才取整」的兩段式設計,round/floor/ceil 取整
+    # 到整數,keep = 維持既有二位小數彙總行為(向下相容既有規則)。
+    total_rounding: Mapped[str] = mapped_column(String(8), default="round")
     calc_basis: Mapped[str] = mapped_column(String(24), default="transaction_date")
     interval: Mapped[str] = mapped_column(String(16), default="billing_cycle")
     min_spend_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -1114,6 +1120,12 @@ class ReadCardRewardRuleProjection(Base):
     # src/services/card_reward_payout.py。
     settlement_type: Mapped[str] = mapped_column(String(24), default="manual")
     settlement_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 週期結束後一次結算的回饋入帳日(Phase 8 #15,2026-08 使用者反饋):
+    # 僅 settlement_type == "period_end" 時有意義,兩者皆為 None 時維持現況
+    # 行為(期間結束當天入帳,向下相容既有規則)。見
+    # services/card_rewards.py::compute_settlement_date。
+    settlement_month_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    settlement_day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reward_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 

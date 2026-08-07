@@ -192,12 +192,21 @@ function useAccountBilling(
       .catch(() => {})
   }, [canViewBilling, token, activeLedgerId, billingAccountId, cycleOffset])
 
+  // 2026-08-07 使用者反饋(§2.9.6 Phase 7):子卡自己的詳情頁不該顯示整組
+  // 合併金額(其它子卡/主帳戶的消費會混進來看到)。查詢仍然只能用主帳戶的
+  // billingAccountId(後端 is_billing_root 限制,子卡自己過不了這個檢查),
+  // 但回傳的 `summary.members` 裡本來就帶著每個成員自己的 period_new_spend/
+  // remaining_due(見 `read/ledgers.py::get_account_billing_summary`)——
+  // 從裡面挑出這張卡自己的那筆當「自身資料」,不用整組數字。
+  const ownMember = isBillingChild && summary ? summary.members.find((m) => m.account_id === accountId) : undefined
+
   return {
     isBillingRoot,
     isBillingChild,
     canViewBilling,
     billingAccountId,
     summary,
+    ownMember,
     suggestion,
     loading,
     available,
@@ -305,20 +314,37 @@ export function AccountDetailDialog({
                 `AccountStatementSection` 自己的標題列,不在這裡重複),
                 跟著上面新增的週期選擇器走;其它帳戶
                 類型維持原本的餘額/收入/支出統計。 */}
-            {/* 所屬主帳戶(2026-08-04 第二輪使用者反饋):子卡才顯示,點擊
-                切換這個彈窗去看主帳戶(§2.9 群組模型)。名稱取自
-                billing.summary.account_name——查詢時已經改用主帳戶的
-                parent_account_id 當 account_id(見 useAccountBilling),
-                後端回傳的 account_name 因此天然就是主帳戶自己的名字。 */}
-            {billing.isBillingChild && billing.summary && onJumpToParentAccount ? (
-              <button
-                type="button"
-                className="flex items-center gap-1.5 border-b border-border/60 bg-muted/10 px-6 py-2 text-left text-xs text-muted-foreground hover:text-foreground hover:underline"
-                onClick={() => onJumpToParentAccount(billing.billingAccountId!)}
+            {/* 所屬主帳戶(2026-08-04 第二輪使用者反饋)+ 餘額調整(§2.10
+                Phase 5)合併成同一列(2026-08-07 第三輪使用者反饋:調整餘額
+                原本自己另開一列,要求收進這裡,不要多一層)。左邊「所屬主
+                帳戶」只有子卡才顯示,點擊切換這個彈窗去看主帳戶(§2.9 群組
+                模型),名稱取自 billing.summary.account_name——查詢時已經
+                改用主帳戶的 parent_account_id 當 account_id(見
+                useAccountBilling),後端回傳的 account_name 因此天然就是
+                主帳戶自己的名字。右邊調整餘額按鈕:account_group 是純管理
+                容器,自己沒有餘額可調整(對齐服务端 balance-adjustment 拒绝
+                account_group 目标的校验),不渲染——目前只有子卡會同時
+                出現兩者,子卡必然不是 account_group,故不會有「只有連結、
+                沒有按鈕」時擠在最左邊 vs 最右邊的視覺落差問題。 */}
+            {(billing.isBillingChild && billing.summary && onJumpToParentAccount) ||
+            account.account_type !== 'account_group' ? (
+              <div
+                className={`flex items-center gap-2 border-b border-border/60 bg-muted/10 px-6 py-2 ${
+                  billing.isBillingChild && billing.summary && onJumpToParentAccount ? 'justify-between' : 'justify-end'
+                }`}
               >
-                <CreditCard className="h-3.5 w-3.5 shrink-0" />
-                <span>{t('cardBilling.parentAccountLink', { name: billing.summary.account_name })}</span>
-              </button>
+                {billing.isBillingChild && billing.summary && onJumpToParentAccount ? (
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground hover:underline"
+                    onClick={() => onJumpToParentAccount(billing.billingAccountId!)}
+                  >
+                    <CreditCard className="h-3.5 w-3.5 shrink-0" />
+                    <span>{t('cardBilling.parentAccountLink', { name: billing.summary.account_name })}</span>
+                  </button>
+                ) : null}
+                {account.account_type !== 'account_group' ? <BalanceAdjustmentButton account={account} /> : null}
+              </div>
             ) : null}
 
             <AccountStatsHeader account={account} t={t} billing={billing} />
@@ -352,15 +378,6 @@ export function AccountDetailDialog({
               periodOffset={rewardPeriodOffset}
               highlightRuleId={highlightRewardRuleId}
             />
-
-            {/* 餘額調整(§2.10 Phase 5):account_group 是純管理容器,自己沒有
-                餘額可調整(對齐服务端 balance-adjustment 拒绝 account_group
-                目标的校验),不渲染。 */}
-            {account.account_type !== 'account_group' ? (
-              <div className="flex justify-end border-b border-border/60 px-6 py-2">
-                <BalanceAdjustmentButton account={account} />
-              </div>
-            ) : null}
 
             {/* 對帳模式(§2.10 Phase 5,2026-08-09 改版為 Moze 式逐筆核對清單):
                 原文入口本來就限定在「信用卡交易明細頁」,範圍跟
@@ -441,6 +458,25 @@ function AccountStatsHeader({
   const balance = hasServerStats ? account.balance! : account.initial_balance ?? 0
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+
+  // 已掛靠群組的子卡(2026-08-07 使用者反饋 §2.9.6 Phase 7):自己的詳情頁
+  // 只顯示自己的本期新增花費/終身應繳餘額,不再借用整組合併數字(那些數字
+  // 混了主帳戶跟其它兄弟卡的金額,使用者反饋「不該顯示主帳戶/其它子卡
+  // 金額」)。想看合併帳單/其它子卡明細,走既有的「所屬主帳戶」連結。
+  if (billing.isBillingChild && billing.available && billing.ownMember) {
+    const m = billing.ownMember
+    return (
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 border-b border-border/60 bg-muted/20 px-6 py-4">
+        <StatTile label={t('cardBilling.period.newSpend')} value={fmt(m.period_new_spend)} />
+        <StatTile
+          label={t('cardBilling.selfRemainingDue')}
+          value={fmt(m.remaining_due)}
+          tone="expense"
+          emphasis
+        />
+      </div>
+    )
+  }
 
   // 主帳戶(account_group)/沒有掛靠群組的獨立信用卡(2026-08-04 使用者反饋):
   // 頂部改顯示 Moze 風格的帳單欄位,取代原本的餘額/收入/支出或「當前欠款」
@@ -855,14 +891,23 @@ function CreditCardBillingSection({
       </div>
       {!expanded ? (
         <div className="flex items-center justify-between text-xs">
-          <span className="text-muted-foreground">{t('cardBilling.remainingDue')}</span>
+          <span className="text-muted-foreground">
+            {billing.isBillingChild ? t('cardBilling.selfRemainingDue') : t('cardBilling.remainingDue')}
+          </span>
           <span className="font-mono font-semibold tabular-nums text-expense">
-            {fmt(summary.remaining_due)}
+            {fmt(billing.isBillingChild && billing.ownMember ? billing.ownMember.remaining_due : summary.remaining_due)}
           </span>
         </div>
       ) : null}
       {expanded ? (
         <>
+      {/* 已掛靠群組的子卡(§2.9.6 Phase 7):展開後看到的下面這組數字是
+          「整組合併」的帳單金額(共用同一條額度),不是這張卡自己的——加個
+          提示避免使用者誤以為是自己單卡的數字,跟上面彈窗頂部
+          AccountStatsHeader 的「自身資料」互相呼應。 */}
+      {billing.isBillingChild ? (
+        <div className="text-[11px] text-muted-foreground">{t('cardBilling.groupMergedHint')}</div>
+      ) : null}
       <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
         <div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -904,8 +949,11 @@ function CreditCardBillingSection({
       {/* 帳單週期明細(2026-08-04 使用者反饋):新增花費/上期欠款/應繳金額/
           已繳金額/帳單分期/剩餘帳款已經移到彈窗最頂部的統計區塊(見
           AccountStatsHeader),跟著標題列的週期選擇器走,這裡不再重複顯示
-          同一組數字。 */}
-      {summary.members.length > 1 ? (
+          同一組數字。2026-08-07 使用者反饋(§2.9.6 Phase 7):子卡自己的
+          詳情頁不該看到「兄弟卡」的金額明細——只在瀏覽的就是主帳戶/獨立卡
+          本身(!isBillingChild)時才顯示這份子卡清單,子卡自己的詳情頁想看
+          完整明細請走上面的「所屬主帳戶」連結。 */}
+      {!billing.isBillingChild && summary.members.length > 1 ? (
         <div className="space-y-1 text-xs text-muted-foreground">
           <div className="font-medium">{t('cardBilling.members')}</div>
           {summary.members.map((m) => (

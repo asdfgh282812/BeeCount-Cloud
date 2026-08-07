@@ -318,6 +318,7 @@ class CyclePeriodBilling(TypedDict):
     remaining_due: float
     has_older: bool
     has_newer: bool
+    per_member_new_spend: dict[str, float]
 
 
 def compute_cycle_period_billing(
@@ -371,21 +372,34 @@ def compute_cycle_period_billing(
     cycle_start_dt = date_to_utc_dt(cycle_start, end_of_day=True)
     cycle_end_dt = date_to_utc_dt(cycle_end, end_of_day=True)
 
+    # 2026-08-07 使用者反饋(§2.9.6 Phase 7,子卡詳情不該顯示合併金額):除了
+    # 整組加總的 `new_spend`,順便按 `account_sync_id` 分組算出每張子卡自己
+    # 在這期貢獻的新增花費(`per_member_new_spend`)——子卡自己的詳情頁改用
+    # 這份資料顯示「自己的」本期新增花費,不再借用整組合併數字(見
+    # `read/ledgers.py::get_account_billing_summary` 怎麼把這個字典塞進
+    # 每個 member 的 `period_new_spend`)。同一個查詢分組一次算完,不額外
+    # 多打一次 DB。
     new_spend = 0.0
+    per_member_new_spend: dict[str, float] = {}
     if member_ids:
-        new_spend = float(db.scalar(
-            select(func.coalesce(func.sum(sa_case(
-                (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
-                (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
-                else_=0.0,
-            )), 0.0)).where(
+        spend_rows = db.execute(
+            select(
+                ReadTxProjection.account_sync_id,
+                func.coalesce(func.sum(sa_case(
+                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                    else_=0.0,
+                )), 0.0),
+            ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
                 _ATTR_DATE > cycle_start_dt,
                 _ATTR_DATE <= cycle_end_dt,
-            )
-        ) or 0.0)
+            ).group_by(ReadTxProjection.account_sync_id)
+        ).all()
+        per_member_new_spend = {acc: float(amt) for acc, amt in spend_rows}
+        new_spend = sum(per_member_new_spend.values())
 
     # 帳單分期沖銷(§2.3,2026-08-02 第三輪):見 compute_offset_totals
     # docstring —— 對所有 cutoff 一律扣掉同一個總額,不分時間視窗。
@@ -447,6 +461,7 @@ def compute_cycle_period_billing(
         "remaining_due": round(remaining_due, 2),
         "has_older": has_older,
         "has_newer": has_newer,
+        "per_member_new_spend": {k: round(v, 2) for k, v in per_member_new_spend.items()},
     }
 
 

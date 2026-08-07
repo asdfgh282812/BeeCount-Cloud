@@ -618,6 +618,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadCardRewardRuleProjection.rate_type,
         ReadCardRewardRuleProjection.rate_value,
         ReadCardRewardRuleProjection.rounding,
+        ReadCardRewardRuleProjection.total_rounding,
         ReadCardRewardRuleProjection.calc_basis,
         ReadCardRewardRuleProjection.interval,
         ReadCardRewardRuleProjection.min_spend_threshold,
@@ -628,14 +629,17 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadCardRewardRuleProjection.ends_at,
         ReadCardRewardRuleProjection.settlement_type,
         ReadCardRewardRuleProjection.settlement_days,
+        ReadCardRewardRuleProjection.settlement_month_offset,
+        ReadCardRewardRuleProjection.settlement_day_of_month,
         ReadCardRewardRuleProjection.reward_account_id,
         ReadCardRewardRuleProjection.note,
         ReadCardRewardRuleProjection.enabled,
     ).where(ReadCardRewardRuleProjection.user_id == user_id)
     for (
         sid, acc_sid, label, category_ids_json, rate_type, rate_value, rounding,
-        calc_basis, interval, min_spend_threshold, min_tx_amount, cap_amount,
+        total_rounding, calc_basis, interval, min_spend_threshold, min_tx_amount, cap_amount,
         cap_shared_key, starts_at, ends_at, settlement_type, settlement_days,
+        settlement_month_offset, settlement_day_of_month,
         reward_account_id, note, enabled,
     ) in db.execute(crr_stmt).all():
         rule: dict[str, Any] = {
@@ -645,6 +649,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             "rateType": rate_type or "percentage",
             "rateValue": rate_value,
             "rounding": rounding or "round",
+            "totalRounding": total_rounding or "round",
             "calcBasis": calc_basis or "transaction_date",
             "interval": interval or "billing_cycle",
             "settlementType": settlement_type or "manual",
@@ -652,6 +657,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         }
         if settlement_days is not None:
             rule["settlementDays"] = settlement_days
+        if settlement_month_offset is not None:
+            rule["settlementMonthOffset"] = settlement_month_offset
+        if settlement_day_of_month is not None:
+            rule["settlementDayOfMonth"] = settlement_day_of_month
         if reward_account_id:
             rule["rewardAccountId"] = reward_account_id
         if category_ids_json:

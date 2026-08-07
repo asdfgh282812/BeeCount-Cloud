@@ -746,6 +746,11 @@ export type AccountBillingMember = {
   account_id: string
   account_name: string
   cycle_spend: number
+  /** 這個成員自己在目前瀏覽週期(period_cycle_start~period_cycle_end)的
+   *  新增花費,不是整組合併數字(§2.9.6 Phase 7,2026-08-07)。 */
+  period_new_spend: number
+  /** 這個成員自己的終身跑動餘額(下限 0),不是整組合併數字。 */
+  remaining_due: number
 }
 
 export type AccountBillingSummary = {
@@ -851,7 +856,10 @@ export type ComparisonReport = {
 // ────────── 信用卡紅利回饋 (Card Rewards，MOZE_FEATURE_GAP_SD.md §2.9.5 Phase 4.5）──────────
 
 export type CardRewardRateType = 'percentage' | 'fixed_amount'
-export type CardRewardRounding = 'floor' | 'round' | 'ceil'
+/** Phase 8 #4(2026-08 使用者反饋):新增 'keep'(保留小數,不取整)。
+ *  `rounding` = 單筆取整方式;`total_rounding`(見下方)= 總額取整方式,
+ *  兩者共用同一組合法值。 */
+export type CardRewardRounding = 'floor' | 'round' | 'ceil' | 'keep'
 export type CardRewardCalcBasis = 'transaction_date' | 'settlement_date'
 export type CardRewardInterval = 'billing_cycle' | 'calendar_month'
 export type CardRewardRuleStatus = 'ok' | 'no_billing_schedule' | 'expired'
@@ -871,6 +879,7 @@ export type ReadCardRewardRule = {
   rate_type: CardRewardRateType
   rate_value: number
   rounding: CardRewardRounding
+  total_rounding: CardRewardRounding
   calc_basis: CardRewardCalcBasis
   interval: CardRewardInterval
   min_spend_threshold?: number | null
@@ -881,9 +890,17 @@ export type ReadCardRewardRule = {
   ends_at?: string | null
   settlement_type: CardRewardSettlementType
   settlement_days?: number | null
+  /** 週期結束後一次結算的回饋入帳日(Phase 8 #15):0 = 當月,1 = 次月...
+   *  跟 `settlement_day_of_month` 成對使用,任一為 null 時維持現況行為
+   *  (期間結束當天入帳)。 */
+  settlement_month_offset?: number | null
+  settlement_day_of_month?: number | null
   reward_account_id?: string | null
   note?: string | null
   enabled: boolean
+  /** Phase 8 #16:規則已有交易掛著或已有自動入帳紀錄時 true——計算相關
+   *  欄位不能再改,只能調整 label/note/enabled/starts_at/ends_at。 */
+  locked?: boolean
   last_change_id: number
 }
 
@@ -893,6 +910,7 @@ export type CardRewardRuleCreatePayload = {
   rate_type?: CardRewardRateType
   rate_value: number
   rounding?: CardRewardRounding
+  total_rounding?: CardRewardRounding
   calc_basis?: CardRewardCalcBasis
   interval?: CardRewardInterval
   min_spend_threshold?: number | null
@@ -903,6 +921,8 @@ export type CardRewardRuleCreatePayload = {
   ends_at?: string | null
   settlement_type?: CardRewardSettlementType
   settlement_days?: number | null
+  settlement_month_offset?: number | null
+  settlement_day_of_month?: number | null
   reward_account_id?: string | null
   note?: string | null
   enabled?: boolean
@@ -915,6 +935,7 @@ export type CardRewardRuleUpdatePayload = {
   rate_type?: CardRewardRateType
   rate_value?: number
   rounding?: CardRewardRounding
+  total_rounding?: CardRewardRounding
   calc_basis?: CardRewardCalcBasis
   interval?: CardRewardInterval
   min_spend_threshold?: number | null
@@ -925,6 +946,8 @@ export type CardRewardRuleUpdatePayload = {
   ends_at?: string | null
   settlement_type?: CardRewardSettlementType
   settlement_days?: number | null
+  settlement_month_offset?: number | null
+  settlement_day_of_month?: number | null
   reward_account_id?: string | null
   note?: string | null
   enabled?: boolean

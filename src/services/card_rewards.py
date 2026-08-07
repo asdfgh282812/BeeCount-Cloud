@@ -40,7 +40,14 @@ from typing import TypedDict
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
-from ..models import ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection, UserCategoryProjection
+from ..models import (
+    CardRewardPayout,
+    ReadCardRewardRuleProjection,
+    ReadTxProjection,
+    SyncChange,
+    UserAccountProjection,
+    UserCategoryProjection,
+)
 from ..sync_applier import apply_user_change_to_projection
 from . import credit_card
 from .deferred_posting import attribution_date as _shared_attribution_date
@@ -144,6 +151,24 @@ def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
+def combine_settlement_date_with_source_time(settlement_date: date, source_happened_at: datetime) -> datetime:
+    """Phase 8 #5-1(2026-08 使用者反饋:回饋金入帳時間應對齊原交易時間,而非
+    固定 08:00)。逐筆結算(`immediate_after_tx`/`after_posting_date`)有明確
+    的單一來源交易,回饋交易的 `happened_at` 改用「結算日期 + 來源交易的
+    時:分:秒」,取代原本 `_date_to_utc_dt(settlement_date)` 固定補
+    00:00:00 UTC(換算 UTC+8 顯示固定是 08:00 的根因)。週期結算
+    (`period_end`)沒有單一來源交易可對齊,不呼叫這個函式,維持現況固定
+    時間。"""
+    happened = source_happened_at
+    if happened.tzinfo is None:
+        happened = happened.replace(tzinfo=timezone.utc)
+    return datetime(
+        settlement_date.year, settlement_date.month, settlement_date.day,
+        happened.hour, happened.minute, happened.second, happened.microsecond,
+        tzinfo=happened.tzinfo,
+    )
+
+
 def _calendar_month_containing(as_of: date) -> tuple[date, date]:
     last_day = calendar.monthrange(as_of.year, as_of.month)[1]
     return date(as_of.year, as_of.month, 1), date(as_of.year, as_of.month, last_day)
@@ -204,12 +229,23 @@ def _resolve_period(
     return month_start, month_end
 
 
-def _round_amount(value: float, rounding: str) -> float:
+def _round_amount(value: float, rounding: str, *, to_integer: bool = False) -> float:
+    """`rounding`/`total_rounding` 共用的取整實作(Phase 8 #4,2026-08 使用者
+    反饋「選了四捨五入,實際回饋還有小數」)。`to_integer=True` 只有
+    `compute_account_card_rewards` 的總額取整會傳——對齊 Moze「總額」取整到
+    整數的語意;單筆(`compute_tx_reward_amount`,`to_integer=False`)維持
+    原本的二位小數精度,語意不變。`keep` 兩個層級行為不同:單筆層級完全不
+    取整(保留原始浮點數,讓誤差留到總額階段一次處理,對齊 Moze「單筆:保留
+    小數」);總額層級仍清理到二位小數(避免浮點誤差直接顯示污染,跟改版前
+    既有行為一致),但不強制取整到整數。"""
+    if rounding == "keep":
+        return round(value, 2) if to_integer else value
+    factor = 1 if to_integer else 100
     if rounding == "floor":
-        return math.floor(value * 100) / 100
+        return math.floor(value * factor) / factor
     if rounding == "ceil":
-        return math.ceil(value * 100) / 100
-    return round(value, 2)
+        return math.ceil(value * factor) / factor
+    return round(value) if to_integer else round(value, 2)
 
 
 def compute_tx_reward_amount(rule: ReadCardRewardRuleProjection, tx_amount: float) -> float:
@@ -313,6 +349,30 @@ def fetch_cap_group_rules(
     return list(by_id.values())
 
 
+def rule_has_history(db: Session, *, user_id: str, rule_id: str) -> bool:
+    """規則已經「算過」的判斷(Phase 8 #16,2026-08 使用者反饋):有交易勾選過
+    它(`reward_rule_sync_ids_json` 引用)或已經有自動入帳紀錄
+    (`CardRewardPayout`)。任一成立就視為有歷史——寫入端(`routers/write/
+    card_reward_rules.py`)據此鎖定核心計算欄位/把刪除改成軟刪除,讀取端
+    (`routers/read/ledgers.py`)據此回傳 `locked` 供前端提前 disable 欄位,
+    兩處共用同一份判斷邏輯,避免各自實作出現行為分歧。"""
+    has_payout = db.scalar(
+        select(CardRewardPayout.id).where(
+            CardRewardPayout.user_id == user_id,
+            CardRewardPayout.rule_sync_id == rule_id,
+        ).limit(1)
+    )
+    if has_payout is not None:
+        return True
+    has_tx_ref = db.scalar(
+        select(ReadTxProjection.sync_id).where(
+            ReadTxProjection.user_id == user_id,
+            ReadTxProjection.reward_rule_sync_ids_json.like(f'%"{rule_id}"%'),
+        ).limit(1)
+    )
+    return has_tx_ref is not None
+
+
 def compute_settlement_date(
     rule: ReadCardRewardRuleProjection,
     *,
@@ -337,6 +397,17 @@ def compute_settlement_date(
             happened = happened.replace(tzinfo=timezone.utc)
         return happened.date() + timedelta(days=rule.settlement_days or 0)
     if rule.settlement_type == "period_end":
+        if period_end is None:
+            return None
+        # Phase 8 #15(2026-08 使用者反饋):可設定「當月/次月...第 N 天」入帳,
+        # 兩個欄位皆為 None 時維持現況行為(期間結束當天),向下相容既有規則。
+        if rule.settlement_month_offset is not None and rule.settlement_day_of_month is not None:
+            target_month_start = _shift_calendar_month(
+                date(period_end.year, period_end.month, 1), rule.settlement_month_offset,
+            )
+            last_day = calendar.monthrange(target_month_start.year, target_month_start.month)[1]
+            day = min(rule.settlement_day_of_month, last_day)
+            return date(target_month_start.year, target_month_start.month, day)
         return period_end
     return None
 
@@ -434,13 +505,17 @@ def compute_account_card_rewards(
         qualifying_spend = sum(item["tx"].amount for item in items)
         threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
         raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
+        # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
+        # rule.total_rounding 再取整一次(round/floor/ceil 到整數,keep = 維持
+        # 現況二位小數彙總,向下相容既有規則的預設值)。
+        raw_reward = _round_amount(raw_reward, rule.total_rounding, to_integer=True)
 
         results.append({
             "rule": rule, "period_start": period_start, "period_end": period_end,
             "qualifying_spend": round(qualifying_spend, 2),
             "threshold_met": threshold_met,
-            "raw_reward": round(raw_reward, 2),
-            "capped_reward": round(raw_reward, 2),
+            "raw_reward": raw_reward,
+            "capped_reward": raw_reward,
             "status": "ok",
         })
     return results

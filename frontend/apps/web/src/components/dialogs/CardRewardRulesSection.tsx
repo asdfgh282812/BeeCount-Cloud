@@ -76,6 +76,15 @@ function isExpired(rule: ReadCardRewardRule): boolean {
   return forceUtcTimestamp(rule.ends_at) < Date.now()
 }
 
+/** Phase 8 #16(2026-08 使用者反饋):「已結束」= 活動期間過期,或規則被
+ *  停用(包含使用者手動關閉,以及有交易掛著時刪除改軟刪除
+ *  ── enabled=false)。規則清單用這個判斷把已結束的活動收進可折疊區塊,
+ *  不再跟進行中規則混在一起,也不從清單直接消失(軟刪除的規則要能被
+ *  使用者找回來看到歷史計算依據)。 */
+function isEnded(rule: ReadCardRewardRule): boolean {
+  return isExpired(rule) || !rule.enabled
+}
+
 /** 規則列表行顯示活動期間(2026-08-07 使用者反饋:設定了活動開始/結束日,
  *  但規則清單完全沒有顯示,只有點進編輯表單才看得到)——只有 starts_at/
  *  ends_at 任一有值時才顯示,兩個都沒設就回傳 null 讓呼叫端跳過整行。 */
@@ -161,16 +170,132 @@ export function CardRewardRulesSection({
   }
   if (!isGroup || groupChildren.length === 0) return null
   return (
-    <div className="space-y-3">
-      {groupChildren.map((child) => (
-        <SingleCardCardRewards
-          key={child.id}
-          accountId={child.id}
-          accountLabel={child.name}
-          periodOffset={periodOffset}
-          highlightRuleId={highlightRuleId}
-        />
-      ))}
+    <GroupCardRewardsSummary
+      groupChildren={groupChildren}
+      periodOffset={periodOffset}
+      highlightRuleId={highlightRuleId}
+    />
+  )
+}
+
+/**
+ * 主帳戶(account_group)紅利回饋收合摘要(§2.9.5 Phase 4.5,2026-08-07 使用者
+ * 反饋 §2.9.6 Phase 7):原本每張子卡各自渲染一份 `SingleCardCardRewards`
+ * 標題列,N 張卡就疊 N 行,把下面的交易列表往下推。改成先顯示一行摘要按鈕
+ * (卡片數 + 本期回饋合計),點擊後用既有的 dialog 模式展開,內容才是原本
+ * 這 N 個 `SingleCardCardRewards` 區塊——單一信用卡(非主帳戶)視圖不受影響
+ * (`CardRewardRulesSection` 上面已經另外分派)。
+ *
+ * 合計金額(`totalReward`)獨立打一輪 `fetchCardRewards`(不等使用者點開才
+ * 抓,不然摘要行永遠是空的),跟 dialog 展開後每個 `SingleCardCardRewards`
+ * 自己重新 fetch 的資料重複一次——這裡刻意接受這個小重複,換取「摘要按鈕
+ * 不用等使用者點開才有數字」,不用把 `SingleCardCardRewards` 內部改成可以
+ * 接收外部預抓資料的複雜版本。
+ */
+function GroupCardRewardsSummary({
+  groupChildren,
+  periodOffset = 0,
+  highlightRuleId,
+}: {
+  groupChildren: ReadAccount[]
+  periodOffset?: number
+  highlightRuleId?: string
+}) {
+  const t = useT()
+  const { token } = useAuth()
+  const { activeLedgerId } = useLedgers()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [totalReward, setTotalReward] = useState<number | null>(null)
+  // 從交易詳情彈窗「使用回饋」chip 跳過來時(highlightRuleId 非空),原本每
+  // 張子卡都各自掛載、各自比對——收合成摘要按鈕後子卡的區塊要等使用者點開
+  // 才會掛載,所以這裡額外查一輪各子卡的規則清單,命中哪張卡就自動把摘要
+  // dialog 打開(裡面該張卡的 SingleCardCardRewards 掛載後,會用既有邏輯
+  // 接手自動展開交易明細彈窗)。同一個 id 只自動觸發一次。
+  const appliedHighlightRef = useRef<string | null>(null)
+
+  const fmt = (v: number) =>
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+
+  useEffect(() => {
+    if (!token || !activeLedgerId || groupChildren.length === 0) {
+      setTotalReward(null)
+      return
+    }
+    let cancelled = false
+    Promise.all(
+      groupChildren.map((c) =>
+        fetchCardRewards(token, activeLedgerId, c.id, periodOffset).catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return
+      setTotalReward(results.reduce((acc, r) => acc + (r?.total_reward || 0), 0))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, activeLedgerId, groupChildren, periodOffset])
+
+  useEffect(() => {
+    if (!highlightRuleId || !token || !activeLedgerId) return
+    if (appliedHighlightRef.current === highlightRuleId) return
+    let cancelled = false
+    Promise.all(
+      groupChildren.map((c) =>
+        fetchCardRewardRules(token, activeLedgerId, c.id)
+          .then((rules) => rules.some((r) => r.id === highlightRuleId))
+          .catch(() => false),
+      ),
+    ).then((hits) => {
+      if (cancelled) return
+      if (hits.some(Boolean)) {
+        appliedHighlightRef.current = highlightRuleId
+        setDialogOpen(true)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [highlightRuleId, groupChildren, token, activeLedgerId])
+
+  return (
+    <div className="border-b border-border/60 bg-muted/10 px-6 py-4">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        onClick={() => setDialogOpen(true)}
+      >
+        <span className="flex items-center gap-1.5">
+          <Gift className="h-3.5 w-3.5" />
+          {t('cardRewards.groupSummary.title', { count: groupChildren.length })}
+        </span>
+        {totalReward !== null && totalReward > 0 ? (
+          <span className="font-mono text-xs font-semibold tabular-nums text-income">
+            {t('cardRewards.totalReward')}: {fmt(totalReward)}
+          </span>
+        ) : null}
+      </button>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="flex max-h-[80vh] max-w-md flex-col gap-0 p-0">
+          <DialogHeader className="border-b border-border/60 px-5 py-3">
+            <DialogTitle className="flex items-center gap-1.5 text-base">
+              <Gift className="h-4 w-4" />
+              {t('cardRewards.groupSummary.title', { count: groupChildren.length })}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {groupChildren.map((child) => (
+              <SingleCardCardRewards
+                key={child.id}
+                accountId={child.id}
+                accountLabel={child.name}
+                periodOffset={periodOffset}
+                highlightRuleId={highlightRuleId}
+              />
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -201,7 +326,9 @@ function SingleCardCardRewards({
   // 下面的交易明細往下推。改成點標題開一個獨立彈出視窗,詳情彈窗本身的
   // 版面高度不再被這個區塊的展開狀態影響。
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [showExpired, setShowExpired] = useState(false)
+  // Phase 8 #16(2026-08 使用者反饋):已結束的活動(過期或停用/軟刪除)收進
+  // 可折疊區塊,預設收合。
+  const [showEnded, setShowEnded] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ReadCardRewardRule | null>(null)
   const [duplicateSeed, setDuplicateSeed] = useState<ReadCardRewardRule | null>(null)
@@ -232,7 +359,7 @@ function SingleCardCardRewards({
 
   useEffect(() => {
     setDialogOpen(false)
-    setShowExpired(false)
+    setShowEnded(false)
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, token, activeLedgerId, periodOffset])
@@ -262,8 +389,8 @@ function SingleCardCardRewards({
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
-  const visibleRules = rules.filter((r) => showExpired || !isExpired(r))
-  const hiddenExpiredCount = rules.length - visibleRules.length
+  const activeRules = rules.filter((r) => !isEnded(r))
+  const endedRules = rules.filter((r) => isEnded(r))
 
   const handleDelete = async (ruleId: string) => {
     if (!token || !activeLedgerId) return
@@ -279,6 +406,114 @@ function SingleCardCardRewards({
     } finally {
       setDeletingId(null)
     }
+  }
+
+  // Phase 8 #16:活躍/已結束兩個列表共用同一份規則行渲染,避免重複維護。
+  const renderRuleRow = (rule: ReadCardRewardRule) => {
+    const usage = usageByRuleId.get(rule.id)
+    const expired = isExpired(rule)
+    return (
+      <div
+        key={rule.id}
+        className="rounded-lg border border-border/50 bg-background/40 p-3 text-xs"
+      >
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 text-left"
+          onClick={() => setDetailRule(rule)}
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <span>{rule.label}</span>
+            {!rule.enabled ? (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {t('cardRewards.disabled')}
+              </span>
+            ) : null}
+            {expired ? (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {t('cardRewards.expiredBadge')}
+              </span>
+            ) : null}
+            {rule.locked ? (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {t('cardRewards.lockedBadge')}
+              </span>
+            ) : null}
+          </div>
+        </button>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <div className="text-muted-foreground">
+            {rule.rate_type === 'percentage'
+              ? t('cardRewards.summary.percentage', { rate: rule.rate_value })
+              : t('cardRewards.summary.fixedAmount', { amount: rule.rate_value })}
+            {rule.cap_amount ? ` · ${t('cardRewards.summary.cap', { cap: fmt(rule.cap_amount) })}` : ''}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
+              onClick={() => {
+                setDuplicateSeed(rule)
+                setEditing(null)
+                setFormOpen(true)
+              }}
+              aria-label={t('cardRewards.duplicate')}
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
+              onClick={() => {
+                setEditing(rule)
+                setDuplicateSeed(null)
+                setFormOpen(true)
+              }}
+              aria-label={t('cardRewards.edit')}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={deletingId === rule.id}
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+              onClick={() => {
+                if (window.confirm(t('cardRewards.confirmDelete'))) void handleDelete(rule.id)
+              }}
+              aria-label={t('cardRewards.delete')}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        {activePeriodText(rule, t) ? (
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            {activePeriodText(rule, t)}
+          </div>
+        ) : null}
+        {usage ? (
+          usage.status === 'no_billing_schedule' ? (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              {t('cardRewards.status.noBillingSchedule')}
+            </div>
+          ) : usage.status === 'expired' ? (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              {t('cardRewards.status.expired')}
+            </div>
+          ) : (
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-[11px] text-muted-foreground">
+                {t('cardRewards.qualifyingSpend')}: {fmt(usage.qualifying_spend)}
+                {!usage.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
+              </span>
+              <span className="font-mono font-semibold tabular-nums text-income">
+                {fmt(usage.capped_reward)}
+              </span>
+            </div>
+          )
+        ) : null}
+      </div>
+    )
   }
 
   return (
@@ -322,122 +557,25 @@ function SingleCardCardRewards({
             </DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
-            {hiddenExpiredCount > 0 ? (
-              <button
-                type="button"
-                className="text-[11px] text-muted-foreground underline underline-offset-2"
-                onClick={() => setShowExpired((v) => !v)}
-              >
-                {showExpired
-                  ? t('cardRewards.hideExpired')
-                  : t('cardRewards.showExpired', { count: hiddenExpiredCount })}
-              </button>
-            ) : null}
-            {visibleRules.length === 0 ? (
+            {activeRules.length === 0 && endedRules.length === 0 ? (
               <div className="text-xs text-muted-foreground">{t('cardRewards.empty')}</div>
             ) : (
-              visibleRules.map((rule) => {
-                const usage = usageByRuleId.get(rule.id)
-                const expired = isExpired(rule)
-                return (
-                  <div
-                    key={rule.id}
-                    className="rounded-lg border border-border/50 bg-background/40 p-3 text-xs"
-                  >
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between gap-2 text-left"
-                      onClick={() => setDetailRule(rule)}
-                    >
-                      <div className="flex items-center gap-2 font-medium">
-                        <span>{rule.label}</span>
-                        {!rule.enabled ? (
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {t('cardRewards.disabled')}
-                          </span>
-                        ) : null}
-                        {expired ? (
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {t('cardRewards.expiredBadge')}
-                          </span>
-                        ) : null}
-                      </div>
-                    </button>
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <div className="text-muted-foreground">
-                        {rule.rate_type === 'percentage'
-                          ? t('cardRewards.summary.percentage', { rate: rule.rate_value })
-                          : t('cardRewards.summary.fixedAmount', { amount: rule.rate_value })}
-                        {rule.cap_amount ? ` · ${t('cardRewards.summary.cap', { cap: fmt(rule.cap_amount) })}` : ''}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
-                          onClick={() => {
-                            setDuplicateSeed(rule)
-                            setEditing(null)
-                            setFormOpen(true)
-                          }}
-                          aria-label={t('cardRewards.duplicate')}
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60"
-                          onClick={() => {
-                            setEditing(rule)
-                            setDuplicateSeed(null)
-                            setFormOpen(true)
-                          }}
-                          aria-label={t('cardRewards.edit')}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={deletingId === rule.id}
-                          className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-                          onClick={() => {
-                            if (window.confirm(t('cardRewards.confirmDelete'))) void handleDelete(rule.id)
-                          }}
-                          aria-label={t('cardRewards.delete')}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                    {activePeriodText(rule, t) ? (
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        {activePeriodText(rule, t)}
-                      </div>
-                    ) : null}
-                    {usage ? (
-                      usage.status === 'no_billing_schedule' ? (
-                        <div className="mt-1 text-[11px] text-muted-foreground">
-                          {t('cardRewards.status.noBillingSchedule')}
-                        </div>
-                      ) : usage.status === 'expired' ? (
-                        <div className="mt-1 text-[11px] text-muted-foreground">
-                          {t('cardRewards.status.expired')}
-                        </div>
-                      ) : (
-                        <div className="mt-2 flex items-center justify-between">
-                          <span className="text-[11px] text-muted-foreground">
-                            {t('cardRewards.qualifyingSpend')}: {fmt(usage.qualifying_spend)}
-                            {!usage.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
-                          </span>
-                          <span className="font-mono font-semibold tabular-nums text-income">
-                            {fmt(usage.capped_reward)}
-                          </span>
-                        </div>
-                      )
-                    ) : null}
-                  </div>
-                )
-              })
+              activeRules.map(renderRuleRow)
             )}
+            {endedRules.length > 0 ? (
+              <div className="space-y-2 border-t border-dashed border-border/60 pt-2">
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground underline underline-offset-2"
+                  onClick={() => setShowEnded((v) => !v)}
+                >
+                  {showEnded
+                    ? t('cardRewards.endedSection.hide')
+                    : t('cardRewards.endedSection.show', { count: endedRules.length })}
+                </button>
+                {showEnded ? endedRules.map(renderRuleRow) : null}
+              </div>
+            ) : null}
             <button
               type="button"
               className="w-full rounded-md border border-dashed border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted/50"
@@ -510,10 +648,17 @@ function CardRewardRuleFormDialog({
   const isEdit = Boolean(rule)
   const source = rule ?? seed
 
+  // Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄時,
+  // 計算相關欄位全部鎖定,只能調整名稱/備註/啟用狀態/起訖日期。
+  const locked = isEdit && Boolean(rule?.locked)
+
   const [label, setLabel] = useState(source?.label || '')
   const [rateType, setRateType] = useState<CardRewardRateType>(source?.rate_type || 'percentage')
   const [rateValue, setRateValue] = useState(source ? String(source.rate_value) : '')
   const [rounding, setRounding] = useState<CardRewardRounding>(source?.rounding || 'round')
+  // Phase 8 #4(2026-08 使用者反饋:「四捨五入」實際回饋還有小數):總額取整
+  // 方式,對齊 Moze「單筆保留小數、總額才取整」的兩段式設計。
+  const [totalRounding, setTotalRounding] = useState<CardRewardRounding>(source?.total_rounding || 'round')
   const [intervalMode, setIntervalMode] = useState<CardRewardInterval>(source?.interval || 'billing_cycle')
   const [minSpendThreshold, setMinSpendThreshold] = useState(
     source?.min_spend_threshold != null ? String(source.min_spend_threshold) : '',
@@ -529,6 +674,15 @@ function CardRewardRuleFormDialog({
   )
   const [settlementDays, setSettlementDays] = useState(
     source?.settlement_days != null ? String(source.settlement_days) : '',
+  )
+  // Phase 8 #15(2026-08 使用者反饋:週期結束後一次結算要能選回饋日期):
+  // 0 = 當月,1 = 次月...跟 settlementDayOfMonth 成對使用,任一為空字串時
+  // 維持現況行為(期間結束當天入帳)。
+  const [settlementMonthOffset, setSettlementMonthOffset] = useState(
+    source?.settlement_month_offset != null ? String(source.settlement_month_offset) : '',
+  )
+  const [settlementDayOfMonth, setSettlementDayOfMonth] = useState(
+    source?.settlement_day_of_month != null ? String(source.settlement_day_of_month) : '',
   )
   const [rewardAccountId, setRewardAccountId] = useState(source?.reward_account_id || '')
   const [note, setNote] = useState(source?.note || '')
@@ -572,6 +726,10 @@ function CardRewardRuleFormDialog({
 
   const needsSettlementDays = settlementType === 'immediate_after_tx' || settlementType === 'after_posting_date'
   const needsRewardAccount = settlementType !== 'manual'
+  const needsSettlementDate = settlementType === 'period_end'
+  // Phase 8 #16:「共用上限群組」只在填了「本期回饋上限」時才顯示,避免空
+  // 規則也要看到一堆不相關的群組勾選 UI(2026-08 使用者反饋)。
+  const showCapGroup = capAmount.trim().length > 0
 
   const canSubmit =
     label.trim().length > 0 &&
@@ -611,12 +769,13 @@ function CardRewardRuleFormDialog({
         effectiveCapKey = crypto.randomUUID()
       }
 
-      const payload = {
+      const fullPayload = {
         label: label.trim(),
         category_ids: null,
         rate_type: rateType,
         rate_value: Number(rateValue),
         rounding,
+        total_rounding: totalRounding,
         calc_basis: 'transaction_date' as const,
         interval: intervalMode,
         min_spend_threshold: minSpendThreshold ? Number(minSpendThreshold) : null,
@@ -627,51 +786,73 @@ function CardRewardRuleFormDialog({
         ends_at: endsAt ? dateInputToIso(endsAt) : null,
         settlement_type: settlementType,
         settlement_days: needsSettlementDays ? Number(settlementDays) : null,
+        settlement_month_offset:
+          needsSettlementDate && settlementMonthOffset !== '' && settlementDayOfMonth !== ''
+            ? Number(settlementMonthOffset)
+            : null,
+        settlement_day_of_month:
+          needsSettlementDate && settlementMonthOffset !== '' && settlementDayOfMonth !== ''
+            ? Number(settlementDayOfMonth)
+            : null,
         reward_account_id: needsRewardAccount ? rewardAccountId : null,
         note: note.trim() || null,
         enabled,
       }
 
       if (isEdit && rule) {
+        // Phase 8 #16:規則已鎖定時,只送出仍可編輯的欄位(label/note/enabled/
+        // starts_at/ends_at)——送出鎖定欄位(即使值沒變)會被後端 422 擋下。
+        const updatePayload = locked
+          ? {
+              label: fullPayload.label,
+              starts_at: fullPayload.starts_at,
+              ends_at: fullPayload.ends_at,
+              note: fullPayload.note,
+              enabled: fullPayload.enabled,
+            }
+          : fullPayload
         await retryOnConflict(ledgerId, (base) =>
-          updateCardRewardRule(token, ledgerId, accountId, rule.id, base, payload),
+          updateCardRewardRule(token, ledgerId, accountId, rule.id, base, updatePayload),
         )
         toast.success(t('cardRewards.notice.updated'), t('notice.success'))
       } else {
         await retryOnConflict(ledgerId, (base) =>
-          createCardRewardRule(token, ledgerId, accountId, base, payload),
+          createCardRewardRule(token, ledgerId, accountId, base, fullPayload),
         )
         toast.success(t('cardRewards.notice.created'), t('notice.success'))
       }
 
-      // 同步群組成員:新加入的規則 PATCH 成同一個 key,原本屬於這個群組
-      // 但這次被取消勾選的規則 PATCH 清空 key。每條規則各自屬於哪張卡,
-      // ledger_id 一律用當前這個(card_reward_rule 是 user-global 實體,
-      // 寫入端點的 ledger_id 只拿來過 CAS 鎖,不影響歸屬)。
-      const previousMembers = new Set(
-        source?.cap_shared_key
-          ? otherRules.filter((r) => r.cap_shared_key === source.cap_shared_key).map((r) => r.id)
-          : [],
-      )
-      const toAdd = [...capGroupSelection].filter((id) => !previousMembers.has(id))
-      const toRemove = [...previousMembers].filter((id) => !capGroupSelection.has(id))
-      for (const id of toAdd) {
-        const member = allRules.find((r) => r.id === id)
-        if (!member) continue
-        await retryOnConflict(ledgerId, (base) =>
-          updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
-            cap_shared_key: effectiveCapKey,
-          }),
+      // 同步群組成員(規則鎖定時 cap_shared_key 不可改,略過整段——見上方
+      // updatePayload 的鎖定欄位白名單):新加入的規則 PATCH 成同一個 key,
+      // 原本屬於這個群組但這次被取消勾選的規則 PATCH 清空 key。每條規則
+      // 各自屬於哪張卡,ledger_id 一律用當前這個(card_reward_rule 是
+      // user-global 實體,寫入端點的 ledger_id 只拿來過 CAS 鎖,不影響歸屬)。
+      if (!locked) {
+        const previousMembers = new Set(
+          source?.cap_shared_key
+            ? otherRules.filter((r) => r.cap_shared_key === source.cap_shared_key).map((r) => r.id)
+            : [],
         )
-      }
-      for (const id of toRemove) {
-        const member = allRules.find((r) => r.id === id)
-        if (!member) continue
-        await retryOnConflict(ledgerId, (base) =>
-          updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
-            cap_shared_key: null,
-          }),
-        )
+        const toAdd = [...capGroupSelection].filter((id) => !previousMembers.has(id))
+        const toRemove = [...previousMembers].filter((id) => !capGroupSelection.has(id))
+        for (const id of toAdd) {
+          const member = allRules.find((r) => r.id === id)
+          if (!member) continue
+          await retryOnConflict(ledgerId, (base) =>
+            updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
+              cap_shared_key: effectiveCapKey,
+            }),
+          )
+        }
+        for (const id of toRemove) {
+          const member = allRules.find((r) => r.id === id)
+          if (!member) continue
+          await retryOnConflict(ledgerId, (base) =>
+            updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
+              cap_shared_key: null,
+            }),
+          )
+        }
       }
       onSaved()
     } catch (err) {
@@ -694,6 +875,11 @@ function CardRewardRuleFormDialog({
           </DialogTitle>
         </DialogHeader>
         <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+          {locked ? (
+            <div className="rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
+              {t('cardRewards.lockedHint')}
+            </div>
+          ) : null}
           <div className="space-y-1">
             <Label>{t('cardRewards.field.label')}</Label>
             <Input
@@ -705,7 +891,7 @@ function CardRewardRuleFormDialog({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>{t('cardRewards.field.rateType')}</Label>
-              <Select value={rateType} onValueChange={(v) => setRateType(v as CardRewardRateType)}>
+              <Select value={rateType} onValueChange={(v) => setRateType(v as CardRewardRateType)} disabled={locked}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -726,13 +912,18 @@ function CardRewardRuleFormDialog({
                 inputMode="decimal"
                 value={rateValue}
                 onChange={(e) => setRateValue(e.target.value)}
+                disabled={locked}
               />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>{t('cardRewards.field.interval')}</Label>
-              <Select value={intervalMode} onValueChange={(v) => setIntervalMode(v as CardRewardInterval)}>
+              <Select
+                value={intervalMode}
+                onValueChange={(v) => setIntervalMode(v as CardRewardInterval)}
+                disabled={locked}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -744,7 +935,7 @@ function CardRewardRuleFormDialog({
             </div>
             <div className="space-y-1">
               <Label>{t('cardRewards.field.rounding')}</Label>
-              <Select value={rounding} onValueChange={(v) => setRounding(v as CardRewardRounding)}>
+              <Select value={rounding} onValueChange={(v) => setRounding(v as CardRewardRounding)} disabled={locked}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -752,8 +943,30 @@ function CardRewardRuleFormDialog({
                   <SelectItem value="round">{t('cardRewards.rounding.round')}</SelectItem>
                   <SelectItem value="floor">{t('cardRewards.rounding.floor')}</SelectItem>
                   <SelectItem value="ceil">{t('cardRewards.rounding.ceil')}</SelectItem>
+                  <SelectItem value="keep">{t('cardRewards.rounding.keep')}</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label>{t('cardRewards.field.totalRounding')}</Label>
+              <Select
+                value={totalRounding}
+                onValueChange={(v) => setTotalRounding(v as CardRewardRounding)}
+                disabled={locked}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="round">{t('cardRewards.rounding.round')}</SelectItem>
+                  <SelectItem value="floor">{t('cardRewards.rounding.floor')}</SelectItem>
+                  <SelectItem value="ceil">{t('cardRewards.rounding.ceil')}</SelectItem>
+                  <SelectItem value="keep">{t('cardRewards.rounding.keep')}</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="text-[11px] text-muted-foreground">{t('cardRewards.field.totalRoundingHint')}</div>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -764,6 +977,7 @@ function CardRewardRuleFormDialog({
                 inputMode="decimal"
                 value={minTxAmount}
                 onChange={(e) => setMinTxAmount(e.target.value)}
+                disabled={locked}
               />
             </div>
             <div className="space-y-1">
@@ -771,6 +985,7 @@ function CardRewardRuleFormDialog({
               <Input
                 type="number"
                 inputMode="decimal"
+                disabled={locked}
                 value={minSpendThreshold}
                 onChange={(e) => setMinSpendThreshold(e.target.value)}
               />
@@ -793,8 +1008,12 @@ function CardRewardRuleFormDialog({
               inputMode="decimal"
               value={capAmount}
               onChange={(e) => setCapAmount(e.target.value)}
+              disabled={locked}
             />
           </div>
+          {/* Phase 8 #16(2026-08 使用者反饋):共用上限群組只在填了「本期回饋
+              上限」時才顯示,避免空規則也要看一堆不相關的群組勾選 UI。 */}
+          {showCapGroup ? (
           <div className="space-y-1">
             <Label>{t('cardRewards.field.capGroup')}</Label>
             <div className="text-[11px] text-muted-foreground">{t('cardRewards.field.capGroupHint')}</div>
@@ -809,8 +1028,9 @@ function CardRewardRuleFormDialog({
                     <button
                       key={r.id}
                       type="button"
+                      disabled={locked}
                       onClick={() => toggleCapGroupMember(r.id)}
-                      className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                      className={`rounded-full border px-2.5 py-1 text-[11px] disabled:opacity-50 ${
                         checked
                           ? 'border-primary bg-primary/10 text-primary'
                           : 'border-border text-muted-foreground'
@@ -823,11 +1043,13 @@ function CardRewardRuleFormDialog({
               </div>
             )}
           </div>
+          ) : null}
           <div className="space-y-1 rounded-md border border-border/60 p-2">
             <Label>{t('cardRewards.field.settlementType')}</Label>
             <Select
               value={settlementType}
               onValueChange={(v) => setSettlementType(v as CardRewardSettlementType)}
+              disabled={locked}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -851,13 +1073,68 @@ function CardRewardRuleFormDialog({
                   inputMode="numeric"
                   value={settlementDays}
                   onChange={(e) => setSettlementDays(e.target.value)}
+                  disabled={locked}
                 />
+              </div>
+            ) : null}
+            {needsSettlementDate ? (
+              <div className="space-y-1 pt-1">
+                <Label>{t('cardRewards.field.settlementDate')}</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Select
+                    value={settlementMonthOffset}
+                    onValueChange={setSettlementMonthOffset}
+                    disabled={locked}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={t('cardRewards.settlementDate.defaultOption')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {['0', '1', '2', '3'].map((offset) => (
+                        <SelectItem key={offset} value={offset}>
+                          {t(`cardRewards.settlementDate.month.${offset}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={settlementDayOfMonth}
+                    onValueChange={setSettlementDayOfMonth}
+                    disabled={locked}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={t('cardRewards.settlementDate.dayPlaceholder')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 28 }, (_, i) => String(i + 1)).map((day) => (
+                        <SelectItem key={day} value={day}>
+                          {t('cardRewards.settlementDate.day', { day })}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>{t('cardRewards.settlementDate.hint')}</span>
+                  {!locked && (settlementMonthOffset !== '' || settlementDayOfMonth !== '') ? (
+                    <button
+                      type="button"
+                      className="shrink-0 underline underline-offset-2"
+                      onClick={() => {
+                        setSettlementMonthOffset('')
+                        setSettlementDayOfMonth('')
+                      }}
+                    >
+                      {t('cardRewards.settlementDate.reset')}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
             {needsRewardAccount ? (
               <div className="space-y-1 pt-1">
                 <Label>{t('cardRewards.field.rewardAccount')}</Label>
-                <Select value={rewardAccountId} onValueChange={setRewardAccountId}>
+                <Select value={rewardAccountId} onValueChange={setRewardAccountId} disabled={locked}>
                   <SelectTrigger>
                     <SelectValue placeholder={t('cardRewards.field.rewardAccountPlaceholder')} />
                   </SelectTrigger>

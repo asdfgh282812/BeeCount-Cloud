@@ -1202,6 +1202,25 @@ async def _commit_write_fast_tx(
                     reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
                 )
 
+            # 信用卡紅利回饋事後修改重算(§2.9.5.4 補強,Phase 8 #5,2026-08
+            # 使用者反饋):happened_at/amount/category_id/account_id 這四個
+            # 欄位會影響回饋計算,合併後任一實際變動時,把這筆交易先前已經
+            # 逐筆結算入帳的回饋金沖銷(刪除)掉,讓下一輪排程用新欄位值重新
+            # 計算補發——note/商店等不影響計算的欄位編輯不觸發,避免使用者
+            # 隨手改備註就把回饋金搞亂。
+            reward_calc_impacted = (
+                prev_item.get("happenedAt") != new_item.get("happenedAt")
+                or prev_item.get("amount") != new_item.get("amount")
+                or prev_item.get("categoryId") != new_item.get("categoryId")
+                or prev_item.get("accountId") != new_item.get("accountId")
+            )
+            if reward_calc_impacted:
+                from ...services.card_reward_payout import reverse_card_reward_payouts_for_edit
+                reverse_card_reward_payouts_for_edit(
+                    db, ledger_id=ledger.id, user_id=ledger.user_id,
+                    edited_tx_id=tx_id, now=now,
+                )
+
             change_row = SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
