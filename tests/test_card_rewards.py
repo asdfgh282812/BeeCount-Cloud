@@ -29,6 +29,7 @@ from sqlalchemy.pool import StaticPool
 from src.database import Base, get_db
 from src.main import app
 from src.models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, User
+from src.services import card_reward_payout
 
 
 def _make_client():
@@ -1124,6 +1125,82 @@ def test_get_card_reward_rule_transactions_endpoint():
         assert data["raw_reward"] == 15.0
         assert data["capped_reward"] == 15.0
         assert data["remaining_reward_room"] == 5.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_card_reward_rule_transactions_payout_tx_id_and_editable_amount():
+    """使用者反饋(2026-08,對帳明細可逐筆編輯回饋金額):逐筆結算且已到期
+    入帳的項目,明細裡要帶出實際回饋交易的 `payout_tx_id`;還沒入帳的規則
+    (`period_end` 沒有逐筆對應)固定 `None`。編輯過那筆回饋交易的金額後,
+    再打一次明細端點要看到編輯後的實際值,不能被公式重算蓋回去
+    (見 schemas.ReadCardRewardQualifyingTxOut docstring)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr24@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr24@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() + timedelta(days=5)).day
+        _seed_ledger_and_card(client, hdr_app, "lgr24", billing_day=billing_day, payment_due_day=10)
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr24/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "可編輯測試", "rate_type": "percentage", "rate_value": 10.0,
+                "settlement_type": "immediate_after_tx", "settlement_days": 0,
+                "reward_account_id": "acc-card1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        _push(client, hdr_app, "lgr24", "transaction", "tx-payable1",
+              {"syncId": "tx-payable1", "type": "expense", "amount": 100.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡", "note": "午餐",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+
+        # 還沒入帳前,payout_tx_id 固定 None。
+        before = client.get(
+            f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        ).json()
+        assert before["items"][0]["payout_tx_id"] is None
+        assert before["items"][0]["reward_amount"] == 10.0
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result["tx_payouts"] == 1
+
+        after = client.get(
+            f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        ).json()
+        item = after["items"][0]
+        payout_tx_id = item["payout_tx_id"]
+        assert payout_tx_id is not None
+        assert payout_tx_id != "tx-payable1"
+        assert item["reward_amount"] == 10.0
+
+        # 銀行實際入帳的回饋金跟系統算出來的不一樣(比如有取整差異),使用者
+        # 在對帳明細裡把這筆回饋金額改成銀行實際入帳的數字。
+        patch = client.patch(
+            f"/api/v1/write/ledgers/lgr24/transactions/{payout_tx_id}",
+            headers=hdr_web,
+            json={"base_change_id": 0, "amount": 12.0},
+        )
+        assert patch.status_code == 200, patch.text
+
+        edited = client.get(
+            f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        ).json()
+        # 明細要顯示編輯後的實際金額(12.0),不是重算回去的公式值(10.0)。
+        assert edited["items"][0]["reward_amount"] == 12.0
+        assert edited["items"][0]["payout_tx_id"] == payout_tx_id
     finally:
         app.dependency_overrides.clear()
 

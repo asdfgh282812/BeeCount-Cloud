@@ -961,7 +961,10 @@ export type ReadCardRewards = {
   total_reward: number
 }
 
-/** §2.9.5.3 交易明細彈窗:單一規則命中哪些交易 + 各自回饋金額。 */
+/** §2.9.5.3 交易明細彈窗:單一規則命中哪些交易 + 各自回饋金額。
+ *  `payout_tx_id`(2026-08 對帳明細可編輯回饋金額):這筆消費實際結算入帳
+ *  的回饋交易 sync_id,只有逐筆結算且已到期入帳的項目才有值——有值時才能
+ *  編輯這一行的回饋金額(PATCH 這個 id 對應的交易,不是 `tx_id`)。 */
 export type ReadCardRewardQualifyingTx = {
   tx_id: string
   happened_at: string
@@ -970,6 +973,7 @@ export type ReadCardRewardQualifyingTx = {
   category_name?: string | null
   reward_amount: number
   settlement_date?: string | null
+  payout_tx_id?: string | null
 }
 
 export type ReadCardRewardRuleTransactions = {
@@ -1430,6 +1434,18 @@ export type StatementTransaction = {
   happened_at: string
   deferred_posting_at?: string | null
   reconciled_at?: string | null
+  /** Phase 6:分類是系統紅利回饋專屬分類時為 true,前端顯示「回饋」標籤。 */
+  is_reward?: boolean
+  /** 2026-08 使用者反饋:同一個回饋方案(rule)在這期帳單內的所有回饋交易
+   *  合併成一行,`amount` 是加總。非 null 時這一行是合併列,點擊可展開看
+   *  `reward_rule_id` 對應方案的原始消費明細(呼叫既有的
+   *  `fetchCardRewardRuleTransactions`)。手動記的回饋分類交易(查不到對應
+   *  規則)維持 null,行為等同合併前的單筆顯示。 */
+  reward_rule_id?: string | null
+  reward_rule_label?: string | null
+  /** 這一行實際包含的原始交易 sync_id——確認/延後入帳要對清單裡每一筆各自
+   *  呼叫 `updateTransaction`。非回饋合併列時只含自己這一筆(等同 `[id]`)。 */
+  member_tx_ids?: string[]
 }
 
 export type StatementAccountTotal = {

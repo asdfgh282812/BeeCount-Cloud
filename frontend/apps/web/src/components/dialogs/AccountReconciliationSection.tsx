@@ -1,10 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
-import type { AccountStatement, StatementTransaction } from '@beecount/api-client'
+import type {
+  AccountStatement,
+  ReadCardRewardQualifyingTx,
+  ReadCardRewardRuleTransactions,
+  StatementTransaction
+} from '@beecount/api-client'
 import {
   balanceAdjustment,
   clearStatementConfirmations,
   fetchAccountStatement,
+  fetchCardRewardRuleTransactions,
+  fetchWorkspaceTransactions,
   updateTransaction
 } from '@beecount/api-client'
 import {
@@ -23,13 +30,14 @@ import {
   useToast
 } from '@beecount/ui'
 import { ConfirmDialog } from '@beecount/web-features'
-import { ArrowDownUp, Check, Clock3, ListChecks, MoreVertical } from 'lucide-react'
+import { ArrowDownUp, Check, ChevronRight, Clock3, ListChecks, MoreVertical, Pencil, X } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
+import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
-import { dispatchOpenNewTx } from '../../lib/txDialogEvents'
+import { dispatchOpenEditTx, dispatchOpenNewTx } from '../../lib/txDialogEvents'
 
 type RetryOnConflict = <T,>(ledgerId: string, submit: (baseChangeId: number) => Promise<T>) => Promise<T>
 
@@ -231,6 +239,7 @@ export function AccountStatementSection({
   const [postponeTarget, setPostponeTarget] = useState<StatementTransaction | null>(null)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [rewardDetailTarget, setRewardDetailTarget] = useState<StatementTransaction | null>(null)
 
   const reload = () => {
     if (!token || !activeLedgerId || !billingAccountId) return
@@ -250,19 +259,47 @@ export function AccountStatementSection({
     setDialogOpen(false)
   }, [billingAccountId])
 
+  // 使用者反饋(2026-08,對帳明細可編輯既有交易):編輯彈窗是全局的
+  // (GlobalEditDialogs 監聽 dispatchOpenEditTx),存檔成功後不會直接通知這裡
+  // ——跟其它 *Page 同款訂閱 sync_change,寫入落地後自動重新拉一次對帳清單,
+  // 不需要另外設計一條 callback 通道。
+  useSyncRefresh(reload)
+
   if (!activeLedgerId) return null
 
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
+  const handleEdit = async (tx: StatementTransaction) => {
+    if (!token) return
+    try {
+      const page = await fetchWorkspaceTransactions(token, { ledgerId: activeLedgerId, txSyncId: tx.id, limit: 1 })
+      const full = page.items[0]
+      if (!full) {
+        toast.error(t('statement.error'), t('notice.error'))
+        return
+      }
+      dispatchOpenEditTx(full)
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    }
+  }
+
   const toggleConfirmed = async (tx: StatementTransaction) => {
     if (!token) return
     setBusyTxId(tx.id)
     try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        updateTransaction(token, activeLedgerId, tx.id, base, {
-          reconciled_at: tx.reconciled_at ? null : new Date().toISOString()
-        })
+      // 合併後的回饋方案列(需求 #7 改版):確認/取消確認要對這一列包含的
+      // 每一筆原始回饋交易(member_tx_ids)各自呼叫既有的 PATCH,不是新增
+      // 批次 write endpoint。非合併列時 member_tx_ids 只含自己這一筆。
+      const targetIds = tx.member_tx_ids && tx.member_tx_ids.length > 0 ? tx.member_tx_ids : [tx.id]
+      const nextReconciledAt = tx.reconciled_at ? null : new Date().toISOString()
+      await Promise.all(
+        targetIds.map((id) =>
+          retryOnConflict(activeLedgerId, (base) =>
+            updateTransaction(token, activeLedgerId, id, base, { reconciled_at: nextReconciledAt })
+          )
+        )
       )
       toast.success(
         tx.reconciled_at ? t('statement.notice.unconfirmed') : t('statement.notice.confirmed'),
@@ -402,6 +439,8 @@ export function AccountStatementSection({
                         t={t}
                         onToggleConfirm={() => void toggleConfirmed(tx)}
                         onPostpone={() => setPostponeTarget(tx)}
+                        onEdit={() => void handleEdit(tx)}
+                        onOpenRewardDetail={tx.reward_rule_id ? () => setRewardDetailTarget(tx) : undefined}
                       />
                     ))}
                   </div>
@@ -424,6 +463,25 @@ export function AccountStatementSection({
             setPostponeTarget(null)
             reload()
           }}
+        />
+      ) : null}
+
+      {rewardDetailTarget && rewardDetailTarget.reward_rule_id ? (
+        <RewardGroupDetailDialog
+          token={token || ''}
+          ledgerId={activeLedgerId}
+          // 回饋規則綁定的是實際刷卡那張子卡(rewardDetailTarget.account_id),
+          // 不是這個對帳彈窗查詢用的 billingAccountId(account_group 場景下
+          // 可能是群組本身)——後端 card-reward-rules/{id}/transactions 端點
+          // 會校驗 account_id 必須等於 rule.account_sync_id,傳群組 id 會
+          // 400(rule_id does not belong to this account)。
+          accountId={rewardDetailTarget.account_id}
+          ruleId={rewardDetailTarget.reward_rule_id}
+          ruleLabel={rewardDetailTarget.reward_rule_label || t('statement.row.rewardBadge')}
+          periodOffset={cycleOffset - 1}
+          retryOnConflict={retryOnConflict}
+          onClose={() => setRewardDetailTarget(null)}
+          onChanged={reload}
         />
       ) : null}
 
@@ -467,7 +525,9 @@ function StatementRow({
   fmt,
   t,
   onToggleConfirm,
-  onPostpone
+  onPostpone,
+  onEdit,
+  onOpenRewardDetail
 }: {
   tx: StatementTransaction
   showAccountName: boolean
@@ -476,12 +536,23 @@ function StatementRow({
   t: (key: string, params?: Record<string, string | number>) => string
   onToggleConfirm: () => void
   onPostpone: () => void
+  onEdit: () => void
+  onOpenRewardDetail?: () => void
 }) {
   const confirmed = Boolean(tx.reconciled_at)
   const postponed = Boolean(tx.deferred_posting_at)
+  const isTransfer = tx.tx_type === 'transfer'
+  const memberCount = tx.member_tx_ids?.length ?? 1
+  // 使用者反饋(2026-08,對帳明細可編輯既有交易):合併後的回饋方案列
+  // (memberCount > 1)沒有單一一筆真正的交易可以編輯——金額是這一列底下
+  // 好幾筆回饋交易加總出來的,要編輯只能點進明細彈窗逐筆改
+  // (RewardGroupDetailDialog)。只有這一列本身就對應唯一一筆真交易時
+  // (memberCount <= 1,不管是不是回饋交易)才顯示編輯按鈕。
+  const editable = memberCount <= 1
   // 對齊 compute_cycle_period_billing.new_spend 的正負號口徑:expense 為正
-  // (增加應繳),income/退款為負(減少應繳)。
-  const signed = tx.tx_type === 'income' ? -tx.amount : tx.amount
+  // (增加應繳),income/退款為負(減少應繳)。轉入這張卡(Phase 6,SD 需求
+  // #1)比照 income 記為負值(還款/預繳,減少應繳)。
+  const signed = tx.tx_type === 'expense' ? tx.amount : -tx.amount
 
   return (
     <div
@@ -503,17 +574,37 @@ function StatementRow({
       >
         <Check className="h-3 w-3" />
       </button>
-      <div className="min-w-0 flex-1">
+      <div
+        className={`min-w-0 flex-1 ${onOpenRewardDetail ? 'cursor-pointer' : ''}`}
+        onClick={onOpenRewardDetail}
+        role={onOpenRewardDetail ? 'button' : undefined}
+      >
         <div className="flex items-center gap-1.5">
           <span className="truncate font-medium">
-            {tx.category_name || tx.note || t('statement.row.uncategorized')}
+            {tx.reward_rule_label || tx.category_name || tx.note || t('statement.row.uncategorized')}
           </span>
+          {isTransfer ? (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+              {t('statement.row.transferBadge')}
+            </span>
+          ) : null}
+          {tx.is_reward ? (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-income/10 px-1 py-0.5 text-[10px] text-income">
+              {t('statement.row.rewardBadge')}
+            </span>
+          ) : null}
+          {onOpenRewardDetail && memberCount > 1 ? (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-income/10 px-1 py-0.5 text-[10px] text-income">
+              {t('statement.row.rewardCount', { count: memberCount })}
+            </span>
+          ) : null}
           {postponed ? (
             <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
               <Clock3 className="h-2.5 w-2.5" />
               {t('statement.row.postponedBadge')}
             </span>
           ) : null}
+          {onOpenRewardDetail ? <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" /> : null}
         </div>
         <div className="truncate text-[11px] text-muted-foreground">
           {showAccountName && tx.account_name ? `${tx.account_name} · ` : ''}
@@ -524,6 +615,17 @@ function StatementRow({
       <span className={`shrink-0 font-mono font-semibold tabular-nums ${signed >= 0 ? 'text-expense' : 'text-income'}`}>
         {fmt(Math.abs(signed))}
       </span>
+      {editable ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          aria-label={t('statement.action.edit')}
+          title={t('statement.action.edit')}
+          className="shrink-0 rounded-md border border-dashed border-border p-1 text-muted-foreground hover:bg-muted/60"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={onPostpone}
@@ -563,8 +665,16 @@ function PostponeDialog({
     if (!date) return
     setSubmitting(true)
     try {
-      await retryOnConflict(ledgerId, (base) =>
-        updateTransaction(token, ledgerId, tx.id, base, { deferred_posting_at: dateInputToIso(date) })
+      // 合併後的回饋方案列(需求 #7 改版):延後入帳要對這一列包含的每一筆
+      // 原始回饋交易各自呼叫既有的 PATCH。非合併列時 member_tx_ids 只含
+      // 自己這一筆。
+      const targetIds = tx.member_tx_ids && tx.member_tx_ids.length > 0 ? tx.member_tx_ids : [tx.id]
+      await Promise.all(
+        targetIds.map((id) =>
+          retryOnConflict(ledgerId, (base) =>
+            updateTransaction(token, ledgerId, id, base, { deferred_posting_at: dateInputToIso(date) })
+          )
+        )
       )
       toast.success(t('statement.notice.postponed'), t('notice.success'))
       onSaved()
@@ -600,6 +710,184 @@ function PostponeDialog({
           >
             {t('statement.postpone.dialog.submit')}
           </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 使用者反饋(2026-08-XX,需求 #7 改版):對帳明細裡的回饋方案合併列,點擊
+ * 才展開看「這個方案這期賺到哪些消費的回饋」——重用既有的
+ * `fetchCardRewardRuleTransactions`(§2.9.5.3 交易明細彈窗同一支端點),
+ * 不新增後端 endpoint。`periodOffset` 換算跟 `AccountDetailDialog` 同一個
+ * 既有慣例:`period_offset = cycleOffset - 1`(對帳的 `cycleOffset` 是「已
+ * 結束週期」口徑,回饋規則的 `period_offset=0` 是「still-open 當期」口徑,
+ * 兩者定義差一期)。確認/延後入帳操作維持在合併列本身(對這個方案底下所有
+ * 回饋交易批次生效),這裡不逐筆做。
+ *
+ * 2026-08 第二輪使用者反饋(明細可逐筆編輯回饋金額):每一項只有
+ * `payout_tx_id` 非空(逐筆結算已到期入帳)才顯示編輯按鈕——`period_end`
+ * 整期一次性入帳沒有逐筆對應的真實交易可以改,見 schemas.
+ * ReadCardRewardQualifyingTxOut docstring。編輯直接 PATCH 那筆回饋交易的
+ * `amount`(既有的 updateTransaction 端點,不需要新的後端 write 邏輯),
+ * 存檔後重新拉一次這個彈窗自己的明細 + 呼叫 `onChanged` 讓上層對帳清單也
+ * 一起重新整理(合併列的總額要跟著變)。
+ */
+function RewardGroupDetailDialog({
+  token,
+  ledgerId,
+  accountId,
+  ruleId,
+  ruleLabel,
+  periodOffset,
+  retryOnConflict,
+  onClose,
+  onChanged
+}: {
+  token: string
+  ledgerId: string
+  accountId: string
+  ruleId: string
+  ruleLabel: string
+  periodOffset: number
+  retryOnConflict: RetryOnConflict
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const t = useT()
+  const toast = useToast()
+  const [detail, setDetail] = useState<ReadCardRewardRuleTransactions | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(false)
+  const [editingTxId, setEditingTxId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  const loadDetail = useCallback(() => {
+    setLoading(true)
+    setFetchError(false)
+    return fetchCardRewardRuleTransactions(token, ledgerId, accountId, ruleId, periodOffset)
+      .then(setDetail)
+      .catch(() => setFetchError(true))
+      .finally(() => setLoading(false))
+  }, [token, ledgerId, accountId, ruleId, periodOffset])
+
+  useEffect(() => {
+    void loadDetail()
+  }, [loadDetail])
+
+  const fmt = (v: number) =>
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+
+  const startEdit = (item: ReadCardRewardQualifyingTx) => {
+    setEditingTxId(item.tx_id)
+    setEditValue(String(item.reward_amount))
+  }
+
+  const handleSaveEdit = async (item: ReadCardRewardQualifyingTx) => {
+    if (!item.payout_tx_id) return
+    const amountNum = Number(editValue)
+    if (!Number.isFinite(amountNum) || amountNum < 0) {
+      toast.error(t('transactions.error.amountInvalid'), t('notice.error'))
+      return
+    }
+    setSavingEdit(true)
+    try {
+      await retryOnConflict(ledgerId, (base) =>
+        updateTransaction(token, ledgerId, item.payout_tx_id!, base, { amount: amountNum })
+      )
+      toast.success(t('statement.rewardDetail.notice.updated'), t('notice.success'))
+      setEditingTxId(null)
+      await loadDetail()
+      onChanged()
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="flex max-h-[80vh] max-w-md flex-col gap-0 p-0">
+        <DialogHeader className="border-b border-border/60 px-5 py-3">
+          <DialogTitle className="text-base">{ruleLabel}</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div>
+          ) : fetchError || !detail ? (
+            <div className="text-xs text-muted-foreground">{t('statement.error')}</div>
+          ) : detail.items.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border/60 py-4 text-center text-xs text-muted-foreground">
+              {t('statement.empty')}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {detail.items.map((item) => (
+                <div
+                  key={item.tx_id}
+                  className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-3 py-2 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">
+                      {item.category_name || item.note || t('statement.row.uncategorized')}
+                    </div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {item.happened_at.slice(0, 10)} · {fmt(item.amount)}
+                    </div>
+                  </div>
+                  {editingTxId === item.tx_id ? (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Input
+                        type="number"
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        className="h-6 w-20 px-1.5 py-0.5 text-right font-mono text-xs tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        disabled={savingEdit}
+                        aria-label={t('common.save')}
+                        onClick={() => void handleSaveEdit(item)}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-income hover:bg-income/10 disabled:opacity-40"
+                      >
+                        <Check className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingEdit}
+                        aria-label={t('dialog.cancel')}
+                        onClick={() => setEditingTxId(null)}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-40"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className="font-mono font-semibold tabular-nums text-income">
+                        +{fmt(item.reward_amount)}
+                      </span>
+                      {item.payout_tx_id ? (
+                        <button
+                          type="button"
+                          aria-label={t('statement.action.edit')}
+                          title={t('statement.action.edit')}
+                          onClick={() => startEdit(item)}
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted/60"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

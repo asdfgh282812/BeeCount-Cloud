@@ -81,6 +81,8 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src (僅單元測試)
 ### 3. 特殊業務校驗規範
 * **帳戶群組限制**: `account_type == "account_group"` 為純管理容器。任何交易（Transaction）、週期性收支（RecurringRule）、分期（InstallmentPlan）、範本套用（TxTemplate）寫入路徑，必須呼叫 `_assert_account_not_group` 擋下。
 * **前端 UI 驗證要求**: 任何觸及 Web UI 的改動，**必須實際在瀏覽器中手動操作過一遍**，不能僅憑 `pytest` 或 `pnpm build` 通過就宣稱完成。
+* **Service Worker 快取陷阱**（2026-08-07 實測踩到）: `apps/web` 是 PWA，瀏覽器可能對 `localhost:5173` 殘留舊版建置的 Service Worker registration，導致 `pnpm dev` 熱重載後新程式碼完全不生效（新增的按鈕/欄位「看起來沒出現」）。手動驗證前若改動明明已存在於原始碼卻不出現在畫面上，先用 DevTools → Application → Service Workers 檢查有沒有殘留 registration，或執行 `navigator.serviceWorker.getRegistrations()` 全部 `unregister()` + `caches.keys()` 全部 `delete()` 後重新整理，不要先懷疑程式碼邏輯本身有問題。
+* **本地 API server 沒帶 `--reload` 陷阱**（2026-08-07 實測踩到）: 手動用 `uvicorn server:app --host 0.0.0.0 --port 8080`（沒加 `--reload`）背景啟動的話，後續對 `src/` 的任何修改都不會生效，瀏覽器打到的永遠是啟動當下那個版本的程式碼，新增的 schema 欄位/查詢邏輯在 API 回應裡會整個消失，容易誤判「邏輯寫錯了」。手動驗證前若懷疑後端改動沒生效，先用 `curl .../openapi.json` 比對目標 schema 有沒有帶到新欄位，或直接確認啟動指令有沒有 `--reload`；沒有就 kill 掉重開一個新的進程，不要先排查程式碼邏輯。
 
 ---
 

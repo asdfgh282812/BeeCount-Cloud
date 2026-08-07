@@ -757,7 +757,17 @@ class ReadCardRewardRuleOut(BaseModel):
 
 
 class ReadCardRewardQualifyingTxOut(BaseModel):
-    """單筆符合條件交易明細(§2.9.5.3 交易明細彈窗)。"""
+    """單筆符合條件交易明細(§2.9.5.3 交易明細彈窗)。
+
+    2026-08 使用者反饋(對帳明細可編輯回饋金額):`payout_tx_id` 是這筆消費
+    實際結算入帳的回饋交易 sync_id——只有逐筆結算(`immediate_after_tx`/
+    `after_posting_date`)且已經到期入帳的項目才有值;`period_end`(整期
+    一次性入帳,沒有逐筆對應)或還沒到入帳日的項目固定 `None`,前端據此決定
+    要不要顯示「編輯這筆回饋金額」的按鈕。有 `payout_tx_id` 時,`reward_amount`
+    改用該筆交易目前實際的金額(不是重新按公式算出來的)——一旦使用者透過
+    這個欄位編輯過金額,之後每次打開明細都要看到編輯後的實際值,不能被重算
+    蓋回去(對齊 `card_reward_payout.reverse_card_reward_payouts_for_refund`
+    docstring 同一個「實際落袋的錢才是唯一權威來源」原則)。"""
     tx_id: str
     happened_at: datetime
     amount: float
@@ -765,6 +775,7 @@ class ReadCardRewardQualifyingTxOut(BaseModel):
     category_name: str | None = None
     reward_amount: float
     settlement_date: datetime | None = None
+    payout_tx_id: str | None = None
 
 
 class ReadCardRewardRuleTransactionsOut(BaseModel):
@@ -1003,7 +1014,22 @@ class StatementTransactionOut(BaseModel):
     """對帳模式(§2.10 Phase 5,2026-08-09 改版為 Moze 式逐筆核對清單)裡
     「這期帳單」列表的一行。`account_id`/`account_name` 是這筆交易實際掛的
     那張卡(account_group 場景下用來分組顯示,對齊 Moze 參考文件「依卡分組」
-    的行為),不一定等於查詢用的 `account_id`(可能是群組本身)。"""
+    的行為),不一定等於查詢用的 `account_id`(可能是群組本身)——`tx_type`
+    為 `transfer` 時,這兩欄改填「轉入的那張卡」(`to_account_sync_id`/
+    `to_account_name`),因為轉帳交易本身沒有 `account_sync_id`(Phase 6,
+    docs/PH6_USER_FEEDBACK_2026-08_SD.md)。`is_reward`=True 代表這筆交易的
+    分類是系統紅利回饋專屬分類(`services.card_rewards.REWARD_CATEGORY_NAME`),
+    供前端顯示「回饋」標籤辨識來源。
+
+    2026-08 使用者反饋(合併回饋方案顯示):同一個回饋方案(rule)在這期帳單
+    內的所有回饋入帳交易,合併成一行顯示總金額,不逐筆列出——`reward_rule_id`
+    非空時,這一行是合併後的「代表列」,`amount` 是這個方案在這期內所有回饋
+    交易的加總,`member_tx_ids` 是被合併的原始回饋交易 sync_id 清單(確認/
+    延後入帳要對這清單裡每一筆各自呼叫既有的 `PATCH .../transactions/{id}`,
+    不新增批次 write endpoint)。非回饋交易、或回饋交易查不到對應
+    `CardRewardPayout`(例如手動記的回饋分類交易,不是系統自動入帳)時,
+    `reward_rule_id`/`reward_rule_label` 為 None,`member_tx_ids` 只含自己
+    這一筆,行為等同合併前(單筆顯示)。"""
     id: str
     account_id: str
     account_name: str | None = None
@@ -1014,6 +1040,10 @@ class StatementTransactionOut(BaseModel):
     happened_at: datetime
     deferred_posting_at: datetime | None = None
     reconciled_at: datetime | None = None
+    is_reward: bool = False
+    reward_rule_id: str | None = None
+    reward_rule_label: str | None = None
+    member_tx_ids: list[str] = Field(default_factory=list)
 
 
 class StatementAccountTotalOut(BaseModel):

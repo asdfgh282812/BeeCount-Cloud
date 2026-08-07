@@ -8,6 +8,7 @@ from datetime import date
 
 from sqlalchemy import false as sa_false
 
+from ...models import CardRewardPayout
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
 
@@ -863,24 +864,57 @@ def get_card_reward_rule_transactions(
     detail = card_rewards.list_rule_qualifying_transactions(
         db, ledger_id=ledger.id, account=account, rule=rule, now=now, period_offset=period_offset,
     )
-    items = [
-        ReadCardRewardQualifyingTxOut(
-            tx_id=item["tx"].sync_id,
-            happened_at=item["tx"].happened_at,
-            amount=item["tx"].amount,
-            note=item["tx"].note,
-            category_name=item["tx"].category_name,
-            reward_amount=item["reward_amount"],
-            settlement_date=(
-                _date_to_utc_dt(settlement_date)
-                if (settlement_date := card_rewards.compute_settlement_date(
-                    rule, tx_happened_at=item["tx"].happened_at, period_end=detail["period_end"],
-                )) is not None
-                else None
-            ),
+
+    # 2026-08 使用者反饋(對帳明細可編輯回饋金額):逐筆結算的 `CardRewardPayout.
+    # dedup_key` 就是來源消費本身的 sync_id,反查得到這筆消費實際結算入帳的
+    # 回饋交易 id;再拿這批回饋交易目前的實際金額,取代重新按公式算出來的
+    # `reward_amount`——避免使用者編輯過金額後,下次打開明細又被算回原值
+    # (見 ReadCardRewardQualifyingTxOut docstring)。
+    payout_tx_by_dedup: dict[str, str] = {}
+    if detail["items"]:
+        dedup_keys = [item["tx"].sync_id for item in detail["items"]]
+        payout_rows = db.execute(
+            select(CardRewardPayout.dedup_key, CardRewardPayout.payout_tx_sync_id).where(
+                CardRewardPayout.user_id == current_user.id,
+                CardRewardPayout.rule_sync_id == rule.sync_id,
+                CardRewardPayout.dedup_key.in_(dedup_keys),
+            )
+        ).all()
+        payout_tx_by_dedup = {
+            dedup_key: payout_tx_id for dedup_key, payout_tx_id in payout_rows if payout_tx_id
+        }
+    payout_amount_by_tx_id: dict[str, float] = {}
+    if payout_tx_by_dedup:
+        amount_rows = db.execute(
+            select(ReadTxProjection.sync_id, ReadTxProjection.amount).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.sync_id.in_(payout_tx_by_dedup.values()),
+            )
+        ).all()
+        payout_amount_by_tx_id = dict(amount_rows)
+
+    items = []
+    for item in detail["items"]:
+        payout_tx_id = payout_tx_by_dedup.get(item["tx"].sync_id)
+        actual_amount = payout_amount_by_tx_id.get(payout_tx_id) if payout_tx_id else None
+        items.append(
+            ReadCardRewardQualifyingTxOut(
+                tx_id=item["tx"].sync_id,
+                happened_at=item["tx"].happened_at,
+                amount=item["tx"].amount,
+                note=item["tx"].note,
+                category_name=item["tx"].category_name,
+                reward_amount=actual_amount if actual_amount is not None else item["reward_amount"],
+                settlement_date=(
+                    _date_to_utc_dt(settlement_date)
+                    if (settlement_date := card_rewards.compute_settlement_date(
+                        rule, tx_happened_at=item["tx"].happened_at, period_end=detail["period_end"],
+                    )) is not None
+                    else None
+                ),
+                payout_tx_id=payout_tx_id,
+            )
         )
-        for item in detail["items"]
-    ]
     return ReadCardRewardRuleTransactionsOut(
         rule_id=rule.sync_id,
         label=rule.label or "",
@@ -1486,26 +1520,91 @@ def get_account_statement(
 
     attr_date = attribution_date_expr()
     order_col = ReadTxProjection.happened_at.desc() if sort_desc else ReadTxProjection.happened_at.asc()
+    # Phase 6(docs/PH6_USER_FEEDBACK_2026-08_SD.md 需求 #1):轉入這張卡/群組
+    # 的轉帳(還款/預繳)原本完全沒進這個查詢——tx_type 白名單不含
+    # "transfer",且轉帳交易的金額歸屬欄位是 to_account_sync_id,不是
+    # account_sync_id。改成 OR 兩個分支:一般消費/收入沿用原本
+    # account_sync_id 篩選;轉帳只收「轉入」(to_account_sync_id 命中這張卡),
+    # 轉出這張卡的錢語意上不是消費,維持排除。
     rows = db.scalars(
         select(ReadTxProjection).where(
             ReadTxProjection.ledger_id == ledger.id,
-            ReadTxProjection.account_sync_id.in_(member_ids),
-            ReadTxProjection.tx_type.in_(["expense", "income"]),
+            or_(
+                and_(
+                    ReadTxProjection.tx_type.in_(["expense", "income"]),
+                    ReadTxProjection.account_sync_id.in_(member_ids),
+                ),
+                and_(
+                    ReadTxProjection.tx_type == "transfer",
+                    ReadTxProjection.to_account_sync_id.in_(member_ids),
+                ),
+            ),
             attr_date > cycle_start_dt,
             attr_date <= cycle_end_dt,
         ).order_by(order_col)
     ).all()
 
+    # 2026-08 使用者反饋(需求 #7 改版):同一個回饋方案(rule)在這期帳單內
+    # 的所有回饋入帳交易合併成一列顯示總金額,點擊才展開看原始消費明細(前端
+    # 另外呼叫既有的 card-reward-rules/{rule_id}/transactions 端點,這裡只
+    # 負責合併)。反查靠 `CardRewardPayout.payout_tx_sync_id`——手動記的
+    # 「回饋金」分類交易(不是系統自動入帳)查不到對應紀錄,維持合併前的
+    # 單筆顯示(reward_rule_id 留 None)。
+    reward_tx_ids = [
+        row.sync_id for row in rows
+        if row.tx_type == "income" and row.category_name == card_rewards.REWARD_CATEGORY_NAME
+    ]
+    payout_rule_by_tx: dict[str, str] = {}
+    if reward_tx_ids:
+        payout_rows = db.execute(
+            select(CardRewardPayout.payout_tx_sync_id, CardRewardPayout.rule_sync_id).where(
+                CardRewardPayout.user_id == current_user.id,
+                CardRewardPayout.payout_tx_sync_id.in_(reward_tx_ids),
+            )
+        ).all()
+        payout_rule_by_tx = {tx_id: rule_id for tx_id, rule_id in payout_rows if tx_id}
+    rule_label_by_id: dict[str, str] = {}
+    if payout_rule_by_tx:
+        rule_rows = db.execute(
+            select(ReadCardRewardRuleProjection.sync_id, ReadCardRewardRuleProjection.label).where(
+                ReadCardRewardRuleProjection.user_id == current_user.id,
+                ReadCardRewardRuleProjection.sync_id.in_(set(payout_rule_by_tx.values())),
+            )
+        ).all()
+        rule_label_by_id = {sync_id: (label or "") for sync_id, label in rule_rows}
+
+    reward_group_rows: dict[str, list[ReadTxProjection]] = {}
+    flat_rows: list[ReadTxProjection] = []
+    for row in rows:
+        rule_id = payout_rule_by_tx.get(row.sync_id)
+        if rule_id is None:
+            flat_rows.append(row)
+        else:
+            reward_group_rows.setdefault(rule_id, []).append(row)
+
     transactions_out: list[StatementTransactionOut] = []
     account_totals: dict[str, dict[str, Any]] = {}
+    # "新增消費"(statement_total)刻意只算 expense/income,比照
+    # `credit_card_billing.compute_cycle_period_billing.new_spend` 的口徑
+    # ——轉入是還款/預繳,不是消費,不能被誤算進這格(SD 需求 #1)。
     statement_total = 0.0
     confirmed_count = 0
     confirmed_total = 0.0
-    for row in rows:
-        signed = row.amount if row.tx_type == "expense" else -row.amount
-        statement_total += signed
+    for row in flat_rows:
+        is_transfer = row.tx_type == "transfer"
+        if is_transfer:
+            # 轉入視為還款/預繳,比照 income 記為負值(減少應繳餘額);金額
+            # 歸屬欄位改用 to_account_sync_id/to_account_name。
+            signed = -row.amount
+            bucket_account_id = row.to_account_sync_id
+            bucket_account_name = row.to_account_name
+        else:
+            signed = row.amount if row.tx_type == "expense" else -row.amount
+            statement_total += signed
+            bucket_account_id = row.account_sync_id
+            bucket_account_name = row.account_name
         bucket = account_totals.setdefault(
-            row.account_sync_id, {"account_name": row.account_name, "count": 0, "total": 0.0},
+            bucket_account_id, {"account_name": bucket_account_name, "count": 0, "total": 0.0},
         )
         bucket["count"] += 1
         bucket["total"] += signed
@@ -1515,8 +1614,8 @@ def get_account_statement(
         transactions_out.append(
             StatementTransactionOut(
                 id=row.sync_id,
-                account_id=row.account_sync_id or "",
-                account_name=row.account_name,
+                account_id=bucket_account_id or "",
+                account_name=bucket_account_name,
                 tx_type=row.tx_type,
                 amount=row.amount,
                 category_name=row.category_name,
@@ -1524,8 +1623,49 @@ def get_account_statement(
                 happened_at=row.happened_at,
                 deferred_posting_at=row.deferred_posting_at,
                 reconciled_at=row.reconciled_at,
+                is_reward=row.category_name == card_rewards.REWARD_CATEGORY_NAME,
+                member_tx_ids=[row.sync_id],
             )
         )
+
+    for rule_id, members in reward_group_rows.items():
+        members_sorted = sorted(members, key=lambda r: r.happened_at)
+        total_amount = sum(m.amount for m in members_sorted)
+        signed = -total_amount
+        statement_total += signed
+        bucket_account_id = members_sorted[0].account_sync_id
+        bucket_account_name = members_sorted[0].account_name
+        bucket = account_totals.setdefault(
+            bucket_account_id, {"account_name": bucket_account_name, "count": 0, "total": 0.0},
+        )
+        bucket["count"] += len(members_sorted)
+        bucket["total"] += signed
+        all_confirmed = all(m.reconciled_at is not None for m in members_sorted)
+        all_deferred = all(m.deferred_posting_at is not None for m in members_sorted)
+        if all_confirmed:
+            confirmed_count += 1
+            confirmed_total += signed
+        latest = members_sorted[-1]
+        transactions_out.append(
+            StatementTransactionOut(
+                id=f"reward-group:{rule_id}",
+                account_id=bucket_account_id or "",
+                account_name=bucket_account_name,
+                tx_type="income",
+                amount=total_amount,
+                category_name=card_rewards.REWARD_CATEGORY_NAME,
+                note=None,
+                happened_at=latest.happened_at,
+                deferred_posting_at=latest.deferred_posting_at if all_deferred else None,
+                reconciled_at=latest.reconciled_at if all_confirmed else None,
+                is_reward=True,
+                reward_rule_id=rule_id,
+                reward_rule_label=rule_label_by_id.get(rule_id) or None,
+                member_tx_ids=[m.sync_id for m in members_sorted],
+            )
+        )
+
+    transactions_out.sort(key=lambda t: t.happened_at, reverse=sort_desc)
 
     accounts_out = [
         StatementAccountTotalOut(

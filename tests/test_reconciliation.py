@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from src.database import Base, get_db
 from src.main import app
 from src.models import Ledger, LedgerMember, ReadTxProjection, User
-from src.services import credit_card
+from src.services import card_reward_payout, credit_card
 
 
 def _make_client():
@@ -97,6 +97,48 @@ def _patch_tx(client, hdr, ledger_id, tx_id, **fields):
         json={"base_change_id": 0, **fields},
     )
     return r
+
+
+def _create_transfer_tx(client, hdr, ledger_id, *, from_account_id, to_account_id, amount, happened_at):
+    r = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        json={
+            "base_change_id": 0, "tx_type": "transfer", "amount": amount,
+            "happened_at": happened_at, "from_account_id": from_account_id,
+            "to_account_id": to_account_id,
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["entity_id"]
+
+
+def _create_reward_rule(client, hdr, ledger_id, account_id, *, reward_account_id, **kwargs):
+    payload = {
+        "base_change_id": 0, "label": "測試規則", "rate_type": "percentage", "rate_value": 10.0,
+        "reward_account_id": reward_account_id,
+    }
+    payload.update(kwargs)
+    r = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/accounts/{account_id}/card-reward-rules",
+        headers=hdr, json=payload,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["entity_id"]
+
+
+def _create_tx_with_reward_rule(client, hdr, ledger_id, *, account_id, amount, happened_at, reward_rule_id):
+    r = client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/transactions",
+        headers=hdr,
+        json={
+            "base_change_id": 0, "tx_type": "expense", "amount": amount,
+            "happened_at": happened_at, "account_id": account_id,
+            "reward_rule_ids": [reward_rule_id],
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["entity_id"]
 
 
 def _get_statement(client, hdr, ledger_id, account_id, **params):
@@ -207,6 +249,196 @@ def test_statement_account_group_groups_transactions_by_member_card():
         by_id = {a["account_id"]: a for a in data["accounts"]}
         assert by_id["cardA"]["total"] == 50.0
         assert by_id["cardB"]["total"] == 70.0
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6(docs/PH6_USER_FEEDBACK_2026-08_SD.md 需求 #1、#7):轉入信用卡的
+# 轉帳要出現在對帳清單且正負號正確、轉出不出現、"新增消費"不誤算轉帳、
+# 回饋金交易出現且帶 is_reward 標記。
+# ---------------------------------------------------------------------------
+
+
+def test_statement_includes_transfer_in_but_excludes_transfer_out():
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st12@t.com", device_id="d-app")
+        web_tok = _login(client, "st12@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st12", "ledger", "st12",
+              {"syncId": "st12", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "st12", "account", "cash12",
+              {"syncId": "cash12", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st12", "card12", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        expense_id = _create_tx(client, hdr_web, "st12", account_id="card12", amount=100.0,
+                                 happened_at=_dt(cycle_start + timedelta(days=1)))
+        transfer_in_id = _create_transfer_tx(client, hdr_web, "st12", from_account_id="cash12",
+                                              to_account_id="card12", amount=40.0,
+                                              happened_at=_dt(cycle_start + timedelta(days=2)))
+        # 轉出這張卡(還原成現金)的錢不是還款,不該出現在這張卡的對帳清單。
+        _create_transfer_tx(client, hdr_web, "st12", from_account_id="card12",
+                             to_account_id="cash12", amount=15.0,
+                             happened_at=_dt(cycle_start + timedelta(days=3)))
+
+        r = _get_statement(client, hdr_web, "st12", "card12", cycle_offset=0)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        ids = {t["id"] for t in data["transactions"]}
+        assert expense_id in ids
+        assert transfer_in_id in ids
+        assert data["statement_count"] == 2
+
+        transfer_row = next(t for t in data["transactions"] if t["id"] == transfer_in_id)
+        assert transfer_row["tx_type"] == "transfer"
+        assert transfer_row["account_id"] == "card12"
+
+        # "新增消費"(statement_total)比照 compute_cycle_period_billing.new_spend
+        # 的口徑,只算 expense/income,轉入的 40 元不能被算進去。
+        assert data["statement_total"] == 100.0
+    finally:
+        client.close()
+
+
+def test_statement_confirming_transfer_in_reduces_confirmed_total():
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st13@t.com", device_id="d-app")
+        web_tok = _login(client, "st13@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st13", "ledger", "st13",
+              {"syncId": "st13", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "st13", "account", "cash13",
+              {"syncId": "cash13", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st13", "card13", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        transfer_in_id = _create_transfer_tx(client, hdr_web, "st13", from_account_id="cash13",
+                                              to_account_id="card13", amount=25.0,
+                                              happened_at=_dt(cycle_start + timedelta(days=1)))
+
+        assert _patch_tx(client, hdr_web, "st13", transfer_in_id, reconciled_at=_iso()).status_code == 200
+
+        data = _get_statement(client, hdr_web, "st13", "card13", cycle_offset=0).json()
+        assert data["confirmed_count"] == 1
+        # 轉入比照 income 記為負值(減少應繳)。
+        assert data["confirmed_total"] == -25.0
+    finally:
+        client.close()
+
+
+def test_statement_flags_reward_category_transaction_as_is_reward():
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st14@t.com", device_id="d-app")
+        web_tok = _login(client, "st14@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st14", "ledger", "st14",
+              {"syncId": "st14", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st14", "card14", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        r = client.post(
+            f"/api/v1/write/ledgers/st14/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "tx_type": "income", "amount": 5.0,
+                "happened_at": _dt(cycle_start + timedelta(days=1)), "account_id": "card14",
+                "category_name": "回饋金", "category_kind": "income",
+            },
+        )
+        assert r.status_code == 200, r.text
+        reward_tx_id = r.json()["entity_id"]
+
+        data = _get_statement(client, hdr_web, "st14", "card14", cycle_offset=0).json()
+        row = next(t for t in data["transactions"] if t["id"] == reward_tx_id)
+        assert row["is_reward"] is True
+        assert row["category_name"] == "回饋金"
+    finally:
+        client.close()
+
+
+def test_statement_merges_same_rule_reward_payouts_into_one_row():
+    """使用者反饋(2026-08-XX,需求 #7 改版):同一個回饋方案在這期帳單內的
+    多筆自動入帳回饋,合併成一列顯示總金額,不逐筆列出。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "st15@t.com", device_id="d-app")
+        web_tok = _login(client, "st15@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st15", "ledger", "st15",
+              {"syncId": "st15", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st15", "card15", billing_day=billing_day, name="Green卡")
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        rule_id = _create_reward_rule(
+            client, hdr_web, "st15", "card15", reward_account_id="card15",
+            settlement_type="immediate_after_tx", settlement_days=0,
+        )
+        tx1 = _create_tx_with_reward_rule(
+            client, hdr_web, "st15", account_id="card15", amount=100.0,
+            happened_at=_dt(cycle_start + timedelta(days=1)), reward_rule_id=rule_id,
+        )
+        tx2 = _create_tx_with_reward_rule(
+            client, hdr_web, "st15", account_id="card15", amount=50.0,
+            happened_at=_dt(cycle_start + timedelta(days=2)), reward_rule_id=rule_id,
+        )
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result["tx_payouts"] == 2
+
+        data = _get_statement(client, hdr_web, "st15", "card15", cycle_offset=0).json()
+        # 兩筆消費 + 一個合併後的回饋方案列
+        assert data["statement_count"] == 3
+        reward_rows = [t for t in data["transactions"] if t["is_reward"]]
+        assert len(reward_rows) == 1
+        group = reward_rows[0]
+        assert group["reward_rule_id"] == rule_id
+        assert group["reward_rule_label"] == "測試規則"
+        assert group["amount"] == 15.0  # 100*10% + 50*10%
+        # member_tx_ids 是系統自動入帳的兩筆「回饋金」income 交易 sync_id,
+        # 不是原始消費(tx1/tx2)本身。
+        assert len(group["member_tx_ids"]) == 2
+        assert tx1 not in group["member_tx_ids"]
+        assert tx2 not in group["member_tx_ids"]
+
+        # "新增消費" = 100+50-15
+        assert data["statement_total"] == 135.0
+
+        # 確認其中一筆成員,合併列還不算「已確認」;兩筆都確認後才算。
+        member_ids = group["member_tx_ids"]
+        assert _patch_tx(client, hdr_web, "st15", member_ids[0], reconciled_at=_iso()).status_code == 200
+        data2 = _get_statement(client, hdr_web, "st15", "card15", cycle_offset=0).json()
+        group2 = next(t for t in data2["transactions"] if t["is_reward"])
+        assert group2["reconciled_at"] is None
+        assert data2["confirmed_count"] == 0
+
+        assert _patch_tx(client, hdr_web, "st15", member_ids[1], reconciled_at=_iso()).status_code == 200
+        data3 = _get_statement(client, hdr_web, "st15", "card15", cycle_offset=0).json()
+        group3 = next(t for t in data3["transactions"] if t["is_reward"])
+        assert group3["reconciled_at"] is not None
+        assert data3["confirmed_count"] == 1
+        assert data3["confirmed_total"] == -15.0
     finally:
         client.close()
 
