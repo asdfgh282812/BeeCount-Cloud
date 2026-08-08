@@ -26,6 +26,7 @@ import type {
   ReadCardRewardRule,
   ReadCategory,
   ReadDebt,
+  ReadProject,
   ReadTag,
   ReadTransaction,
   WorkspaceCategory,
@@ -36,6 +37,7 @@ import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import { interestRateToPercentDisplay, percentDisplayToInterestRate } from '../format'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
+import { ProjectPickerDialog } from '../components/ProjectPickerDialog'
 import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { tagTextColorOn } from '../lib/tagColorPalette'
@@ -63,6 +65,14 @@ type TransactionsPanelProps = {
    *  按 ledger role === 'owner' 算好再传进来(對齊 DebtsPage.tsx 的
    *  canManage 判斷),不在這個 panel 內部重新猜權限。 */
   canCreateDebt?: boolean
+  /** 專案(Phase 13,docs/PH13_PROJECT_SD.md):主表單掛專案用,只需要
+   *  啟用中的專案(`ProjectSelector`/`ProjectPickerDialog` 内部已經會過濾
+   *  `enabled=false`,這裡傳全量列表即可)。 */
+  projects?: ReadProject[]
+  /** 表單內直接新增專案(比照 onCreateCategory/onCreateTag 同款模式):不傳
+   *  則專案選擇彈窗不顯示「新增 "xxx"」內嵌入口。建立成功後回傳新專案,
+   *  失敗回傳 null(呼叫方已自行 toast 提示錯誤)。 */
+  onCreateProject?: (name: string) => Promise<ReadProject | null>
   /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):目前表單選中帳戶(必須是
    *  credit_card 類型)名下的回饋規則,給「勾選要走哪幾條規則」的多選用。
    *  呼叫方按 `form.account_name` 對應的帳戶單獨拉,非信用卡帳戶传空数组。 */
@@ -270,6 +280,8 @@ export function TransactionsPanel({
   tags,
   debts = [],
   canCreateDebt = false,
+  projects = [],
+  onCreateProject,
   rewardRules = [],
   onCreateCategory,
   onCreateTag,
@@ -307,6 +319,7 @@ export function TransactionsPanel({
   const setOpen = onDialogOpenChange
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   // 拆帳(§2.4):null = 分类 picker 打开时选的是主分类字段;数字 = 选的是
   // splits[index] 那一行,同一个 CategoryPickerDialog 实例按这个分流 onSelect。
   const [splitPickerIndex, setSplitPickerIndex] = useState<number | null>(null)
@@ -338,6 +351,14 @@ export function TransactionsPanel({
         const trimmed = created.name.trim()
         if (form.tags.some((tagName) => tagName.trim().toLowerCase() === trimmed.toLowerCase())) return
         onFormChange({ ...form, tags: [...form.tags, trimmed] })
+      }
+    : undefined
+  // 表單內直接新增專案(Phase 13):建立成功後直接寫回 form,選中新專案。
+  const handleCreateProject = onCreateProject
+    ? async (name: string) => {
+        const created = await onCreateProject(name)
+        if (!created) return
+        onFormChange({ ...form, project_id: created.id, project_name: created.name.trim() })
       }
     : undefined
   const textActionClass =
@@ -933,6 +954,25 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
+            {/* 專案(Phase 13,docs/PH13_PROJECT_SD.md):只支援 expense/income
+                (跟債務/退款同款排除 transfer),手動指定這筆交易屬於哪個專案。 */}
+            {!isTransfer ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.project')}</Label>
+                <button
+                  type="button"
+                  disabled={dictionariesLoading}
+                  onClick={() => setProjectPickerOpen(true)}
+                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className={`flex-1 truncate ${form.project_name ? '' : 'text-muted-foreground'}`}>
+                    {form.project_name || t('transactions.placeholder.project')}
+                  </span>
+                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                </button>
+              </div>
+            ) : null}
+
             {/* 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記交易時手動
                 勾選這筆消費要走哪幾條回饋規則(可複選)——系統不再依 category/
                 金額自動判斷,只在 expense + 選中帳戶是信用卡時顯示。
@@ -1509,6 +1549,19 @@ export function TransactionsPanel({
             category_kind: form.tx_type,
           })
         }}
+      />
+
+      {/* 專案(Phase 13,docs/PH13_PROJECT_SD.md):單選 + 支援表單內直接新增。 */}
+      <ProjectPickerDialog
+        open={projectPickerOpen}
+        onClose={() => setProjectPickerOpen(false)}
+        projects={projects}
+        selectedId={form.project_id || undefined}
+        title={t('transactions.field.project')}
+        onClear={() => onFormChange({ ...form, project_id: '', project_name: '' })}
+        clearLabel={t('transactions.placeholder.project')}
+        onCreateNew={handleCreateProject}
+        onSelect={(project) => onFormChange({ ...form, project_id: project.id, project_name: project.name })}
       />
     </>
   )

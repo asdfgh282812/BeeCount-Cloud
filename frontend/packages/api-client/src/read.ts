@@ -19,6 +19,7 @@ import type {
   ReadInstallmentPlan,
   ReadLedger,
   ReadLedgerDetail,
+  ReadProject,
   ReadRecurringRule,
   ReadTag,
   ReadTransaction,
@@ -263,6 +264,18 @@ export async function fetchReadDebts(
 
 /** MOZE_FEATURE_GAP_SD.md §2.10 Phase 5 —— 對帳記錄列表,按 statement_date
  *  降序(最近的在前)。`computed_balance`/`difference` 由 server 即时算出。 */
+/** docs/PH13_PROJECT_SD.md Phase 13 —— 專案列表,按 sort_order 升序。
+ *  `spent`/`remaining`/`progress_pct`/`status` 由 server 即时算出。 */
+export async function fetchReadProjects(
+  token: string,
+  ledgerId: string,
+): Promise<ReadProject[]> {
+  return authedGet<ReadProject[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects`,
+    token,
+  )
+}
+
 /** 對帳模式(§2.10 Phase 5,2026-08-09 改版):「這期帳單」的交易清單,
  *  `cycleOffset` 語意跟 `fetchAccountBillingSummary` 一致(0 = 最近一次已
  *  結束的週期)。`account_id` 必須是 account_group 或沒掛靠群組的獨立信用卡

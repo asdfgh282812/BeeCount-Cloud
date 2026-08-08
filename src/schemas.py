@@ -578,6 +578,11 @@ class ReadTransactionOut(BaseModel):
     debt_id: str | None = None
     debt_counterparty_name: str | None = None
     debt_direction: DebtDirection | None = None
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md §2.2):指向这笔交易关联的專案
+    # sync_id;None = 沒掛專案。project_name 是反查这个專案拿到的展示字段
+    # (对齐 debt_counterparty_name 的既有惯例),讓前端不用額外查表。
+    project_id: str | None = None
+    project_name: str | None = None
     # 拆帳(§2.4):has_splits=True 时 category_id/category_name 为 None(前端
     # 显示"多分类"),明细在 splits;False 时 splits 是空列表,走原本单分类显示。
     has_splits: bool = False
@@ -1015,6 +1020,39 @@ class ReadDebtOut(BaseModel):
     ledger_name: str | None = None
 
 
+ProjectPeriodType = Literal["fixed", "monthly", "yearly"]
+# 對齊 Moze 總覽頁狀態指標:✅ 正常 / ⚠️ 接近上限 / 🚨 超支。沒設預算
+# (budget_amount=None)一律 "ok"(純追蹤用途,無上限概念)。
+ProjectStatus = Literal["ok", "warning", "over"]
+
+
+class ReadProjectOut(BaseModel):
+    """專案只读视图(Phase 13,docs/PH13_PROJECT_SD.md)。`spent`/`remaining`/
+    `progress_pct`/`status` 不落库,是读路径从 `read_tx_projection.
+    project_sync_id` 反查交易、依 period_type 算出當期起訖窗口即時彙總出的
+    derived 字段(见 `ReadProjectProjection` docstring)。"""
+    id: str
+    name: str
+    icon: str | None = None
+    budget_amount: float | None = None
+    period_type: ProjectPeriodType
+    period_start: date | None = None
+    period_end: date | None = None
+    carryover_enabled: bool
+    visible_on_home: bool
+    enabled: bool
+    sort_order: int
+    # 當期(依 period_type 滾動計算的起訖窗口)累計花費,取絕對值。
+    spent: float
+    # budget_amount 為 None 時 remaining/progress_pct 也是 None(沒有上限概念)。
+    remaining: float | None = None
+    progress_pct: float | None = None
+    status: ProjectStatus
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
 class ReadTxTemplateOut(BaseModel):
     """交易範本只读视图(§2.7)。"""
     id: str
@@ -1384,6 +1422,11 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 收款。None = 普通交易。debt_id 必须指向该账本下已存在的欠款
     # (write/_shared.py `_assert_debt_exists`),允许多笔部分还款。
     debt_id: str | None = None
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md §2.2):这笔交易手動指定屬於
+    # 哪個 project_id。None = 不掛專案。只支援 expense/income
+    # (write/_shared.py `_assert_project_exists` 拒絕 transfer/adjustment
+    # 帶這個欄位),project_id 必须指向该账本下已存在的專案。
+    project_id: str | None = None
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易要
     # 走哪幾條回饋規則(可複選)。None/不传 = 不挂任何规则。每个 id 必须指向
     # `account_id` 这张信用卡自己名下的规则(write/_shared.py
@@ -1436,6 +1479,8 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     splits: list["WriteTxSplitItem"] | None = None
     # 借還款追蹤(§2.5 Phase 3):None = 不变。传空字符串清空关联。
     debt_id: str | None = None
+    # 專案(Phase 13):None = 不变。传空字符串清空关联。
+    project_id: str | None = None
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):None(不传该 key)= 不变。
     # 传空列表 [] = 清空,传非空列表 = 整批替换。
     reward_rule_ids: list[str] | None = None
@@ -1700,6 +1745,35 @@ class WriteDebtUpdateRequest(WriteBaseRequest):
     # 結案(體驗補強):key 不出現 = 不變;傳 ISO 時間 = 結案;傳 null = 重新
     # 開啟。跟 due_at/refund_of_id 同款「以 key 是否出現判斷是否要改」語意。
     closed_at: datetime | None = None
+
+
+class WriteProjectCreateRequest(WriteBaseRequest):
+    name: str = Field(min_length=1, max_length=255)
+    icon: str | None = Field(default=None, max_length=32)
+    budget_amount: float | None = Field(default=None, gt=0)
+    period_type: ProjectPeriodType = "monthly"
+    # `period_type == "fixed"` 時必填(write/_shared.py 校驗),monthly/yearly
+    # 不使用,週期由系統依當下日期滾動計算。
+    period_start: date | None = None
+    period_end: date | None = None
+    carryover_enabled: bool = False
+    visible_on_home: bool = True
+    enabled: bool = True
+    sort_order: int = 0
+
+
+class WriteProjectUpdateRequest(WriteBaseRequest):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    icon: str | None = Field(default=None, max_length=32)
+    # key 不出現 = 不變;顯式傳 null = 清空預算(改回純追蹤用途);傳正數 = 更新。
+    budget_amount: float | None = Field(default=None, gt=0)
+    period_type: ProjectPeriodType | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    carryover_enabled: bool | None = None
+    visible_on_home: bool | None = None
+    enabled: bool | None = None
+    sort_order: int | None = None
 
 
 class WriteStatementClearConfirmationsRequest(WriteBaseRequest):

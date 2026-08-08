@@ -67,6 +67,9 @@ const SettingsProfilePage = lazy(() =>
 const TagsPage = lazy(() =>
   import('./pages/sections/TagsPage').then((m) => ({ default: m.TagsPage })),
 )
+const ProjectsPage = lazy(() =>
+  import('./pages/sections/ProjectsPage').then((m) => ({ default: m.ProjectsPage })),
+)
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
@@ -300,6 +303,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <TagsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="projects"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ProjectsPage />
             </Suspense>
           }
         />

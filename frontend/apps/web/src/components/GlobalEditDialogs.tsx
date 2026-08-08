@@ -4,10 +4,12 @@ import {
   createCategory,
   createDebt,
   createInstallmentPlan,
+  createProject,
   createTag,
   createTransaction,
   fetchCardRewardRules,
   fetchReadDebts,
+  fetchReadProjects,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
@@ -16,6 +18,7 @@ import {
   uploadAttachment,
   type ReadCardRewardRule,
   type ReadDebt,
+  type ReadProject,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -92,6 +95,9 @@ export function GlobalEditDialogs() {
   // 借還款追蹤(§2.5 體驗補強):ledger-scoped,跟 account/category/tag
   // 一起按 ledgerId 拉,同 TransactionsPage 的 txDictionaryDebts 逻辑。
   const [editTxDebts, setEditTxDebts] = useState<ReadDebt[]>([])
+  // 專案(Phase 13,docs/PH13_PROJECT_SD.md):同款语义,ledger-scoped,
+  // 跟 debt 一起按 ledgerId 拉。
+  const [editTxProjects, setEditTxProjects] = useState<ReadProject[]>([])
   // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):跟 TransactionsPage 同款,
   // 按目前表单选中的信用卡帐户单独拉,不进 loadRefsForLedger 的批量字典。
   const [editTxRewardRules, setEditTxRewardRules] = useState<ReadCardRewardRule[]>([])
@@ -171,22 +177,27 @@ export function GlobalEditDialogs() {
   // TransactionsPage.tsx::txCanCreateDebt 同一判断口径。
   const editTxCanCreateDebt =
     ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
+  // 專案(Phase 13):新建專案同样是 owner-only 的 `POST .../projects`。
+  const editTxCanManageProjects =
+    ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
 
   const loadRefsForLedger = useCallback(
     async (ledgerId: string) => {
       if (!ledgerId) return
       setRefsLoading(true)
       try {
-        const [accts, cats, tagsList, debtsList] = await Promise.all([
+        const [accts, cats, tagsList, debtsList, projectsList] = await Promise.all([
           fetchWorkspaceAccounts(token, { ledgerId, limit: 500 }),
           fetchWorkspaceCategories(token, { ledgerId, limit: 500 }),
           fetchWorkspaceTags(token, { ledgerId, limit: 500 }),
           fetchReadDebts(token, ledgerId).catch(() => []),
+          fetchReadProjects(token, ledgerId).catch(() => []),
         ])
         setEditTxAccounts(accts)
         setEditTxCategories(cats)
         setEditTxTags(tagsList)
         setEditTxDebts(debtsList)
+        setEditTxProjects(projectsList)
       } catch (err) {
         notifyError(err)
       } finally {
@@ -272,6 +283,39 @@ export function GlobalEditDialogs() {
     [editTxLedgerId, retryOnConflict, token, notifyError],
   )
 
+  // 專案(Phase 13):同 TransactionsPage.tsx::onCreateTxProject 邏輯。
+  const onCreateTxProject = useCallback(
+    async (name: string): Promise<ReadProject | null> => {
+      const ledgerId = editTxLedgerId.trim()
+      if (!ledgerId) return null
+      try {
+        const res = await retryOnConflict(ledgerId, (base) =>
+          createProject(token, ledgerId, base, { name }),
+        )
+        const created: ReadProject = {
+          id: res.entity_id || '',
+          name,
+          period_type: 'monthly',
+          carryover_enabled: false,
+          visible_on_home: true,
+          enabled: true,
+          sort_order: 0,
+          spent: 0,
+          status: 'ok',
+          last_change_id: res.new_change_id,
+          ledger_id: ledgerId,
+          ledger_name: null,
+        }
+        setEditTxProjects((prev) => [...prev, created])
+        return created
+      } catch (err) {
+        notifyError(err)
+        return null
+      }
+    },
+    [editTxLedgerId, retryOnConflict, token, notifyError],
+  )
+
   // 监听全局 openEditTx 事件 — 任何页 dispatch 都会被这里接住
   // 先 await fetch refs 再 open dialog,避免下拉空数据闪现
   useEffect(() => {
@@ -324,6 +368,8 @@ export function GlobalEditDialogs() {
         exclude_from_budget: Boolean(tx.exclude_from_budget),
         refund_of_id: tx.refund_of_id || '',
         debt_id: tx.debt_id || '',
+        project_id: tx.project_id || '',
+        project_name: tx.project_name || '',
         reward_rule_ids: tx.reward_rule_ids || [],
         // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
         split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
@@ -615,6 +661,8 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type !== 'transfer' && editTxForm.debt_id !== '__new__'
           ? editTxForm.debt_id.trim() || null
           : null,
+      // 專案(Phase 13):同 TransactionsPage.onSaveTransaction。
+      project_id: editTxForm.tx_type !== 'transfer' ? editTxForm.project_id.trim() || null : null,
       // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):同 TransactionsPage.onSaveTransaction。
       reward_rule_ids: editTxForm.tx_type === 'expense' ? editTxForm.reward_rule_ids : [],
       // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建生效。
@@ -789,6 +837,8 @@ export function GlobalEditDialogs() {
       tags={editTxTags}
       debts={editTxDebts}
       canCreateDebt={editTxCanCreateDebt}
+      projects={editTxProjects}
+      onCreateProject={editTxCanManageProjects ? onCreateTxProject : undefined}
       rewardRules={editTxRewardRules}
       onCreateCategory={onCreateTxCategory}
       onCreateTag={onCreateTxTag}

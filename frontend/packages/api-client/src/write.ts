@@ -20,6 +20,8 @@ import type {
   InstallmentRebalancePayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
+  ProjectCreatePayload,
+  ProjectUpdatePayload,
   ReadAccount,
   ReadCategory,
   ReadTag,
@@ -644,6 +646,51 @@ export async function deleteDebt(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** docs/PH13_PROJECT_SD.md Phase 13 —— 專案。 */
+export async function createProject(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: ProjectCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+export async function updateProject(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  baseChangeId: number,
+  payload: ProjectUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** 專案底下已有交易掛著時,server 會自動改成軟刪除(`enabled=false`)而非
+ *  物理刪除,呼叫方不需要分辨,回傳的 WriteCommitMeta 語意一致。 */
+export async function deleteProject(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}`,
     token,
     { base_change_id: baseChangeId },
   )

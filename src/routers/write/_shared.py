@@ -47,6 +47,7 @@ from ...models import (
     LedgerMember,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadProjectProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
     SyncChange,
@@ -81,6 +82,8 @@ from ...schemas import (
     WriteInstallmentRebalanceRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteProjectCreateRequest,
+    WriteProjectUpdateRequest,
     WriteRecurringOccurrenceUpdateRequest,
     WriteRecurringRuleCreateRequest,
     WriteRecurringRuleUpdateRequest,
@@ -105,6 +108,7 @@ from ...snapshot_mutator import (
     create_debt,
     create_installment_period,
     create_installment_plan,
+    create_project,
     create_recurring_rule,
     create_tag,
     create_transaction,
@@ -116,6 +120,7 @@ from ...snapshot_mutator import (
     delete_debt,
     delete_installment_period,
     delete_installment_plan,
+    delete_project,
     delete_recurring_rule,
     delete_tag,
     delete_transaction,
@@ -128,6 +133,7 @@ from ...snapshot_mutator import (
     update_debt,
     update_installment_period,
     update_installment_plan,
+    update_project,
     update_recurring_rule,
     update_tag,
     update_transaction,
@@ -200,6 +206,7 @@ _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
+    "project": projection.upsert_project,
     "tx_template": projection.upsert_tx_template,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
@@ -209,6 +216,7 @@ _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "installment_plan": projection.delete_installment_plan,
     "installment_period": projection.delete_installment_period,
     "debt": projection.delete_debt,
+    "project": projection.delete_project,
     "tx_template": projection.delete_tx_template,
 }
 
@@ -492,6 +500,9 @@ def _emit_entity_diffs(
                       prev.get("debts") or [], next_snapshot.get("debts") or [],
                       "debt", emitted_ids)
     _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("projects") or [], next_snapshot.get("projects") or [],
+                      "project", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("txTemplates") or [], next_snapshot.get("txTemplates") or [],
                       "tx_template", emitted_ids)
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", len(emitted_ids), ledger.external_id)
@@ -674,6 +685,35 @@ def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> ReadDeb
     return debt
 
 
+def _assert_project_exists(
+    db: Session, *, ledger_id: str, project_id: str, tx_type: str | None,
+) -> ReadProjectProjection:
+    """專案(Phase 13,docs/PH13_PROJECT_SD.md §2.2):`project_id` 必须指向
+    该账本下真实存在的一個專案,否則一筆交易會掛一個查無對應專案的孤兒反查
+    欄位,讀路徑 `list_projects` 反查 SUM 永遠算不到它(比照 `_assert_debt_
+    exists` 同款存在性檢查)。同時只支援 expense/income——transfer「轉去哪」
+    沒有花在哪個專案的語意,adjustment 已經被 `_assert_valid_adjustment_tx`
+    整體擋掉分類/關聯類欄位,這裡再擋一次 transfer 是因為 adjustment 檢查
+    不會涵蓋 transfer 的組合。"""
+    if tx_type not in ("expense", "income"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="project_id can only be set on expense/income transactions",
+        )
+    project = db.scalar(
+        select(ReadProjectProjection).where(
+            ReadProjectProjection.ledger_id == ledger_id,
+            ReadProjectProjection.sync_id == project_id,
+        ).limit(1)
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="project not found",
+        )
+    return project
+
+
 def _assert_reward_rules_valid(
     db: Session, *, user_id: str, account_id: str | None, reward_rule_ids: list[str],
 ) -> None:
@@ -723,11 +763,12 @@ def _assert_valid_adjustment_tx(
     splits: Any,
     refund_of_id: str | None,
     debt_id: str | None,
+    project_id: str | None,
     reward_rule_ids: Any,
 ) -> None:
     """餘額調整(§2.10 Phase 5):`tx_type == "adjustment"` 只描述「這個帳戶
     餘額被直接修正了多少」,語意上不該疊加分類/轉帳對象/拆帳/退款/欠款/
-    紅利回饋這些屬於一般收支/轉帳交易的概念——校验成功路径(語意化端點
+    專案/紅利回饋這些屬於一般收支/轉帳交易的概念——校验成功路径(語意化端點
     `POST .../balance-adjustment`)只会产生完全干净的 payload,这里是给
     直接调用 `POST/PATCH .../transactions` 手动传 `tx_type=adjustment` 的
     调用方(未来 mobile / API 直连)兜底,create/update 两条 fast path 都要
@@ -763,6 +804,11 @@ def _assert_valid_adjustment_tx(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="adjustment transactions cannot be linked to a debt",
+        )
+    if project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="adjustment transactions cannot be linked to a project",
         )
     if reward_rule_ids:
         raise HTTPException(
@@ -959,6 +1005,7 @@ async def _commit_create_tx_fast(
             splits=splits_payload,
             refund_of_id=refund_of_id,
             debt_id=mutate_payload.get("debt_id"),
+            project_id=mutate_payload.get("project_id"),
             reward_rule_ids=mutate_payload.get("reward_rule_ids"),
         )
         if splits_payload:
@@ -1007,6 +1054,12 @@ async def _commit_create_tx_fast(
                     direction=debt_row.direction,
                     counterparty_name=debt_row.counterparty_name,
                 )
+        project_id = mutate_payload.get("project_id")
+        if project_id:
+            _assert_project_exists(
+                db, ledger_id=ledger.id, project_id=str(project_id),
+                tx_type=mutate_payload.get("tx_type"),
+            )
         reward_rule_ids = mutate_payload.get("reward_rule_ids")
         if reward_rule_ids:
             _assert_reward_rules_valid(
@@ -1255,6 +1308,14 @@ async def _commit_write_fast_tx(
             debt_id = mutate_payload.get("debt_id")
             if debt_id:
                 _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+            # 專案(Phase 13):同款语义,显式改 project_id(非空)时才校验存在性
+            # 与 tx_type 限制 —— exclude_unset 没传该 key 代表这次 PATCH 不动它。
+            project_id = mutate_payload.get("project_id")
+            if project_id:
+                _assert_project_exists(
+                    db, ledger_id=ledger.id, project_id=str(project_id),
+                    tx_type=mutate_payload.get("tx_type") or prev_item.get("type"),
+                )
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
@@ -1276,8 +1337,17 @@ async def _commit_write_fast_tx(
                 splits=new_item.get("splits"),
                 refund_of_id=new_item.get("refundOfId"),
                 debt_id=new_item.get("debtId"),
+                project_id=new_item.get("projectId"),
                 reward_rule_ids=new_item.get("rewardRuleIds"),
             )
+            # 專案(Phase 13):同上,在 merge 后的最终状态上再擋一次
+            # tx_type 限制 —— 涵蓋「project_id 沒變,但這次 PATCH 把 tx_type
+            # 改成 transfer」這種 adjustment 檢查涵蓋不到的組合。
+            if new_item.get("projectId") and new_item.get("type") not in ("expense", "income"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="project_id can only be set on expense/income transactions",
+                )
 
             # 退款分类自动归类(2026-08-04 使用者反馈):跟 create 快路径同一套
             # 逻辑,搬到 merge 后的最终状态判断——`prev_item` 原本不是退款、
@@ -1545,6 +1615,11 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 时,不带上这个会让 debtId 反查在这次 upsert 后被静默清空。
     if row.debt_sync_id is not None:
         item["debtId"] = row.debt_sync_id
+    # 專案(Phase 13):同理,fast path 编辑一笔已掛專案交易的其它字段时,
+    # 不带上这个会让 projectId 反查在这次 upsert 后被静默清空(CLAUDE.md
+    # 記過的既有 bug 模式,見 `_shared.py::_projection_row_to_tx_dict` docstring)。
+    if row.project_sync_id is not None:
+        item["projectId"] = row.project_sync_id
     # 拆帳(§2.4):同理,fast path 编辑一笔拆帳交易的其它字段(备注/金额)时,
     # 不带上旧 splits 会让 update_transaction 因为 payload 没传 "splits" key
     # 而保留 prev_item 里的值 —— 前提是这里真的把它塞进 prev_item。
@@ -2026,6 +2101,7 @@ __all__ = [
     'LedgerMember',
     'ReadCardRewardRuleProjection',
     'ReadDebtProjection',
+    'ReadProjectProjection',
     'ReadTxProjection',
     'ReadTxTemplateProjection',
     'SyncChange',
@@ -2057,6 +2133,8 @@ __all__ = [
     'WriteInstallmentRebalanceRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteProjectCreateRequest',
+    'WriteProjectUpdateRequest',
     'WriteStatementClearConfirmationsRequest',
     'WriteRecurringOccurrenceUpdateRequest',
     'WriteRecurringRuleCreateRequest',
@@ -2081,6 +2159,7 @@ __all__ = [
     'create_debt',
     'create_installment_period',
     'create_installment_plan',
+    'create_project',
     'create_recurring_rule',
     'create_tag',
     'create_transaction',
@@ -2092,6 +2171,7 @@ __all__ = [
     'delete_debt',
     'delete_installment_period',
     'delete_installment_plan',
+    'delete_project',
     'delete_recurring_rule',
     'delete_tag',
     'delete_transaction',
@@ -2104,6 +2184,7 @@ __all__ = [
     'update_debt',
     'update_installment_period',
     'update_installment_plan',
+    'update_project',
     'update_recurring_rule',
     'update_tag',
     'update_transaction',
@@ -2116,6 +2197,7 @@ __all__ = [
     '_WRITE_RESPONSES',
     '_utcnow',
     '_assert_debt_exists',
+    '_assert_project_exists',
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
     '_assert_category_required',

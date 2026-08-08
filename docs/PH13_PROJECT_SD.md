@@ -5,6 +5,14 @@ checklist 盤點清楚，**本文件不包含任何程式改動**，實作留待
 展開（比照 `docs/PH6_USER_FEEDBACK_2026-08_SD.md` 的既有慣例：先寫 SD、
 之後分段做）。
 
+> **2026-08-08 UI 位置修正**：本文件 §0/§3.1/§4.1 原本把「專案」設計成
+> 「標籤」分頁底下的子分頁，這是當時使用者指定的 UI 位置。實作完成後使用
+> 者改變主意，要求把「專案」分開成獨立入口、緊鄰頂部導航「標籤」右側（見
+> `frontend/packages/web-features/src/nav.ts` NAV_GROUPS 的 bookkeeping 組、
+> `frontend/apps/web/src/pages/sections/ProjectsPage.tsx` 新路由
+> `/app/projects`）。以下內文提到「標籤分頁底下的子分頁」的地方，UI 位置
+> 已改成如上所述，其餘設計（entity 結構、資料模型獨立於標籤）不變。
+
 ---
 
 ## 0. 背景

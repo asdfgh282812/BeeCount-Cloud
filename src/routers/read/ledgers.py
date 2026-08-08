@@ -338,6 +338,23 @@ def list_transactions(
         for debt_sid, debt_counterparty_name, debt_direction in debt_info_rows:
             debt_info_by_id[debt_sid] = (debt_counterparty_name, debt_direction)
 
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md):同款批次反查模式,建
+    # sync_id -> name 字典,讓前端不用額外查表就能顯示交易掛的專案名稱。
+    project_sync_ids = {row.project_sync_id for row in rows if row.project_sync_id}
+    project_name_by_id: dict[str, str] = {}
+    if project_sync_ids:
+        project_rows = db.execute(
+            select(
+                ReadProjectProjection.sync_id,
+                ReadProjectProjection.name,
+            ).where(
+                ReadProjectProjection.ledger_id == ledger.id,
+                ReadProjectProjection.sync_id.in_(project_sync_ids),
+            )
+        ).all()
+        for project_sid, project_name in project_rows:
+            project_name_by_id[project_sid] = project_name
+
     results: list[ReadTransactionOut] = []
     for row in rows:
         tag_ids: list[str] = []
@@ -398,6 +415,8 @@ def list_transactions(
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
+                project_id=row.project_sync_id,
+                project_name=project_name_by_id.get(row.project_sync_id) if row.project_sync_id else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
                 deferred_posting_at=row.deferred_posting_at,
@@ -1476,6 +1495,119 @@ def list_debts(
                 note=row.note,
                 repayments=repayments_by_debt.get(row.sync_id, []),
                 closed_at=row.closed_at,
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return out
+
+
+def _project_period_range(
+    period_type: str, period_start, period_end, now: datetime,
+) -> tuple[datetime, datetime] | None:
+    """專案(Phase 13)當期起訖窗口:
+    - `fixed`:直接用 period_start/period_end(轉成當天 UTC 零點 ~ 隔天零點,
+      含頭尾兩天)。缺欄位時視為無有效窗口(彙總回 0),不拋錯——歷史髒資料
+      不該讓整個列表 500。
+    - `monthly`/`yearly`:依「當下日期」滾動計算(不依賴帳本 month_start_day,
+      專案沒有自己的 start_day 欄位,固定用日曆月/年 1 號起算)。
+    """
+    if period_type == "fixed":
+        if period_start is None or period_end is None:
+            return None
+        start = datetime(period_start.year, period_start.month, period_start.day, tzinfo=timezone.utc)
+        end_day = datetime(period_end.year, period_end.month, period_end.day, tzinfo=timezone.utc)
+        end = end_day + timedelta(days=1)
+        return start, end
+    if period_type == "yearly":
+        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = start.replace(year=start.year + 1)
+        return start, end
+    # monthly(默认兜底)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/projects",
+    response_model=list[ReadProjectOut],
+)
+def list_projects(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadProjectOut]:
+    """專案只读列表(Phase 13,docs/PH13_PROJECT_SD.md)。`spent`/`remaining`/
+    `progress_pct`/`status` 不落库,从 `read_tx_projection.project_sync_id`
+    反查交易,依 period_type 算出當期起訖窗口即時彙總算出(见
+    `ReadProjectProjection` docstring)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadProjectProjection).where(
+            ReadProjectProjection.ledger_id == ledger.id,
+        ).order_by(ReadProjectProjection.sort_order.asc(), ReadProjectProjection.sync_id.asc())
+    ).all()
+    if not rows:
+        return []
+
+    now = datetime.now(timezone.utc)
+    out: list[ReadProjectOut] = []
+    for row in rows:
+        window = _project_period_range(row.period_type or "monthly", row.period_start, row.period_end, now)
+        spent = 0.0
+        if window is not None:
+            start, end = window
+            spent = float(db.scalar(
+                select(func.coalesce(func.sum(
+                    func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+                ), 0.0)).where(
+                    ReadTxProjection.ledger_id == ledger.id,
+                    ReadTxProjection.project_sync_id == row.sync_id,
+                    ReadTxProjection.happened_at >= start,
+                    ReadTxProjection.happened_at < end,
+                )
+            ) or 0.0)
+            spent = abs(spent)
+        budget_amount = float(row.budget_amount) if row.budget_amount is not None else None
+        remaining: float | None = None
+        progress_pct: float | None = None
+        project_status: str = "ok"
+        if budget_amount is not None and budget_amount > 0:
+            remaining = budget_amount - spent
+            progress_pct = round(min(spent / budget_amount, 999.0) * 100.0, 2)
+            if spent >= budget_amount:
+                project_status = "over"
+            elif spent >= budget_amount * 0.8:
+                project_status = "warning"
+        out.append(
+            ReadProjectOut(
+                id=row.sync_id,
+                name=row.name or "",
+                icon=row.icon,
+                budget_amount=budget_amount,
+                period_type=cast("Any", row.period_type or "monthly"),
+                period_start=row.period_start,
+                period_end=row.period_end,
+                carryover_enabled=bool(row.carryover_enabled),
+                visible_on_home=bool(row.visible_on_home),
+                enabled=bool(row.enabled),
+                sort_order=int(row.sort_order or 0),
+                spent=spent,
+                remaining=remaining,
+                progress_pct=progress_pct,
+                status=cast("Any", project_status),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

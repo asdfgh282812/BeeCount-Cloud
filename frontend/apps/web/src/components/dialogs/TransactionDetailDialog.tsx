@@ -17,7 +17,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
+import { Briefcase, Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -271,6 +271,17 @@ export function TransactionDetailDialog({
                       </span>
                     )
                   }
+                />
+              ) : null}
+              {/* 專案(Phase 13,docs/PH13_PROJECT_SD.md):tx.project_id 存在時
+                  顯示掛的專案名稱,純展示,沒有專門的專案詳情頁可跳轉
+                  (專案在「標籤」分頁底下,不像 debt 有獨立頁面 + highlight
+                  query param)。 */}
+              {tx.project_id ? (
+                <DetailRow
+                  icon={<Briefcase className="h-4 w-4" />}
+                  label={t('transactions.field.project')}
+                  value={<span>{tx.project_name || '—'}</span>}
                 />
               ) : null}
               {/* 信用卡紅利回饋自動入帳(§2.9.5.4 補強):tx.reward_source_tx_id

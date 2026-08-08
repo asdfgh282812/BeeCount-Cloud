@@ -48,6 +48,12 @@ export type TxForm = {
    *  '__new__' = 用这笔交易顺便建一笔新欠款(见下面 new_debt_* 两个字段)。
    *  跟 refund_of_id 同款语意,expense/income 都可选,transfer 不适用。 */
   debt_id: string
+  /** 專案(Phase 13,docs/PH13_PROJECT_SD.md):这笔交易关联的專案 syncId。
+   *  ''=不掛專案。只在 expense/income 顯示,跟 debt_id 同款语意
+   *  (transfer 隱藏此欄位)。 */
+  project_id: string
+  /** 選中專案的顯示名(給 UI 展示當前選中,不傳給 server)。 */
+  project_name: string
   /** debt_id === '__new__' 时用:新欠款的对方名字(必填)/到期日(可选,
    *  纯日期字符串 yyyy-mm-dd)。direction 不在表单里存 —— 由 tx_type 在
    *  提交时推算(income=payable 我欠对方,expense=receivable 对方欠我),
@@ -278,6 +284,28 @@ export type DebtForm = {
   note: string
 }
 
+export type ProjectPeriodType = 'fixed' | 'monthly' | 'yearly'
+
+export type ProjectForm = {
+  /** 编辑模式 = project syncId,新建 = null。 */
+  editingId: string | null
+  name: string
+  /** emoji 字串,選填。 */
+  icon: string
+  /** 金额字符串,空字符串 = 不設預算(純追蹤用途)。 */
+  budget_amount: string
+  period_type: ProjectPeriodType
+  /** date input 用的 yyyy-mm-dd 字符串。`period_type==='fixed'` 時必填。 */
+  period_start: string
+  period_end: string
+  carryover_enabled: boolean
+  visible_on_home: boolean
+  /** 軟刪除(有交易掛著時 DELETE 會把這個設成 false)後,編輯表單裡可以
+   *  手動切回 true 重新啟用 —— 沒有獨立的「重新開啟」端點,靠 PATCH 這個
+   *  欄位達成(跟 debt 的 close/reopen 不同,不需要專門的按鈕/端點)。 */
+  enabled: boolean
+}
+
 export type TxTemplateForm = {
   /** 编辑模式 = template syncId,新建 = null。 */
   editingId: string | null
@@ -318,6 +346,8 @@ export const txDefaults = (): TxForm => ({
   exclude_from_budget: false,
   refund_of_id: '',
   debt_id: '',
+  project_id: '',
+  project_name: '',
   new_debt_counterparty_name: '',
   new_debt_due_at: '',
   deferred_posting_at: '',
@@ -461,6 +491,19 @@ export const debtDefaults = (): DebtForm => ({
   principal_amount: '',
   due_at: '',
   note: '',
+})
+
+export const projectDefaults = (): ProjectForm => ({
+  editingId: null,
+  name: '',
+  icon: '',
+  budget_amount: '',
+  period_type: 'monthly',
+  period_start: '',
+  period_end: '',
+  carryover_enabled: false,
+  visible_on_home: true,
+  enabled: true,
 })
 
 export const txTemplateDefaults = (): TxTemplateForm => ({

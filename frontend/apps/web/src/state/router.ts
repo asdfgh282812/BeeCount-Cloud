@@ -16,6 +16,7 @@ export const APP_SECTIONS: AppSection[] = [
   'accounts',
   'categories',
   'tags',
+  'projects',
   'budgets',
   'recurring-rules',
   'installment-plans',
@@ -88,6 +89,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'categories'
     case 'tags':
       return 'tags'
+    case 'projects':
+      return 'projects'
     case 'budgets':
       return 'budgets'
     case 'recurring-rules':
@@ -190,6 +193,7 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'accounts' ||
     parts[1] === 'categories' ||
     parts[1] === 'tags' ||
+    parts[1] === 'projects' ||
     parts[1] === 'budgets' ||
     parts[1] === 'recurring-rules' ||
     parts[1] === 'installment-plans' ||
@@ -226,6 +230,8 @@ export function routePath(route: AppRoute): string {
       return '/app/categories'
     case 'tags':
       return '/app/tags'
+    case 'projects':
+      return '/app/projects'
     case 'budgets':
       return '/app/budgets'
     case 'recurring-rules':

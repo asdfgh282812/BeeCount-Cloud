@@ -462,6 +462,8 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["recurringRuleId"] = str(payload.get("recurring_rule_id"))
     if payload.get("debt_id") is not None:
         item["debtId"] = str(payload.get("debt_id"))
+    if payload.get("project_id") is not None:
+        item["projectId"] = str(payload.get("project_id"))
     if payload.get("deferred_posting_at") is not None:
         item["deferredPostingAt"] = _to_iso8601(payload.get("deferred_posting_at"))
     reward_rule_ids_raw = payload.get("reward_rule_ids")
@@ -641,6 +643,12 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("debtId", None)
         else:
             item["debtId"] = str(value)
+    if "project_id" in payload:
+        value = payload.get("project_id")
+        if value is None or str(value).strip() == "":
+            item.pop("projectId", None)
+        else:
+            item["projectId"] = str(value)
     if "deferred_posting_at" in payload:
         value = payload.get("deferred_posting_at")
         if value is None:
@@ -1643,6 +1651,125 @@ def delete_debt(snapshot: dict, debt_id: str, payload: dict | None = None) -> di
     idx, debt = _find_by_sync_id(debts, debt_id, expected_prefix="debt")
     _assert_actor_can_modify(debt, payload or {})
     debts.pop(idx)
+    return target
+
+
+# ============================================================================
+# 專案(Phase 13,docs/PH13_PROJECT_SD.md)—— 跟 budget/debt 同款 boilerplate。
+# 花費彙總不落庫,读路径从 read_tx_projection.project_sync_id 反查交易即时
+# 汇总算出(见 ReadProjectProjection docstring)。
+# ============================================================================
+
+
+_PROJECT_PERIOD_TYPES = {"fixed", "monthly", "yearly"}
+
+
+def create_project(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    projects = _ensure_list(target, "projects")
+    name = _normalize_name(payload.get("name"))
+    if not name:
+        raise ValueError("write validation failed: project name is required")
+    period_type = str(payload.get("period_type") or "monthly")
+    if period_type not in _PROJECT_PERIOD_TYPES:
+        raise ValueError("write validation failed: invalid period_type")
+    period_start = payload.get("period_start")
+    period_end = payload.get("period_end")
+    if period_type == "fixed" and (period_start is None or period_end is None):
+        raise ValueError(
+            "write validation failed: fixed period_type requires period_start and period_end"
+        )
+    budget_amount = _to_optional_float(payload.get("budget_amount"))
+    if budget_amount is not None and budget_amount <= 0:
+        raise ValueError("write validation failed: budget_amount must be > 0")
+    sync_id = _new_sync_id("proj")
+    project: dict[str, object] = {
+        "syncId": sync_id,
+        "name": name,
+        "periodType": period_type,
+        "carryoverEnabled": bool(payload.get("carryover_enabled")),
+        "visibleOnHome": bool(payload.get("visible_on_home")) if payload.get("visible_on_home") is not None else True,
+        "enabled": bool(payload.get("enabled")) if payload.get("enabled") is not None else True,
+        "sortOrder": _to_optional_int(payload.get("sort_order")) or 0,
+    }
+    if payload.get("icon") is not None:
+        project["icon"] = str(payload.get("icon"))
+    if budget_amount is not None:
+        project["budgetAmount"] = budget_amount
+    if period_start is not None:
+        project["periodStart"] = _date_only_iso8601(period_start)
+    if period_end is not None:
+        project["periodEnd"] = _date_only_iso8601(period_end)
+    _mark_entity_actor(project, payload, create=True)
+    projects.append(project)
+    return target, sync_id
+
+
+def update_project(snapshot: dict, project_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    projects = _ensure_list(target, "projects")
+    _, project = _find_by_sync_id(projects, project_id, expected_prefix="proj")
+    _assert_actor_can_modify(project, payload)
+
+    if "name" in payload:
+        name = _normalize_name(payload.get("name"))
+        if not name:
+            raise ValueError("write validation failed: project name is required")
+        project["name"] = name
+    if "icon" in payload:
+        value = payload.get("icon")
+        if value is None or str(value).strip() == "":
+            project.pop("icon", None)
+        else:
+            project["icon"] = str(value)
+    if "budget_amount" in payload:
+        value = payload.get("budget_amount")
+        if value is None:
+            project.pop("budgetAmount", None)
+        else:
+            budget_amount = _to_optional_float(value)
+            if budget_amount is None or budget_amount <= 0:
+                raise ValueError("write validation failed: budget_amount must be > 0")
+            project["budgetAmount"] = budget_amount
+    # period_type 变更时不强制立刻带 period_start/period_end(fixed 需要
+    # 两者才有意义,交给前端表单一起送;这里只做落库,不重複 create 那层的
+    # 强制校验 —— PATCH 通常是逐欄位调整,硬卡在这里反而卡死"先切 fixed
+    # 再补日期"这种分两步操作的合理场景)。
+    if "period_type" in payload:
+        period_type = str(payload.get("period_type") or "")
+        if period_type not in _PROJECT_PERIOD_TYPES:
+            raise ValueError("write validation failed: invalid period_type")
+        project["periodType"] = period_type
+    if "period_start" in payload:
+        value = payload.get("period_start")
+        if value is None:
+            project.pop("periodStart", None)
+        else:
+            project["periodStart"] = _date_only_iso8601(value)
+    if "period_end" in payload:
+        value = payload.get("period_end")
+        if value is None:
+            project.pop("periodEnd", None)
+        else:
+            project["periodEnd"] = _date_only_iso8601(value)
+    if "carryover_enabled" in payload:
+        project["carryoverEnabled"] = bool(payload.get("carryover_enabled"))
+    if "visible_on_home" in payload:
+        project["visibleOnHome"] = bool(payload.get("visible_on_home"))
+    if "enabled" in payload:
+        project["enabled"] = bool(payload.get("enabled"))
+    if "sort_order" in payload:
+        project["sortOrder"] = _to_optional_int(payload.get("sort_order")) or 0
+    _mark_entity_actor(project, payload, create=False)
+    return target
+
+
+def delete_project(snapshot: dict, project_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    projects = _ensure_list(target, "projects")
+    idx, project = _find_by_sync_id(projects, project_id, expected_prefix="proj")
+    _assert_actor_can_modify(project, payload or {})
+    projects.pop(idx)
     return target
 
 

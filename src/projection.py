@@ -28,6 +28,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
     ReadTxSplitProjection,
@@ -125,6 +126,28 @@ def _parse_happened_at(raw: Any):
         except ValueError:
             return datetime.now(timezone.utc)
     return datetime.now(timezone.utc)
+
+
+def _parse_date_only(raw: Any):
+    """periodStart/periodEnd(專案 Phase 13)是純日期(Date 欄位,無時區),
+    跟 happenedAt 的 DateTime 不同,不能複用 _parse_happened_at。"""
+    from datetime import date, datetime
+
+    if raw is None:
+        return None
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -361,6 +384,9 @@ def upsert_tx(
         # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义:None = 普通交易,缺键
         # 保留由上游 merge_with_existing 负责。
         "debt_sync_id": _as_str(payload.get("debtId")),
+        # 專案(Phase 13)反查字段,同款语义:None = 沒掛專案,缺键保留由
+        # 上游 merge_with_existing 负责。
+        "project_sync_id": _as_str(payload.get("projectId")),
         # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)反查字段,同款语义:None =
         # 没勾选任何规则,缺键保留由上游 merge_with_existing 负责。
         "reward_rule_sync_ids_json": reward_rule_sync_ids_json,
@@ -736,6 +762,42 @@ def upsert_debt(
 
 def delete_debt(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadDebtProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_project(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """專案(Phase 13,docs/PH13_PROJECT_SD.md)。花費彙總不落庫,見
+    ReadProjectProjection docstring —— 这里只落名稱/預算/期間等靜態字段。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "name": _as_str(payload.get("name")) or "",
+        "icon": _as_str(payload.get("icon")),
+        "budget_amount": _as_float_or_none(payload.get("budgetAmount")),
+        "period_type": _as_str(payload.get("periodType")) or "monthly",
+        "period_start": _parse_date_only(payload.get("periodStart")),
+        "period_end": _parse_date_only(payload.get("periodEnd")),
+        "carryover_enabled": _as_bool(payload.get("carryoverEnabled"), default=False),
+        "visible_on_home": _as_bool(payload.get("visibleOnHome"), default=True),
+        "enabled": _as_bool(payload.get("enabled"), default=True),
+        "sort_order": _as_int(payload.get("sortOrder"), default=0),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadProjectProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_project(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadProjectProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def upsert_tx_template(

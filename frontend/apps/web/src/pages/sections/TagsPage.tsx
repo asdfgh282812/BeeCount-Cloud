@@ -4,19 +4,11 @@ import {
   createTag,
   deleteTag,
   fetchWorkspaceTags,
-  fetchWorkspaceTransactions,
   updateTag,
-  type ReadTag,
   type WorkspaceTag,
-  type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
-import {
-  ConfirmDialog,
-  TagsPanel,
-  tagDefaults,
-  type TagForm,
-} from '@beecount/web-features'
+import { ConfirmDialog, TagsPanel, tagDefaults, type TagForm } from '@beecount/web-features'
 
 import { dispatchOpenDetailTag } from '../../lib/txDialogEvents'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
@@ -26,12 +18,14 @@ import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 
-const TAG_DETAIL_PAGE_SIZE = 20
-
 /**
  * 标签管理页 —— 列表 + 统计(每个标签的笔数/收入/支出,server 一次性汇好)
  * + CRUD(带 ConfirmDialog 二次确认删除)+ 点击标签弹 TagDetailDialog
  * 无限滚动加载该标签下的交易。
+ *
+ * Phase 13(docs/PH13_PROJECT_SD.md)新增的「專案」功能原本以子分頁形式
+ * 掛在本頁,後來使用者要求分開成獨立入口(見 `ProjectsPage.tsx`),本頁
+ * 恢復成純標籤管理。
  */
 export function TagsPage() {
   const t = useT()
@@ -124,7 +118,6 @@ export function TagsPage() {
     }
   }
 
-
   return (
     <>
       <TagsPanel
@@ -157,9 +150,7 @@ export function TagsPage() {
           }
           setPendingDelete({ id: row.id, name: row.name })
         }}
-        onClickTag={(row) =>
-          dispatchOpenDetailTag(row as WorkspaceTag, { defaultScope: 'all' })
-        }
+        onClickTag={(row) => dispatchOpenDetailTag(row as WorkspaceTag, { defaultScope: 'all' })}
       />
       {/* TagDetailDialog 已迁到 GlobalEntityDialogs */}
       <ConfirmDialog

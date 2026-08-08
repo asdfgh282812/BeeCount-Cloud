@@ -22,6 +22,7 @@ from . import (
     exchange_rate_overrides,
     installment_plans,
     ledgers,
+    projects,
     recurring_rules,
     tags,
     transactions,
@@ -43,5 +44,6 @@ router.include_router(exchange_rate_overrides.router)
 router.include_router(recurring_rules.router)
 router.include_router(installment_plans.router)
 router.include_router(debts.router)
+router.include_router(projects.router)
 router.include_router(tx_templates.router)
 router.include_router(card_reward_rules.router)

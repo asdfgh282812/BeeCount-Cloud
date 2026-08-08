@@ -194,6 +194,23 @@ def list_workspace_transactions(
         for debt_sid, debt_counterparty_name, debt_direction in debt_info_rows:
             debt_info_by_id[debt_sid] = (debt_counterparty_name, debt_direction)
 
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md):同款批次反查模式,scope 到
+    # 本次可见的多个账本内。
+    project_sync_ids = {r.project_sync_id for r in rows if r.project_sync_id}
+    project_name_by_id: dict[str, str] = {}
+    if project_sync_ids:
+        project_rows = db.execute(
+            select(
+                ReadProjectProjection.sync_id,
+                ReadProjectProjection.name,
+            ).where(
+                ReadProjectProjection.ledger_id.in_(ledger_internal_ids),
+                ReadProjectProjection.sync_id.in_(project_sync_ids),
+            )
+        ).all()
+        for project_sid, project_name in project_rows:
+            project_name_by_id[project_sid] = project_name
+
     # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
     # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
     # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
@@ -286,6 +303,8 @@ def list_workspace_transactions(
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
+                project_id=row.project_sync_id,
+                project_name=project_name_by_id.get(row.project_sync_id) if row.project_sync_id else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
                 deferred_posting_at=row.deferred_posting_at,

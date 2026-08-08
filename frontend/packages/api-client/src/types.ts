@@ -232,6 +232,11 @@ export type ReadTransaction = {
   debt_id?: string | null
   debt_counterparty_name?: string | null
   debt_direction?: DebtDirection | null
+  /** 專案(Phase 13,docs/PH13_PROJECT_SD.md):这笔交易关联的專案 id。
+   *  null = 沒掛專案。project_name 是反查这个專案拿到的展示字段(体验
+   *  补强,对齐 debt_counterparty_name 的既有惯例)。 */
+  project_id?: string | null
+  project_name?: string | null
   /** 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
    *  哪幾條回饋規則的 id 列表,空数组 = 没有勾选任何规则。 */
   reward_rule_ids?: string[]
@@ -708,6 +713,12 @@ export type TxPayload = {
    * 交易/不改。
    */
   debt_id?: string | null
+  /**
+   * 專案(Phase 13,docs/PH13_PROJECT_SD.md):这笔交易手動指定屬於哪個
+   * project_id,只支援 expense/income。必须指向该帳本下已存在的專案。
+   * null = 不掛專案/不改。
+   */
+  project_id?: string | null
   /**
    * 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者手動勾選這筆交易走
    * 哪幾條回饋規則(可複選),每個 id 必須是 `account_id` 這張信用卡自己
@@ -1462,6 +1473,69 @@ export type DebtUpdatePayload = {
   due_at?: string | null
   note?: string | null
   closed_at?: string | null
+}
+
+// ────────── 專案 (Projects，docs/PH13_PROJECT_SD.md Phase 13）──────────
+
+export type ProjectPeriodType = 'fixed' | 'monthly' | 'yearly'
+/** 對齊 Moze 總覽頁狀態指標:✅ 正常 / ⚠️ 接近上限(≥80%) / 🚨 超支(≥100%)。
+ *  沒設預算(budget_amount=null)一律 'ok'。 */
+export type ProjectStatus = 'ok' | 'warning' | 'over'
+
+/**
+ * `spent`/`remaining`/`progress_pct`/`status` 不落库,是 server 读路径從
+ * `project_sync_id` 反查交易、依 period_type 算出當期起訖窗口即時彙總出的
+ * derived 字段(见 server `ReadProjectProjection` docstring)。
+ */
+export type ReadProject = {
+  id: string
+  name: string
+  icon?: string | null
+  budget_amount?: number | null
+  period_type: ProjectPeriodType
+  period_start?: string | null
+  period_end?: string | null
+  carryover_enabled: boolean
+  visible_on_home: boolean
+  enabled: boolean
+  sort_order: number
+  spent: number
+  remaining?: number | null
+  progress_pct?: number | null
+  status: ProjectStatus
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type ProjectCreatePayload = {
+  name: string
+  icon?: string | null
+  budget_amount?: number | null
+  period_type?: ProjectPeriodType
+  /** `period_type === 'fixed'` 時必填(server 校驗)。 */
+  period_start?: string | null
+  period_end?: string | null
+  carryover_enabled?: boolean
+  visible_on_home?: boolean
+  enabled?: boolean
+  sort_order?: number
+}
+
+/** key 不出現 = 不變;`budget_amount` 顯式傳 null = 清空預算(改回純追蹤
+ *  用途)。DELETE 若專案底下已有交易掛著,server 會自動改成軟刪除
+ *  (`enabled=false`)而非物理刪除,前端不需要另外呼叫這個 update。 */
+export type ProjectUpdatePayload = {
+  name?: string
+  icon?: string | null
+  budget_amount?: number | null
+  period_type?: ProjectPeriodType
+  period_start?: string | null
+  period_end?: string | null
+  carryover_enabled?: boolean
+  visible_on_home?: boolean
+  enabled?: boolean
+  sort_order?: number
 }
 
 // ────────── 對帳模式 (Statement Mode，MOZE_FEATURE_GAP_SD.md §2.10 Phase 5，

@@ -58,6 +58,7 @@ import {
   type ReadCategory,
   type ReadDebt,
   type ReadLedger,
+  type ReadProject,
   type ReadTag,
   type ReadTransaction,
   type WorkspaceTag,
@@ -65,6 +66,7 @@ import {
   deleteLedger,
   createCategory,
   createDebt,
+  createProject,
   createTag,
   createTransaction,
   deleteTransaction,
@@ -74,6 +76,7 @@ import {
   fetchReadDebts,
   fetchReadLedgerDetail,
   fetchReadLedgers,
+  fetchReadProjects,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTransaction,
@@ -424,6 +427,9 @@ export function TransactionsPage() {
   // ledger-scoped 实体,按「当前写入账本」单独拉,不进 loadTxDictionaries
   // 那套 user-global 字典逻辑。
   const [txDictionaryDebts, setTxDictionaryDebts] = useState<ReadDebt[]>([])
+  // 專案(Phase 13,docs/PH13_PROJECT_SD.md):跟 debt 同款语意,ledger-scoped
+  // 实体,按「当前写入账本」单独拉。
+  const [txDictionaryProjects, setTxDictionaryProjects] = useState<ReadProject[]>([])
   // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):主表單「勾選要走哪幾條規則」
   // 下拉的選項,按目前表單選中的信用卡帳戶單獨拉(規則綁在具體帳戶上,不是
   // ledger-scoped,也不进 loadTxDictionaries 的 user-global 字典)。
@@ -604,6 +610,8 @@ export function TransactionsPage() {
   // POST .../debts(跟 DebtsPage.tsx::canManage 同一权限判断),不是一般
   // 记交易的写权限,所以单独算好传给 TransactionsPanel。
   const txCanCreateDebt = txContextLedger?.role === 'owner'
+  // 專案(Phase 13):新建專案同样是 owner-only 的 `POST .../projects`。
+  const txCanManageProjects = txContextLedger?.role === 'owner'
   const { bundle: sharedBundle } = useSharedLedgerResources(
     txIsSharedEditor ? txContextLedgerId : null,
   )
@@ -628,6 +636,26 @@ export function TransactionsPage() {
       })
       .catch(() => {
         if (!cancelled) setTxDictionaryDebts([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [route.section, token, txContextLedgerId])
+
+  // 專案(Phase 13):跟 debt 同款语意,主表單掛專案的下拉選項,按目前寫入
+  // 的账本单独拉。
+  useEffect(() => {
+    if (route.section !== 'transactions' || !txContextLedgerId) {
+      setTxDictionaryProjects([])
+      return
+    }
+    let cancelled = false
+    fetchReadProjects(token, txContextLedgerId)
+      .then((rows) => {
+        if (!cancelled) setTxDictionaryProjects(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxDictionaryProjects([])
       })
     return () => {
       cancelled = true
@@ -1334,6 +1362,41 @@ export function TransactionsPage() {
     }
   }
 
+  // 專案(Phase 13,docs/PH13_PROJECT_SD.md):跟 onCreateTxTag 同款模式,
+  // owner-only 寫入(`_OWNER_ONLY_ROLES`),只在 `txCanManageProjects` 時
+  // 由 ProjectSelector 顯示「新增」入口(見下方 TransactionsPanel props)。
+  const onCreateTxProject = async (name: string): Promise<ReadProject | null> => {
+    const ledgerId = txWriteLedgerId.trim()
+    if (!ledgerId) {
+      setErrorNotice(t('shell.selectLedgerFirst'))
+      return null
+    }
+    try {
+      const res = await retryOnConflict(ledgerId, (base) =>
+        createProject(token, ledgerId, base, { name })
+      )
+      const created: ReadProject = {
+        id: res.entity_id || '',
+        name,
+        period_type: 'monthly',
+        carryover_enabled: false,
+        visible_on_home: true,
+        enabled: true,
+        sort_order: 0,
+        spent: 0,
+        status: 'ok',
+        last_change_id: res.new_change_id,
+        ledger_id: ledgerId,
+        ledger_name: null
+      }
+      setTxDictionaryProjects((prev) => [...prev, created])
+      return created
+    } catch (err) {
+      setErrorNotice(renderError(err))
+      return null
+    }
+  }
+
   const renderError = (err: unknown): string => localizeError(err, t)
 
   const fetchBaseChangeId = async (ledgerId: string): Promise<number> => {
@@ -1873,6 +1936,9 @@ export function TransactionsPage() {
           txForm.tx_type !== 'transfer' && txForm.debt_id !== '__new__'
             ? txForm.debt_id.trim() || null
             : null,
+        // 專案(Phase 13,docs/PH13_PROJECT_SD.md):跟 debt_id 同款语意,
+        // 只支援 expense/income,transfer 时发 null 显式清掉关联。
+        project_id: txForm.tx_type !== 'transfer' ? txForm.project_id.trim() || null : null,
         // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):跟 debt_id 同款语意,
         // 只有 expense 有意义(回饋是消費行为),transfer/income 一律清空。
         reward_rule_ids: txForm.tx_type === 'expense' ? txForm.reward_rule_ids : [],
@@ -2419,6 +2485,8 @@ export function TransactionsPage() {
                 tags={txWriteTags}
                 debts={txDictionaryDebts}
                 canCreateDebt={txCanCreateDebt}
+                projects={txDictionaryProjects}
+                onCreateProject={txCanManageProjects ? onCreateTxProject : undefined}
                 rewardRules={txFormRewardRules}
                 onCreateCategory={onCreateTxCategory}
                 onCreateTag={onCreateTxTag}
@@ -2505,6 +2573,8 @@ export function TransactionsPage() {
                     exclude_from_budget: Boolean(tx.exclude_from_budget),
                     refund_of_id: tx.refund_of_id || '',
                     debt_id: tx.debt_id || '',
+                    project_id: tx.project_id || '',
+                    project_name: tx.project_name || '',
                     reward_rule_ids: tx.reward_rule_ids || [],
                     // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
                     split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,

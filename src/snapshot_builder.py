@@ -22,6 +22,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
@@ -103,6 +104,11 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 借還款追蹤(§2.5 Phase 3)反查字段,同样必须进 full snapshot,原因
         # 同 refund_of_sync_id/installment_plan_sync_id。
         ReadTxProjection.debt_sync_id,
+        # 專案(Phase 13,docs/PH13_PROJECT_SD.md)反查字段,同样必须进 full
+        # snapshot,原因同 debt_sync_id(CLAUDE.md 記過的既有 bug 模式:漏
+        # SELECT 新欄位 → 下一次 `_commit_write` 的 diff 把它當「本來就沒有」
+        # 靜默清空)。
+        ReadTxProjection.project_sync_id,
         # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)使用者勾選字段 —— 之前漏
         # 加进这个 SELECT(既有 bug,2026-08-04 补上):没有它,`_commit_write`
         # 下一次拿 snapshot_builder.build() 当 prev_snapshot 时会看不到这笔
@@ -135,7 +141,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          base_amount, fee_amount, fee_label, discount_amount, discount_label,
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
-         splits_json, debt_id,
+         splits_json, debt_id, project_id,
          reward_rule_ids_json, reward_source_tx_id,
          deferred_posting_at, reconciled_at) = row
         item: dict[str, Any] = {
@@ -218,6 +224,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 pass
         if debt_id:
             item["debtId"] = debt_id
+        if project_id:
+            item["projectId"] = project_id
         if reward_rule_ids_json:
             try:
                 reward_rule_ids = json.loads(reward_rule_ids_json)
@@ -585,6 +593,44 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             d["closedAt"] = _to_iso_utc(closed_at)
         debts.append(d)
 
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md)
+    projects: list[dict[str, Any]] = []
+    project_stmt = select(
+        ReadProjectProjection.sync_id,
+        ReadProjectProjection.name,
+        ReadProjectProjection.icon,
+        ReadProjectProjection.budget_amount,
+        ReadProjectProjection.period_type,
+        ReadProjectProjection.period_start,
+        ReadProjectProjection.period_end,
+        ReadProjectProjection.carryover_enabled,
+        ReadProjectProjection.visible_on_home,
+        ReadProjectProjection.enabled,
+        ReadProjectProjection.sort_order,
+    ).where(ReadProjectProjection.ledger_id == ledger_id)
+    for (
+        sid, name, icon, budget_amount, period_type, period_start, period_end,
+        carryover_enabled, visible_on_home, enabled, sort_order,
+    ) in db.execute(project_stmt).all():
+        p: dict[str, Any] = {
+            "syncId": sid,
+            "name": name,
+            "periodType": period_type or "monthly",
+            "carryoverEnabled": bool(carryover_enabled),
+            "visibleOnHome": bool(visible_on_home),
+            "enabled": bool(enabled),
+            "sortOrder": sort_order or 0,
+        }
+        if icon is not None:
+            p["icon"] = icon
+        if budget_amount is not None:
+            p["budgetAmount"] = budget_amount
+        if period_start is not None:
+            p["periodStart"] = period_start.isoformat()
+        if period_end is not None:
+            p["periodEnd"] = period_end.isoformat()
+        projects.append(p)
+
     # 交易範本(§2.7 Phase 3)
     tx_templates: list[dict[str, Any]] = []
     tpl_stmt = select(
@@ -727,6 +773,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "installmentPlans": installment_plans,
         "installmentPeriods": installment_periods,
         "debts": debts,
+        "projects": projects,
         "txTemplates": tx_templates,
         "cardRewardRules": card_reward_rules,
     }

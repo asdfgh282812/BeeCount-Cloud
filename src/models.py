@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -590,6 +591,13 @@ class ReadTxProjection(Base):
     # 纯粹是个跟 installment_plan_sync_id/recurring_rule_sync_id 同款的
     # denormalized 反查列。
     debt_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 專案(Phase 13,docs/PH13_PROJECT_SD.md §2.2):有值 = 使用者手動指定
+    # 這筆交易屬於哪個 read_project_projection.sync_id。None = 沒掛專案。
+    # 只支援 expense/income(跟 debt_sync_id 同款單值反查,寫入路徑
+    # `_assert_project_exists` 拒絕 transfer/adjustment 帶這個欄位),不需要
+    # 任何 upsert/delete 時的聯動重算——花費彙總(list_projects)從這個反查
+    # 欄位即時 SUM 算出。
+    project_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記這筆交易時手動勾選
     # 的 read_card_reward_rule_projection.sync_id 列表(nullable JSON array,
     # 跟 tag_sync_ids_json 同一模式)。系統不再依 category/金額自動比對「這筆
@@ -1043,6 +1051,51 @@ Index(
     "ix_read_debt_ledger_due",
     ReadDebtProjection.ledger_id,
     ReadDebtProjection.due_at,
+)
+
+
+class ReadProjectProjection(Base):
+    """專案(Phase 13,docs/PH13_PROJECT_SD.md)。ledger-scoped,PK 形狀比照
+    `ReadBudgetProjection`/`ReadDebtProjection`:`(ledger_id, sync_id)`。跟
+    `ReadBudgetProjection` 是兩條完全獨立的邏輯——專案有自己的
+    `budget_amount` + 花費彙總(`SUM(amount) WHERE project_sync_id = X`),
+    不讀也不寫 `read_budget_projection`。花費彙總不落庫,讀路徑
+    (`read/ledgers.py::list_projects`)從 `read_tx_projection.project_sync_id`
+    反查交易即時算出,跟 `ReadDebtProjection.remaining_amount` derive 的方式
+    同一取舍——避免在 mobile push / web write 两条独立路径上都要挂一段
+    「改交易时联动重算专案花費」的逻辑。"""
+
+    __tablename__ = "read_project_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, default="")
+    icon: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    budget_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 'fixed'(單次固定起訖日) / 'monthly' / 'yearly'
+    period_type: Mapped[str] = mapped_column(String(16), default="monthly")
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    carryover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    visible_on_home: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_project_user_id",
+    ReadProjectProjection.user_id,
+)
+Index(
+    "ix_read_project_ledger_sort",
+    ReadProjectProjection.ledger_id,
+    ReadProjectProjection.sort_order,
 )
 
 

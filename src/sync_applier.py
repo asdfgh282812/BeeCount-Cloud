@@ -52,6 +52,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
@@ -70,6 +71,7 @@ INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
     "installment_period", "debt", "tx_template", "card_reward_rule",
+    "project",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -282,6 +284,19 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("note", "note"),
         ("closedAt", "closed_at", _isoformat_or_none),
     ]),
+    "project": _MergeSpec(ReadProjectProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("icon", "icon"),
+        ("budgetAmount", "budget_amount"),
+        ("periodType", "period_type"),
+        ("periodStart", "period_start"),
+        ("periodEnd", "period_end"),
+        ("carryoverEnabled", "carryover_enabled"),
+        ("visibleOnHome", "visible_on_home"),
+        ("enabled", "enabled"),
+        ("sortOrder", "sort_order"),
+    ]),
     "tx_template": _MergeSpec(ReadTxTemplateProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
@@ -343,6 +358,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("recurringOccurrenceOverridden", "recurring_occurrence_overridden"),
         # 借還款追蹤(§2.5 Phase 3)反查字段,同款语义。
         ("debtId", "debt_sync_id"),
+        # 專案(Phase 13)反查字段,同款语义。
+        ("projectId", "project_sync_id"),
         # 信用卡紅利回饋(§2.9.5,2026-08-06 改版)反查字段,同款语义:缺键
         # 保留既有勾选列表。
         ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
@@ -379,6 +396,7 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
+    "project": projection.upsert_project,
     "tx_template": projection.upsert_tx_template,
 }
 
@@ -499,6 +517,13 @@ def _delete_debt(db: Session, ledger_id: str, sync_id: str, user_id: str) -> Non
     )
 
 
+def _delete_project(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_project(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="project", entity_sync_id=sync_id,
+    )
+
+
 def _delete_tx_template(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     projection.delete_tx_template(db, ledger_id=ledger_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -541,6 +566,7 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "installment_plan": _delete_installment_plan,
     "installment_period": _delete_installment_period,
     "debt": _delete_debt,
+    "project": _delete_project,
     "tx_template": _delete_tx_template,
 }
 

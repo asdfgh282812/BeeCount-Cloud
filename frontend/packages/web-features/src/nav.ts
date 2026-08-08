@@ -5,6 +5,7 @@ export type AppSection =
   | 'accounts'
   | 'categories'
   | 'tags'
+  | 'projects'
   | 'budgets'
   | 'recurring-rules'
   | 'installment-plans'
@@ -45,7 +46,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // 入口走 AppHeader 右上角图标 + ⌘K + AvatarDropdown 任一即可。
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
-      { key: 'tags', labelKey: 'nav.tags' }
+      { key: 'tags', labelKey: 'nav.tags' },
+      // 专案(Phase 13)跟标签平级放在顶部导航,紧邻标签右侧 —— 用户明确
+      // 要求从「标签分页底下的子分页」改成独立入口,不嵌在标签页面里。
+      { key: 'projects', labelKey: 'nav.projects' }
       // 预算从顶部 bookkeeping 组移出,改放头像下拉的"工具"里 —— 用户
       // 场景下预算访问频率低于 tx/account/category,顶部 nav 保持瘦。
     ]
