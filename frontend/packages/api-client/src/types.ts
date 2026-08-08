@@ -202,6 +202,16 @@ export type ReadTransaction = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(记账时汇率,保存即定)。null 时 fallback 用 amount。 */
   native_amount?: number | null
+  /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+   *  base_amount=使用者輸入的原始金額(信用卡回饋計算的權威基準,null=
+   *  沒用過這個功能,fallback 用 amount);fee_amount/discount_amount=
+   *  額外調整金額;fee_label/discount_label=自訂名稱(null=顯示預設
+   *  「手續費」「折扣」)。 */
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
   /** 退款(§2.6):这笔交易是对哪笔支出的退款。null = 普通交易。 */
   refund_of_id?: string | null
   /** 分期付款(§2.3):所属分期计划的 id。null = 非分期生成的交易。 */
@@ -640,6 +650,17 @@ export type TxPayload = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(前端按 server 汇率算好传入)。 */
   native_amount?: number | null
+  /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+   *  base_amount=使用者輸入的原始金額(server 端據此 + fee/discount 重新
+   *  算出權威的 amount,見 write/_shared.py::_normalize_fee_discount_amount);
+   *  fee_amount/discount_amount=額外調整金額;fee_label/discount_label=
+   *  自訂名稱。create 不傳任一個 = 不使用這個功能(向下相容);update 不傳
+   *  = 不改,傳 null = 清空該分量。 */
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
   /** 延後入帳(§2.10 Phase 5):create 不传/null = 未设置;update 不传 = 不改,
    *  传 ISO 字符串 = 设置,传 null = 清空。 */
   deferred_posting_at?: string | null

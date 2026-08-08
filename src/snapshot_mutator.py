@@ -401,6 +401,20 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["currencyCode"] = str(payload.get("currency_code")).upper()
     if payload.get("native_amount") is not None:
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
+    # 手續費/折扣(2026-08 使用者需求):base_amount 是使用者輸入的原始金額
+    # (回饋計算權威基準),只在 write/_shared.py::_normalize_fee_discount_amount
+    # 認定「這筆交易有用到這個功能」時才會出現在 payload,不傳 → 不產生 key
+    # (旧行为,统计/回饋 COALESCE 回退 amount)。
+    if payload.get("base_amount") is not None:
+        item["baseAmount"] = _to_float(payload.get("base_amount"))
+    if payload.get("fee_amount") is not None:
+        item["feeAmount"] = _to_float(payload.get("fee_amount"))
+    if payload.get("fee_label") is not None:
+        item["feeLabel"] = str(payload.get("fee_label"))
+    if payload.get("discount_amount") is not None:
+        item["discountAmount"] = _to_float(payload.get("discount_amount"))
+    if payload.get("discount_label") is not None:
+        item["discountLabel"] = str(payload.get("discount_label"))
     if payload.get("note") is not None:
         item["note"] = str(payload.get("note"))
     if payload.get("merchant") is not None:
@@ -521,6 +535,24 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
     if payload.get("native_amount") is not None:
         # 显式传入优先(Web 折算录入);None = 不变。
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
+    # 手續費/折扣(2026-08 使用者需求):"key" in payload 才动作(PATCH 缺键
+    # 保留既有值,同 amount/nativeAmount 惯例);显式传 None = 使用者关掉这个
+    # 功能,清掉该 key(upsert 落 NULL,回饋計算/顯示 fallback 回 amount)。
+    if "base_amount" in payload:
+        if payload.get("base_amount") is None:
+            item.pop("baseAmount", None)
+        else:
+            item["baseAmount"] = _to_float(payload.get("base_amount"))
+    if "fee_amount" in payload:
+        if payload.get("fee_amount") is None:
+            item.pop("feeAmount", None)
+        else:
+            item["feeAmount"] = _to_float(payload.get("fee_amount"))
+    if "discount_amount" in payload:
+        if payload.get("discount_amount") is None:
+            item.pop("discountAmount", None)
+        else:
+            item["discountAmount"] = _to_float(payload.get("discount_amount"))
     if payload.get("currency_code") is not None:
         item["currencyCode"] = str(payload.get("currency_code")).upper()
     if "happened_at" in payload:
@@ -529,6 +561,8 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
     mapping = {
         "note": "note",
         "merchant": "merchant",
+        "fee_label": "feeLabel",
+        "discount_label": "discountLabel",
         "category_name": "categoryName",
         "category_kind": "categoryKind",
         "category_id": "categoryId",

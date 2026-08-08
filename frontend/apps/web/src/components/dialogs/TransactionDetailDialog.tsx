@@ -17,7 +17,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -305,6 +305,25 @@ export function TransactionDetailDialog({
                   icon={<Store className="h-4 w-4" />}
                   label={t('detail.transaction.merchant')}
                   value={tx.merchant}
+                />
+              ) : null}
+              {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+                  只在有值時顯示一行,不常用不占版面。base_amount 存在才代表
+                  這筆交易用過這個功能。 */}
+              {tx.base_amount != null ? (
+                <DetailRow
+                  icon={<Receipt className="h-4 w-4" />}
+                  label={t('detail.transaction.feeDiscount')}
+                  value={
+                    <span>
+                      {t('transactions.table.amount')} {tx.base_amount}
+                      {tx.fee_amount ? ` · ${tx.fee_label || t('transactions.field.fee')} ${tx.fee_amount}` : ''}
+                      {tx.discount_amount
+                        ? ` · ${tx.discount_label || t('transactions.field.discount')} ${tx.discount_amount}`
+                        : ''}
+                      {` · ${t('transactions.field.total')} ${tx.amount}`}
+                    </span>
+                  }
                 />
               ) : null}
               {tx.note ? (

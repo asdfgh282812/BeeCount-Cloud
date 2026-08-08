@@ -47,6 +47,9 @@ async def create_tx(
     # 主帳戶(§2.9 Phase 4):account_group 是純管理容器,不能被一般交易挂上。
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 手續費/折扣(2026-08 使用者需求):在 mutate_payload 复制前重算 amount,
+    # 之后所有分支(fast path / recurring inline)读到的都是校正后的总额。
+    _normalize_fee_discount_amount(db=db, ledger_id=ledger.id, tx_id=None, payload=payload)
     # 旧架构这里要跑 _resolve_tx_dictionary_payload 去 UserAccount/Category/Tag
     # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
@@ -213,6 +216,8 @@ async def update_tx(
     )
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 手續費/折扣(2026-08 使用者需求):PATCH 缺鍵的分量 fallback 現有 DB 值。
+    _normalize_fee_discount_amount(db=db, ledger_id=ledger.id, tx_id=tx_id, payload=payload)
     # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,
     # 不再经 UserAccount 投影表。
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)

@@ -28,6 +28,7 @@ import {
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
   validateTxSplits,
+  computeTxTotalAmount,
   CategoriesPanel,
   categoryDefaults,
   pickRandomTagColor,
@@ -288,7 +289,15 @@ export function GlobalEditDialogs() {
         // 已經存在的 tx_type(這個表單本來就不打算讓使用者手動改成
         // adjustment,payload 也不会送这个值)。
         tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
-        amount: String(tx.amount),
+        // 手續費/折扣(2026-08 使用者需求):金額欄位回填 base_amount(原始
+        // 金額),沒用過這個功能(base_amount 為 null)時 fallback 回 amount,
+        // 對既有交易的顯示完全沒有影響。
+        amount: String(tx.base_amount ?? tx.amount),
+        fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
+        fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
+        fee_label: tx.fee_label || '',
+        discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
+        discount_label: tx.discount_label || '',
         happened_at: tx.happened_at,
         deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
         // v30 多币种:回显该笔币种 + 原币种(提交时币种未变不发字段,金额
@@ -397,6 +406,12 @@ export function GlobalEditDialogs() {
       notifyError(new Error(t('transactions.error.amountInvalid')))
       return false
     }
+    // 手續費/折扣(2026-08 使用者需求):前端先算好即時預覽/離線送出用的
+    // 總額,server 端仍會依 base_amount/fee_amount/discount_amount 重新算
+    // 一次當最終權威(見 write/_shared.py::_normalize_fee_discount_amount)。
+    const feeNum = editTxForm.fee_enabled ? Number(editTxForm.fee_amount) || 0 : 0
+    const discountNum = editTxForm.fee_enabled ? Number(editTxForm.discount_amount) || 0 : 0
+    const totalAmountNum = computeTxTotalAmount(editTxForm.tx_type, amountNum, feeNum, discountNum)
     // 退款交易(refund_of_id 非空)留空分类时 server 会自动归到自建的「退款」
     // 分类(`ensure_refund_category`),跟主表单(TransactionsPage.tsx)同款
     // 放宽,不强制用户手动选。
@@ -410,8 +425,10 @@ export function GlobalEditDialogs() {
       return false
     }
     // 拆帳(§2.4):跟 server 端 _validate_tx_splits 同一套规则(至少 2 笔/
-    // 每笔金额 > 0/加总等于交易 amount),前端先挡一遍减少来回请求。
-    const splitError = validateTxSplits(editTxForm, amountNum)
+    // 每笔金额 > 0/加总等于交易 amount),前端先挡一遍减少来回请求。手續費/
+    // 折扣開啟時,server 端驗證的 amount 是換算後的總額,這裡要用
+    // totalAmountNum 對齊,不能用調整前的 amountNum。
+    const splitError = validateTxSplits(editTxForm, totalAmountNum)
     if (splitError) {
       notifyError(new Error(t(splitError)))
       return false
@@ -488,7 +505,9 @@ export function GlobalEditDialogs() {
           token,
           ledgerBase,
           currency: effCurrency,
-          amount: amountNum,
+          // 手續費/折扣:折算快照要跟著實際入帳總額走,不是調整前的
+          // base_amount(否則外幣交易的 native_amount 會跟 amount 對不上)。
+          amount: totalAmountNum,
           originalCurrency: editTxForm.editingId
             ? editTxForm.original_currency
             : undefined
@@ -540,7 +559,18 @@ export function GlobalEditDialogs() {
 
     const payload = {
       tx_type: editTxForm.tx_type,
-      amount: amountNum,
+      amount: totalAmountNum,
+      // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
+      // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
+      ...(editTxForm.fee_enabled
+        ? {
+            base_amount: amountNum,
+            fee_amount: feeNum,
+            fee_label: editTxForm.fee_label.trim() || null,
+            discount_amount: discountNum,
+            discount_label: editTxForm.discount_label.trim() || null,
+          }
+        : {}),
       happened_at: editTxForm.happened_at,
       // 延後入帳(§2.10 Phase 5):同 TransactionsPage.onSaveTransaction。
       deferred_posting_at: editTxForm.deferred_posting_at

@@ -328,6 +328,14 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # _sync_native_amount_after_merge。
         ("currencyCode", "currency_code"),
         ("nativeAmount", "native_amount"),
+        # 手續費/折扣(2026-08 使用者需求):缺键保留既有值,同 nativeAmount
+        # 惯例。base_amount 是信用卡回饋計算的權威基準(見
+        # services/card_rewards.py::_reward_base_amount)。
+        ("baseAmount", "base_amount"),
+        ("feeAmount", "fee_amount"),
+        ("feeLabel", "fee_label"),
+        ("discountAmount", "discount_amount"),
+        ("discountLabel", "discount_label"),
         ("refundOfId", "refund_of_sync_id"),
         ("installmentPlanId", "installment_plan_sync_id"),
         # 週期性收支(§2.12.2 Phase 1.5)反查字段 + 单笔编辑标记。

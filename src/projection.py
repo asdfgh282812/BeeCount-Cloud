@@ -341,6 +341,14 @@ def upsert_tx(
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),
         "native_amount": _as_float_or_none(payload.get("nativeAmount")),
+        # 手續費/折扣(2026-08 使用者需求):base_amount 缺失必须落 NULL(=
+        # 從未使用過這個功能),用 _as_float_or_none 保留 NULL 语义,同
+        # native_amount 写法。
+        "base_amount": _as_float_or_none(payload.get("baseAmount")),
+        "fee_amount": _as_float_or_none(payload.get("feeAmount")),
+        "fee_label": _as_str(payload.get("feeLabel")),
+        "discount_amount": _as_float_or_none(payload.get("discountAmount")),
+        "discount_label": _as_str(payload.get("discountLabel")),
         # 退款(§2.6)/ 分期(§2.3)反查字段:None = 普通交易,缺键保留由上游
         # merge_with_existing 负责。
         "refund_of_sync_id": _as_str(payload.get("refundOfId")),

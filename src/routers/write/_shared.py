@@ -776,6 +776,106 @@ _SPLIT_MIN_COUNT = 2
 _SPLIT_AMOUNT_EPSILON = 0.01
 
 
+def _normalize_fee_discount_amount(
+    *, db: Session, ledger_id: str, tx_id: str | None, payload: dict,
+) -> None:
+    """手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+    `base_amount`(使用者輸入的原始金額,信用卡回饋計算的權威基準,見
+    services/card_rewards.py::_reward_base_amount)/`fee_amount`/
+    `discount_amount` 任一出現在 payload 時,server 端用這三者 + tx_type
+    重新算出權威的 `amount`(實際入帳、驅動餘額/統計的總額),直接覆蓋掉
+    payload 裡任何前端算好的 `amount`——避免前端浮點誤差或漏算讓 `amount`
+    跟三個分量互相對不上,寧可 server 端單一權威來源重算一次。
+
+    三個新欄位都不在 payload 裡時整個函式 no-op,不影響任何既有(沒用這個
+    功能的)交易寫入路徑。PATCH 缺鍵的分量 fallback 現有 DB 值(partial
+    update 惯例);create(tx_id=None)缺鍵 fallback 0。
+
+    公式(expense/income 方向不同,跟餘額增減直覺一致):
+      expense: amount = base_amount + fee_amount − discount_amount
+      income:  amount = base_amount − fee_amount + discount_amount
+    transfer/adjustment 没有明確的方向語意,不支援,帶了任一新欄位直接 400。
+    """
+    _fd_keys = ("base_amount", "fee_amount", "discount_amount")
+    if tx_id is None:
+        # create(POST):`req.model_dump(mode="json")` 沒用 exclude_unset,
+        # 這三個 key 永遠存在(值為 None)——用「key 是否出現」判斷會對每一筆
+        # 新建交易(含 transfer/adjustment)誤觸發,必須看有沒有任何一個真的
+        # 帶了非 None 的值。
+        if not any(payload.get(k) is not None for k in _fd_keys):
+            return
+    else:
+        # update(PATCH):`exclude_unset=True`,key 出現即代表使用者這次有
+        # 動這個分量(包含顯式傳 null 清空),要用「key 是否出現」判斷,不能
+        # 只看值是否為 None,否則「PATCH {"discount_amount": null}」這種
+        # 純清空操作(其它兩個分量都沒出現)會被誤判成「沒有動這三個欄位」
+        # 而整個 no-op,清不掉。
+        if not any(k in payload for k in _fd_keys):
+            return
+
+    existing = None
+    if tx_id is not None:
+        existing = db.execute(
+            select(
+                ReadTxProjection.tx_type,
+                ReadTxProjection.amount,
+                ReadTxProjection.base_amount,
+                ReadTxProjection.fee_amount,
+                ReadTxProjection.discount_amount,
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id == tx_id,
+            )
+        ).first()
+
+    tx_type = payload.get("tx_type") if "tx_type" in payload else (existing.tx_type if existing else None)
+    tx_type = tx_type or "expense"
+    if tx_type not in {"expense", "income"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="fee/discount amounts are only supported for expense/income transactions",
+        )
+
+    base_amount = payload.get("base_amount") if "base_amount" in payload else (
+        existing.base_amount if existing else None
+    )
+    if base_amount is None:
+        base_amount = payload.get("amount") if "amount" in payload else (
+            existing.amount if existing else None
+        )
+    fee_amount = payload.get("fee_amount") if "fee_amount" in payload else (
+        existing.fee_amount if existing else None
+    )
+    discount_amount = payload.get("discount_amount") if "discount_amount" in payload else (
+        existing.discount_amount if existing else None
+    )
+    base_amount = float(base_amount or 0)
+    fee_amount = float(fee_amount or 0)
+    discount_amount = float(discount_amount or 0)
+
+    if base_amount < 0 or fee_amount < 0 or discount_amount < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="fee/discount/base amount must not be negative",
+        )
+
+    if tx_type == "expense":
+        amount = base_amount + fee_amount - discount_amount
+    else:
+        amount = base_amount - fee_amount + discount_amount
+
+    payload["amount"] = round(amount, 2)
+    # 顯式傳 null(使用者主動清掉該分量)要保留 None,讓下游
+    # snapshot_mutator.update_transaction 的清空邏輯生效,不能被這裡「重新
+    # 計算」的動作覆蓋回數值,否則 PATCH {"discount_amount": null} 清不掉。
+    if not ("base_amount" in payload and payload["base_amount"] is None):
+        payload["base_amount"] = base_amount
+    if not ("fee_amount" in payload and payload["fee_amount"] is None):
+        payload["fee_amount"] = fee_amount
+    if not ("discount_amount" in payload and payload["discount_amount"] is None):
+        payload["discount_amount"] = discount_amount
+
+
 def _validate_tx_splits(
     *, tx_type: str | None, amount: float | None, splits: list[dict],
 ) -> None:
@@ -1411,6 +1511,19 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["currencyCode"] = row.currency_code
     if row.native_amount is not None:
         item["nativeAmount"] = row.native_amount
+    # 手續費/折扣(2026-08 使用者需求):同上,fast path 的 prev_item 也必须
+    # 带上,否则 PATCH 只改其它字段时,update_transaction 的 mapping 循环/
+    # 显式 "key" in payload 判断读不到旧值,会把已设置的手續費/折扣静默清空。
+    if row.base_amount is not None:
+        item["baseAmount"] = row.base_amount
+    if row.fee_amount is not None:
+        item["feeAmount"] = row.fee_amount
+    if row.fee_label is not None:
+        item["feeLabel"] = row.fee_label
+    if row.discount_amount is not None:
+        item["discountAmount"] = row.discount_amount
+    if row.discount_label is not None:
+        item["discountLabel"] = row.discount_label
     # 退款(§2.6):fast path 的 prev_item 也要带上,否则 PATCH 走
     # update_transaction 时读不到 payload.get("refund_of_id") in item 的旧值,
     # 未显式改 refund_of_id 的 update 请求会把关联静默丢掉。
@@ -2007,6 +2120,7 @@ __all__ = [
     '_assert_account_not_group',
     '_assert_category_required',
     '_assert_valid_adjustment_tx',
+    '_normalize_fee_discount_amount',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',
     '_LEDGER_PROJECTION_UPSERTERS',

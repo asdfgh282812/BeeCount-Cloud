@@ -95,6 +95,7 @@ import {
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
   validateTxSplits,
+  computeTxTotalAmount,
   CategoryPickerDialog,
   ConfirmDialog,
   TagPickerDialog,
@@ -1691,6 +1692,12 @@ export function TransactionsPage() {
       setErrorNotice(t('transactions.error.amountInvalid'))
       return false
     }
+    // 手續費/折扣(2026-08 使用者需求):前端先算好即時預覽/離線送出用的
+    // 總額,server 端仍會依 base_amount/fee_amount/discount_amount 重新算
+    // 一次當最終權威(見 write/_shared.py::_normalize_fee_discount_amount)。
+    const feeNum = txForm.fee_enabled ? Number(txForm.fee_amount) || 0 : 0
+    const discountNum = txForm.fee_enabled ? Number(txForm.discount_amount) || 0 : 0
+    const totalAmountNum = computeTxTotalAmount(txForm.tx_type, amountNum, feeNum, discountNum)
     // 非转账交易必须选分类(transfer 自动归虚拟"转账"分类,server 处理)。
     // mobile 端 transaction_editor_page 也强制必选,跨端一致避免 ungrouped tx
     // 污染分类统计。拆帳(§2.4)时不看单一 category,改看 splits。退款交易
@@ -1707,7 +1714,9 @@ export function TransactionsPage() {
       return false
     }
     // 拆帳(§2.4):跟 server 端 _validate_tx_splits 同一套规则,前端先挡一遍。
-    const splitError = validateTxSplits(txForm, amountNum)
+    // 手續費/折扣開啟時,server 端驗證的 amount 是換算後的總額,這裡要用
+    // totalAmountNum 對齊,不能用調整前的 amountNum。
+    const splitError = validateTxSplits(txForm, totalAmountNum)
     if (splitError) {
       setErrorNotice(t(splitError))
       return false
@@ -1783,14 +1792,15 @@ export function TransactionsPage() {
       // 「只改备注被今日汇率重算」的快照漂移;改回本位币显式发 base+amount)。
       // 拉不到汇率阻断保存(绝不静默 1:1,与 App L8 一致)。transfer 不带。
       let currencyFields: { currency_code?: string; native_amount?: number } = {}
-      const submitAmount = Number(txForm.amount || 0)
       if (!isTransfer) {
         try {
           const resolved = await resolveCurrencyFields({
             token,
             ledgerBase: txWriteLedgerCurrency,
             currency: txFormCurrency,
-            amount: submitAmount,
+            // 手續費/折扣:折算快照要跟著實際入帳總額走,不是調整前的
+            // base_amount(否則外幣交易的 native_amount 會跟 amount 對不上)。
+            amount: totalAmountNum,
             originalCurrency: txForm.editingId ? txForm.original_currency : undefined
           })
           if (resolved) currencyFields = resolved
@@ -1814,7 +1824,18 @@ export function TransactionsPage() {
 
       const payload = {
         tx_type: txForm.tx_type,
-        amount: Number(txForm.amount || 0),
+        amount: totalAmountNum,
+        // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
+        // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
+        ...(txForm.fee_enabled
+          ? {
+              base_amount: amountNum,
+              fee_amount: feeNum,
+              fee_label: txForm.fee_label.trim() || null,
+              discount_amount: discountNum,
+              discount_label: txForm.discount_label.trim() || null,
+            }
+          : {}),
         happened_at: txForm.happened_at || new Date().toISOString(),
         // 延後入帳(§2.10 Phase 5):進階/選填欄位,''=未設定 → 顯式傳 null
         // (create 場景等同不傳;update 場景顯式清空既有值,對齊 debt_id/
@@ -1898,7 +1919,7 @@ export function TransactionsPage() {
               createDebt(token, ledgerId, base, {
                 direction: txForm.tx_type === 'income' ? 'payable' : 'receivable',
                 counterparty_name: newDebtCounterparty,
-                principal_amount: submitAmount,
+                principal_amount: totalAmountNum,
                 due_at: txForm.new_debt_due_at
                   ? new Date(`${txForm.new_debt_due_at}T00:00:00Z`).toISOString()
                   : null,
@@ -2447,7 +2468,15 @@ export function TransactionsPage() {
                     // 顯示(行內編輯按鈕已經對這種交易灰掉,這裡是防禦性 cast,
                     // 不會真的被使用者從這條路径觸發)。
                     tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
-                    amount: String(tx.amount),
+                    // 手續費/折扣(2026-08 使用者需求):金額欄位回填
+                    // base_amount(原始金額),沒用過這個功能時 fallback 回
+                    // amount,對既有交易的顯示完全沒有影響。
+                    amount: String(tx.base_amount ?? tx.amount),
+                    fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
+                    fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
+                    fee_label: tx.fee_label || '',
+                    discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
+                    discount_label: tx.discount_label || '',
                     happened_at: tx.happened_at,
                     deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
                     note: tx.note || '',

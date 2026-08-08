@@ -544,6 +544,18 @@ class ReadTxProjection(Base):
     # 统计端 COALESCE 回退 amount)。账本维度统计读 native_amount,账户维度仍 amount。
     currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     native_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+    # base_amount=使用者輸入的原始金額(信用卡回饋計算的權威基準,見
+    # services/card_rewards.py::_reward_base_amount);fee_amount/discount_amount
+    # =額外調整金額(可為 0),fee_label/discount_label=自訂名稱(NULL=用預設
+    # 「手續費」「折扣」顯示)。既有 amount 欄位語意不變,仍是換算後、實際
+    # 影響帳戶餘額的總額。base_amount 為 NULL = 從未使用過這個功能,不影響
+    # 既有交易任何行為。
+    base_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    discount_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 退款(§2.6 MOZE_FEATURE_GAP_SD.md):指向被退款的那笔支出 tx 的 sync_id。
     # 有值 = 这笔(通常是 income)交易是对某笔支出的退款,统计口径从"当期收入"
     # 挪走,改冲抵该笔支出净额(见 read/_shared._projection_totals、

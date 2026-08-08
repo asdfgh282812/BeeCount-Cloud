@@ -304,6 +304,14 @@ def _round_amount(value: float, rounding: str, *, to_integer: bool = False) -> f
     return round(value) if to_integer else round(value, 2)
 
 
+def _reward_base_amount(tx: ReadTxProjection) -> float:
+    """回饋計算一律用調整前的原始金額,排除手續費/折扣(2026-08 使用者需求,
+    比照 Moze record/introduction)。`tx.base_amount` 為 NULL(既有交易/沒
+    用過手續費折扣欄位)時 fallback 回 `tx.amount`,語意等同調整前後相同,
+    對舊資料零影響。"""
+    return tx.base_amount if tx.base_amount is not None else tx.amount
+
+
 def compute_tx_reward_amount(rule: ReadCardRewardRuleProjection, tx_amount: float) -> float:
     """單筆交易在這條規則下的回饋金額(percentage 逐筆取整 / fixed_amount
     固定值)。`compute_account_card_rewards` 的聚合迴圈跟 §2.9.5.4 payout
@@ -393,9 +401,10 @@ def _qualifying_transactions(
             tagged_rule_ids = []
         if not isinstance(tagged_rule_ids, list) or rule.sync_id not in tagged_rule_ids:
             continue
-        if rule.min_tx_amount is not None and tx.amount < rule.min_tx_amount:
+        reward_base = _reward_base_amount(tx)
+        if rule.min_tx_amount is not None and reward_base < rule.min_tx_amount:
             continue
-        items.append({"tx": tx, "reward_amount": compute_tx_reward_amount(rule, tx.amount)})
+        items.append({"tx": tx, "reward_amount": compute_tx_reward_amount(rule, reward_base)})
     return items
 
 
@@ -575,7 +584,7 @@ def compute_account_card_rewards(
         items = _qualifying_transactions(
             db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
         )
-        qualifying_spend = sum(item["tx"].amount for item in items)
+        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
         threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
         raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
         # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
@@ -686,7 +695,7 @@ def list_rule_qualifying_transactions(
                 enforce_active_window=False,
             )
         ]
-        qualifying_spend = sum(item["tx"].amount for item in items)
+        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
         return {
             "rule": rule, "period_start": period_start, "period_end": period_end,
             "status": "expired", "qualifying_spend": round(qualifying_spend, 2),
@@ -697,7 +706,7 @@ def list_rule_qualifying_transactions(
     items = _qualifying_transactions(
         db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
     )
-    qualifying_spend = sum(item["tx"].amount for item in items)
+    qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
     threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
     raw_reward = round(sum(item["reward_amount"] for item in items), 2) if threshold_met else 0.0
     if not threshold_met:

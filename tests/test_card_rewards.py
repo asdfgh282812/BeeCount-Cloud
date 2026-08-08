@@ -1962,3 +1962,52 @@ def test_editing_source_tx_impactful_field_reverses_and_recomputes_reward():
         assert incomes_after[0].amount == 20.0
     finally:
         app.dependency_overrides.clear()
+
+
+def test_card_rewards_excludes_fee_discount_from_qualifying_base():
+    """2026-08 使用者需求(比照 Moze record/introduction 手續費/折扣欄位):
+    回饋計算一律用 base_amount(調整前原始金額),不受 fee_amount/
+    discount_amount 影響。tx 的 amount(實際入帳總額)是 790 - 100 = 690
+    (折扣後),但 base_amount 是 790——qualifying_spend/raw_reward 都應該
+    用 790 算,不是 690。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr_fd1@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr_fd1@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() + timedelta(days=5)).day
+        _seed_ledger_and_card(client, hdr_app, "lgr_fd1", billing_day=billing_day, payment_due_day=10)
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr_fd1/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "折扣排除測試",
+                "rate_type": "percentage", "rate_value": 2.0,
+                "rounding": "keep", "total_rounding": "keep",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        _push(client, hdr_app, "lgr_fd1", "transaction", "tx-fd-1",
+              {"syncId": "tx-fd-1", "type": "expense", "amount": 690.0,
+               "baseAmount": 790.0, "feeAmount": 0.0,
+               "discountAmount": 100.0, "discountLabel": "滿千送百",
+               "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        rr = client.get(
+            "/api/v1/read/ledgers/lgr_fd1/accounts/acc-card1/card-rewards", headers=hdr_web,
+        )
+        assert rr.status_code == 200, rr.text
+        item = rr.json()["items"][0]
+        # qualifying_spend/raw_reward 用 base_amount(790)算,不是 amount(690)。
+        assert item["qualifying_spend"] == 790.0
+        assert item["raw_reward"] == 15.8  # 790 * 2%
+    finally:
+        app.dependency_overrides.clear()

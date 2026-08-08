@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  AmountInput,
   Badge,
   Button,
   Dialog,
@@ -38,7 +39,7 @@ import { CategoryIcon } from '../components/CategoryIcon'
 import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { tagTextColorOn } from '../lib/tagColorPalette'
-import { txSplitItemDefaults, type TxForm } from '../forms'
+import { computeTxTotalAmount, txSplitItemDefaults, type TxForm } from '../forms'
 
 type TransactionsPanelProps = {
   form: TxForm
@@ -425,7 +426,15 @@ export function TransactionsPanel({
         // 拆帳(§2.4)只对 expense/income 有意义(跟 category 同语意),
         // 切到 transfer 时关掉 + 清空明细。
         split_enabled: false,
-        splits: []
+        splits: [],
+        // 手續費/折扣(2026-08 使用者需求)同样只对 expense/income 有意义
+        // (转帐没有明确方向语意,server 端也会拒绝),切到 transfer 时关掉
+        // + 清空明细,避免残留脏值。
+        fee_enabled: false,
+        fee_amount: '',
+        fee_label: '',
+        discount_amount: '',
+        discount_label: ''
       })
       return
     }
@@ -523,11 +532,26 @@ export function TransactionsPanel({
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>{t('transactions.table.amount')}</Label>
-              <Input
+              <div className="flex items-center justify-between">
+                <Label>{t('transactions.table.amount')}</Label>
+                {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction
+                    金額旁邊的「+」):只在 expense/income 顯示,轉帳沒有明確
+                    方向語意(server 端也會拒絕)。 */}
+                {form.tx_type !== 'transfer' && !form.fee_enabled ? (
+                  <button
+                    type="button"
+                    onClick={() => onFormChange({ ...form, fee_enabled: true })}
+                    className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                    title={t('transactions.field.feeDiscountToggle')}
+                  >
+                    +
+                  </button>
+                ) : null}
+              </div>
+              <AmountInput
                 placeholder={t('transactions.placeholder.amount')}
                 value={form.amount}
-                onChange={(e) => onFormChange({ ...form, amount: e.target.value })}
+                onChange={(value) => onFormChange({ ...form, amount: value })}
               />
               {/* v30 多币种:币种另起一行,全宽显示币种全名+国旗(挨金额太窄会截断);
                   选非本位币 → 账户下拉按币种过滤 + 已选账户清空(币种优先联动,
@@ -548,6 +572,67 @@ export function TransactionsPanel({
                   ratesToBase={currencyRates}
                   rateBase={baseCurrency}
                 />
+              ) : null}
+              {form.tx_type !== 'transfer' && form.fee_enabled ? (
+                <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.fee')}
+                      value={form.fee_label}
+                      onChange={(e) => onFormChange({ ...form, fee_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.fee_amount}
+                      onChange={(value) => onFormChange({ ...form, fee_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.discount')}
+                      value={form.discount_label}
+                      onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.discount_amount}
+                      onChange={(value) => onFormChange({ ...form, discount_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span>{t('transactions.field.total')}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            fee_enabled: false,
+                            fee_amount: '',
+                            fee_label: '',
+                            discount_amount: '',
+                            discount_label: ''
+                          })
+                        }
+                        className="text-muted-foreground/70 hover:text-foreground"
+                      >
+                        {t('transactions.field.feeDiscountRemove')}
+                      </button>
+                    </div>
+                    <span className="font-medium text-foreground">
+                      {computeTxTotalAmount(
+                        form.tx_type,
+                        Number(form.amount) || 0,
+                        Number(form.fee_amount) || 0,
+                        Number(form.discount_amount) || 0
+                      )}
+                    </span>
+                  </div>
+                </div>
               ) : null}
             </div>
             <div className="space-y-1">

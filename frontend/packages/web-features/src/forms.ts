@@ -93,6 +93,34 @@ export type TxForm = {
    *  哪幾條回饋規則(可複選),只在 tx_type='expense' 且選了信用卡帳戶時
    *  顯示。存 `read_card_reward_rule_projection.sync_id` 列表。 */
   reward_rule_ids: string[]
+  /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+   *  `amount` 欄位在這個功能開啟時代表使用者輸入的原始金額(base_amount,
+   *  信用卡回饋計算的權威基準),`fee_enabled` 控制「+」展開的手續費/折扣
+   *  兩列 UI 是否顯示。fee_label/discount_label 空字串 = 用預設「手續費」
+   *  「折扣」顯示,不送給 server(留給 server 端預設)。只支援
+   *  expense/income,切到 transfer 時要重置 fee_enabled=false。 */
+  fee_enabled: boolean
+  fee_amount: string
+  fee_label: string
+  discount_amount: string
+  discount_label: string
+}
+
+/** 手續費/折扣(2026-08 使用者需求)換算總額的公式,跟後端
+ * `src/routers/write/_shared.py::_normalize_fee_discount_amount` 用同一條
+ * 公式——server 端仍是最終權威來源,這裡只用來即時預覽跟離線送出時的
+ * `amount` 欄位,兩邊改動要一起同步。
+ *   expense: amount = base + fee - discount
+ *   income:  amount = base - fee + discount
+ */
+export const computeTxTotalAmount = (
+  txType: 'expense' | 'income' | 'transfer',
+  base: number,
+  fee: number,
+  discount: number
+): number => {
+  if (txType === 'income') return base - fee + discount
+  return base + fee - discount
 }
 
 /** 拆帳(§2.4):`TxForm.splits` 单行明细的表单态(金额存字符串绑 input)。 */
@@ -311,6 +339,11 @@ export const txDefaults = (): TxForm => ({
   split_enabled: false,
   splits: [],
   reward_rule_ids: [],
+  fee_enabled: false,
+  fee_amount: '',
+  fee_label: '',
+  discount_amount: '',
+  discount_label: '',
 })
 
 export const accountDefaults = (): AccountForm => ({

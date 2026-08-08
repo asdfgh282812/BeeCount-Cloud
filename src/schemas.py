@@ -551,6 +551,15 @@ class ReadTransactionOut(BaseModel):
     # native_amount=折账本本位币快照(null 时前端 fallback 用 amount)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 手續費/折扣(2026-08 使用者需求):base_amount=使用者輸入的原始金額
+    # (null=沒用過這個功能,前端 fallback 用 amount);fee_amount/
+    # discount_amount=額外調整金額;fee_label/discount_label=自訂名稱
+    # (null=前端顯示預設「手續費」「折扣」)。
+    base_amount: float | None = None
+    fee_amount: float | None = None
+    fee_label: str | None = None
+    discount_amount: float | None = None
+    discount_label: str | None = None
     # 退款(§2.6):指向被退款那笔支出的 sync_id;None = 普通交易。
     refund_of_id: str | None = None
     # 分期付款(§2.3):指向所属分期计划的 sync_id;None = 非分期生成的交易。
@@ -1350,6 +1359,18 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 折账本本位币快照(前端按汇率算好传入)。不传 → item 不产生字段(旧行为)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
+    # base_amount=使用者輸入的原始金額(信用卡回饋計算的權威基準);
+    # fee_amount/discount_amount=額外調整金額;fee_label/discount_label=
+    # 自訂名稱(None=用預設「手續費」「折扣」顯示)。不傳任一個 → 維持現行
+    # 單一 amount 行為(向下相容)。server 端會依 tx_type 用這三者重新算出
+    # 權威的 amount(write/_shared.py::_normalize_fee_discount_amount),
+    # 傳入的 amount 只在完全沒用這個功能時才是最終值。
+    base_amount: float | None = Field(default=None, ge=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
     # 退款(§2.6):这笔交易是对 refund_of_id 那笔支出的退款。None = 普通交易。
     refund_of_id: str | None = None
     # Phase 1.5(§2.12.2):建交易当下顺便把它设成週期性收支的起点。None =
@@ -1399,6 +1420,14 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 交易级多币种(0018):显式传入优先(mutator 不再联动);None = 不变。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 手續費/折扣(2026-08 使用者需求):key 不出現 = 不變;傳 null = 清除該
+    # 分量(關掉手續費/折扣功能);傳值 = 更新。server 端一律用最終三個分量
+    # 重算 amount,見 write/_shared.py::_normalize_fee_discount_amount。
+    base_amount: float | None = Field(default=None, ge=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
     # 退款(§2.6):None = 不变。传空字符串清空关联(mutator 按空串处理成 null)。
     refund_of_id: str | None = None
     # 拆帳(§2.4):None(不传该 key)= 不变,沿用既有 splits(或维持无 splits)。

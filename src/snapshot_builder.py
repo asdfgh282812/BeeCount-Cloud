@@ -80,6 +80,14 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 全量同步后外币折算全部丢失(apply 缺省 nativeAmount=amount 退化 1:1)。
         ReadTxProjection.currency_code,
         ReadTxProjection.native_amount,
+        # 手續費/折扣(2026-08 使用者需求),同样必须进 full snapshot,原因同上
+        # (CLAUDE.md 記過的既有 bug 模式:漏 SELECT 新欄位 → 下一次
+        # `_commit_write` 的 diff 把它當「本來就沒有」靜默清空)。
+        ReadTxProjection.base_amount,
+        ReadTxProjection.fee_amount,
+        ReadTxProjection.fee_label,
+        ReadTxProjection.discount_amount,
+        ReadTxProjection.discount_label,
         # 退款(§2.6)/ 分期(§2.3)反查字段:同样必须进 full snapshot,否则新
         # 设备首次同步 / 重装后这两个关联全丢。
         ReadTxProjection.refund_of_sync_id,
@@ -124,6 +132,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
          currency_code, native_amount,
+         base_amount, fee_amount, fee_label, discount_amount, discount_label,
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
          splits_json, debt_id,
@@ -182,6 +191,16 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["currencyCode"] = currency_code
         if native_amount is not None:
             item["nativeAmount"] = native_amount
+        if base_amount is not None:
+            item["baseAmount"] = base_amount
+        if fee_amount is not None:
+            item["feeAmount"] = fee_amount
+        if fee_label:
+            item["feeLabel"] = fee_label
+        if discount_amount is not None:
+            item["discountAmount"] = discount_amount
+        if discount_label:
+            item["discountLabel"] = discount_label
         if refund_of_id:
             item["refundOfId"] = refund_of_id
         if installment_plan_id:
