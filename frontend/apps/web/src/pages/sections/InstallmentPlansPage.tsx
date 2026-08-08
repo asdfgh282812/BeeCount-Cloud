@@ -200,6 +200,12 @@ export function InstallmentPlansPage() {
           toast.error(t('installmentPlans.error.firstPeriodAtRequired'), t('notice.error'))
           return false
         }
+        // 需求 #14(Phase 12):分期付款恆為 expense、無轉帳語意,分類必填,
+        // 避免每期生成的交易漏分類。
+        if (!form.category_id.trim()) {
+          toast.error(t('transactions.error.categoryRequired'), t('notice.error'))
+          return false
+        }
         await retryOnConflict(activeLedgerId, (base) =>
           createInstallmentPlan(token, activeLedgerId, base, {
             total_amount: totalAmount,

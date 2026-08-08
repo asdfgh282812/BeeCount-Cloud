@@ -167,6 +167,13 @@ def _periods(client, hdr, ledger_id, plan_id):
     return r.json()
 
 
+def _seed_category(client, hdr, ledger_id, sync_id="cat-1", kind="expense", name="測試分類"):
+    """需求 #14(Phase 12)分類必填後,大多數建立分期付款計畫的測試都要先有
+    一個分類可以帶。跟 mobile push 一筆 user-global category 一样简单。"""
+    _push(client, hdr, ledger_id, "category", sync_id, {"syncId": sync_id, "name": name, "kind": kind})
+    return sync_id
+
+
 # ---------------------------------------------------------------------------
 # Web write:建计画当下一次生成全部期数
 # ---------------------------------------------------------------------------
@@ -185,6 +192,7 @@ def test_create_installment_plan_generates_all_periods():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -192,6 +200,7 @@ def test_create_installment_plan_generates_all_periods():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
                 "note": "笔记本电脑",
@@ -265,6 +274,7 @@ def test_create_installment_plan_with_offset_existing_balance_zeroes_out_card_de
         assert summary_before.json()["remaining_due"] == 1200.0
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=30)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -272,6 +282,7 @@ def test_create_installment_plan_with_offset_existing_balance_zeroes_out_card_de
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
                 "account_id": "acc-card",
@@ -340,6 +351,7 @@ def test_create_installment_plan_rejects_when_no_outstanding_balance():
         # 没有任何消费,remaining_due 恒为 0。
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=30)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -347,6 +359,7 @@ def test_create_installment_plan_rejects_when_no_outstanding_balance():
             json={
                 "base_change_id": base,
                 "total_amount": 500.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
                 "account_id": "acc-card",
@@ -404,6 +417,7 @@ def test_create_installment_plan_on_account_group_distributes_offset_to_children
             json={
                 "base_change_id": base,
                 "total_amount": 800.0,
+                "category_id": "cat-1",
                 "periods": 2,
                 "first_period_at": first_period_at.isoformat(),
                 "account_id": "acc-cube",
@@ -413,6 +427,8 @@ def test_create_installment_plan_on_account_group_distributes_offset_to_children
         assert rejected.status_code == 400, rejected.text
         assert rejected.json()["error"]["code"] == "INSTALLMENT_ACCOUNT_IS_GROUP_MEMBER"
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
+
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -420,6 +436,7 @@ def test_create_installment_plan_on_account_group_distributes_offset_to_children
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
                 "account_id": "acc-group",
@@ -461,6 +478,7 @@ def test_create_installment_plan_offset_requires_account_id():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -468,6 +486,7 @@ def test_create_installment_plan_offset_requires_account_id():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
                 "offset_existing_balance": True,
@@ -490,6 +509,8 @@ def test_installment_plan_plain_patch_can_settle():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
+
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -497,6 +518,7 @@ def test_installment_plan_plain_patch_can_settle():
             json={
                 "base_change_id": base,
                 "total_amount": 300.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             },
@@ -593,6 +615,7 @@ def test_installment_period_patch_marks_overridden_and_skipped_by_rebalance():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -600,6 +623,7 @@ def test_installment_period_patch_marks_overridden_and_skipped_by_rebalance():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
                 "repayment_method": "equal_installment",
@@ -675,6 +699,7 @@ def test_installment_early_repay_principal_reduces_future_periods():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -682,6 +707,7 @@ def test_installment_early_repay_principal_reduces_future_periods():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -726,6 +752,7 @@ def test_installment_early_repay_principal_full_amount_settles_plan():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -733,6 +760,7 @@ def test_installment_early_repay_principal_full_amount_settles_plan():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -774,6 +802,7 @@ def test_installment_payoff_deletes_future_periods_and_generates_settlement_tx()
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -781,6 +810,7 @@ def test_installment_payoff_deletes_future_periods_and_generates_settlement_tx()
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -821,6 +851,7 @@ def test_installment_terminate_future_deletes_without_settlement_tx():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -828,6 +859,7 @@ def test_installment_terminate_future_deletes_without_settlement_tx():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -873,6 +905,7 @@ def test_installment_refund_period_marks_refunded_and_creates_income_tx():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -880,6 +913,7 @@ def test_installment_refund_period_marks_refunded_and_creates_income_tx():
             json={
                 "base_change_id": base,
                 "total_amount": 1200.0,
+                "category_id": "cat-1",
                 "periods": 12,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -943,6 +977,7 @@ def test_installment_refund_period_custom_amount_and_note():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -950,6 +985,7 @@ def test_installment_refund_period_custom_amount_and_note():
             json={
                 "base_change_id": base,
                 "total_amount": 300.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -993,6 +1029,7 @@ def test_installment_refund_period_rejects_double_refund():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -1000,6 +1037,7 @@ def test_installment_refund_period_rejects_double_refund():
             json={
                 "base_change_id": base,
                 "total_amount": 300.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -1044,6 +1082,7 @@ def test_installment_plan_delete_cascades_periods_and_transactions_after_partial
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -1051,6 +1090,7 @@ def test_installment_plan_delete_cascades_periods_and_transactions_after_partial
             json={
                 "base_change_id": base,
                 "total_amount": 300.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -1103,6 +1143,7 @@ def test_installment_period_tx_amount_date_account_cannot_be_edited_directly():
         hdr = {"Authorization": f"Bearer {token}"}
 
         first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
             f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
@@ -1110,6 +1151,7 @@ def test_installment_period_tx_amount_date_account_cannot_be_edited_directly():
             json={
                 "base_change_id": base,
                 "total_amount": 300.0,
+                "category_id": "cat-1",
                 "periods": 3,
                 "first_period_at": first_period_at.isoformat(),
             },
@@ -1143,5 +1185,40 @@ def test_installment_period_tx_amount_date_account_cannot_be_edited_directly():
         txs = {t["id"]: t for t in _transactions(client, hdr, ledger_id)}
         assert txs[tx_id]["note"] == "第一期备注"
         assert txs[tx_id]["amount"] == 100.0, "上面两次被拒绝的 amount/happened_at 编辑不应该生效"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 分類必填(需求 #14,2026-08 使用者回饋改善 SD Phase 12)
+# ---------------------------------------------------------------------------
+
+
+def test_create_installment_plan_without_category_rejected():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "inscat1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_INSCAT1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "inscat1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        first_period_at = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/installment-plans",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "total_amount": 1200.0,
+                "periods": 12,
+                "first_period_at": first_period_at.isoformat(),
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert _plans(client, hdr, ledger_id) == []
     finally:
         app.dependency_overrides.clear()

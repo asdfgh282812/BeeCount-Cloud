@@ -32,6 +32,7 @@ import type {
 
 import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
+import { interestRateToPercentDisplay, percentDisplayToInterestRate } from '../format'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { TagPickerDialog } from '../components/TagPickerDialog'
@@ -1177,12 +1178,20 @@ export function TransactionsPanel({
                     </div>
                     <div className="space-y-1">
                       <Label>{t('installmentPlans.field.interestRate')}</Label>
+                      {/* 需求 #17(Phase 12):使用者直接輸入整數百分比(6=6%),
+                          表單狀態仍儲存小數分數(0.06),換算邏輯見
+                          format.ts::interestRateToPercentDisplay。 */}
                       <Input
                         type="number"
                         min={0}
-                        step="0.001"
-                        value={form.installment_interest_rate}
-                        onChange={(e) => onFormChange({ ...form, installment_interest_rate: e.target.value })}
+                        step="0.1"
+                        value={interestRateToPercentDisplay(form.installment_interest_rate)}
+                        onChange={(e) =>
+                          onFormChange({
+                            ...form,
+                            installment_interest_rate: percentDisplayToInterestRate(e.target.value)
+                          })
+                        }
                       />
                     </div>
                     <div className="space-y-1">

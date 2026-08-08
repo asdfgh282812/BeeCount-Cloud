@@ -73,6 +73,14 @@ RECEIVABLE_CATEGORY_NAME = "收款"
 PAYABLE_CATEGORY_NAME = "還款"
 _DEBT_CATEGORY_DEVICE_ID = "server-debt"
 
+# 週期性收支/分期付款分類必填(需求 #14,2026-08 Phase 12):上線前建立的
+# 舊規則/計畫可能 category_sync_id 是 NULL,一次性回填腳本
+# (scripts/backfill_recurring_installment_categories.py)拿這個歸到「未分類」
+# 專屬分類,避免舊規則繼續產生沒有分類的交易。跟 REWARD/REFUND/DEBT 同款
+# 「按 kind 各自幂等建一次」模式。
+UNCATEGORIZED_CATEGORY_NAME = "未分類"
+_UNCATEGORIZED_CATEGORY_DEVICE_ID = "server-uncategorized-backfill"
+
 
 def _ensure_user_global_category(
     db: Session, *, user_id: str, name: str, kind: str, device_id: str,
@@ -158,6 +166,18 @@ def ensure_debt_category(db: Session, *, user_id: str, direction: str) -> str:
     return _ensure_user_global_category(
         db, user_id=user_id, name=debt_category_name(direction),
         kind=debt_category_kind(direction), device_id=_DEBT_CATEGORY_DEVICE_ID,
+    )
+
+
+def ensure_uncategorized_category(db: Session, *, user_id: str, kind: str) -> str:
+    """需求 #14(2026-08 Phase 12):週期性收支/分期付款分類上線前建立的舊
+    規則/計畫若 `category_sync_id` 是 NULL,一次性回填腳本
+    (`scripts/backfill_recurring_installment_categories.py`)拿這個歸到
+    「未分類」專屬分類。`kind` 依規則本身的 `tx_type` 傳入(分期付款恒為
+    expense,週期性收支依規則自己的方向 expense/income)。"""
+    return _ensure_user_global_category(
+        db, user_id=user_id, name=UNCATEGORIZED_CATEGORY_NAME, kind=kind,
+        device_id=_UNCATEGORIZED_CATEGORY_DEVICE_ID,
     )
 
 

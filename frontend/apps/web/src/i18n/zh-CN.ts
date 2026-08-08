@@ -654,7 +654,7 @@ const zhCN = {
   'installmentPlans.field.interestPeriod': '计息方式',
   'installmentPlans.interestPeriod.monthly': '按月',
   'installmentPlans.interestPeriod.daily': '按日',
-  'installmentPlans.field.interestRate': '年利率',
+  'installmentPlans.field.interestRate': '年利率 (%)',
   'installmentPlans.field.roundAmounts': '金额取整',
   'installmentPlans.field.remainderPosition': '尾差归入',
   'installmentPlans.remainderPosition.first': '第一期',

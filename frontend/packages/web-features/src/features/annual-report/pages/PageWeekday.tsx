@@ -7,9 +7,7 @@ import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { weekdayInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
-
-const currencySymbol = (code: string) =>
-  ({ CNY: '¥', USD: '$', EUR: '€', GBP: '£', JPY: '¥', HKD: 'HK$' } as Record<string, string>)[code] || code + ' '
+import { currencySymbol } from '../../../lib/currencies'
 
 /**
  * 工作日 vs 周末:双卡对比 + 周末倍数高亮。

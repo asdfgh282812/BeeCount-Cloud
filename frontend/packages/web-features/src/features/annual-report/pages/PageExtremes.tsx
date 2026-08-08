@@ -6,9 +6,7 @@ import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { extremesInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
-
-const currencySymbol = (code: string) =>
-  ({ CNY: '¥', USD: '$', EUR: '€', GBP: '£', JPY: '¥', HKD: 'HK$' } as Record<string, string>)[code] || code + ' '
+import { currencySymbol } from '../../../lib/currencies'
 
 const formatDate = (iso: string) => {
   // ISO 'YYYY-MM-DD...' → 'M月D日'

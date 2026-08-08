@@ -84,23 +84,25 @@ describe('i18n error mapping and formatting', () => {
  * 锁住 bug —— 英文界面下的 CNY 金额曾仍显示「247.25万」,应为「2.47M」。
  */
 describe('compact amount locale unit', () => {
+  // 需求 #12(2026-08 Phase 12):CNY/JPY 不再显示 ¥ 符号前缀,只显示数字
+  // (见 lib/currencies.ts::currencySymbol)。
   it('formatBalanceCompact uses 万 for chinese', () => {
-    expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('¥5万')
-    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true })).toBe('¥247.25万')
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('5万')
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true })).toBe('247.25万')
     // < 1 万整数不带小数点(见「所有显示金额」需求)
-    expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('¥980')
-    expect(formatBalanceCompact(980.5, 'CNY', { chinese: true })).toBe('¥980.5')
+    expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('980')
+    expect(formatBalanceCompact(980.5, 'CNY', { chinese: true })).toBe('980.5')
   })
 
   it('formatBalanceCompact honors traditional 萬 via wanUnit', () => {
-    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('¥247.25萬')
-    expect(formatBalanceCompact(50000, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('¥5萬')
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('247.25萬')
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('5萬')
   })
 
   it('formatBalanceCompact uses k / M for english (even CNY)', () => {
-    expect(formatBalanceCompact(50000, 'CNY', { chinese: false })).toBe('¥50k')
-    expect(formatBalanceCompact(2472500, 'CNY', { chinese: false })).toBe('¥2.47M')
-    expect(formatBalanceCompact(980, 'CNY', { chinese: false })).toBe('¥980')
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: false })).toBe('50k')
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: false })).toBe('2.47M')
+    expect(formatBalanceCompact(980, 'CNY', { chinese: false })).toBe('980')
     // currencyCode 传 null 不带符号
     expect(formatBalanceCompact(50000, null, { chinese: false })).toBe('50k')
   })

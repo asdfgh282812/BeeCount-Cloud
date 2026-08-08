@@ -1840,6 +1840,26 @@ def _assert_account_not_group(
         )
 
 
+def _assert_category_required(
+    tx_type: str | None, category_id: str | None, *, field_name: str = "category_id",
+) -> None:
+    """需求 #14(2026-08 使用者回饋改善 SD Phase 12):系統自動產生交易不可
+    漏分類。週期性收支(非轉帳)、分期付款(恒為 expense,無轉帳語意)建立/
+    編輯時,分類為必填,避免產生的每期交易落地時分類欄位是空的、報表出現
+    Uncategorized(呼應 CLAUDE.md「系統自動產生交易不可漏分類」鐵律的第三個
+    案例——退款/信用卡回饋/欠還款已經有 `ensure_*_category` 自動歸類的模式,
+    這裡直接改成前端強制必選,不是自動歸類,因為使用者本來就該手動指定這筆
+    週期性收支/分期付款要記在哪個分類下,不適合系統代猜)。轉帳類型的週期
+    規則沒有分類語意,維持允許為空。"""
+    if tx_type == "transfer":
+        return
+    if not category_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} is required",
+        )
+
+
 def _assert_can_modify_entity(
     *,
     db: Session,  # noqa: ARG001 — retained for signature compat
@@ -1985,6 +2005,7 @@ __all__ = [
     '_assert_debt_exists',
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
+    '_assert_category_required',
     '_assert_valid_adjustment_tx',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',

@@ -5,6 +5,7 @@ import { useReducedMotion } from 'framer-motion'
 import { useLocale, useT } from '@beecount/ui'
 
 import { formatBalanceCompact } from '../format'
+import { currencySymbol } from '../lib/currencies'
 
 /**
  * 通用金额展示组件。全站所有"金额"类文案都走这里，方便统一改：
@@ -19,10 +20,10 @@ import { formatBalanceCompact } from '../format'
  * - `showCurrency`：是否在数字前展示币种符号（默认不展示，避免和 pill / 分组标题重复）。
  * - `size`：预设字号。业务不直接指定 tailwind text-\* 以免各处分散。
  *
- * 使用示例(中文 locale)：
- *   <Amount value={1234567.89} />                     → ¥123.5万   （英文 locale → ¥1.2M）
+ * 使用示例(中文 locale，币种 CNY——CNY/JPY 不带符号前缀，见 `lib/currencies.ts`)：
+ *   <Amount value={1234567.89} />                     → 123.5万   （英文 locale → 1.2M）
  *   <Amount value={-980} tone="negative" />           → -980.00
- *   <Amount value={0} compact={false} showCurrency /> → ¥0.00
+ *   <Amount value={0} compact={false} showCurrency /> → 0.00
  */
 export type AmountTone = 'default' | 'positive' | 'negative' | 'muted'
 export type AmountSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl'
@@ -261,22 +262,4 @@ function renderAmount({
   if (sign === 'always') return (isNeg ? '-' : '+') + body
   if (sign === 'never') return body
   return isNeg ? `-${body}` : body
-}
-
-function currencySymbol(code: string): string {
-  switch (code.toUpperCase()) {
-    case 'CNY':
-    case 'JPY':
-      return '¥'
-    case 'USD':
-      return '$'
-    case 'EUR':
-      return '€'
-    case 'HKD':
-      return 'HK$'
-    case 'GBP':
-      return '£'
-    default:
-      return ''
-  }
 }

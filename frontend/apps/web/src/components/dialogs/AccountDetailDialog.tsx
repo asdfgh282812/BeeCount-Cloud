@@ -36,7 +36,7 @@ import {
   useT,
   useToast
 } from '@beecount/ui'
-import { TransactionList } from '@beecount/web-features'
+import { interestRateToPercentDisplay, percentDisplayToInterestRate, TransactionList } from '@beecount/web-features'
 import {
   Banknote,
   Calendar as CalendarIcon,
@@ -1174,6 +1174,8 @@ function InstallmentQuickCreateDialog({
     Number(periods) >= 1 &&
     Boolean(firstPeriodAt) &&
     Boolean(ledgerId) &&
+    // 需求 #14(Phase 12):分期付款分類必填,避免每期生成的交易漏分類。
+    Boolean(categoryId) &&
     (categoryId !== NEW_CATEGORY_VALUE || Boolean(newCategoryName.trim()))
 
   const handleSubmit = async () => {
@@ -1317,12 +1319,13 @@ function InstallmentQuickCreateDialog({
             </div>
             <div className="space-y-1">
               <Label>{t('installmentPlans.field.interestRate')}</Label>
+              {/* 需求 #17(Phase 12):輸入整數百分比,`interestRate` state 仍存小數分數。 */}
               <Input
                 type="number"
                 min="0"
-                step="0.001"
-                value={interestRate}
-                onChange={(e) => setInterestRate(e.target.value)}
+                step="0.1"
+                value={interestRateToPercentDisplay(interestRate)}
+                onChange={(e) => setInterestRate(percentDisplayToInterestRate(e.target.value))}
               />
             </div>
             <div className="space-y-1 sm:col-span-2">

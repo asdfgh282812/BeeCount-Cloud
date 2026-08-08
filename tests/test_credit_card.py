@@ -689,6 +689,8 @@ def test_billing_summary_period_installment_summary_field():
         _push(client, hdr_app, "lgbi1", "account", "acc-card",
               {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
                "billingDay": 25, "paymentDueDay": 10}, device_id="d-app")
+        _push(client, hdr_app, "lgbi1", "category", "cat-1",
+              {"syncId": "cat-1", "name": "測試分類", "kind": "expense"}, device_id="d-app")
 
         # 首期已经到期(昨天),之后 11 期还没到 → paid_periods 应该是 1。
         first_period_at = datetime.now(timezone.utc) - timedelta(days=1)
@@ -696,6 +698,7 @@ def test_billing_summary_period_installment_summary_field():
             "/api/v1/write/ledgers/lgbi1/installment-plans", headers=hdr_web,
             json={
                 "base_change_id": 0, "total_amount": 1200.0, "periods": 12,
+                "category_id": "cat-1",
                 "first_period_at": first_period_at.isoformat(), "account_id": "acc-card",
             },
         )
@@ -713,6 +716,7 @@ def test_billing_summary_period_installment_summary_field():
             "/api/v1/write/ledgers/lgbi1/installment-plans", headers=hdr_web,
             json={
                 "base_change_id": 0, "total_amount": 300.0, "periods": 3,
+                "category_id": "cat-1",
                 "first_period_at": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
                 "account_id": "acc-card",
             },

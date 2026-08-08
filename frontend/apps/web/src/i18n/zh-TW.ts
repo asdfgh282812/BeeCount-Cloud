@@ -1138,7 +1138,7 @@ const zhTW = {
   'installmentPlans.field.interestPeriod': '計息方式',
   'installmentPlans.interestPeriod.monthly': '按月',
   'installmentPlans.interestPeriod.daily': '按日',
-  'installmentPlans.field.interestRate': '年利率',
+  'installmentPlans.field.interestRate': '年利率 (%)',
   'installmentPlans.field.roundAmounts': '金額取整',
   'installmentPlans.field.remainderPosition': '尾差歸入',
   'installmentPlans.remainderPosition.first': '第一期',

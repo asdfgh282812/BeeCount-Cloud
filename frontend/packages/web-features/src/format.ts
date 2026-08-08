@@ -1,5 +1,7 @@
 import type { ReadLedger } from '@beecount/api-client'
 
+import { currencySymbol } from './lib/currencies'
+
 /** 去掉小数点后多余的尾随 0(657.00 → 657、657.50 → 657.5),用户不想在没有
  *  小数的金额上一律拖一条 ".00"(见「所有显示金额」需求)。 */
 function trimZero(s: string): string {
@@ -86,23 +88,30 @@ export function formatCompactTick(
   return value.toFixed(0)
 }
 
-function currencySymbol(code: string): string {
-  switch (code.toUpperCase()) {
-    case 'CNY':
-      return '¥'
-    case 'USD':
-      return '$'
-    case 'EUR':
-      return '€'
-    case 'JPY':
-      return '¥'
-    case 'HKD':
-      return 'HK$'
-    case 'GBP':
-      return '£'
-    default:
-      return ''
-  }
+/**
+ * 分期付款年利率顯示轉換(需求 #17,2026-08 Phase 12)。後端/表單狀態一律
+ * 儲存小數分數(`0.06` = 6%/年,`services/installment_amortization.py`
+ * 既有數學不變),UI 輸入框改成讓使用者直接打整數百分比(`6`),這兩個函式
+ * 只做「顯示 ⇄ 儲存」的來回換算,不影響任何送出/計算邏輯。四捨五入到固定
+ * 精度是為了避免 `0.06 * 100` 這類二進位浮點運算殘留 `6.000000000000001`
+ * 這種雜訊字元。四個呼叫點(`TransactionsPanel.tsx`/`InstallmentPlansPanel.tsx`
+ * 建立表單 + 重新分期彈窗/`AccountDetailDialog.tsx`)共用這一份,不要各自
+ * 複製一份轉換邏輯。
+ */
+export function interestRateToPercentDisplay(fraction: string): string {
+  const trimmed = fraction.trim()
+  if (trimmed === '') return ''
+  const n = Number(trimmed)
+  if (!Number.isFinite(n)) return ''
+  return String(Number((n * 100).toFixed(4)))
+}
+
+export function percentDisplayToInterestRate(percent: string): string {
+  const trimmed = percent.trim()
+  if (trimmed === '') return ''
+  const n = Number(trimmed)
+  if (!Number.isFinite(n)) return ''
+  return String(Number((n / 100).toFixed(6)))
 }
 
 export function formatIsoDateTime(value: string | null | undefined): string {

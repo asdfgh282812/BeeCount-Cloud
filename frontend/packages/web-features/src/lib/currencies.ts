@@ -3,9 +3,9 @@
  * 覆盖通行 ISO 4217;全部在汇率源 fawaz currency-api 有报价)。新增货币只需在
  * 此追加,前端两端都得同步更新。
  *
- * 不单独维护 symbol 表 —— web 上目前没有展示 symbol 的地方,需要时可从
- * [Intl.NumberFormat] 派生。币种名称同理走 [Intl.DisplayNames](见
- * [currencyDisplayName]),主流币种由 i18n key `currency.<CODE>` 覆盖。
+ * 币种符号見下方 `currencySymbol()`(全站唯一來源)。币种名称走
+ * [Intl.DisplayNames](见 [currencyDisplayName]),主流币种由 i18n key
+ * `currency.<CODE>` 覆盖。
  */
 
 const CURRENCY_GROUPS: Array<{ region: string; codes: string[] }> = [
@@ -34,21 +34,32 @@ export const CURRENCY_REGION_GROUPS = CURRENCY_GROUPS
  * 仅在无覆盖时调用本函数 —— 这样长尾币种也能自动按当前语言显示名称。
  */
 /**
- * 从 Intl.NumberFormat 派生币种符号(zh-CN:CNY→"¥"、JPY→"JP¥"、USD→"US$")。
- * 用 currencyDisplay:'symbol'(非 narrowSymbol):JPY/CNY 的 narrow 同为 "¥",
- * 多币种列表里无法区分 —— symbol 形态自带区分前缀。未知 code 回退 code 本身。
+ * 全站唯一的币种符号來源(需求 #12,2026-08 使用者回饋改善 Phase 12)。
+ * 之前有 4 套各自獨立的實作（`format.ts`/`Amount.tsx` 各自的 switch、這裡
+ * 原本用 Intl.NumberFormat 派生的版本、annual-report 5 個檔案各自內嵌的
+ * 對照表），現在收斂成這一份，其餘全部改成直接 import。
+ *
+ * 固定字面量對照（不吃 locale）—— 沿用原本 `format.ts`/`Amount.tsx` 的
+ * 「純數字符號」行為，不像 Intl.NumberFormat 那樣依 locale 帶出
+ * "US$"/"JP¥" 這種國家碼前綴（那樣會讓多數幣別的顯示比現況多長一截）。
+ * 使用者明確要求「拿掉¥符號」：CNY/JPY 一律回傳空字串（只顯示數字），
+ * 其它幣別維持原本符號不變。未知幣別回傳空字串。
  */
-export function currencySymbol(code: string, locale = 'zh-CN'): string {
-  const upper = code.toUpperCase()
-  try {
-    const parts = new Intl.NumberFormat(locale, {
-      style: 'currency',
-      currency: upper,
-      currencyDisplay: 'symbol',
-    }).formatToParts(1)
-    return parts.find((p) => p.type === 'currency')?.value || upper
-  } catch {
-    return upper
+export function currencySymbol(code: string): string {
+  switch (code.toUpperCase()) {
+    case 'CNY':
+    case 'JPY':
+      return ''
+    case 'USD':
+      return '$'
+    case 'EUR':
+      return '€'
+    case 'HKD':
+      return 'HK$'
+    case 'GBP':
+      return '£'
+    default:
+      return ''
   }
 }
 

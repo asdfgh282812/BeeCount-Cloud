@@ -159,6 +159,13 @@ def _rules(client, hdr, ledger_id):
     return r.json()
 
 
+def _seed_category(client, hdr, ledger_id, sync_id="cat-1", kind="expense", name="測試分類"):
+    """需求 #14(Phase 12)分類必填後,大多數建立週期性收支規則的測試都要先有
+    一個分類可以帶。跟 mobile push 一筆 user-global category 一样简单。"""
+    _push(client, hdr, ledger_id, "category", sync_id, {"syncId": sync_id, "name": name, "kind": kind})
+    return sync_id
+
+
 # ---------------------------------------------------------------------------
 # 建立當下批次生成
 # ---------------------------------------------------------------------------
@@ -176,6 +183,7 @@ def test_create_recurring_rule_with_end_at_generates_all_occurrences_and_disable
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         next_run = datetime.now(timezone.utc) + timedelta(days=1)
         end_at = next_run + timedelta(days=61)  # 涵盖 next_run/+1mo/+2mo 三次
         base = _latest_change_id(client, token, ledger_id)
@@ -187,6 +195,7 @@ def test_create_recurring_rule_with_end_at_generates_all_occurrences_and_disable
                 "tx_type": "expense",
                 "amount": 99.5,
                 "note": "房租",
+                "category_id": "cat-1",
                 "frequency": "monthly",
                 "interval": 1,
                 "next_run_at": next_run.isoformat(),
@@ -224,6 +233,7 @@ def test_create_recurring_rule_without_end_at_generates_default_window():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         next_run = datetime.now(timezone.utc) - timedelta(days=1)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
@@ -232,6 +242,7 @@ def test_create_recurring_rule_without_end_at_generates_default_window():
             json={
                 "base_change_id": base,
                 "amount": 50.0,
+                "category_id": "cat-1",
                 "frequency": "monthly",
                 "next_run_at": next_run.isoformat(),
             },
@@ -263,6 +274,7 @@ def test_web_update_and_delete_recurring_rule():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         base = _latest_change_id(client, token, ledger_id)
         next_run = datetime.now(timezone.utc) + timedelta(days=1)
         end_at = next_run + timedelta(days=1)
@@ -272,6 +284,7 @@ def test_web_update_and_delete_recurring_rule():
             json={
                 "base_change_id": base,
                 "amount": 50,
+                "category_id": "cat-1",
                 "next_run_at": next_run.isoformat(),
                 "end_at": end_at.isoformat(),
             },
@@ -398,6 +411,7 @@ def test_recurring_occurrence_update_overridden_skipped_by_update_from():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         next_run = datetime.now(timezone.utc) + timedelta(days=1)
         end_at = next_run + timedelta(days=91)  # next_run/+1/+2/+3 月 四次
         base = _latest_change_id(client, token, ledger_id)
@@ -407,6 +421,7 @@ def test_recurring_occurrence_update_overridden_skipped_by_update_from():
             json={
                 "base_change_id": base,
                 "amount": 100.0,
+                "category_id": "cat-1",
                 "frequency": "monthly",
                 "next_run_at": next_run.isoformat(),
                 "end_at": end_at.isoformat(),
@@ -465,6 +480,7 @@ def test_recurring_occurrence_delete():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         next_run = datetime.now(timezone.utc) + timedelta(days=1)
         end_at = next_run + timedelta(days=32)
         base = _latest_change_id(client, token, ledger_id)
@@ -474,6 +490,7 @@ def test_recurring_occurrence_delete():
             json={
                 "base_change_id": base,
                 "amount": 20.0,
+                "category_id": "cat-1",
                 "frequency": "monthly",
                 "next_run_at": next_run.isoformat(),
                 "end_at": end_at.isoformat(),
@@ -516,6 +533,7 @@ def test_recurring_terminate_future_deletes_unhappened_keeps_past():
 
         # daily 频率,从 -3 天到 +3 天,7 次 occurrence;调用 terminate-future
         # 时的 now 一定晚于建规则时的 now,所以 offset=0 那笔也会落在"过去"。
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         start = datetime.now(timezone.utc) - timedelta(days=3)
         end_at = datetime.now(timezone.utc) + timedelta(days=3)
         base = _latest_change_id(client, token, ledger_id)
@@ -525,6 +543,7 @@ def test_recurring_terminate_future_deletes_unhappened_keeps_past():
             json={
                 "base_change_id": base,
                 "amount": 5.0,
+                "category_id": "cat-1",
                 "frequency": "daily",
                 "next_run_at": start.isoformat(),
                 "end_at": end_at.isoformat(),
@@ -569,6 +588,7 @@ def test_refill_recurring_windows_extends_generated_until_at():
         token = web["access_token"]
         hdr = {"Authorization": f"Bearer {token}"}
 
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
         next_run = datetime.now(timezone.utc) - timedelta(days=1)
         base = _latest_change_id(client, token, ledger_id)
         res = client.post(
@@ -577,6 +597,7 @@ def test_refill_recurring_windows_extends_generated_until_at():
             json={
                 "base_change_id": base,
                 "amount": 30.0,
+                "category_id": "cat-1",
                 "frequency": "monthly",
                 "next_run_at": next_run.isoformat(),
             },
@@ -953,5 +974,123 @@ def test_inline_recurring_transfer_creates_origin_only_not_bulk():
             )
             assert rule_row.generated_until_at is not None
             assert rule_row.enabled is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 分類必填(需求 #14,2026-08 使用者回饋改善 SD Phase 12)
+# ---------------------------------------------------------------------------
+
+
+def test_create_recurring_rule_without_category_rejected():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "reccat1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECCAT1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "reccat1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 50.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert _rules(client, hdr, ledger_id) == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_transfer_recurring_rule_without_category_allowed():
+    """轉帳規則沒有分類語意,不受分類必填限制。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "reccat2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECCAT2"
+        _seed_ledger(client, app_token, device, ledger_id)
+        _push(client, {"Authorization": f"Bearer {app_token}"}, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "bank_card", "currency": "CNY"})
+        _push(client, {"Authorization": f"Bearer {app_token}"}, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+
+        web = _login_web(client, "reccat2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 50.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+            },
+        )
+        assert res.status_code == 200, res.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_recurring_rule_cannot_clear_category():
+    """PATCH 顯式把非轉帳規則的分類清空(傳 category_id=null)應該被擋,
+    維持既有分類不變。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "reccat3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECCAT3"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "reccat3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 50.0,
+                "category_id": "cat-1",
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}",
+            headers=hdr,
+            json={"base_change_id": base, "category_id": None},
+        )
+        assert res.status_code == 400, res.text
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["category_id"] == "cat-1", "被拒绝的更新不该动到既有分类"
     finally:
         app.dependency_overrides.clear()

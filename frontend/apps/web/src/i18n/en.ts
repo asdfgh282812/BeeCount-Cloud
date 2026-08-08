@@ -1138,7 +1138,7 @@ const en = {
   'installmentPlans.field.interestPeriod': 'Interest accrual',
   'installmentPlans.interestPeriod.monthly': 'Monthly',
   'installmentPlans.interestPeriod.daily': 'Daily',
-  'installmentPlans.field.interestRate': 'Annual interest rate',
+  'installmentPlans.field.interestRate': 'Annual interest rate (%)',
   'installmentPlans.field.roundAmounts': 'Round amounts',
   'installmentPlans.field.remainderPosition': 'Remainder goes to',
   'installmentPlans.remainderPosition.first': 'First period',

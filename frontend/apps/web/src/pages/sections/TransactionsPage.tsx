@@ -362,6 +362,13 @@ export function TransactionsPage() {
 
   const previewRequestSeqRef = useRef(0)
   const txFilterRestoreInProgressRef = useRef(false)
+  // 交易搜尋日期預設改「全部」(需求 #13,Phase 12):記錄「目前是否有搜尋
+  // 關鍵字」這個布林狀態,只在它真的發生「無→有」/「有→無」轉換的那一刻
+  // 才自動切換日期範圍(見下方 effect),不會每個 keystroke 都重算——這樣
+  // 使用者在同一次搜尋期間手動選的日期(quick chip / 進階篩選)會被保留,
+  // 直到這次搜尋的關鍵字被清空為止,自然滿足「尊重使用者最後手動操作」的
+  // 需求,不需要額外的「手動覆蓋」旗標。
+  const txSearchHasQueryRef = useRef(false)
   const txAttachmentPreviewUrlByFileIdRef = useRef<Record<string, string>>({})
   // 进交易页时初始 state 是 defaultTxFilter()(今日),localStorage 里持久化
   // 的筛选(比如「全部」)由 restore effect 异步覆盖回来——这中间会短暂触发
@@ -992,15 +999,54 @@ export function TransactionsPage() {
     // 搜索词必须落到输入框,不能被 localStorage 里的旧值盖掉。
     const urlQ = searchParams.get('q')
     const effectiveQ = urlQ && urlQ.trim().length > 0 ? urlQ : nextFilter.q
+    const hasQuery = effectiveQ.trim() !== ''
+    // 需求 #13(Phase 12):快取還原邏輯修正 —— 若還原出來的關鍵字非空,強制
+    // 套用「全部」日期範圍,不管快取裡存的 dateFrom/dateTo 是什麼(舊版存量
+    // 使用者可能存過「有關鍵字 + 今日」這種在新規則下不該共存的組合)。無
+    // 關鍵字則完全維持原本還原邏輯(不強制回「今日」,尊重使用者已保存的
+    // 其它篩選)。
+    const restoredFilter = hasQuery
+      ? { ...nextFilter, q: effectiveQ, dateFrom: '', dateTo: '' }
+      : { ...nextFilter, q: effectiveQ }
     setListQuery(effectiveQ)
-    setTxFilterApplied({ ...nextFilter, q: effectiveQ })
-    setTxFilterDraft({ ...nextFilter, q: effectiveQ })
+    setTxFilterApplied(restoredFilter)
+    setTxFilterDraft(restoredFilter)
     setTxPage(1)
+    // 同步「目前是否有關鍵字」的轉換偵測基準,避免還原完成後下面那個 effect
+    // 誤判成一次新的「無→有」轉換,又跑一次自動切換邏輯(此時已經按上面的
+    // 規則處理過了,不需要重複套用)。
+    txSearchHasQueryRef.current = hasQuery
     queueMicrotask(() => {
       txFilterRestoreInProgressRef.current = false
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.section, txFilterPersistKey])
+
+  // 交易搜尋日期預設改「全部」(需求 #13,Phase 12):有搜尋關鍵字時自動把
+  // 日期篩選切成「全部」(dateFrom/dateTo 清空);關鍵字被清空時自動回復
+  // 「今日」。只在「有沒有關鍵字」的轉換那一刻套用一次(見上方
+  // `txSearchHasQueryRef` 註解),重新打 API 交給下面既有的 fetch effect
+  // (依賴 `txFilterApplied`)自動處理,這裡不用額外呼叫。
+  useEffect(() => {
+    if (route.section !== 'transactions') return
+    if (txFilterRestoreInProgressRef.current) return
+    const hasQuery = listQuery.trim() !== ''
+    if (hasQuery === txSearchHasQueryRef.current) return
+    txSearchHasQueryRef.current = hasQuery
+    if (hasQuery) {
+      setTxFilterApplied((prev) =>
+        prev.dateFrom === '' && prev.dateTo === '' ? prev : { ...prev, dateFrom: '', dateTo: '' }
+      )
+      setTxFilterDraft((prev) =>
+        prev.dateFrom === '' && prev.dateTo === '' ? prev : { ...prev, dateFrom: '', dateTo: '' }
+      )
+    } else {
+      const today = todayRange()
+      setTxFilterApplied((prev) => ({ ...prev, dateFrom: today.dateFrom, dateTo: today.dateTo }))
+      setTxFilterDraft((prev) => ({ ...prev, dateFrom: today.dateFrom, dateTo: today.dateTo }))
+    }
+    setTxPage(1)
+  }, [listQuery, route.section])
 
   useEffect(() => {
     if (route.section !== 'transactions') return

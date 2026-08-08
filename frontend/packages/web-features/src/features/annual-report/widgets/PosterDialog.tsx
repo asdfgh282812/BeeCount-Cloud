@@ -6,9 +6,7 @@ import { useT } from '@beecount/ui'
 
 import type { AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
-
-const currencySymbol = (code: string) =>
-  ({ CNY: '¥', USD: '$', EUR: '€', GBP: '£', JPY: '¥', HKD: 'HK$' } as Record<string, string>)[code] || code + ' '
+import { currencySymbol } from '../../../lib/currencies'
 
 export type PosterDialogProps = {
   data: AnnualReportData

@@ -160,6 +160,12 @@ export function RecurringRulesPage() {
       toast.error(t('transactions.error.transferAccountsRequired'), t('notice.error'))
       return false
     }
+    // 需求 #14(Phase 12):非轉帳規則分類必填,避免產生的每期交易漏分類
+    // (轉帳沒有分類語意,維持不強制)。
+    if (form.tx_type !== 'transfer' && !form.category_id.trim()) {
+      toast.error(t('transactions.error.categoryRequired'), t('notice.error'))
+      return false
+    }
     const nextRunAtIso = new Date(form.next_run_at).toISOString()
     const endAtIso = form.end_at.trim() ? new Date(form.end_at).toISOString() : null
     try {

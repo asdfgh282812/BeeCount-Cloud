@@ -32,6 +32,7 @@ import { Amount } from '../components/Amount'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { interestRateToPercentDisplay, percentDisplayToInterestRate } from '../format'
 import type { InstallmentPlanForm } from '../forms'
 import { installmentPlanDefaults } from '../forms'
 import { formatAmountTrimmed } from '../format'
@@ -319,13 +320,16 @@ export function InstallmentPlansPanel({
               </div>
               <div className="space-y-1">
                 <Label>{t('installmentPlans.field.interestRate')}</Label>
+                {/* 需求 #17(Phase 12):輸入整數百分比,表單狀態仍存小數分數。 */}
                 <Input
                   type="number"
                   min="0"
-                  step="0.001"
+                  step="0.1"
                   disabled={!!form.editingId}
-                  value={form.interest_rate}
-                  onChange={(e) => onFormChange({ ...form, interest_rate: e.target.value })}
+                  value={interestRateToPercentDisplay(form.interest_rate)}
+                  onChange={(e) =>
+                    onFormChange({ ...form, interest_rate: percentDisplayToInterestRate(e.target.value) })
+                  }
                 />
               </div>
               <div className="space-y-1">
@@ -905,7 +909,14 @@ function RebalanceDialog({
           </div>
           <div className="space-y-1">
             <Label>{t('installmentPlans.field.interestRate')}</Label>
-            <Input type="number" min="0" step="0.001" value={rate} onChange={(e) => setRate(e.target.value)} />
+            {/* 需求 #17(Phase 12):輸入整數百分比,`rate` state 仍存小數分數。 */}
+            <Input
+              type="number"
+              min="0"
+              step="0.1"
+              value={interestRateToPercentDisplay(rate)}
+              onChange={(e) => setRate(percentDisplayToInterestRate(e.target.value))}
+            />
           </div>
         </div>
         <DialogFooter>

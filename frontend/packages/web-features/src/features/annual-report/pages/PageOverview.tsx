@@ -5,9 +5,7 @@ import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { overviewInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
-
-const currencySymbol = (code: string) =>
-  ({ CNY: '¥', USD: '$', EUR: '€', GBP: '£', JPY: '¥', HKD: 'HK$' } as Record<string, string>)[code] || code + ' '
+import { currencySymbol } from '../../../lib/currencies'
 
 /**
  * 总览屏:4 个核心指标(总笔数 / 记账天数 / 总收入 / 总支出),翻牌大字。

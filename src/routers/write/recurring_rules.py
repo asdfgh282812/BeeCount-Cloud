@@ -21,6 +21,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
+from ...models import ReadRecurringRuleProjection
 from ...snapshot_mutator import create_transaction as _mutate_create_tx
 from ...services import recurring_schedule
 
@@ -71,6 +72,8 @@ async def create_recurring_rule_ep(
     # 主帳戶(§2.9 Phase 4):account_group 不能被週期性收支拿來當帳戶用。
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=getattr(req, field, None), field_name=field)
+    # 需求 #14(Phase 12):非轉帳規則必須帶分類,避免生成的每期交易漏分類。
+    _assert_category_required(req.tx_type, req.category_id)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:
@@ -181,6 +184,20 @@ async def update_recurring_rule_ep(
         return replay
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 需求 #14(Phase 12):使用者主動要改 category_id 時(不管是清空還是換
+    # 別的值)才檢查——維持 partial update「沒帶的欄位不動」既有語意,不會
+    # 因為這條規則本來就沒分類(舊資料)而擋下跟分類無關的其它欄位更新。
+    # tx_type 沒帶在這次 payload 裡就查現有規則的 tx_type 判斷是否轉帳。
+    if "category_id" in payload:
+        effective_tx_type = payload.get("tx_type")
+        if effective_tx_type is None:
+            effective_tx_type = db.scalar(
+                select(ReadRecurringRuleProjection.tx_type).where(
+                    ReadRecurringRuleProjection.ledger_id == ledger.id,
+                    ReadRecurringRuleProjection.sync_id == rule_id,
+                )
+            )
+        _assert_category_required(effective_tx_type, payload.get("category_id"))
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
@@ -326,6 +343,18 @@ async def update_recurring_rule_from_ep(
     )
     if replay:
         return replay
+    # 需求 #14(Phase 12):同 update_recurring_rule_ep 的檢查——「這期以後」
+    # 批次改分類時也不能把非轉帳規則的分類改成空的。
+    if "category_id" in payload:
+        effective_tx_type = payload.get("tx_type")
+        if effective_tx_type is None:
+            effective_tx_type = db.scalar(
+                select(ReadRecurringRuleProjection.tx_type).where(
+                    ReadRecurringRuleProjection.ledger_id == ledger.id,
+                    ReadRecurringRuleProjection.sync_id == rule_id,
+                )
+            )
+        _assert_category_required(effective_tx_type, payload.get("category_id"))
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:

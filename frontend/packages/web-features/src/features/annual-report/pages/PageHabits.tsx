@@ -7,9 +7,7 @@ import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { habitsInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
-
-const currencySymbol = (code: string) =>
-  ({ CNY: '¥', USD: '$', EUR: '€', GBP: '£', JPY: '¥', HKD: 'HK$' } as Record<string, string>)[code] || code + ' '
+import { currencySymbol } from '../../../lib/currencies'
 
 /**
  * 习惯画像:最长连续记账 / 日均支出 / 周均笔数 — 三张大数字卡。

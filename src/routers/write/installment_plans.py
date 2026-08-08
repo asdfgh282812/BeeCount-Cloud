@@ -89,6 +89,9 @@ async def create_installment_plan_ep(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="offset_existing_balance requires account_id",
         )
+    # 需求 #14(Phase 12):分期付款恒為 expense、無轉帳語意,分類必填,避免
+    # 每期生成的交易漏分類(見 `_assert_category_required` docstring)。
+    _assert_category_required("expense", req.category_id)
 
     # §2.3 補強(2026-08-02 第三輪,對齊使用者需求「以主帳戶為單位分期,而
     # 不是選擇信用卡」):`account_id` 現在可以是 account_group(主帳戶)
