@@ -28,10 +28,13 @@ BeeCount 裡重新做一套回饋規則資料庫。同時使用者也已經意�
   未完成的 SSO 遷移**，因此設計上分兩條路徑並行（見 §3.2）：v1 先做「使用
   者自行貼上 SwipeSmart 個人 API Key」這條可以獨立運作、不受 SSO 遷移時程
   拖累的路徑，SSO 互通列入 §7 v2 之後視遷移進度再評估。
-- 卡片對應**不做字串自動比對**（BeeCount 帳戶命名與 SwipeSmart 卡片命名不
-  保證一致），改成使用者手動一一勾選對照的設定視窗（見 §3.3.1）。沒有對照
-  到的情況下，建議仍然要顯示，只是降級成純文字說明、不能點擊代入帳戶（見
-  §3.3.3）。
+- 卡片對應**改成先自動比對，比對不到的才要手動勾選**（2026-08-09
+  修訂——原本 v1 設計是「刻意不做字串自動比對」，實作完成後使用者回饋不希
+  望每個人都要手動一一對照，改成帳戶名稱與 SwipeSmart 卡片名稱相近/相同時
+  自動寫入，見 §3.3.1(b) 修訂內容）。沒有比對到、或比對到多張候選卡（無法
+  判斷是哪一張）的情況，仍然回到手動一一勾選對照的設定視窗（見 §3.3.1）。
+  沒有對照到的情況下，建議仍然要顯示，只是降級成純文字說明、不能點擊代入
+  帳戶（見 §3.3.3）。
 - 卡片目錄覆蓋率**不是風險**：使用者自行維護 SwipeSmart 的 MariaDB 卡片/
   規則庫，覆蓋率由使用者自己控制與擴充，不受外部限制（§5 原本列的「卡片
   目錄覆蓋率」風險移除）。
@@ -231,7 +234,8 @@ changes`/projection，不同步到其他裝置的本地明文），存放在使�
 具體落地哪張表待實作階段確認（例如使用者帳號設定表新增一個加密欄位），
 **不是**本 SD §3.3.1(b)/§6 SOP 講的 sync entity 欄位。
 
-**(b) 信用卡帳戶 ↔ SwipeSmart 卡片：手動對照視窗（不做字串自動比對）**
+**(b) 信用卡帳戶 ↔ SwipeSmart 卡片：先自動比對，比對不到才手動對照（2026-08-09
+修訂）**
 
 `UserAccountProjection` 新增 nullable 欄位 `swipesmart_card_id: str | None`
 （對應 SwipeSmart 的 `CardId`），只有 `account_type == "credit_card"` 才
@@ -239,18 +243,35 @@ changes`/projection，不同步到其他裝置的本地明文），存放在使�
 校驗模式，見 `src/routers/write/card_reward_rules.py:25-37`）。這個欄位本
 身照樣走 sync entity 欄位新增流程（§6）。
 
-- **UI 不是單張帳戶下拉選單，而是一個批次「卡片對照」設定視窗**：貼完
-  Personal API Key 後（或之後任何時候重新打開設定），彈出一個對照畫面，
-  左邊列出使用者名下所有 `account_type == "credit_card"` 的 BeeCount 帳
-  戶，右邊列出 SwipeSmart 卡片目錄（§3.3.2 快取的 `/api/cards`；若該使用
-  者在 SwipeSmart 自己的 `/api/user/cards-info` 已經登錄過卡片，優先把這
-  些卡排在前面縮小選擇範圍），使用者針對每一張 BeeCount 信用卡帳戶手動勾
-  選要對應的 SwipeSmart 卡片。**不做名稱字串自動比對**——兩邊卡片命名習
-  慣不保證一致（例如 BeeCount 帳戶叫「國泰現金回饋卡」，SwipeSmart 目錄
-  可能叫「Cathay CUBE 卡」），自動比對容易配錯。
-- 沒有設定 Personal API Key，或設定了但某張信用卡帳戶沒有在對照視窗裡被
-  勾選對應：這張帳戶**不參與「反查帳戶並可點擊代入」**，但不代表完全沒有
-  建議可看——見 §3.3.3 的降級行為（純文字顯示，不可點擊）。
+- **自動比對（新增，`src/services/swipesmart_matching.py`）**：只處理
+  `swipesmart_card_id is None`（目前未對照）的信用卡帳戶，把帳戶名稱正規
+  化（去空白、轉小寫）後跟卡片目錄的 `bankName`+`cardName`（以及單獨的
+  `cardName`）做**包含式模糊比對**（任一方整段包含另一方）。命中「剛好一
+  張」候選卡才自動寫入；命中 0 張或 2 張以上（無法判斷）一律跳過，交回手
+  動對照。觸發時機兩個：①使用者貼上/更換 Personal API Key 當下（
+  `POST /profile/swipesmart`）；②每次打開「卡片對照」設定視窗時（
+  `GET /profile/swipesmart/cards`）都重跑一次，涵蓋「之後新增信用卡帳戶」
+  或「SwipeSmart 卡片目錄擴充」的情況。寫入方式跟既有
+  `_ensure_user_global_category`／`scripts/backfill_recurring_installment_
+  categories.py` 同一套「SyncChange + `apply_user_change_to_projection`」
+  局部更新（`account` 是 user-global entity，`scope="user"`，不需要
+  `ledger_id`）。
+  - **已知簡化，刻意不處理**：`swipesmart_card_id` 欄位分不出「從未處理
+    過」跟「使用者在對照視窗裡刻意選了『未對照』」——這兩種狀態在 DB 裡都
+    是 `NULL`。代表使用者刻意清空某張帳戶的對照後，下次打開對照視窗、或
+    下次貼 Key，如果名稱仍然命中，會被自動比對重新配對回去。沒有為此新增
+    額外的「使用者已明確拒絕」旗標欄位。
+- **UI 仍保留批次「卡片對照」設定視窗，用途改成手動覆蓋/補上自動比對漏掉
+  的部分**：貼完 Personal API Key 後（或之後任何時候重新打開設定），彈出
+  一個對照畫面，左邊列出使用者名下所有 `account_type == "credit_card"` 的
+  BeeCount 帳戶（已經被自動比對配好的欄位會顯示目前對應到的卡片），右邊列
+  出 SwipeSmart 卡片目錄（§3.3.2 快取的 `/api/cards`；若該使用者在
+  SwipeSmart 自己的 `/api/user/cards-info` 已經登錄過卡片，優先把這些卡排
+  在前面縮小選擇範圍），使用者針對每一張 BeeCount 信用卡帳戶手動勾選/覆蓋
+  要對應的 SwipeSmart 卡片。
+- 沒有設定 Personal API Key，或自動比對/手動對照後某張信用卡帳戶仍然沒有
+  對應：這張帳戶**不參與「反查帳戶並可點擊代入」**，但不代表完全沒有建議
+  可看——見 §3.3.3 的降級行為（純文字顯示，不可點擊）。
 - 欄位新增的 4 個改動點，比照 `avatar_cloud_file_id` 當初新增時的改動點
   （CLAUDE.md Phase 提到的模式）：
   1. `src/routers/write/accounts.py`：schema 加欄位、更新端點透傳。
@@ -475,7 +496,10 @@ CLAUDE.md「新增或修改 Sync Entity 檢查清單」）
    欄位更新被靜默清空）+ `card-recommendation` 端點測試（沒設 Personal Key
    回空陣列、有 Key 但無對照卡片仍回傳純文字建議、SwipeSmart 逾時時優雅
    降級、CardId 正確反查回 account_id）+ §3.3.4 回填端點測試（觸發時機、
-   SwipeSmart 失敗不阻塞交易寫入）。
+   SwipeSmart 失敗不阻塞交易寫入）+ 自動比對測試（`swipesmart_matching.
+   auto_match_unmapped_accounts`：名稱相近/相同單一命中自動寫入、命中
+   0/2 張以上都不寫入、已有值的帳戶不被覆蓋；`POST /profile/swipesmart`
+   與 `GET /profile/swipesmart/cards` 都會觸發一次）。
 
 ---
 

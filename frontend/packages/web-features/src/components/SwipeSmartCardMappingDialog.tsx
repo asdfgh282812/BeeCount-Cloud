@@ -33,10 +33,11 @@ type SwipeSmartCardMappingDialogProps = {
 }
 
 /**
- * 卡片對照設定視窗(Phase 14 §3.3.1(b)):批次列出使用者名下所有信用卡帳戶,
- * 每一列手動勾選要對應的 SwipeSmart 卡片 —— 刻意不做名稱字串自動比對(兩邊
- * 命名習慣不保證一致)。每列改動立即自動儲存(不是整批「確認」),跟 Settings
- * 頁其它非同步儲存欄位一致的 UX。
+ * 卡片對照設定視窗(Phase 14 §3.3.1(b),修訂後):批次列出使用者名下所有信用
+ * 卡帳戶,名稱跟 SwipeSmart 卡片目錄相近/相同的欄位已經由後端自動比對好(見
+ * `src/services/swipesmart_matching.py`,貼 Key 當下 + 每次打開這個視窗都會
+ * 重跑一次),這裡只給使用者手動覆蓋/補上比對不到的剩餘欄位。每列改動立即
+ * 自動儲存(不是整批「確認」),跟 Settings 頁其它非同步儲存欄位一致的 UX。
  */
 export function SwipeSmartCardMappingDialog({
   open,

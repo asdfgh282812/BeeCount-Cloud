@@ -1,11 +1,15 @@
 import logging
 import os
+import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
+from urllib.parse import urlencode
 from uuid import uuid4
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,6 +39,7 @@ from ..security import (
     hash_token,
     verify_password,
 )
+from ..services import oidc
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,17 @@ _rate_limit_buckets: dict[str, list[float]] = {}
 
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
+
+
+def _require_password_login_enabled() -> None:
+    """帳號密碼登入/註冊只在 APP_ENV=development 開放,當作本地開發捷徑
+    (仿 SwipeSmart 的 `/dev-login`)。生產環境唯一登入路徑是 `/auth/sso/*`
+    —— main.py 啟動時已確保 non-development 環境一定有設好 OIDC。"""
+    if settings.app_env != "development":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password login is disabled; use SSO",
+        )
 
 
 def _upsert_device(
@@ -177,6 +193,7 @@ def register(
     request: Request,
     db: Session = Depends(get_db),
 ) -> AuthTokenResponse:
+    _require_password_login_enabled()
     if not settings.registration_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -231,6 +248,7 @@ def login(
     老客户端(只读 access_token 字段不看 requires_2fa)在 2FA 关闭场景仍能正常工作;
     用户一旦启用 2FA,App / Web 必须升级才能登录。详见 .docs/2fa-design.md。
     """
+    _require_password_login_enabled()
     _apply_rate_limit(request, "login")
     email = _normalize_email(req.email)
     user = db.scalar(select(User).where(User.email == email))
@@ -402,3 +420,216 @@ def logout(
 
     logger.info("auth.logout user=%s refresh_revoked=%s", current_user.id, revoked)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# SSO(OpenID Connect)—— Web 前端在生產環境的唯一登入路徑。
+#
+# 這個 app 全程是 stateless JWT bearer token API(沒有 server-side session /
+# cookie),所以 OIDC 的 `state` 參數改用一份短效簽章 JWT 自己攜帶所有需要
+# 在 /sso/login → /sso/callback 之間傳遞的資訊(nonce 防重放、瀏覽器帶來的
+# device 資訊、登入完成後要跳回的深連結路徑),不需要額外的 server-side
+# state 儲存。callback 換完 token 後,用 URL fragment(`#...`)把
+# access/refresh token 交給前端 —— fragment 不會被送到 server、不會進
+# access log / Referer header,是瀏覽器導頁交接 token 的慣用安全作法。
+# --------------------------------------------------------------------------- #
+
+_SSO_STATE_TYPE = "sso_state"
+_SSO_STATE_TTL_SECONDS = 600
+
+
+def _default_sso_redirect_uri(request: Request) -> str:
+    if settings.oidc_redirect_uri:
+        return settings.oidc_redirect_uri
+    base = str(request.base_url).rstrip("/")
+    return f"{base}{settings.api_prefix}/auth/sso/callback"
+
+
+def _frontend_origin(request: Request) -> str:
+    # web 前端由這個 FastAPI app 直接 serve 靜態檔(main.py 的 SPA
+    # catch-all),所以前端 origin 就是這個 request 的 origin。
+    return str(request.base_url).rstrip("/")
+
+
+def _encode_sso_state(
+    *,
+    device_id: str | None,
+    device_name: str | None,
+    platform: str | None,
+    app_version: str | None,
+    os_version: str | None,
+    device_model: str | None,
+    redirect_path: str,
+) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "type": _SSO_STATE_TYPE,
+        "nonce": uuid4().hex,
+        "device_id": device_id,
+        "device_name": device_name,
+        "platform": platform,
+        "app_version": app_version,
+        "os_version": os_version,
+        "device_model": device_model,
+        "redirect_path": redirect_path,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=_SSO_STATE_TTL_SECONDS)).timestamp()),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def _decode_sso_state(state: str) -> dict:
+    payload = jwt.decode(state, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    if payload.get("type") != _SSO_STATE_TYPE:
+        raise ValueError("invalid state type")
+    return payload
+
+
+def _safe_redirect_path(raw: str) -> str:
+    # 只允許站內相對路徑,防止這個參數被拿去做 open redirect 釣魚
+    # (目前來源是前端自己組的 URL,理論上受信任,但多一層防禦避免未來這
+    # 個參數的來源改成不受信任輸入時忘記加這條檢查)。
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return "/app/overview"
+
+
+@router.get("/sso/status")
+def sso_status() -> dict:
+    return {
+        "sso_enabled": settings.oidc_configured,
+        "password_login_enabled": settings.app_env == "development",
+    }
+
+
+@router.get("/sso/login")
+def sso_login(
+    request: Request,
+    redirect: str = "/app/overview",
+    device_id: str | None = None,
+    device_name: str | None = None,
+    platform: str | None = None,
+    app_version: str | None = None,
+    os_version: str | None = None,
+    device_model: str | None = None,
+) -> RedirectResponse:
+    if not settings.oidc_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SSO not configured",
+        )
+    state = _encode_sso_state(
+        device_id=device_id,
+        device_name=device_name,
+        platform=platform,
+        app_version=app_version,
+        os_version=os_version,
+        device_model=device_model,
+        redirect_path=_safe_redirect_path(redirect),
+    )
+    authorize_url = oidc.build_authorize_url(
+        state=state, redirect_uri=_default_sso_redirect_uri(request)
+    )
+    return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/sso/callback")
+def sso_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    frontend_origin = _frontend_origin(request)
+
+    def _error_redirect(reason: str) -> RedirectResponse:
+        query = urlencode({"sso_error": reason})
+        return RedirectResponse(
+            f"{frontend_origin}/login?{query}", status_code=status.HTTP_302_FOUND
+        )
+
+    if error:
+        logger.warning("auth.sso.callback idp_error=%s", error)
+        return _error_redirect(error)
+    if not code or not state:
+        return _error_redirect("missing_code")
+
+    try:
+        state_payload = _decode_sso_state(state)
+    except Exception:
+        logger.warning("auth.sso.callback invalid_state", exc_info=True)
+        return _error_redirect("invalid_state")
+
+    try:
+        token_response = oidc.exchange_code(
+            code=code, redirect_uri=_default_sso_redirect_uri(request)
+        )
+        id_token = token_response.get("id_token")
+        if not id_token:
+            raise oidc.OidcError("token response missing id_token")
+        claims = oidc.verify_id_token(id_token)
+    except Exception:
+        logger.exception("auth.sso.callback token_exchange_failed")
+        return _error_redirect("token_exchange_failed")
+
+    sso_subject = claims.get("sub")
+    if not sso_subject:
+        return _error_redirect("missing_sub")
+    email = _normalize_email(claims.get("email") or "")
+
+    user = db.scalar(select(User).where(User.sso_subject == sso_subject))
+    if user is None:
+        if not email:
+            return _error_redirect("missing_email")
+        # 既有密碼帳號、email 對得上 → link,不建重複帳號
+        user = db.scalar(select(User).where(User.email == email))
+        if user is not None:
+            user.sso_subject = sso_subject
+        else:
+            user = User(
+                email=email,
+                password_hash=hash_password(secrets.token_urlsafe(32)),
+                sso_subject=sso_subject,
+                is_admin=False,
+                is_enabled=True,
+            )
+            db.add(user)
+            db.flush()
+
+    if not user.is_enabled:
+        return _error_redirect("account_disabled")
+
+    device = _upsert_device(
+        db,
+        user.id,
+        state_payload.get("device_id"),
+        state_payload.get("device_name") or "BeeCount Web",
+        state_payload.get("platform") or "web",
+        app_version=state_payload.get("app_version"),
+        os_version=state_payload.get("os_version"),
+        device_model=state_payload.get("device_model"),
+        last_ip=request.client.host if request.client else None,
+    )
+    token_response_out = _issue_tokens(db, user, device, client_type="web")
+    db.commit()
+    logger.info(
+        "auth.sso.login user=%s device=%s sub=%s", user.id, device.id, sso_subject
+    )
+
+    redirect_path = state_payload.get("redirect_path") or "/app/overview"
+    fragment = urlencode(
+        {
+            "access_token": token_response_out.access_token,
+            "refresh_token": token_response_out.refresh_token,
+            "device_id": token_response_out.device_id,
+            "user_id": token_response_out.user.id,
+            "user_email": token_response_out.user.email,
+            "expires_in": token_response_out.expires_in,
+            "redirect": redirect_path,
+        }
+    )
+    return RedirectResponse(
+        f"{frontend_origin}/login/sso-complete#{fragment}",
+        status_code=status.HTTP_302_FOUND,
+    )

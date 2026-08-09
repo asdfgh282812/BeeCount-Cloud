@@ -124,6 +124,31 @@ class Settings(BaseSettings):
     swipesmart_base_url: str = Field(default="", alias="SWIPESMART_BASE_URL")
     swipesmart_timeout: float = Field(default=8.0, alias="SWIPESMART_TIMEOUT")
 
+    # ===== SSO(OpenID Connect)登入 =====
+    # Web 前端登入方式:生產環境(APP_ENV != development)強制走這裡設定的
+    # OIDC 身分提供者;`POST /auth/login`、`POST /auth/register`(帳號密碼)
+    # 只在 APP_ENV=development 時可用,當作本地開發捷徑,仿 SwipeSmart 的
+    # `/dev-login`。Mobile App 不受影響,仍走既有 email/password + JWT
+    # (client_type=app)。
+    # Authority 是 IdP 的 issuer base URL,server 端會自動拼上
+    # `/.well-known/openid-configuration` 做標準 OIDC discovery。
+    # 只支援 Authorization Code flow(confidential client,用 client_secret
+    # 在後端跟 IdP 換 token,不是 SPA 直接對話,PKCE 對這個場景沒有額外
+    # 防護,故不啟用)。
+    oidc_authority: str = Field(default="", alias="OIDC_AUTHORITY")
+    oidc_client_id: str = Field(default="", alias="OIDC_CLIENT_ID")
+    oidc_client_secret: str = Field(default="", alias="OIDC_CLIENT_SECRET")
+    oidc_scope: str = Field(default="openid profile email", alias="OIDC_SCOPE")
+    # 選填。留空時由 request 自動推導成
+    # `{scheme}://{host}{api_prefix}/auth/sso/callback`(需要正確的反代
+    # X-Forwarded-* header)。跨網域反代 / 自訂網域建議明確設定,避免推導
+    # 出來的 host 跟 IdP 後台註冊的 redirect URI 對不上。
+    oidc_redirect_uri: str = Field(default="", alias="OIDC_REDIRECT_URI")
+
+    @property
+    def oidc_configured(self) -> bool:
+        return bool(self.oidc_authority and self.oidc_client_id and self.oidc_client_secret)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

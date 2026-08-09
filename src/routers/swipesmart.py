@@ -22,6 +22,7 @@ from ..deps import get_current_user, require_any_scopes
 from ..models import User, UserProfile
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
 from ..services import secret_crypto, swipesmart_client
+from ..services.swipesmart_matching import auto_match_unmapped_accounts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ def _get_profile(db: Session, user_id: str) -> UserProfile | None:
 class SwipeSmartKeyStatusOut(BaseModel):
     has_key: bool
     masked: str | None = None
+    # 只有 POST(貼上/更換 Key)當下有意義:本次順帶自動比對配對成功的信用卡
+    # 帳戶數(§3.3.1(b) 修訂 —— 名稱相近/相同自動對應)。GET/DELETE 恆為 0。
+    auto_mapped: int = 0
 
 
 class SwipeSmartKeySetRequest(BaseModel):
@@ -76,7 +80,7 @@ def get_swipesmart_key_status(
 
 
 @router.post("", response_model=SwipeSmartKeyStatusOut)
-def set_swipesmart_key(
+async def set_swipesmart_key(
     req: SwipeSmartKeySetRequest,
     _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
@@ -95,7 +99,18 @@ def set_swipesmart_key(
         profile.swipesmart_api_key_encrypted = encrypted
     db.commit()
     logger.info("swipesmart.key_set user=%s", current_user.id)
-    return SwipeSmartKeyStatusOut(has_key=True, masked=_mask(plaintext))
+
+    # §3.3.1(b) 修訂:貼上 Key 當下順帶跑一次自動比對,尚未對照的信用卡帳戶
+    # 名稱跟卡片目錄相近/相同就直接寫入,不用每個使用者都手動一一勾選。
+    # SwipeSmart 呼叫失敗/回空目錄時 auto_match_unmapped_accounts 直接短路
+    # 回 0,不影響 Key 已經存好這件事(呼應「外部依賴不擋核心流程」原則)。
+    auto_mapped = 0
+    cards = await swipesmart_client.get_cards(plaintext)
+    if cards:
+        auto_mapped = auto_match_unmapped_accounts(db, user_id=current_user.id, cards=cards)
+        if auto_mapped:
+            db.commit()
+    return SwipeSmartKeyStatusOut(has_key=True, masked=_mask(plaintext), auto_mapped=auto_mapped)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
@@ -138,6 +153,14 @@ async def list_swipesmart_cards(
             detail="SwipeSmart personal API key not configured",
         ) from None
     cards = await swipesmart_client.get_cards(plaintext)
+    # §3.3.1(b) 修訂:每次打開卡片對照視窗都重跑一次自動比對(不只貼 Key
+    # 當下那一次)——之後使用者新增信用卡帳戶或 SwipeSmart 卡片目錄擴充,
+    # 尚未對照的帳戶下次打開視窗一樣有機會自動配對成功。前端會在這支回應
+    # 之後才去拉帳戶列表(見 SettingsSwipeSmartSection.tsx::openMapping),
+    # 確保看到的是配對後的最新狀態。
+    if cards:
+        if auto_match_unmapped_accounts(db, user_id=current_user.id, cards=cards):
+            db.commit()
     return [
         SwipeSmartCardOut(card_id=c["cardId"], bank_name=c["bankName"], card_name=c["cardName"])
         for c in cards

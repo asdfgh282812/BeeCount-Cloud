@@ -44,6 +44,13 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # SSO(OIDC)登入時的身分識別(IdP 回傳的 `sub` claim)。null = 尚未透過
+    # SSO 登入過(純密碼帳號,或尚未 link)。既有密碼帳號第一次用 SSO 登入、
+    # email 對得上時會自動 link 這個欄位到現有 row,不會建出重複帳號。
+    sso_subject: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
+    )
+
 
 class RecoveryCode(Base):
     """2FA 一次性恢复码。启用 2FA 时一次生成 10 个,sha256 hash 存库。"""

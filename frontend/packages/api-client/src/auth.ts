@@ -1,6 +1,6 @@
 import { API_BASE } from './http'
 import { extractApiError } from './errors'
-import type { LoginResponse } from './types'
+import type { LoginResponse, SsoStatusResponse } from './types'
 
 const DEVICE_ID_KEY = `beecount.web.device_id.${API_BASE}`
 const REFRESH_TOKEN_KEY = `beecount.refresh_token.${API_BASE}`
@@ -126,6 +126,66 @@ export async function login(email: string, password: string): Promise<LoginRespo
   const payload = (await res.json()) as LoginResponse
   persistSession(payload)
   return payload
+}
+
+/** 查詢這個部署要求哪種登入方式:生產環境只回 sso_enabled=true,開發模式
+ *  兩者都 true(SSO 若設定了也能用,同時保留帳密登入捷徑)。LoginPage 靠
+ *  這個決定畫面上要不要顯示密碼表單。 */
+export async function getSsoStatus(): Promise<SsoStatusResponse> {
+  const res = await fetch(`${API_BASE}/auth/sso/status`)
+  if (!res.ok) {
+    throw await extractApiError(res)
+  }
+  return (await res.json()) as SsoStatusResponse
+}
+
+/** 組出「使用 SSO 登入」按鈕要導去的 URL —— 帶上瀏覽器既有的 device_id
+ *  (若有)與裝置資訊,讓 /auth/sso/callback 能沿用既有 device 行,不會
+ *  每次 SSO 登入都在设备管理页多长出一行。`redirectPath` 是登入完成後
+ *  要跳回的深連結(來自 `RequireAuth` 存的 `location.state.from`)。 */
+export function buildSsoLoginUrl(redirectPath: string = '/app/overview'): string {
+  const existingDeviceId = getStoredDeviceId() || undefined
+  const info = detectWebClientInfo()
+  const params = new URLSearchParams()
+  params.set('redirect', redirectPath)
+  if (existingDeviceId) params.set('device_id', existingDeviceId)
+  params.set('device_name', 'BeeCount Web')
+  params.set('platform', 'web')
+  if (info.app_version) params.set('app_version', info.app_version)
+  params.set('os_version', info.os_version)
+  params.set('device_model', info.device_model)
+  return `${API_BASE}/auth/sso/login?${params.toString()}`
+}
+
+/**
+ * 解析 `/login/sso-complete` 落地頁的 URL fragment(`#access_token=...`)。
+ * 後端用 fragment(而非 query string)交接 token —— fragment 不會被送到
+ * server、不會進 access log / Referer header,調用方拿到結果後要立刻用
+ * `history.replaceState` 清掉,避免 token 留在網址列 / 瀏覽紀錄。
+ */
+export function parseSsoCallbackFragment(
+  hash: string
+): { accessToken: string; redirectPath: string } | null {
+  const params = new URLSearchParams(hash.replace(/^#/, ''))
+  const accessToken = params.get('access_token')
+  if (!accessToken) return null
+
+  const userId = params.get('user_id')
+  const expiresInRaw = params.get('expires_in')
+  const payload: LoginResponse = {
+    requires_2fa: false,
+    access_token: accessToken,
+    refresh_token: params.get('refresh_token') || undefined,
+    device_id: params.get('device_id') || undefined,
+    expires_in: expiresInRaw ? Number(expiresInRaw) : undefined,
+    user: userId ? { id: userId, email: params.get('user_email') || '' } : undefined
+  }
+  persistSession(payload)
+
+  return {
+    accessToken,
+    redirectPath: params.get('redirect') || '/app/overview'
+  }
 }
 
 /**

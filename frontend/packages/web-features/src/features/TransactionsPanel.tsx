@@ -920,6 +920,72 @@ export function TransactionsPanel({
               />
             </div>
 
+            {/* 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記交易時手動
+                勾選這筆消費要走哪幾條回饋規則(可複選)——系統不再依 category/
+                金額自動判斷,只在 expense + 選中帳戶是信用卡時顯示。
+                §2.9.5.4 補強:只顯示規則生效中的選項。
+                2026-08-07 使用者反饋:原本拿「現在的時間(Date.now())」跟
+                starts_at/ends_at 比,而不是拿「這筆交易自己的時間」比——結果
+                補記一筆已過期活動期間的舊交易時,清單只看記錄當下規則還在
+                不在,過期規則會一路留在清單裡讓使用者誤勾,越積越多。改成
+                拿 `form.happened_at`(這筆交易的時間,使用者改時間欄位時
+                即時重新過濾)去跟規則的生效窗比對,不在窗內就不出現在候選
+                清單——但如果這條規則已經被這筆交易勾選過,即使已經不在窗內
+                也要保留顯示,讓使用者可以取消勾選(跟已停用規則若曾被勾選
+                仍要顯示同一個既有慣例)。2026-08-09 使用者反饋:從原本跟
+                標籤管理同一列的位置往上移到備註旁邊——備註只佔一個 grid
+                cell,右側原本是空的(建議刷卡區塊改成佔滿整行後空出來的
+                位置),剛好用來放這個。 */}
+            {form.tx_type === 'expense' &&
+            accounts.find(
+              (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
+            )?.account_type === 'credit_card' &&
+            rewardRules.length > 0 ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.rewardRules')}</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {rewardRules
+                    .filter((rule) => {
+                      if (form.reward_rule_ids.includes(rule.id)) return true
+                      if (!rule.enabled) return false
+                      const txTime = forceUtcTimestamp(form.happened_at)
+                      if (rule.starts_at && forceUtcTimestamp(rule.starts_at) > txTime) return false
+                      if (rule.ends_at && forceUtcTimestamp(rule.ends_at) < txTime) return false
+                      return true
+                    })
+                    .map((rule) => {
+                    const checked = form.reward_rule_ids.includes(rule.id)
+                    return (
+                      <button
+                        key={rule.id}
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            reward_rule_ids: checked
+                              ? form.reward_rule_ids.filter((id) => id !== rule.id)
+                              : [...form.reward_rule_ids, rule.id]
+                          })
+                        }
+                        className={`rounded-full border px-2.5 py-1 text-xs ${
+                          checked
+                            ? 'border-primary bg-primary/15 text-primary'
+                            : 'border-input text-muted-foreground hover:bg-accent/40'
+                        }`}
+                      >
+                        {rule.label}
+                        {!rule.enabled ? (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            {t('cardRewards.disabled')}
+                          </span>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             {/* SwipeSmart 刷卡建議(Phase 14 §3.3.5;2026-08-09 使用者反饋改版):
                 有對照帳戶 = 可點擊卡片,點擊直接帶入帳戶欄位(使用者主動點才
                 生效,不自動代填);沒對照 = 純文字說明,不可點擊。完全沒有
@@ -1054,69 +1120,6 @@ export function TransactionsPanel({
                   </span>
                   <span className="text-xs text-muted-foreground opacity-60">▾</span>
                 </button>
-              </div>
-            ) : null}
-
-            {/* 信用卡紅利回饋(§2.9.5,2026-08-06 改版):使用者記交易時手動
-                勾選這筆消費要走哪幾條回饋規則(可複選)——系統不再依 category/
-                金額自動判斷,只在 expense + 選中帳戶是信用卡時顯示。
-                §2.9.5.4 補強:只顯示規則生效中的選項。
-                2026-08-07 使用者反饋:原本拿「現在的時間(Date.now())」跟
-                starts_at/ends_at 比,而不是拿「這筆交易自己的時間」比——結果
-                補記一筆已過期活動期間的舊交易時,清單只看記錄當下規則還在
-                不在,過期規則會一路留在清單裡讓使用者誤勾,越積越多。改成
-                拿 `form.happened_at`(這筆交易的時間,使用者改時間欄位時
-                即時重新過濾)去跟規則的生效窗比對,不在窗內就不出現在候選
-                清單——但如果這條規則已經被這筆交易勾選過,即使已經不在窗內
-                也要保留顯示,讓使用者可以取消勾選(跟已停用規則若曾被勾選
-                仍要顯示同一個既有慣例)。 */}
-            {form.tx_type === 'expense' &&
-            accounts.find(
-              (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
-            )?.account_type === 'credit_card' &&
-            rewardRules.length > 0 ? (
-              <div className="space-y-1">
-                <Label>{t('transactions.field.rewardRules')}</Label>
-                <div className="flex flex-wrap gap-1.5">
-                  {rewardRules
-                    .filter((rule) => {
-                      if (form.reward_rule_ids.includes(rule.id)) return true
-                      if (!rule.enabled) return false
-                      const txTime = forceUtcTimestamp(form.happened_at)
-                      if (rule.starts_at && forceUtcTimestamp(rule.starts_at) > txTime) return false
-                      if (rule.ends_at && forceUtcTimestamp(rule.ends_at) < txTime) return false
-                      return true
-                    })
-                    .map((rule) => {
-                    const checked = form.reward_rule_ids.includes(rule.id)
-                    return (
-                      <button
-                        key={rule.id}
-                        type="button"
-                        onClick={() =>
-                          onFormChange({
-                            ...form,
-                            reward_rule_ids: checked
-                              ? form.reward_rule_ids.filter((id) => id !== rule.id)
-                              : [...form.reward_rule_ids, rule.id]
-                          })
-                        }
-                        className={`rounded-full border px-2.5 py-1 text-xs ${
-                          checked
-                            ? 'border-primary bg-primary/15 text-primary'
-                            : 'border-input text-muted-foreground hover:bg-accent/40'
-                        }`}
-                      >
-                        {rule.label}
-                        {!rule.enabled ? (
-                          <span className="ml-1 text-[10px] text-muted-foreground">
-                            {t('cardRewards.disabled')}
-                          </span>
-                        ) : null}
-                      </button>
-                    )
-                  })}
-                </div>
               </div>
             ) : null}
 

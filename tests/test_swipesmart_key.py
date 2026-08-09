@@ -54,7 +54,7 @@ def test_key_status_defaults_to_absent():
         hdr = {"Authorization": f"Bearer {tok}"}
         r = client.get("/api/v1/profile/swipesmart", headers=hdr)
         assert r.status_code == 200, r.text
-        assert r.json() == {"has_key": False, "masked": None}
+        assert r.json() == {"has_key": False, "masked": None, "auto_mapped": 0}
     finally:
         app.dependency_overrides.clear()
 
@@ -114,7 +114,7 @@ def test_delete_key_clears_it():
         assert r.status_code == 204, r.text
 
         r2 = client.get("/api/v1/profile/swipesmart", headers=hdr)
-        assert r2.json() == {"has_key": False, "masked": None}
+        assert r2.json() == {"has_key": False, "masked": None, "auto_mapped": 0}
     finally:
         app.dependency_overrides.clear()
 

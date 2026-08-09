@@ -107,6 +107,8 @@ import {
   TransactionsPanel,
   canManageLedger,
   canWriteTransactions,
+  findAccountBySwipesmartCardId,
+  matchCategoryByName,
   pickRandomTagColor,
   txDefaults,
   type TxForm
@@ -327,6 +329,36 @@ function isPreviewableImage(mimeType: string | null, fileName: string | null | u
   return IMAGE_EXTENSIONS.has(extension)
 }
 
+/**
+ * SwipeSmart 一鍵記帳(Phase 15 §3.4/§3.5):§3.4 信用卡帳戶反查沒對照到時的
+ * 降級備註文字 —— 只在帳戶沒對照到時呼叫(對照到就沒有特殊 UI 狀態,不加
+ * 備註),把分類/預估回饋/回饋率能講的資訊都併進同一行,呼應 SD §3.5「原始
+ * matchedCategoryName 一樣併入 §3.4 那行備註文字」。
+ */
+function buildSwipesmartQuickAddNote(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  opts: { bankName: string; cardName: string; unmatchedCategoryName: string; reward: string; rate: string }
+): string {
+  const clauses: string[] = []
+  if (opts.unmatchedCategoryName) {
+    clauses.push(t('swipesmart.quickAdd.noteCategoryClause', { category: opts.unmatchedCategoryName }))
+  }
+  const rewardNum = Number(opts.reward)
+  if (Number.isFinite(rewardNum) && rewardNum > 0) {
+    clauses.push(t('swipesmart.quickAdd.noteRewardClause', { reward: rewardNum.toFixed(0) }))
+  }
+  const rateNum = Number(opts.rate)
+  if (Number.isFinite(rateNum) && rateNum > 0) {
+    clauses.push(t('swipesmart.quickAdd.noteRateClause', { rate: (rateNum * 100).toFixed(1) }))
+  }
+  clauses.push(t('swipesmart.quickAdd.noteUnboundClause'))
+  return t('swipesmart.quickAdd.noteBankCard', {
+    bank: opts.bankName,
+    card: opts.cardName,
+    detail: clauses.join('，')
+  })
+}
+
 export function TransactionsPage() {
   const _navigate = useNavigateRR()
   // 兼容 legacy 内部代码的 `onNavigate({ kind: 'app', section })` 调用:
@@ -422,6 +454,11 @@ export function TransactionsPage() {
   // adminOverview / adminHealth state 已迁到 SettingsHealthPage。
   // logsOpen / changelogOpen 已搬到 AppShell。
   const [txDictionaryLoading, setTxDictionaryLoading] = useState(false)
+  // SwipeSmart 一鍵記帳(Phase 15 §3.3):quick-add effect 要等這份字典至少
+  // 載入過一次才能做 §3.4/§3.5 反查,否則首次進頁面時字典還沒拉回來就會誤判
+  // 成「沒對照到」而降級 —— `txDictionaryLoading` 初始值是 false,不足以區分
+  // 「還沒開始拉」跟「已經拉完」,所以另外開一个標記。
+  const [txDictionariesLoadedOnce, setTxDictionariesLoadedOnce] = useState(false)
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
@@ -1095,29 +1132,85 @@ export function TransactionsPage() {
   //                       有 share target 投递的文本(标题/正文/URL),按
   //                       「标题 - 正文 url」拼成 note 预填(≤60 字符截断)
   //   range=today       → 把日期筛选预设为今天(「今日账单」shortcut)
+  // source=swipesmart(Phase 15,docs/PH15_SWIPESMART_QUICKADD_SD.md §3.3):
+  //   SwipeSmart 推荐结果「一键记账」deep link,额外带 merchant/amount/
+  //   category/cardId/bankName/cardName/reward/rate,§3.4 用 cardId 反查信用
+  //   卡帐户、§3.5 用 category 反查分类,对不到就降级成备注文字,不擋流程。
   // 消费后一次性 strip URL 参数,避免刷新或下次 effect 重触发。canWriteTx
   // 还没就绪(ledger 还在加载)时 quick-add 留着不消费,deps 变化时再次跑
   // 直到 ledger 加载完 —— 这样用户不会因为时序差就丢掉 shortcut intent。
+  // swipesmart 分支还要等 txDictionariesLoadedOnce(帐户/分类字典至少载入
+  // 过一次)才消费,否则会在字典还没拉回来的第一个 render 就误判成「没对照
+  // 到」而降级 —— 因为 txDictionaryLoading 的初始值是 false,不足以区分
+  // 「还没开始拉」跟「已经拉完」。
   useEffect(() => {
     if (route.section !== 'transactions') return
     const action = searchParams.get('action')
     const range = searchParams.get('range')
     if (!action && !range) return
 
+    const source = searchParams.get('source')
+    if (action === 'quick-add' && source === 'swipesmart' && canWriteTx && !txDictionariesLoadedOnce) {
+      return
+    }
+
     const consumed: string[] = []
 
     if (action === 'quick-add' && canWriteTx) {
-      // 优先消费 share target 投递的文本,拼成 note 预填(≤60 chr 截断,
-      // 避免长 URL 撑爆 textarea)
-      const shareText = consumePendingShareText()
-      if (shareText) {
-        const composed = [shareText.title, shareText.text, shareText.url]
-          .map((s) => (s || '').trim())
-          .filter(Boolean)
-          .join(' ')
-          .slice(0, 60)
-        if (composed) {
-          setTxForm((prev) => ({ ...prev, note: composed }))
+      if (source === 'swipesmart') {
+        const merchant = (searchParams.get('merchant') || '').trim().slice(0, 200)
+        const amountRaw = (searchParams.get('amount') || '').trim()
+        const amountNum = Number(amountRaw)
+        const amount = Number.isFinite(amountNum) && amountNum > 0 ? amountRaw : ''
+        const categoryRaw = (searchParams.get('category') || '').trim().slice(0, 100)
+        const cardId = (searchParams.get('cardId') || '').trim()
+        const bankName = (searchParams.get('bankName') || '').trim().slice(0, 100)
+        const cardName = (searchParams.get('cardName') || '').trim().slice(0, 100)
+        const reward = searchParams.get('reward') || ''
+        const rate = searchParams.get('rate') || ''
+
+        const account = findAccountBySwipesmartCardId(txDictionaryAccounts, cardId)
+        // 分類跟帳戶/標籤一樣是使用者級字典(`loadTxDictionaries` 的既有註解:
+        // 「不像 debt/project 是 ledger-scoped」),`/read/workspace/categories`
+        // 回的 `ledger_id` 固定是空字串,不能拿來做帳本過濾 —— 直接比對
+        // `txDictionaryCategories`,跟 `txWriteCategories`(分類選擇器實際顯示
+        // 的候選清單)同一個範圍,只窄化到 expense(這筆一鍵記帳固定是支出)。
+        const expenseCategories = txDictionaryCategories.filter((c) => c.kind === 'expense')
+        const category = matchCategoryByName(expenseCategories, categoryRaw || null)
+
+        const noteLine = account
+          ? ''
+          : buildSwipesmartQuickAddNote(t, {
+              bankName,
+              cardName,
+              unmatchedCategoryName: category ? '' : categoryRaw,
+              reward,
+              rate
+            })
+
+        setTxForm((prev) => ({
+          ...prev,
+          merchant: merchant || prev.merchant,
+          amount: amount || prev.amount,
+          account_name: account ? account.name : prev.account_name,
+          category_name: category ? category.name : prev.category_name,
+          category_kind: category ? prev.tx_type : prev.category_kind,
+          note: noteLine ? [prev.note, noteLine].filter(Boolean).join('\n') : prev.note
+        }))
+        consumed.push('merchant', 'amount', 'category', 'cardId', 'bankName', 'cardName', 'reward', 'rate')
+      } else {
+        // 优先消费 share target 投递的文本,拼成 note 预填(≤60 chr 截断,
+        // 避免长 URL 撑爆 textarea)
+        const shareText = consumePendingShareText()
+        if (shareText) {
+          const composed = [shareText.title, shareText.text, shareText.url]
+            .map((s) => (s || '').trim())
+            .filter(Boolean)
+            .join(' ')
+            .slice(0, 60)
+          if (composed) {
+            setTxForm((prev) => ({ ...prev, note: composed }))
+          }
         }
       }
       setTxDialogOpen(true)
@@ -1138,7 +1231,16 @@ export function TransactionsPage() {
     consumed.forEach((k) => next.delete(k))
     next.delete('source')
     setSearchParams(next, { replace: true })
-  }, [route.section, searchParams, canWriteTx, setSearchParams])
+  }, [
+    route.section,
+    searchParams,
+    canWriteTx,
+    setSearchParams,
+    txDictionariesLoadedOnce,
+    txDictionaryAccounts,
+    txDictionaryCategories,
+    t
+  ])
 
   // 列表类 section / admin / 设备 / 健康 页的数据加载。合并了"filter 变化
   // 刷新" + "切账本刷新" 两条触发路径 —— 原来分两个 useEffect 都调同一个
@@ -1287,6 +1389,7 @@ export function TransactionsPage() {
       setTxDictionaryTags(tagRows)
     } finally {
       setTxDictionaryLoading(false)
+      setTxDictionariesLoadedOnce(true)
     }
   }
 

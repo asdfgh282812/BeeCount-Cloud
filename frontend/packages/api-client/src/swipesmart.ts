@@ -14,6 +14,9 @@ import { authedDelete, authedGet, authedPost } from './http'
 export interface SwipeSmartKeyStatus {
   has_key: boolean
   masked: string | null
+  /** 只有貼上/更換 Key 那次的回應有意義:本次順帶自動比對配對成功的信用卡
+   *  帳戶數(名稱相近/相同自動對應,不用每個使用者都手動一一勾選)。 */
+  auto_mapped: number
 }
 
 export interface SwipeSmartCard {

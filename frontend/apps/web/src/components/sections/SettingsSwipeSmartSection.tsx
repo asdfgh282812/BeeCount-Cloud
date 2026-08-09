@@ -74,7 +74,11 @@ export function SettingsSwipeSmartSection() {
       setEditing(false)
       setDraft('')
       setShowDraft(false)
-      toast.success(t('swipesmart.key.saved'))
+      if (next.auto_mapped > 0) {
+        toast.success(t('swipesmart.key.savedWithAutoMap', { count: next.auto_mapped }))
+      } else {
+        toast.success(t('swipesmart.key.saved'))
+      }
     } catch (err) {
       toast.error(localizeError(err, t), t('notice.error'))
     } finally {
@@ -86,7 +90,7 @@ export function SettingsSwipeSmartSection() {
     setDeleting(true)
     try {
       await deleteSwipeSmartKey(token)
-      setStatus({ has_key: false, masked: null })
+      setStatus({ has_key: false, masked: null, auto_mapped: 0 })
       toast.success(t('swipesmart.key.deleted'))
     } catch (err) {
       toast.error(localizeError(err, t), t('notice.error'))
@@ -103,10 +107,12 @@ export function SettingsSwipeSmartSection() {
     setMappingOpen(true)
     setCardsLoading(true)
     try {
-      const [accountRows, cardRows] = await Promise.all([
-        fetchReadAccounts(token, activeLedgerId),
-        fetchSwipeSmartCards(token)
-      ])
+      // 先拉卡片目錄(後端會順便對「目前未對照」的信用卡帳戶重跑一次自動比
+      // 對,見 src/routers/swipesmart.py::list_swipesmart_cards),拉完才拉
+      // 帳戶列表 —— 兩支改成依序呼叫(不是 Promise.all 並行),才能保證帳戶
+      // 列表看到的是自動比對「之後」的最新狀態,不會因為並行而讀到舊資料。
+      const cardRows = await fetchSwipeSmartCards(token)
+      const accountRows = await fetchReadAccounts(token, activeLedgerId)
       setAccounts(accountRows)
       setCards(cardRows)
     } catch (err) {

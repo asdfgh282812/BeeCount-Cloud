@@ -4,6 +4,7 @@ import { ApiError } from '@beecount/api-client'
 
 const ERROR_KEYS: Record<string, string> = {
   AUTH_INVALID_CREDENTIALS: 'error.AUTH_INVALID_CREDENTIALS',
+  AUTH_SSO_ONLY: 'error.AUTH_SSO_ONLY',
   INTERNAL_ERROR: 'error.INTERNAL_ERROR',
   WRITE_CONFLICT: 'error.WRITE_CONFLICT',
   WRITE_ROLE_FORBIDDEN: 'error.WRITE_ROLE_FORBIDDEN',

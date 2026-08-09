@@ -7,8 +7,9 @@ interface RequireAuthProps {
 }
 
 /**
- * 未登录的 /app/* 深链会 replace 到 /login。登录成功后 LoginPage 侧用
- * `navigate('/app/overview', { replace: true })` 跳回。
+ * 未登录的 /app/* 深链会 replace 到 /login,原始 location(含 querystring)
+ * 存进 `state.from`。登录成功后 `App.tsx::onLoggedIn` 优先导回 `state.from`,
+ * 没有才 fallback `/app/overview`(docs/PH15_SWIPESMART_QUICKADD_SD.md §3.6)。
  */
 export function RequireAuth({ isAuthed, children }: RequireAuthProps) {
   const location = useLocation()

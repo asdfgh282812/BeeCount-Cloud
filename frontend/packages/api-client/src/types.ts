@@ -13,6 +13,11 @@ export type LoginResponse = {
   available_methods?: Array<'totp' | 'recovery_code'>
 }
 
+export type SsoStatusResponse = {
+  sso_enabled: boolean
+  password_login_enabled: boolean
+}
+
 export type TwoFASetupResponse = {
   secret: string
   qr_code_uri: string

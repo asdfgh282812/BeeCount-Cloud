@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
@@ -7,6 +7,7 @@ import { useT } from '@beecount/ui'
 import { AppShell } from './app/AppShell'
 import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
+import { SsoCallbackPage } from './pages/SsoCallbackPage'
 import { clearCursor } from './state/sync-client'
 
 // Section 页面全部懒加载 — 首屏只下载当前 route 需要的 chunk,显著降低
@@ -105,6 +106,19 @@ const LEGACY_TOKEN_KEY = 'beecount.token'
 const TOKEN_KEY = `beecount.token.${API_BASE}`
 
 /**
+ * 登录成功(或已带 token 时又访问 /login)后该导去哪 —— 优先读
+ * `location.state.from`(未登录时被 `RequireAuth` 导到 /login 前的原始
+ * location,含 querystring),没有才 fallback `/app/overview`。任何「未登录
+ * 时点了带参数的深链」情境都会受惠(例如 SwipeSmart 一键记账、Web Share
+ * Target),否则深链带的参数在这里就丢光了
+ * (docs/PH15_SWIPESMART_QUICKADD_SD.md §1.3/§3.6)。
+ */
+function loggedInRedirectTarget(location: { state: unknown }): string {
+  const from = (location.state as { from?: { pathname: string; search: string } } | null)?.from
+  return from ? `${from.pathname}${from.search}` : '/app/overview'
+}
+
+/**
  * 清掉 per-user 作用域的 localStorage 键 —— 仅限承载"账户数据缓存/选择"
  * 的键,不要碰 `primaryColor` / `theme` / `locale` 这些跨用户的偏好。
  * 多用户切换时避免 User A 残留的 activeLedger / txFilter 被 User B 读到。
@@ -141,6 +155,7 @@ export function App() {
 
 function AppRoutes() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [token, setToken] = useState<string>(() => {
     const scoped = localStorage.getItem(TOKEN_KEY)
     if (scoped) return scoped
@@ -197,16 +212,33 @@ function AppRoutes() {
         path="/login"
         element={
           token ? (
-            <Navigate to="/app/overview" replace />
+            <Navigate to={loggedInRedirectTarget(location)} replace />
           ) : (
             <LoginPage
+              ssoRedirectPath={loggedInRedirectTarget(location)}
               onLoggedIn={(nextToken) => {
+                // 只更新 token,不在这里额外 navigate() —— 上面这行
+                // `token ? <Navigate .../> : ...` 会在 token 变 truthy 后的下
+                // 一次渲染自己接手导航。曾经在这里加过一次 `navigate(target, {
+                // replace: true })`,跟这个三元表达式的声明式 Navigate 抢跑:
+                // React 18 把 `setToken` 触发的重渲染跟这次 imperative navigate
+                // 批在一起,声明式那支(当时还固定写 `/app/overview`)有时会晚一步
+                // 把刚 navigate 过去的 `state.from` 目标地址又覆盖回总览页 ——
+                // 实测点 SwipeSmart 深链会先跳 /login、登入后却落在 /app/overview
+                // 而不是原始深链。拆成单一入口(这里只管 setToken,目标地址交给
+                // 上面那行统一算)才不会有两边各算一次目标地址的竞态。
                 setToken(nextToken)
-                navigate('/app/overview', { replace: true })
               }}
             />
           )
         }
+      />
+      {/* /auth/sso/callback 换完 token 后 302 到这里(fragment 带 token,
+          见 SsoCallbackPage 注释)。不判断 `token` 短路 — SSO 落地时
+          `token` 通常还是空,这个页面自己负责 setToken + navigate。 */}
+      <Route
+        path="/login/sso-complete"
+        element={<SsoCallbackPage onLoggedIn={(nextToken) => setToken(nextToken)} />}
       />
       <Route path="/app" element={shellElement}>
         <Route index element={<Navigate to="overview" replace />} />

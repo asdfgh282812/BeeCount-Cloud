@@ -58,6 +58,15 @@ if settings.app_env != "development":
         raise RuntimeError("JWT_SECRET must be changed to a strong 32+ bytes value")
     if settings.has_wildcard_cors:
         raise RuntimeError("CORS_ORIGINS cannot contain wildcard '*' in non-development environments")
+    if not settings.oidc_configured:
+        # 帳號密碼登入(/auth/login、/auth/register)只在 APP_ENV=development
+        # 開放,生產環境唯一的登入路徑就是 SSO —— 沒設定 OIDC 等於整個系統
+        # 沒人能登入,寧可啟動就炸掉,不要讓運維上線後才發現登不進去。
+        raise RuntimeError(
+            "OIDC_AUTHORITY / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET must be configured in "
+            "non-development environments — password login is disabled, SSO is the only "
+            "way to sign in."
+        )
 
 from .version import __version__ as _beecount_cloud_version, APP_NAME as _beecount_cloud_name
 

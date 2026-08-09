@@ -14,6 +14,7 @@ _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("invalid token", "AUTH_INVALID_TOKEN"),
     ("insufficient scope", "AUTH_INSUFFICIENT_SCOPE"),
     ("invalid credentials", "AUTH_INVALID_CREDENTIALS"),
+    ("password login is disabled", "AUTH_SSO_ONLY"),
     ("email already exists", "AUTH_EMAIL_EXISTS"),
     ("user email exists", "USER_EMAIL_EXISTS"),
     ("user password too short", "USER_PASSWORD_TOO_SHORT"),

@@ -1,12 +1,16 @@
 import { FormEvent, useEffect, useState } from 'react'
-import { HelpCircle, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { HelpCircle, LogIn, X } from 'lucide-react'
 
 import {
   ApiError,
+  buildSsoLoginUrl,
   detectWebClientInfo,
+  getSsoStatus,
   getStoredDeviceId,
   login,
-  verifyTwoFA
+  verifyTwoFA,
+  type SsoStatusResponse
 } from '@beecount/api-client'
 import {
   Alert,
@@ -25,6 +29,9 @@ const HINT_DISMISSED_KEY = 'login_initial_password_hint_dismissed'
 
 type LoginPageProps = {
   onLoggedIn: (token: string) => void
+  /** 登入完成後(含 SSO)要跳回的深連結,來自 `RequireAuth` 存的
+   *  `location.state.from`,沒有就是 `/app/overview`。 */
+  ssoRedirectPath?: string
 }
 
 type ChallengeState = {
@@ -32,13 +39,48 @@ type ChallengeState = {
   available_methods: Array<'totp' | 'recovery_code'>
 }
 
-export function LoginPage({ onLoggedIn }: LoginPageProps) {
+export function LoginPage({ onLoggedIn, ssoRedirectPath = '/app/overview' }: LoginPageProps) {
   const t = useT()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState<{ type: 'default' | 'destructive'; title: string; message: string } | null>(null)
   const [challenge, setChallenge] = useState<ChallengeState | null>(null)
+  const [ssoStatus, setSsoStatus] = useState<SsoStatusResponse | null>(null)
+
+  // 這個部署要求哪種登入方式,由後端 /auth/sso/status 決定 —— 生產環境只
+  // 回 sso_enabled=true,開發模式兩者可能同時為 true(見 main.py 的啟動期
+  // 檢查:非 development 環境沒設 OIDC 直接啟動失敗,所以正式站一定有值)。
+  useEffect(() => {
+    let cancelled = false
+    getSsoStatus()
+      .then((status) => {
+        if (!cancelled) setSsoStatus(status)
+      })
+      .catch(() => {
+        if (!cancelled) setSsoStatus({ sso_enabled: false, password_login_enabled: true })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // SSO callback 失败时(见 SsoCallbackPage / 后端 /auth/sso/callback 的
+  // _error_redirect)会带 ?sso_error=<reason> 落回这里,展示一次性提示。
+  useEffect(() => {
+    const reason = searchParams.get('sso_error')
+    if (!reason) return
+    setNotice({
+      type: 'destructive',
+      title: t('notice.failed'),
+      message: t('login.sso.error.generic', { code: reason })
+    })
+    const next = new URLSearchParams(searchParams)
+    next.delete('sso_error')
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -166,57 +208,91 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
                 <h2 className="mt-2 text-2xl font-bold">{t('login.title')}</h2>
               </div>
 
-              {challenge ? (
-                <TwoFactorChallengeView
-                  challenge={challenge}
-                  onCancel={() => {
-                    setChallenge(null)
-                    setNotice(null)
-                  }}
-                  onVerified={(accessToken) => {
-                    onLoggedIn(accessToken)
-                  }}
-                />
+              {ssoStatus === null ? (
+                <div className="flex h-32 items-center justify-center">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-primary" />
+                </div>
               ) : (
-                <form className="space-y-4" onSubmit={onSubmit}>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="login-email">{t('login.email')}</Label>
-                    <Input
-                      id="login-email"
-                      autoComplete="email"
-                      placeholder="owner@example.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <Label htmlFor="login-password">{t('login.password')}</Label>
-                      {/* (?) 图标 hover 出 hint —— 即便用户关掉了下方提示卡,仍
-                          能从这里查到初始密码出处。Tooltip 仅是 native title,
-                          需要包裹 button(span 上的 title 在某些浏览器里 SVG
-                          区域不触发 hover);同时点击 toggle 出可见浮窗作为
-                          兜底,移动端 / 触屏没有 hover 时也能查看。 */}
-                      <PasswordHintTrigger />
+                <>
+                  {ssoStatus.sso_enabled && (
+                    <a
+                      href={buildSsoLoginUrl(ssoRedirectPath)}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-primary px-6 py-4 font-bold text-primary-foreground shadow-lg transition-all active:scale-[0.98]"
+                    >
+                      <LogIn className="h-5 w-5" />
+                      {t('login.sso.button')}
+                    </a>
+                  )}
+
+                  {ssoStatus.sso_enabled && ssoStatus.password_login_enabled && (
+                    <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+                      <div className="h-px flex-1 bg-border" />
+                      {t('login.sso.orDivider')}
+                      <div className="h-px flex-1 bg-border" />
                     </div>
-                    <Input
-                      id="login-password"
-                      type="password"
-                      autoComplete="current-password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </div>
-                  {/* 初次部署的用户经常不知道初始密码哪里来 — 自部署 server 在
-                      首次启动时会把 admin 账号 + 密码打到 docker log,同时
-                      也写入容器内 `var/initial_admin_password` 文件。提示卡
-                      显示在密码框下方,带 × 关闭按钮,关闭后写 localStorage,
-                      下次不再显示。 */}
-                  <InitialPasswordHint />
-                  <Button className="w-full" type="submit" disabled={loading}>
-                    {loading ? '…' : t('login.submit')}
-                  </Button>
-                </form>
+                  )}
+
+                  {ssoStatus.password_login_enabled &&
+                    (challenge ? (
+                      <TwoFactorChallengeView
+                        challenge={challenge}
+                        onCancel={() => {
+                          setChallenge(null)
+                          setNotice(null)
+                        }}
+                        onVerified={(accessToken) => {
+                          onLoggedIn(accessToken)
+                        }}
+                      />
+                    ) : (
+                      <form className="space-y-4" onSubmit={onSubmit}>
+                        {ssoStatus.sso_enabled && (
+                          <p className="text-xs text-muted-foreground">{t('login.sso.devHint')}</p>
+                        )}
+                        <div className="space-y-1.5">
+                          <Label htmlFor="login-email">{t('login.email')}</Label>
+                          <Input
+                            id="login-email"
+                            autoComplete="email"
+                            placeholder="owner@example.com"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <Label htmlFor="login-password">{t('login.password')}</Label>
+                            {/* (?) 图标 hover 出 hint —— 即便用户关掉了下方提示卡,仍
+                                能从这里查到初始密码出处。Tooltip 仅是 native title,
+                                需要包裹 button(span 上的 title 在某些浏览器里 SVG
+                                区域不触发 hover);同时点击 toggle 出可见浮窗作为
+                                兜底,移动端 / 触屏没有 hover 时也能查看。 */}
+                            <PasswordHintTrigger />
+                          </div>
+                          <Input
+                            id="login-password"
+                            type="password"
+                            autoComplete="current-password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                          />
+                        </div>
+                        {/* 初次部署的用户经常不知道初始密码哪里来 — 自部署 server 在
+                            首次启动时会把 admin 账号 + 密码打到 docker log,同时
+                            也写入容器内 `var/initial_admin_password` 文件。提示卡
+                            显示在密码框下方,带 × 关闭按钮,关闭后写 localStorage,
+                            下次不再显示。 */}
+                        <InitialPasswordHint />
+                        <Button className="w-full" type="submit" disabled={loading}>
+                          {loading ? '…' : t('login.submit')}
+                        </Button>
+                      </form>
+                    ))}
+
+                  {!ssoStatus.sso_enabled && !ssoStatus.password_login_enabled && (
+                    <p className="text-sm text-muted-foreground">{t('login.sso.disabledNotice')}</p>
+                  )}
+                </>
               )}
 
               {notice && (
