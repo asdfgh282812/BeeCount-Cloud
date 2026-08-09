@@ -1,24 +1,21 @@
 name: release
 
-# 打 tag（如 0.2.0 或 v0.2.0）推 Docker 镜像 + 生成 GitHub Release。
-# 参考 PanWatch 的 release.yml，为 BeeCount-Cloud 定制后端测试步骤 +
-# 前端构建参数。
+# push 到 main 分支:自动 build + push :latest 到 GHCR(免测试,快速,给自己的
+# NAS/服务器 docker compose pull 用)。
+# 打 tag(如 1.6.3):额外跑一次后端/前端测试 + 生成 GitHub Release,再 build
+# 该版本号的镜像(同时覆盖 :latest)。
+#
+# 镜像推到 GHCR(ghcr.io/<owner>/<repo>,全小写),用 workflow 内建的
+# GITHUB_TOKEN 登入,不需要另外申请/设定任何 secrets。第一次 push 后记得到
+# repo 的 Packages 页面把 package 设成 Public,这样部署端 pull 不用登入。
 
 on:
   push:
+    branches: [main]
     tags:
       - '*.*.*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Docker tag to publish (e.g. 0.2.0)'
-        required: true
-        type: string
-      push_latest:
-        description: 'Also push :latest'
-        required: false
-        type: boolean
-        default: true
       platforms:
         description: 'Target platforms'
         required: false
@@ -26,13 +23,14 @@ on:
         default: 'linux/amd64,linux/arm64'
 
 env:
-  IMAGE_NAME: sunxiao0721/beecount-cloud
+  REGISTRY: ghcr.io
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
 
     steps:
       - name: Checkout
@@ -40,39 +38,49 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Setup Python
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Install backend deps
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run backend tests
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           DATABASE_URL: 'sqlite:///:memory:'
           SECRET_KEY: test-secret
         run: pytest tests/ -x -q
 
       - name: Setup Node
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Setup pnpm
+        if: startsWith(github.ref, 'refs/tags/')
         uses: pnpm/action-setup@v4
         with:
           version: 9
           run_install: false
 
       - name: Install frontend deps
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: frontend
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: Typecheck web
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: frontend/apps/web
         run: npx tsc -b
 
@@ -81,25 +89,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            version="${{ inputs.version }}"
-            push_latest="${{ inputs.push_latest }}"
-            platforms="${{ inputs.platforms }}"
-          else
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             version="${{ github.ref_name }}"
-            push_latest="true"
-            platforms="linux/amd64,linux/arm64"
+          else
+            version="main-$(git rev-parse --short HEAD)"
           fi
-
-          version_no_v="$version"
-          if [[ "$version" == v* ]]; then
-            version_no_v="${version#v}"
-          fi
-
-          echo "version=$version"             >> "$GITHUB_OUTPUT"
-          echo "version_no_v=$version_no_v"   >> "$GITHUB_OUTPUT"
-          echo "push_latest=$push_latest"     >> "$GITHUB_OUTPUT"
-          echo "platforms=$platforms"         >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -107,21 +102,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ steps.vars.outputs.version }}
-            type=raw,value=${{ steps.vars.outputs.version_no_v }},enable=${{ steps.vars.outputs.version_no_v != steps.vars.outputs.version }}
-            type=raw,value=latest,enable=${{ steps.vars.outputs.push_latest == 'true' }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,prefix=,format=short
           labels: |
             org.opencontainers.image.title=BeeCount-Cloud
             org.opencontainers.image.version=${{ steps.vars.outputs.version }}
@@ -132,7 +128,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ steps.vars.outputs.platforms }}
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -141,53 +137,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Generate release notes (tag push only)
-        if: ${{ github.event_name == 'push' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          current="${{ steps.vars.outputs.version }}"
-          repo="${{ github.repository }}"
-
-          prev=""
-          while IFS= read -r t; do
-            if [[ "$t" != "$current" ]]; then
-              prev="$t"
-              break
-            fi
-          done < <(git tag --list --sort=-v:refname)
-
-          if [[ -n "$prev" ]]; then
-            range="$prev..$current"
-          else
-            range="$current"
-          fi
-
-          {
-            echo "## Docker"
-            echo "- $IMAGE_NAME:$current"
-            echo "- $IMAGE_NAME:latest"
-            echo ""
-            echo "## Commits"
-            if [[ -n "$prev" ]]; then
-              echo "Compare: https://github.com/$repo/compare/$prev...$current"
-              echo ""
-              git log --no-merges --pretty=format:'- %s (%h)' "$range" || true
-            else
-              echo "First release tag."
-            fi
-            echo ""
-          } > release-notes.md
-
       - name: Create GitHub Release (tag push only)
-        if: ${{ github.event_name == 'push' }}
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.version }}
-          body_path: release-notes.md
+          generate_release_notes: true
 
-      - name: Send Telegram notification
-        if: ${{ github.event_name == 'push' }}
+      - name: Send Telegram notification (tag push only)
+        if: startsWith(github.ref, 'refs/tags/')
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
