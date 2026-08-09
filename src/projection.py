@@ -513,6 +513,8 @@ def upsert_account(
         # 帳戶頭像(2026-08-02 補強)。
         "avatar_cloud_file_id": _as_str(payload.get("avatarCloudFileId")),
         "avatar_cloud_sha256": _as_str(payload.get("avatarCloudSha256")),
+        # SwipeSmart 卡片對照(Phase 14)。
+        "swipesmart_card_id": _as_str(payload.get("swipesmartCardId")),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)

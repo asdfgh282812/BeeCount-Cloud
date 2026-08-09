@@ -7,6 +7,7 @@ import {
   createProject,
   createTag,
   createTransaction,
+  fetchCardRecommendation,
   fetchCardRewardRules,
   fetchReadDebts,
   fetchReadProjects,
@@ -19,6 +20,7 @@ import {
   type ReadCardRewardRule,
   type ReadDebt,
   type ReadProject,
+  type SwipeSmartCardRecommendation,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -205,6 +207,19 @@ export function GlobalEditDialogs() {
       }
     },
     [token, notifyError],
+  )
+
+  // SwipeSmart 刷卡建議(Phase 14 §3.3.5):同 TransactionsPage.tsx 的
+  // handleFetchCardRecommendations,失敗/逾時 catch 成空陣列。
+  const handleFetchCardRecommendations = useCallback(
+    async (ledgerId: string, amount: number, merchant: string): Promise<SwipeSmartCardRecommendation[]> => {
+      try {
+        return await fetchCardRecommendation(token, ledgerId, { amount, merchant })
+      } catch {
+        return []
+      }
+    },
+    [token],
   )
 
   // 表單內直接新增分類/標籤(需求 #10,Phase 11):同 TransactionsPage.tsx 的
@@ -842,6 +857,7 @@ export function GlobalEditDialogs() {
       rewardRules={editTxRewardRules}
       onCreateCategory={onCreateTxCategory}
       onCreateTag={onCreateTxTag}
+      fetchCardRecommendations={handleFetchCardRecommendations}
       ledgerOptions={ledgerOptions}
       writeLedgerId={editTxLedgerId}
       onWriteLedgerIdChange={handleLedgerChange}

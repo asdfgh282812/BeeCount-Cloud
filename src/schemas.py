@@ -650,6 +650,26 @@ class ReadAccountOut(BaseModel):
     # 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,None = 沒有自訂頭像。
     avatar_cloud_file_id: str | None = None
     avatar_cloud_sha256: str | None = None
+    # SwipeSmart 卡片對照(Phase 14):對應 SwipeSmart 的 `CardId`,None = 尚未
+    # 對照。前端卡片對照設定視窗用來顯示目前的對應狀態。
+    swipesmart_card_id: str | None = None
+
+
+class ReadCardRecommendationOut(BaseModel):
+    """SwipeSmart 刷卡建議(Phase 14,§3.3.3)。`account_id`/`account_name`
+    只在使用者有把這張 SwipeSmart 卡對照到自己的 BeeCount 信用卡帳戶時才有
+    值 —— 前端據此決定這筆建議要渲染成可點擊 badge(有對照)還是純文字
+    (沒對照,None)。"""
+    card_id: str
+    bank_name: str
+    card_name: str
+    rule_name: str | None = None
+    estimated_reward: float
+    effective_rate: float
+    note: str | None = None
+    alert_messages: list[str] = []
+    account_id: str | None = None
+    account_name: str | None = None
 
 
 class ReadAccountBillingMemberOut(BaseModel):
@@ -1531,6 +1551,9 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     # 帳戶頭像(2026-08-02 補強):新建一般不设,建完卡再 PATCH 上傳。
     avatar_cloud_file_id: str | None = None
     avatar_cloud_sha256: str | None = None
+    # SwipeSmart 卡片對照(Phase 14):新建一般不设,建完卡再透過卡片對照
+    # 設定視窗 PATCH。
+    swipesmart_card_id: str | None = None
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -1554,6 +1577,8 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     # 帳戶頭像(2026-08-02 補強):None = 不改;空字串 = 移除頭像。
     avatar_cloud_file_id: str | None = None
     avatar_cloud_sha256: str | None = None
+    # SwipeSmart 卡片對照(Phase 14):None = 不改;空字串 = 解除對照。
+    swipesmart_card_id: str | None = None
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

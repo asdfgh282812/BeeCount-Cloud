@@ -61,6 +61,7 @@ import {
   type ReadProject,
   type ReadTag,
   type ReadTransaction,
+  type SwipeSmartCardRecommendation,
   type WorkspaceTag,
   type ProfileMe,
   deleteLedger,
@@ -72,6 +73,7 @@ import {
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
   fetchAdminUsers,
+  fetchCardRecommendation,
   fetchCardRewardRules,
   fetchReadDebts,
   fetchReadLedgerDetail,
@@ -1288,6 +1290,20 @@ export function TransactionsPage() {
     }
   }
 
+  // SwipeSmart 刷卡建議(Phase 14 §3.3.5):失敗/逾時已經在 api-client 的
+  // fetchCardRecommendation 這層之外沒有額外包裝,這裡 catch 成空陣列 ——
+  // 呼應「外部依賴不能擋記帳」原則,面板拿到空陣列就是「不顯示建議區塊」。
+  const handleFetchCardRecommendations = useCallback(
+    async (ledgerId: string, amount: number, merchant: string): Promise<SwipeSmartCardRecommendation[]> => {
+      try {
+        return await fetchCardRecommendation(token, ledgerId, { amount, merchant })
+      } catch {
+        return []
+      }
+    },
+    [token]
+  )
+
   // 表單內直接新增分類/標籤(需求 #10,Phase 11):建在目前寫入帳本
   // (`txWriteLedgerId`,跟這筆交易本身走同一條 ledger-scoped 寫入路徑)。
   // 成功後樂觀地把新行 append 進 `txDictionaryCategories`/`txDictionaryTags`
@@ -2490,6 +2506,7 @@ export function TransactionsPage() {
                 rewardRules={txFormRewardRules}
                 onCreateCategory={onCreateTxCategory}
                 onCreateTag={onCreateTxTag}
+                fetchCardRecommendations={handleFetchCardRecommendations}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}

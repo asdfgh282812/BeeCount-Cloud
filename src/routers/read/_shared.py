@@ -61,6 +61,7 @@ from ...schemas import (
     ReadBudgetOut,
     ReadBudgetUsageItemOut,
     ReadBudgetUsageOut,
+    ReadCardRecommendationOut,
     ReadCardRewardQualifyingTxOut,
     ReadCardRewardRuleOut,
     ReadCardRewardRuleTransactionsOut,
@@ -101,7 +102,7 @@ from ...schemas import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_READ
 from ... import snapshot_cache
-from ...services import card_rewards, credit_card, credit_card_billing
+from ...services import card_rewards, credit_card, credit_card_billing, secret_crypto, swipesmart_client
 from ...services.deferred_posting import attribution_date_expr
 
 router = APIRouter()
@@ -779,6 +780,7 @@ __all__ = [
     'ReadBudgetOut',
     'ReadBudgetUsageItemOut',
     'ReadBudgetUsageOut',
+    'ReadCardRecommendationOut',
     'ReadCardRewardQualifyingTxOut',
     'ReadCardRewardRuleOut',
     'ReadCardRewardRuleTransactionsOut',
@@ -822,6 +824,8 @@ __all__ = [
     'card_rewards',
     'credit_card',
     'credit_card_billing',
+    'secret_crypto',
+    'swipesmart_client',
     'router',
     'settings',
     '_READ_SCOPE_DEP',

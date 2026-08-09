@@ -263,6 +263,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.auto_pay_from_account_id,
         UserAccountProjection.avatar_cloud_file_id,
         UserAccountProjection.avatar_cloud_sha256,
+        UserAccountProjection.swipesmart_card_id,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -282,6 +283,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         auto_pay_from_account_id,
         avatar_cloud_file_id,
         avatar_cloud_sha256,
+        swipesmart_card_id,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -322,6 +324,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["avatarCloudFileId"] = avatar_cloud_file_id
         if avatar_cloud_sha256:
             acc["avatarCloudSha256"] = avatar_cloud_sha256
+        # SwipeSmart 卡片對照(Phase 14)。
+        if swipesmart_card_id:
+            acc["swipesmartCardId"] = swipesmart_card_id
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。

@@ -18,46 +18,22 @@ import secrets
 from urllib.parse import quote
 
 import pyotp
-from cryptography.fernet import Fernet, InvalidToken
 
 from ..config import get_settings
-
+from . import secret_crypto
 
 _RECOVERY_CODE_COUNT = 10
 _RECOVERY_CODE_BYTES = 5  # 5 字节 → 8 字符 base32 → 格式化成 4-4 形式
 
 
-def _derive_fernet_key() -> bytes:
-    """从 JWT_SECRET sha256 → urlsafe_b64 → 32 字节 Fernet key。
-
-    复用 JWT_SECRET 是为了少一个机密管理负担(JWT_SECRET 已经是部署级机密,
-    丢了 = JWT 全失效,所以 totp_secret 跟它绑同一安全域是合理的)。
-    JWT_SECRET 轮换时 totp_secret_encrypted 全失效 — 文档已提示运维注意。
-    """
-    settings = get_settings()
-    raw = hashlib.sha256(settings.jwt_secret.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(raw)
-
-
-_fernet_singleton: Fernet | None = None
-
-
-def _fernet() -> Fernet:
-    """懒加载,首次调用时再读 settings — 避免 import 期 settings 未初始化。"""
-    global _fernet_singleton
-    if _fernet_singleton is None:
-        _fernet_singleton = Fernet(_derive_fernet_key())
-    return _fernet_singleton
-
-
 def encrypt_totp_secret(secret: str) -> str:
-    return _fernet().encrypt(secret.encode("utf-8")).decode("utf-8")
+    return secret_crypto.encrypt(secret)
 
 
 def decrypt_totp_secret(encrypted: str) -> str:
     try:
-        return _fernet().decrypt(encrypted.encode("utf-8")).decode("utf-8")
-    except InvalidToken as e:
+        return secret_crypto.decrypt(encrypted)
+    except ValueError as e:
         raise ValueError("totp_secret decrypt failed (JWT_SECRET 轮换?)") from e
 
 

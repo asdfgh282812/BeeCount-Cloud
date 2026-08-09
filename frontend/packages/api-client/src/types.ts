@@ -318,6 +318,9 @@ export type ReadAccount = {
   /** 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,null = 沒有自訂頭像。 */
   avatar_cloud_file_id?: string | null
   avatar_cloud_sha256?: string | null
+  /** SwipeSmart 卡片對照(Phase 14):對應 SwipeSmart 的 CardId,null = 尚未
+   *  對照。 */
+  swipesmart_card_id?: string | null
 }
 
 export type ReadCategory = {
@@ -777,6 +780,8 @@ export type AccountPayload = {
   /** 帳戶頭像(2026-08-02 補強):update 传空字串移除頭像;不传 = 不改。 */
   avatar_cloud_file_id?: string | null
   avatar_cloud_sha256?: string | null
+  /** SwipeSmart 卡片對照(Phase 14):update 传空字串解除對照;不传 = 不改。 */
+  swipesmart_card_id?: string | null
 }
 
 export type AccountBillingMember = {

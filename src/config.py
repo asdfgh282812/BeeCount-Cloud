@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # `docker run -d -p 8080:8080 lineofflight/frankfurter` → http://host:8080)。
     exchange_rate_upstream: str = Field(default="", alias="EXCHANGE_RATE_UPSTREAM")
 
+    # ===== SwipeSmart2 信用卡刷卡建議整合(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md)=====
+    # 使用者自行部署的獨立信用卡回饋推薦引擎(.NET + MariaDB)。空字串 = 功能
+    # 整體停用(card-recommendation 端點直接回空陣列,不嘗試連線)。
+    swipesmart_base_url: str = Field(default="", alias="SWIPESMART_BASE_URL")
+    swipesmart_timeout: float = Field(default=8.0, alias="SWIPESMART_TIMEOUT")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

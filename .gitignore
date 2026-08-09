@@ -21,3 +21,4 @@ node_modules/
 *.db-wal
 *.db-shm
 *.tsbuildinfo
+/SwipeSmart2

@@ -41,6 +41,7 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "transfer_rule_materialization": (15 * 60, False),
     "card_autopay": (15 * 60, False),
     "card_reward_payout": (5 * 60, False),
+    "swipesmart_usage_backfill": (15 * 60, False),
 }
 
 
@@ -130,8 +131,15 @@ def _run_card_reward_payout(db: Session) -> dict:
     return {"tx_payouts": result["tx_payouts"], "period_payouts": result["period_payouts"]}
 
 
-# job_key -> (db) -> dict 摘要。key 必須跟 seed migration
-# (`alembic/versions/0036_scheduled_job_configs.py`)裡的 7 筆 job_key 完全對齊。
+def _run_swipesmart_usage_backfill(db: Session) -> dict:
+    from . import swipesmart_backfill
+
+    return swipesmart_backfill.run_swipesmart_usage_backfill(db)
+
+
+# job_key -> (db) -> dict 摘要。`ensure_default_configs` 在每次啟動時自動補齊
+# 這裡新登記、但舊部署 DB 裡還沒有的 job_key 列(見該函式 docstring),所以
+# 新增 job 不需要另外寫 migration seed。
 JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "mcp_log_retention": _run_mcp_log_retention,
     "recurring_materializer": _run_recurring_materializer,
@@ -140,6 +148,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "transfer_rule_materialization": _run_transfer_rule_materialization,
     "card_autopay": _run_card_autopay,
     "card_reward_payout": _run_card_reward_payout,
+    "swipesmart_usage_backfill": _run_swipesmart_usage_backfill,
 }
 
 

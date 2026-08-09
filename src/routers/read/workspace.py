@@ -803,6 +803,7 @@ def list_workspace_accounts(
                 auto_pay_from_account_id=acct.auto_pay_from_account_id,
                 avatar_cloud_file_id=acct.avatar_cloud_file_id,
                 avatar_cloud_sha256=acct.avatar_cloud_sha256,
+                swipesmart_card_id=acct.swipesmart_card_id,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,

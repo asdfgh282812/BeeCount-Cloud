@@ -488,9 +488,96 @@ def list_accounts(
             auto_pay_from_account_id=row.auto_pay_from_account_id,
             avatar_cloud_file_id=row.avatar_cloud_file_id,
             avatar_cloud_sha256=row.avatar_cloud_sha256,
+            swipesmart_card_id=row.swipesmart_card_id,
         )
         for row in rows
     ]
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/card-recommendation",
+    response_model=list[ReadCardRecommendationOut],
+)
+async def get_card_recommendation(
+    ledger_external_id: str,
+    amount: float = Query(..., gt=0),
+    merchant: str = Query(default=""),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadCardRecommendationOut]:
+    """SwipeSmart 刷卡建議(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md
+    §3.3.3)。帳戶/Personal API Key 都是 user-global,跟 ledger 無關,這裡的
+    `ledger_external_id` 只用來確認呼叫者對這個帳本有權限(跟其它讀端點一致
+    的存取控制慣例),不影響建議結果本身。
+
+    沒設定 Personal API Key,或 SwipeSmart 逾時/失敗,一律優雅降級回 []
+    (§3.3.3 第 6 點的硬性容錯要求)——絕不能因為這個可選功能擋住記帳流程或
+    回錯誤碼。
+    """
+    is_admin = _is_admin(current_user)
+    _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    encrypted = profile.swipesmart_api_key_encrypted if profile is not None else None
+    if not encrypted:
+        return []
+    try:
+        api_key = secret_crypto.decrypt(encrypted)
+    except ValueError:
+        return []
+
+    # 已對照 swipesmart_card_id 的信用卡帳戶 → 反查用的 {CardId: (account_id,
+    # account_name)} 字典(§3.3.3 第 5 點)。
+    mapped_rows = db.scalars(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.account_type == "credit_card",
+            UserAccountProjection.swipesmart_card_id.isnot(None),
+        )
+    ).all()
+    account_by_card_id = {
+        row.swipesmart_card_id: (row.sync_id, row.name or "")
+        for row in mapped_rows
+        if row.swipesmart_card_id
+    }
+
+    # 刻意偏離 SD §3.3.3 第 3 點的做法:直接透傳 SwipeSmart 自己的
+    # GET /api/user/usages(真實 usedCapAmount),不用 credit_card_billing 自己
+    # 近似——見 docs/PH14 plan 的「偏離」說明,避免 CapAmount/UsedCapAmount
+    # 語意落差。
+    user_usages = await swipesmart_client.fetch_user_usages(api_key)
+    results = await swipesmart_client.recommend(
+        api_key, amount=amount, merchant=merchant, user_usages=user_usages,
+    )
+    if not results:
+        return []
+
+    out: list[ReadCardRecommendationOut] = []
+    for r in results:
+        card = r.get("card") or {}
+        card_id = card.get("cardId")
+        mapped = account_by_card_id.get(card_id)
+        out.append(
+            ReadCardRecommendationOut(
+                card_id=card_id or "",
+                bank_name=card.get("bankName") or "",
+                card_name=card.get("cardName") or "",
+                rule_name=r.get("ruleName"),
+                estimated_reward=float(r.get("estimatedReward") or 0.0),
+                effective_rate=float(r.get("effectiveRate") or 0.0),
+                note=r.get("note"),
+                alert_messages=list(r.get("alertMessages") or []),
+                account_id=mapped[0] if mapped else None,
+                account_name=mapped[1] if mapped else None,
+            )
+        )
+    return out
 
 
 def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:

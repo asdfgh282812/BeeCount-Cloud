@@ -101,6 +101,12 @@ class UserProfile(Base):
     # `baseCurrency`,PATCH /profile/me key `primary_currency`。大写 ISO 代码,
     # 预留 16 位对齐既有币种列宽。null = 客户端按自己的规则初始化,server 不猜。
     primary_currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # SwipeSmart2 個人 API Key(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md
+    # §3.3.1(a)):使用者自行貼上的 SwipeSmart Personal API Key,用
+    # `services.secret_crypto` 加密儲存,**不透過 sync 機制**同步到其他裝置。
+    # 只在 `routers/swipesmart.py` 內短暫解密用於呼叫 SwipeSmart,絕不明文
+    # 回傳給前端。
+    swipesmart_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -737,6 +743,11 @@ class UserAccountProjection(Base):
     hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # SwipeSmart2 卡片對照(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md
+    # §3.3.1(b)):對應 SwipeSmart 的 `CardId`,只有 credit_card 類型的帳戶有
+    # 意義。None = 使用者尚未在卡片對照設定視窗裡勾選對應,不參與「反查帳戶」
+    # 但推薦建議仍會顯示(降級為純文字)。
+    swipesmart_card_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class UserExchangeRateProjection(Base):

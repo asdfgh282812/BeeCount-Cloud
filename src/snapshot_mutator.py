@@ -122,6 +122,8 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     # 帳戶頭像(2026-08-02 補強):空字串/None=移除頭像。
     ("avatar_cloud_file_id", "avatarCloudFileId", "str"),
     ("avatar_cloud_sha256", "avatarCloudSha256", "str"),
+    # SwipeSmart 卡片對照(Phase 14):空字串/None=解除對照。
+    ("swipesmart_card_id", "swipesmartCardId", "str"),
 )
 
 

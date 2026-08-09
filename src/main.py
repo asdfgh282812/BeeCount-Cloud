@@ -23,7 +23,7 @@ from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
-from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, write, ws
+from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, swipesmart, write, ws
 from .routers import admin_backup, admin_scheduled_jobs, internal_tasks, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
@@ -165,6 +165,7 @@ app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["w
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
 app.include_router(pats.router, prefix=f"{settings.api_prefix}/profile/pats", tags=["pats"])
+app.include_router(swipesmart.router, prefix=f"{settings.api_prefix}/profile/swipesmart", tags=["swipesmart"])
 app.include_router(
     mcp_calls.router,
     prefix=f"{settings.api_prefix}/profile/mcp-calls",

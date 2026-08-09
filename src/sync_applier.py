@@ -158,6 +158,8 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 帳戶頭像(2026-08-02 補強):None/空字串 = 沒有自訂頭像。
         ("avatarCloudFileId", "avatar_cloud_file_id"),
         ("avatarCloudSha256", "avatar_cloud_sha256"),
+        # SwipeSmart 卡片對照(Phase 14):None/空字串 = 沒有對照。
+        ("swipesmartCardId", "swipesmart_card_id"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),

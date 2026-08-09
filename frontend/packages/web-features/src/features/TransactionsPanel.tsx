@@ -29,6 +29,7 @@ import type {
   ReadProject,
   ReadTag,
   ReadTransaction,
+  SwipeSmartCardRecommendation,
   WorkspaceCategory,
 } from '@beecount/api-client'
 
@@ -83,6 +84,14 @@ type TransactionsPanelProps = {
    *  選中它),失敗回傳 null(呼叫方已自行 toast 提示錯誤)。 */
   onCreateCategory?: (name: string, kind: 'expense' | 'income') => Promise<WorkspaceCategory | null>
   onCreateTag?: (name: string) => Promise<{ id: string; name: string } | null>
+  /** SwipeSmart 刷卡建議(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md
+   *  §3.3.5):不傳則不顯示建議區塊。呼叫方負責實際打 API(需要 token),
+   *  失敗/逾時已經在呼叫方那層 catch 成空陣列,這裡只管 UI 呈現。 */
+  fetchCardRecommendations?: (
+    ledgerId: string,
+    amount: number,
+    merchant: string
+  ) => Promise<SwipeSmartCardRecommendation[]>
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -285,6 +294,7 @@ export function TransactionsPanel({
   rewardRules = [],
   onCreateCategory,
   onCreateTag,
+  fetchCardRecommendations,
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -361,6 +371,35 @@ export function TransactionsPanel({
         onFormChange({ ...form, project_id: created.id, project_name: created.name.trim() })
       }
     : undefined
+  // SwipeSmart 刷卡建議(Phase 14 §3.3.5):debounce 500ms,只在 expense +
+  // 金額/商家皆非空時觸發(「刷哪張卡」對 income/transfer 沒有意義,比 SD
+  // 字面的「非空即觸發」多收斂一步)。比照 CommandPalette.tsx 的
+  // setTimeout/clearTimeout + cancelled 旗標 debounce 慣例。
+  const [cardRecommendations, setCardRecommendations] = useState<SwipeSmartCardRecommendation[]>([])
+  const amountForRecommendation = form.tx_type === 'expense' ? form.amount.trim() : ''
+  const merchantForRecommendation = form.tx_type === 'expense' ? form.merchant.trim() : ''
+  useEffect(() => {
+    if (!fetchCardRecommendations || !writeLedgerId || !amountForRecommendation || !merchantForRecommendation) {
+      setCardRecommendations([])
+      return
+    }
+    const amountNum = Number(amountForRecommendation)
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setCardRecommendations([])
+      return
+    }
+    let cancelled = false
+    const handler = setTimeout(() => {
+      void fetchCardRecommendations(writeLedgerId, amountNum, merchantForRecommendation).then((rows) => {
+        if (!cancelled) setCardRecommendations(rows)
+      })
+    }, 500)
+    return () => {
+      cancelled = true
+      clearTimeout(handler)
+    }
+  }, [fetchCardRecommendations, writeLedgerId, amountForRecommendation, merchantForRecommendation])
+
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -669,7 +708,19 @@ export function TransactionsPanel({
                   })
                 }
               />
+              {/* 商店(需求 #11,Phase 11;2026-08-09 使用者反饋改順序):跟時間
+                  同一個 grid cell,疊在時間欄位下面,寬度跟時間欄位一樣(不佔滿
+                  整行),视觉上跟左邊金額欄位下方的幣別選擇器同高。不加 Label,
+                  placeholder 本身已經寫「商店」,不需要重複的標題。純展示用途,選填。 */}
+              <div className="pt-2">
+                <Input
+                  placeholder={t('transactions.placeholder.merchant')}
+                  value={form.merchant}
+                  onChange={(e) => onFormChange({ ...form, merchant: e.target.value })}
+                />
+              </div>
             </div>
+
             <div className={form.split_enabled && !isTransfer ? 'space-y-1 md:col-span-2' : 'space-y-1'}>
               <div className="flex items-center justify-between">
                 <Label>{t('transactions.table.category')}</Label>
@@ -856,17 +907,10 @@ export function TransactionsPanel({
               </div>
             )}
 
-            {/* 商店 + 備註(需求 #11,Phase 11):商店選填,純展示用途;備註從
-                原本緊鄰「實際入帳日」的位置往上移到帳戶/分類附近,兩者相鄰
-                放置,對齊使用者反饋的欄位順序需求。 */}
-            <div className="space-y-1">
-              <Label>{t('transactions.field.merchant')}</Label>
-              <Input
-                placeholder={t('transactions.placeholder.merchant')}
-                value={form.merchant}
-                onChange={(e) => onFormChange({ ...form, merchant: e.target.value })}
-              />
-            </div>
+            {/* 備註(需求 #11,Phase 11):從原本緊鄰「實際入帳日」的位置往上移到
+                帳戶/分類附近,對齊使用者反饋的欄位順序需求。2026-08-09 使用者
+                反饋:跟下面的 SwipeSmart 建議區塊左右交換,備註留在帳戶同一列
+                (右側欄位),建議區塊改成佔滿整行、放在帳戶下面一整排。 */}
             <div className="space-y-1">
               <Label>{t('transactions.table.note')}</Label>
               <Input
@@ -875,6 +919,46 @@ export function TransactionsPanel({
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
+
+            {/* SwipeSmart 刷卡建議(Phase 14 §3.3.5;2026-08-09 使用者反饋改版):
+                有對照帳戶 = 可點擊卡片,點擊直接帶入帳戶欄位(使用者主動點才
+                生效,不自動代填);沒對照 = 純文字說明,不可點擊。完全沒有
+                建議時不渲染這個區塊。改成佔滿整行(md:col-span-2,放在帳戶
+                欄位下面而不是跟它並排)+ 卡名/回饋分開排版加大字級,避免使用
+                者反饋的「擠成一行看不出來寫什麼」。 */}
+            {cardRecommendations.length > 0 ? (
+              <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-2.5 md:col-span-2">
+                <p className="text-xs font-medium text-primary/80">{t('swipesmart.recommend.title')}</p>
+                {cardRecommendations
+                  .filter((rec) => rec.account_id)
+                  .map((rec) => (
+                    <button
+                      key={rec.card_id}
+                      type="button"
+                      onClick={() => onFormChange({ ...form, account_name: rec.account_name || '' })}
+                      className="flex w-full items-center justify-between gap-2 rounded-md border border-primary/40 bg-background px-3 py-2 text-left transition-colors hover:bg-primary/10"
+                    >
+                      <span className="truncate text-sm font-semibold text-foreground">
+                        {t('swipesmart.recommend.mappedCard', { bank: rec.bank_name, card: rec.card_name })}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">
+                        {t('swipesmart.recommend.mappedReward', {
+                          reward: rec.estimated_reward.toFixed(0),
+                          rate: (rec.effective_rate * 100).toFixed(1)
+                        })}
+                      </span>
+                    </button>
+                  ))}
+                {cardRecommendations
+                  .filter((rec) => !rec.account_id)
+                  .slice(0, 3)
+                  .map((rec) => (
+                    <p key={rec.card_id} className="text-xs text-muted-foreground">
+                      {t('swipesmart.recommend.unmapped', { bank: rec.bank_name, card: rec.card_name })}
+                    </p>
+                  ))}
+              </div>
+            ) : null}
 
             {/* 借還款追蹤(§2.5 體驗補強):expense/income 都能掛欠款(跟退款
                 同样排除 transfer),不強制連動 tx_type,使用者自己判斷要記

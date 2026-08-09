@@ -2,15 +2,17 @@
 `routers/admin_scheduled_jobs.py` 契約測試。
 
 覆蓋:
-1. `ensure_default_configs` 幂等補齊 7 筆預設列(測試 DB 用
-   `Base.metadata.create_all` 建表,不會跑 migration data seed)。
-2. `GET /admin/scheduled-jobs` 列出 7 筆 + admin-only 權限。
+1. `ensure_default_configs` 幂等補齊 8 筆預設列(測試 DB 用
+   `Base.metadata.create_all` 建表,不會跑 migration data seed;第 8 筆
+   `swipesmart_usage_backfill` 是 Phase 14 新增,靠這個函式自我補齊,不需要
+   另外寫 migration seed row)。
+2. `GET /admin/scheduled-jobs` 列出 8 筆 + admin-only 權限。
 3. `PATCH /admin/scheduled-jobs/{job_key}` 改 interval_seconds/enabled,
    重算 next_run_at。
 4. `POST /admin/scheduled-jobs/{job_key}/run-now` 即時回傳摘要,DB 真的有
    反映(用 mcp_log_retention 驗證實際刪除了過期行)。
 5. `run_due_jobs` 到期判斷邏輯(只有到期 + enabled 的才跑)。
-6. 7 個 job_key 都正確對應到既有函式且被實際呼叫(mock/spy)。
+6. 8 個 job_key 都正確對應到既有函式且被實際呼叫(mock/spy)。
 7. `/internal/tasks/materialize-recurring` 舊端點行為不受影響。
 """
 from __future__ import annotations
@@ -121,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 7
+            assert len(rows) == 8
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 7
+            assert len(rows2) == 8
         finally:
             db.close()
     finally:
@@ -157,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 7
+        assert len(rows) == 8
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -320,7 +322,7 @@ def test_run_due_jobs_only_runs_enabled_and_due_jobs():
 
 
 def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
-    """鎖住 JOB_REGISTRY 的 7 個 job_key 跟預期底層函式模組的呼叫關係,
+    """鎖住 JOB_REGISTRY 的 8 個 job_key 跟預期底層函式模組的呼叫關係,
     用 spy 確認 run_job 真的呼叫到對應函式(不是摘要造假)。"""
     _client = _make_client()
     try:
@@ -333,6 +335,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "transfer_rule_materialization",
             "card_autopay",
             "card_reward_payout",
+            "swipesmart_usage_backfill",
         }
 
         assert _TEST_SESSION is not None
@@ -361,6 +364,10 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.card_reward_payout.materialize_due_card_reward_payouts",
                     return_value={"tx_payouts": 0, "period_payouts": 0},
                 ) as mock_reward,
+                patch(
+                    "src.services.swipesmart_backfill.run_swipesmart_usage_backfill",
+                    return_value={"users": 0, "accounts_attempted": 0, "accounts_succeeded": 0},
+                ) as mock_swipesmart,
             ):
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
@@ -368,6 +375,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "card_due_reminders")
                 scheduled_jobs.run_job(db, "card_autopay")
                 scheduled_jobs.run_job(db, "card_reward_payout")
+                scheduled_jobs.run_job(db, "swipesmart_usage_backfill")
 
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
@@ -375,6 +383,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             mock_card.assert_called_once()
             mock_autopay.assert_called_once()
             mock_reward.assert_called_once()
+            mock_swipesmart.assert_called_once()
         finally:
             db.close()
     finally:

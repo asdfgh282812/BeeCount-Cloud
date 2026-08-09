@@ -43,6 +43,7 @@ import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
 import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
+import { SettingsSwipeSmartSection } from './SettingsSwipeSmartSection'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
 const DISPLAY_NAME_MAX = 60
@@ -588,6 +589,9 @@ export function SettingsProfileAppearanceSection() {
 
       {/* 汇率管理小节 —— 主币种未设置时内部渲染空态、不发请求 */}
       <SettingsExchangeRatesSection />
+
+      {/* SwipeSmart 刷卡建議整合(Phase 14) */}
+      <SettingsSwipeSmartSection />
     </div>
   )
 }
