@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -153,25 +154,30 @@ def _parse_date_only(raw: Any):
 # --------------------------------------------------------------------------- #
 # Dialect 中立的 upsert                                                         #
 # --------------------------------------------------------------------------- #
-# SQLite / PostgreSQL 都用 INSERT ... ON CONFLICT DO UPDATE。SQLAlchemy 的
-# `dialects.sqlite.insert` 在两种库上语法基本一致;`dialects.postgresql.insert`
-# 同理。我们按 bind 方言走对应 insert,fallback 到先 SELECT 再 UPDATE/INSERT。
+# SQLite / PostgreSQL 都用 INSERT ... ON CONFLICT DO UPDATE,但两边的方言专属
+# insert()/OnConflictDoUpdate 子句类互不相通,必须按 bind 方言各自用
+# `dialects.sqlite.insert` / `dialects.postgresql.insert` 构造,不能混用同一个
+# 方言的 insert() 去喂给另一个方言的 compiler。未知方言 fallback 到先 SELECT
+# 再 UPDATE/INSERT。
 
-def _is_sqlite(bind) -> bool:
+def _dialect_name(bind) -> str:
     try:
-        name = bind.dialect.name if hasattr(bind, "dialect") else bind.bind.dialect.name
+        return bind.dialect.name if hasattr(bind, "dialect") else bind.bind.dialect.name
     except AttributeError:
-        return True
-    return name == "sqlite"
+        return "sqlite"
 
 
 def _upsert(db: Session, model, pk_fields: tuple[str, ...], values: dict) -> None:
     """通用 upsert:主键撞了就 UPDATE 其他所有列。"""
     bind = db.get_bind()
-    if _is_sqlite(bind) or getattr(bind.dialect, "name", "") == "postgresql":
-        # SQLite / PG 都支持 ON CONFLICT。这里用 sqlite 方言 insert 生成语句,
-        # 实际执行时由 SQLAlchemy 翻译;PG 下走一样的语义。
-        stmt = sqlite_insert(model).values(**values)
+    dialect_name = _dialect_name(bind)
+    if dialect_name in ("sqlite", "postgresql"):
+        # SQLite / PG 都支持 ON CONFLICT,但两边的 Insert/OnConflict 子句是不同
+        # 的类(字段也不同),SQLAlchemy 不会跨方言互相翻译 —— 必须按实际连线
+        # 的方言选对应的 insert() 构造函数,否则 PG 编译器处理 sqlite 方言产生
+        # 的子句会因缺少 `constraint_target` 等属性直接 AttributeError。
+        insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
+        stmt = insert_fn(model).values(**values)
         update_cols = {k: stmt.excluded[k] for k in values.keys() if k not in pk_fields}
         if update_cols:
             stmt = stmt.on_conflict_do_update(
