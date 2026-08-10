@@ -611,8 +611,8 @@ const zhTW = {
   'about.repos.app.desc': 'Flutter 客戶端,iOS / Android',
   'about.repos.cloud.title': '雲端服務',
   'about.repos.cloud.desc': '後端 + Web 控制台,本倉',
-  'about.repos.docs.title': '文檔站',
-  'about.repos.docs.desc': '產品介紹 + 使用文檔',
+  'about.repos.docs.title': '使用手冊',
+  'about.repos.docs.desc': '產品介紹、使用教學、Cloud 進階功能說明',
 
   'ledgers.title': '帳本',
   'ledgers.subtitle': '點選帳本卡片可編輯名稱與幣種,頂部「新建帳本」可直接建立。',

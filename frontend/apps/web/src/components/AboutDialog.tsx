@@ -16,6 +16,8 @@ import {
   DialogHeader,
   DialogTitle,
   useT,
+  useTheme,
+  usePrimaryColor,
 } from '@beecount/ui'
 
 /**
@@ -35,7 +37,7 @@ import {
 const REPO_OWNER = 'TNT-Likely'
 const REPO_CLOUD = 'BeeCount-Cloud' // 本仓 → release / changelog 数据源
 const REPO_APP = 'BeeCount'
-const REPO_DOCS = 'BeeCount-Website'
+const DOCS_SITE_URL = 'https://beecount-manual.pages.dev/docs/intro'
 const GITHUB_API_BASE = `https://api.github.com/repos/${REPO_OWNER}/${REPO_CLOUD}`
 const GITHUB_RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_CLOUD}/releases`
 const PAGE_SIZE = 10
@@ -174,6 +176,9 @@ export function AboutDialog({ open, onOpenChange }: Props) {
   const latestVersion = latestRelease?.tag_name || null
   const hasNew = isNewerVersion(latestVersion, currentVersion)
 
+  const { resolved: resolvedTheme } = useTheme()
+  const { color: primaryColor } = usePrimaryColor()
+
   const repos = useMemo(
     () => [
       {
@@ -195,10 +200,12 @@ export function AboutDialog({ open, onOpenChange }: Props) {
         icon: BookOpen,
         title: t('about.repos.docs.title'),
         desc: t('about.repos.docs.desc'),
-        url: `https://github.com/${REPO_OWNER}/${REPO_DOCS}`,
+        // 帶 embed 主題參數,跟 App 端內嵌打開文件站用的是同一套機制
+        // (docusaurus.config.ts 的 beeEmbedPlugin),讓文件站視覺跟 Web 當下主題一致
+        url: `${DOCS_SITE_URL}?embed=1&theme=${resolvedTheme}&primary=${primaryColor.replace('#', '')}`,
       },
     ],
-    [t],
+    [t, resolvedTheme, primaryColor],
   )
 
   const loadPage = useCallback(async (p: number) => {

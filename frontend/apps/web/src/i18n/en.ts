@@ -612,8 +612,8 @@ const en = {
   'about.repos.app.desc': 'Flutter client for iOS / Android',
   'about.repos.cloud.title': 'Cloud service',
   'about.repos.cloud.desc': 'Backend + web console (this repo)',
-  'about.repos.docs.title': 'Docs site',
-  'about.repos.docs.desc': 'Product intro + usage docs',
+  'about.repos.docs.title': 'User manual',
+  'about.repos.docs.desc': 'Product intro, usage guides, Cloud advanced features',
 
   'ledgers.title': 'Ledgers',
   'ledgers.subtitle': 'Click any ledger card to edit name & currency. Use "New Ledger" to create one.',

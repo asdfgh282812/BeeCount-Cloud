@@ -96,8 +96,8 @@ const zhCN = {
   'about.repos.app.desc': 'Flutter 客户端,iOS / Android',
   'about.repos.cloud.title': '云端服务',
   'about.repos.cloud.desc': '后端 + Web 控制台,本仓',
-  'about.repos.docs.title': '文档站',
-  'about.repos.docs.desc': '产品介绍 + 使用文档',
+  'about.repos.docs.title': '使用手册',
+  'about.repos.docs.desc': '产品介绍、使用教程、Cloud 进阶功能说明',
 
   // 账本列表页
   'ledgers.title': '账本',
