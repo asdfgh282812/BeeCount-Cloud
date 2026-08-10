@@ -1,86 +1,79 @@
-# Deployment Guide
+# 部署指南 (Deployment Guide)
 
-## 1) Default: SQLite single container
+## 1) 預設配置：SQLite 單一容器 (Default: SQLite single container)
 
 ```bash
 docker compose up -d --build
 ```
 
-- Data volume: `beecount_data` mounted at `/data`
-- Default DB URL: `sqlite:////data/beecount.db`
-- Backup artifact dir: `/data/backups` (`BACKUP_STORAGE_DIR`)
-- App collaboration read/device scope: `ALLOW_APP_RW_SCOPES` defaults to `true` (set `false` only if you explicitly want to restrict App RW scopes)
+- **資料卷 (Data volume)：** `beecount_data` 掛載於 `/data`
+- **預設資料庫 URL：** `sqlite:////data/beecount.db`
+- **備份產物目錄：** `/data/backups` (`BACKUP_STORAGE_DIR`)
+- **App 協作讀寫權限範圍：** `ALLOW_APP_RW_SCOPES` 預設為 `true`（僅在明確希望限制 App 讀寫權限時才設為 `false`）
 
-## 2) Health checks
+## 2) 健康檢查 (Health checks)
 
-- Liveness: `GET /healthz`
-- Readiness: `GET /ready`
-- Metrics: `GET /metrics`
-- Compose includes container health checks (ready probe)
+- **存活檢查 (Liveness)：** `GET /healthz`
+- **就緒檢查 (Readiness)：** `GET /ready`
+- **指標數據 (Metrics)：** `GET /metrics`
+- Compose 設定檔已包含容器健康檢查（就緒探針 ready probe）
 
-## 3) Backup
+## 3) 備份 (Backup)
 
-SQLite:
+SQLite 備份命令：
 
 ```bash
 ./scripts/backup_sqlite.sh /data/beecount.db ./backups/sqlite
 ```
 
-The script uses `sqlite3 .backup` (SQLite Online Backup API), which is **safe
-while the server is running** and works in any journal mode. Output is always
-a single clean db file — no `-wal` / `-shm` companions.
+此腳本採用 `sqlite3 .backup`（SQLite 線上備份 API），在**伺服器運行期間執行是絕對安全**的，且適用於任何日誌模式（journal mode）。輸出的結果永遠是單一且乾淨的資料庫檔案，不會產生 `-wal` 或 `-shm` 等附屬檔案。
 
-> ⚠️ Don't `cp` the raw db file: the server runs in WAL mode, and a bare `cp`
-> will miss uncommitted writes still sitting in `beecount.db-wal`. Always use
-> the script (or `sqlite3 .backup` directly).
+> ⚠️ **請勿直接複製 (cp) 原始資料庫檔案：**
+> 伺服器是在 WAL 模式下運行，單純使用 `cp` 指令會遺漏掉仍留在 `beecount.db-wal` 中尚未寫入的資料。請務必使用本腳本（或直接執行 `sqlite3 .backup`）。
 
-For a full volume snapshot (DB + attachments + JWT secret + previous backups
-all together), simply tar the `beecount_data` volume after stopping the
-container, OR use `VACUUM INTO` via the in-app backup runner (admin UI →
-"Backup") which integrates with rclone.
+若需要完整的資料卷快照（包含資料庫、附件、JWT 金鑰及先前所有的備份），可在停止容器後將 `beecount_data` 資料卷打包為 tar 檔；或是透過應用程式內的備份執行器（管理員 UI → "Backup"）使用 `VACUUM INTO` 功能，該功能已整合 rclone。
 
-### Restore
+### 還原 (Restore)
 
-See [ROLLBACK_SOP.md](./ROLLBACK_SOP.md) — note the **delete `-wal` / `-shm`
-before overwriting** step required by WAL mode.
+請參閱 [ROLLBACK_SOP.md](./ROLLBACK_SOP.md) — 請特別注意在 WAL 模式下，**覆蓋資料庫前必須先刪除 `-wal` 與 `-shm` 檔案**的步驟。
 
-## 4) Security baseline
+## 4) 安全基準 (Security baseline)
 
-- First boot auto-generates a 32-byte `JWT_SECRET` into `/data/.jwt_secret`; override the env var if you want to manage the key yourself.
-- Put the API behind your own TLS reverse proxy (Caddy / Nginx / Traefik / Cloudflare).
-- Keep `/data` on persistent storage — DB, attachments, backups, and the JWT secret all live there.
+- 首次啟動時，系統會自動產生 32 位元組的 `JWT_SECRET` 並存入 `/data/.jwt_secret`；若希望自行管理密鑰，可透過環境變數進行覆寫。
+- 請將 API 部署於自建的反向代理伺服器（如 Caddy / Nginx / Traefik / Cloudflare）並啟用 TLS 加密。
+- 請確保 `/data` 存放於持久化儲存設備中 — 資料庫、附件、備份檔以及 JWT 密鑰皆存放於此。
 
-## 5) App scope troubleshooting
+## 5) App 權限範圍疑難排解 (App scope troubleshooting)
 
-- Symptom: App shows collaboration role as not ready or device page reports `Insufficient scope`.
-- Check env: ensure `ALLOW_APP_RW_SCOPES` is not set to `false`.
-- Apply changes: restart service/container, then sign out/in again in App to refresh token/session context.
-- Device API defaults: `GET /api/v1/devices` now returns `view=deduped` and `active_within_days=30` by default.
-  - Full sessions: `GET /api/v1/devices?view=sessions&active_within_days=0`
-  - Deduped devices keep `session_count` for readability.
+- **異常症狀：** App 顯示協作角色為未就緒，或是裝置頁面回報 `Insufficient scope`（權限不足）。
+- **檢查環境變數：** 請確認 `ALLOW_APP_RW_SCOPES` 未被設定為 `false`。
+- **套用變更：** 重啟服務或容器，並於 App 中重新登出再登入，以刷新 Token 與 Session 上下文。
+- **裝置 API 預設值：** `GET /api/v1/devices` 目前預設回傳 `view=deduped` 與 `active_within_days=30`。
+  - 查看完整 Session：`GET /api/v1/devices?view=sessions&active_within_days=0`
+  - 去重後的裝置列表會保留 `session_count` 欄位，以利閱讀。
 
-## 6) Self-host member management
+## 6) 自建託管之成員管理 (Self-host member management)
 
-- Web collaboration page supports direct member management by email (`add/update/remove`) without requiring invite-code flow.
-- Recommended operation path for self-hosting: manage shared ledger members in Web/admin, keep App as collaboration read surface.
+- Web 協作頁面支援直接透過 Email 管理成員（新增/更新/移除：`add/update/remove`），無需經過邀請碼流程。
+- 自建託管的推薦操作流程：請於 Web / 管理員介面中管理共享帳本成員，並將 App 作為協作讀取端。
 
-## 7) Minimal SOP (self-host)
+## 7) 最小化標準作業程序 (Minimal SOP - 自建託管)
 
-- If App role shows "Permission not ready", copy diagnostics from App ledger collaboration page and verify:
+- 若 App 角色顯示「權限未就緒」(Permission not ready)，請從 App 帳本協作頁面複製診斷資訊，並確認以下項目：
   - `role_resolve_status`
   - `scope_hint`
   - `deviceId`
-- Verify `ALLOW_APP_RW_SCOPES` is enabled (`true`), restart backend, then sign out/in in App.
-- If device list looks too large, keep default deduped view first, then switch to all sessions only for revocation.
-- If a user has local default ledger `id=1` and remote shared ledger like `ledger_1.json`, the latest App build auto-reconciles identity on startup:
-  - personal ledger is remapped to a namespaced local sync id,
-  - `sync_queue`/`sync_state` references are migrated automatically,
-  - old snapshot path is copied to the new path best-effort when target path is empty.
+- 確認 `ALLOW_APP_RW_SCOPES` 已啟用（設為 `true`），重啟後端，並於 App 中重新登出再登入。
+- 若裝置列表項目過多，請先維持預設的去重檢視（deduped view），僅在需要撤銷權限時才切換至完整 Session 檢視。
+- 若使用者本地帶有預設帳本 `id=1`，且同時存在遠端共享帳本（例如 `ledger_1.json`），最新版本的 App 會在啟動時自動進行身份調和（auto-reconciles）：
+  - 個人帳本會重新映射至帶有命名空間的本地同步 ID（namespaced local sync id）。
+  - `sync_queue` 與 `sync_state` 的引用關係會自動進行遷移。
+  - 當目標路徑為空時，系統會盡力將舊的快照路徑複製至新路徑。
 
-## 8) Experimental collaboration policy
+## 8) 實驗性協作策略 (Experimental collaboration policy)
 
-- Current collaboration capability is treated as **experimental** for self-host deployments.
-- Keep backend API compatibility stable; avoid destructive API removal while App/UI continues to iterate.
-- Recommended user-facing policy:
-  - App keeps collaboration entry visible with beta warnings.
-  - Shared member operations remain managed in Web/admin first.
+- 目前的協作功能在自建託管部署中被視為**實驗性功能 (experimental)**。
+- 請保持後端 API 的相容性穩定；在 App / UI 持續迭代期間，避免進行破壞性的 API 刪除。
+- 建議之面向使用者的策略：
+  - App 保留協作入口可見，並附帶 Beta 測試警告。
+  - 共享成員的操作維護，仍以 Web / 管理端介面優先。

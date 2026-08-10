@@ -42,7 +42,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("job_key", sa.String(64), nullable=False),
         sa.Column("interval_seconds", sa.Integer(), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("next_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_run_status", sa.String(16), nullable=True),
