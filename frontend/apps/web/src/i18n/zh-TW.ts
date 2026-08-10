@@ -389,6 +389,7 @@ const zhTW = {
   'admin.scheduledJobs.job.transfer_rule_materialization': '自動轉帳規則產生',
   'admin.scheduledJobs.job.card_autopay': '信用卡自動扣繳',
   'admin.scheduledJobs.job.card_reward_payout': '信用卡紅利回饋入帳',
+  'admin.scheduledJobs.job.swipesmart_usage_backfill': 'Swipesmart 使用額度回填',
   'admin.dataCleanup.title': '資料清理',
   'admin.dataCleanup.subtitle': '掃描並清理孤兒資料(跨所有使用者)',
   'admin.dataCleanup.rescan': '重新掃描',
