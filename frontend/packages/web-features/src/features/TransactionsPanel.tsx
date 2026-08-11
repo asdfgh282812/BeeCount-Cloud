@@ -376,9 +376,15 @@ export function TransactionsPanel({
   // 字面的「非空即觸發」多收斂一步)。比照 CommandPalette.tsx 的
   // setTimeout/clearTimeout + cancelled 旗標 debounce 慣例。
   const [cardRecommendations, setCardRecommendations] = useState<SwipeSmartCardRecommendation[]>([])
+  // 2026-08-11 使用者反饋:點擊某張建議卡「代入帳戶」後就把整個建議區塊收
+  // 起來省空間(不必手動關閉),不用等使用者換掉金額/商家才會消失。換一組
+  // 金額/商家(觸發下面 effect 重新打 API)時視同「新的一筆建議」,重置回
+  // 展開狀態。
+  const [recommendationCollapsed, setRecommendationCollapsed] = useState(false)
   const amountForRecommendation = form.tx_type === 'expense' ? form.amount.trim() : ''
   const merchantForRecommendation = form.tx_type === 'expense' ? form.merchant.trim() : ''
   useEffect(() => {
+    setRecommendationCollapsed(false)
     if (!fetchCardRecommendations || !writeLedgerId || !amountForRecommendation || !merchantForRecommendation) {
       setCardRecommendations([])
       return
@@ -986,7 +992,12 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
-            {/* SwipeSmart 刷卡建議(Phase 14 §3.3.5;2026-08-09 使用者反饋改版):
+            {/* SwipeSmart 刷卡建議(Phase 14 §3.3.5;2026-08-09 使用者反饋改版;
+                2026-08-11 使用者反饋再改:①最多只列 3 張已對照的建議卡,不
+                管實際比對到幾張,避免長清單佔掉表單版面;②點擊某張卡「代入
+                帳戶」後整塊自動收起來省空間(`recommendationCollapsed`,見上
+                面 effect ——換一組金額/商家等於新的一輪建議,自動重置回展開),
+                收起狀態顯示一行摘要 + 可點擊展開回去,不是直接消失找不回來)。
                 有對照帳戶 = 可點擊卡片,點擊直接帶入帳戶欄位(使用者主動點才
                 生效,不自動代填);沒對照 = 純文字說明,不可點擊。完全沒有
                 建議時不渲染這個區塊。改成佔滿整行(md:col-span-2,放在帳戶
@@ -994,35 +1005,54 @@ export function TransactionsPanel({
                 者反饋的「擠成一行看不出來寫什麼」。 */}
             {cardRecommendations.length > 0 ? (
               <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-2.5 md:col-span-2">
-                <p className="text-xs font-medium text-primary/80">{t('swipesmart.recommend.title')}</p>
-                {cardRecommendations
-                  .filter((rec) => rec.account_id)
-                  .map((rec) => (
-                    <button
-                      key={rec.card_id}
-                      type="button"
-                      onClick={() => onFormChange({ ...form, account_name: rec.account_name || '' })}
-                      className="flex w-full items-center justify-between gap-2 rounded-md border border-primary/40 bg-background px-3 py-2 text-left transition-colors hover:bg-primary/10"
-                    >
-                      <span className="truncate text-sm font-semibold text-foreground">
-                        {t('swipesmart.recommend.mappedCard', { bank: rec.bank_name, card: rec.card_name })}
-                      </span>
-                      <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">
-                        {t('swipesmart.recommend.mappedReward', {
-                          reward: rec.estimated_reward.toFixed(0),
-                          rate: (rec.effective_rate * 100).toFixed(1)
-                        })}
-                      </span>
-                    </button>
-                  ))}
-                {cardRecommendations
-                  .filter((rec) => !rec.account_id)
-                  .slice(0, 3)
-                  .map((rec) => (
-                    <p key={rec.card_id} className="text-xs text-muted-foreground">
-                      {t('swipesmart.recommend.unmapped', { bank: rec.bank_name, card: rec.card_name })}
-                    </p>
-                  ))}
+                {recommendationCollapsed ? (
+                  <button
+                    type="button"
+                    onClick={() => setRecommendationCollapsed(false)}
+                    className="flex w-full items-center justify-between gap-2 text-left"
+                  >
+                    <span className="text-xs font-medium text-primary/80">{t('swipesmart.recommend.title')}</span>
+                    <span className="text-xs text-muted-foreground underline-offset-4 hover:underline">
+                      {t('swipesmart.recommend.expand')}
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    <p className="text-xs font-medium text-primary/80">{t('swipesmart.recommend.title')}</p>
+                    {cardRecommendations
+                      .filter((rec) => rec.account_id)
+                      .slice(0, 3)
+                      .map((rec) => (
+                        <button
+                          key={rec.card_id}
+                          type="button"
+                          onClick={() => {
+                            onFormChange({ ...form, account_name: rec.account_name || '' })
+                            setRecommendationCollapsed(true)
+                          }}
+                          className="flex w-full items-center justify-between gap-2 rounded-md border border-primary/40 bg-background px-3 py-2 text-left transition-colors hover:bg-primary/10"
+                        >
+                          <span className="truncate text-sm font-semibold text-foreground">
+                            {t('swipesmart.recommend.mappedCard', { bank: rec.bank_name, card: rec.card_name })}
+                          </span>
+                          <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-semibold text-primary">
+                            {t('swipesmart.recommend.mappedReward', {
+                              reward: rec.estimated_reward.toFixed(0),
+                              rate: (rec.effective_rate * 100).toFixed(1)
+                            })}
+                          </span>
+                        </button>
+                      ))}
+                    {cardRecommendations
+                      .filter((rec) => !rec.account_id)
+                      .slice(0, 3)
+                      .map((rec) => (
+                        <p key={rec.card_id} className="text-xs text-muted-foreground">
+                          {t('swipesmart.recommend.unmapped', { bank: rec.bank_name, card: rec.card_name })}
+                        </p>
+                      ))}
+                  </>
+                )}
               </div>
             ) : null}
 

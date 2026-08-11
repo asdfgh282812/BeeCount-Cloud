@@ -2229,6 +2229,7 @@ const zhTW = {
   'swipesmart.recommend.mappedCard': '{bank} {card}',
   'swipesmart.recommend.mappedReward': '預估回饋 {reward}({rate}%)',
   'swipesmart.recommend.unmapped': '這筆消費刷「{bank} {card}」回饋較高(未綁定此卡,無法直接帶入)',
+  'swipesmart.recommend.expand': '展開',
   'swipesmart.quickAdd.noteBankCard': 'SwipeSmart 建議刷:{bank} {card}({detail})',
   'swipesmart.quickAdd.noteCategoryClause': '分類:{category}',
   'swipesmart.quickAdd.noteRewardClause': '預估回饋 {reward}',

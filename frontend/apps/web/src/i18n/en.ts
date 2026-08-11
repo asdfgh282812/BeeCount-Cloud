@@ -2238,6 +2238,7 @@ const en = {
   'swipesmart.recommend.mappedCard': '{bank} {card}',
   'swipesmart.recommend.mappedReward': 'est. reward {reward} ({rate}%)',
   'swipesmart.recommend.unmapped': '{bank} {card} has a better reward for this (not mapped, cannot auto-fill)',
+  'swipesmart.recommend.expand': 'Expand',
   'swipesmart.quickAdd.noteBankCard': 'SwipeSmart suggests: {bank} {card} ({detail})',
   'swipesmart.quickAdd.noteCategoryClause': 'category: {category}',
   'swipesmart.quickAdd.noteRewardClause': 'est. reward {reward}',

@@ -2270,6 +2270,7 @@ const zhCN = {
   'swipesmart.recommend.mappedCard': '{bank} {card}',
   'swipesmart.recommend.mappedReward': '预估回馈 {reward}({rate}%)',
   'swipesmart.recommend.unmapped': '这笔消费刷「{bank} {card}」回馈较高(未绑定此卡,无法直接带入)',
+  'swipesmart.recommend.expand': '展开',
   'swipesmart.quickAdd.noteBankCard': 'SwipeSmart 建议刷:{bank} {card}({detail})',
   'swipesmart.quickAdd.noteCategoryClause': '分类:{category}',
   'swipesmart.quickAdd.noteRewardClause': '预估回馈 {reward}',
