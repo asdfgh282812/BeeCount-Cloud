@@ -107,7 +107,7 @@ export function AvatarDropdown({
       </button>
       {/* 悬浮面板 —— 默认透明不接收指针,hover/focus 状态打开 */}
       <div className="invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
-        <div className="rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
+        <div className="max-h-[calc(100vh-5rem)] overflow-y-auto rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
           {/* 头部:角色标识 + email。display_name 跟 email 重复已删;
               admin/user 用 ShieldCheck/UserRound 区分 + tooltip 显示完整角色名。 */}
           <div className="flex items-center gap-1.5 px-2 py-2">
