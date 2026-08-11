@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 from ...models import AttachmentFile
+from ...services.default_categories import build_default_category_payloads
 from ...services.exchange_rate import fetcher as _rate_fetcher
 from ...snapshot_mutator import _to_float as _snap_to_float
 from ...services.data_cleanup.cleaner import _remove_empty_parents
@@ -80,6 +81,40 @@ async def create_ledger(
     )
     db.add(row_change)
     db.flush()
+
+    # 新帳本自動種一批預設分類(食衣住行育樂等常見項目 + 清晰易辨識的圖示),
+    # 讓使用者建完帳本就能直接記帳,不用先手動建一輪分類。走跟 import_data
+    # 批次建分類一样的「snapshot_mutator.create_category + _emit_entity_diffs」
+    # 標準寫入路徑 —— 產生的 SyncChange/projection 跟逐筆呼叫
+    # POST /categories 完全等價,mobile pull 下來能正常吃。只有 web 建帳本
+    # 這條路径需要(mobile 端自己在本地用 seed_service.dart 種好才 push 上來,
+    # 走 /sync/push 另一条路径,不会重复)。
+    #
+    # **分類是 user-global**(UserCategoryProjection,PK=user_id+sync_id,跨
+    # 帳本共享,見 sync_applier.USER_GLOBAL_ENTITY_TYPES)——同一使用者建第
+    # 二本帳本時,snapshot 裡已經帶著第一本帳本種下的分類,不能重複種(會撞
+    # create_category 的同名同 kind 查重直接炸掉整個建帳本請求)。用
+    # snapshot_builder.build 先讀一次使用者目前真實的分類清單,只有「目前
+    # 一個分類都沒有」(使用者第一次進入)才種,已經有分類的使用者建新帳本
+    # 就直接沿用既有分類,不動它。
+    real_snapshot = snapshot_builder.build(db, ledger)
+    category_change_ids: list[int] = []
+    if not real_snapshot.get("categories"):
+        category_snapshot = real_snapshot
+        actor_base = _payload_with_actor({}, current_user, ledger=ledger)
+        for cat_payload in build_default_category_payloads():
+            category_snapshot, _ = create_category(category_snapshot, {**actor_base, **cat_payload})
+        category_change_ids = _emit_entity_diffs(
+            db,
+            ledger=ledger,
+            current_user=current_user,
+            device_id="web-console",
+            prev=real_snapshot,
+            next_snapshot=category_snapshot,
+            now=now,
+        )
+    new_change_id = max([row_change.change_id, *category_change_ids])
+
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -87,7 +122,8 @@ async def create_ledger(
             action="web_ledger_create",
             metadata_json={
                 "ledgerId": external_id,
-                "newChangeId": row_change.change_id,
+                "newChangeId": new_change_id,
+                "seededCategoriesCount": len(category_change_ids),
             },
         )
     )
@@ -98,22 +134,23 @@ async def create_ledger(
         {
             "type": "sync_change",
             "ledgerId": external_id,
-            "serverCursor": row_change.change_id,
+            "serverCursor": new_change_id,
             "serverTimestamp": row_change.updated_at.isoformat(),
         },
     )
 
     logger.info(
-        "write.ledger.create ledger=%s name=%s currency=%s user=%s",
+        "write.ledger.create ledger=%s name=%s currency=%s user=%s seeded_categories=%d",
         external_id,
         name,
         currency,
         current_user.id,
+        len(category_change_ids),
     )
     return WriteCommitMeta(
         ledger_id=external_id,
         base_change_id=0,
-        new_change_id=row_change.change_id,
+        new_change_id=new_change_id,
         server_timestamp=row_change.updated_at,
         idempotency_replayed=False,
         entity_id=external_id,

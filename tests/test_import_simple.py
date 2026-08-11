@@ -120,10 +120,13 @@ def test_download_template(entity_type, fmt):
 
 
 def _categories_csv() -> bytes:
+    # "早茶" 刻意避開 services/default_categories.py 的預設分類名字("早餐"是
+    # 預設分類之一)—— 建帳本時會自動種好預設分類,若這裡撞名,import 會因為
+    # create_category 的同名同 kind 查重直接失敗。
     return (
         "名稱,類型,父分類\n"
         "餐飲,支出,\n"
-        "早餐,支出,餐飲\n"
+        "早茶,支出,餐飲\n"
         "薪資,收入,\n"
     ).encode("utf-8")
 
@@ -160,8 +163,8 @@ def test_categories_upload_and_execute():
         try:
             rows = db.scalars(select(UserCategoryProjection)).all()
             names = {row.name for row in rows}
-            assert {"餐飲", "早餐", "薪資"} <= names
-            leaf = next(row for row in rows if row.name == "早餐")
+            assert {"餐飲", "早茶", "薪資"} <= names
+            leaf = next(row for row in rows if row.name == "早茶")
             assert leaf.parent_name == "餐飲"
         finally:
             db.close()
@@ -228,13 +231,15 @@ def test_categories_missing_parent_auto_created_as_top_level():
     try:
         token = _login(client, "cat4@t.com")
         ledger_id = _make_ledger(client, token)
-        # "生活" 群組從未以自己的名字獨立成一列;"手續費" 自我参照(常見於
-        # 使用者誤填成自己的名字,而不是留白代表無父)。
+        # "戶外" 群組從未以自己的名字獨立成一列;"雜費" 自我参照(常見於
+        # 使用者誤填成自己的名字,而不是留白代表無父)。名字刻意避開
+        # services/default_categories.py 的預設分類名字(建帳本時已自動種好),
+        # 否則會撞 create_category 的同名同 kind 查重。
         csv_bytes = (
             "名稱,類型,父分類\n"
-            "住宿,支出,生活\n"
-            "旅行,支出,生活\n"
-            "手續費,支出,手續費\n"
+            "民宿,支出,戶外\n"
+            "露營,支出,戶外\n"
+            "雜費,支出,雜費\n"
         ).encode("utf-8")
 
         r = client.post(
@@ -265,19 +270,21 @@ def test_categories_missing_parent_auto_created_as_top_level():
         try:
             rows = db.scalars(select(UserCategoryProjection)).all()
             by_name = {row.name: row for row in rows}
-            assert set(by_name) == {"生活", "住宿", "旅行", "手續費"}
+            # 建帳本時已自動種了一批預設分類(見 services/default_categories.py),
+            # 所以這裡用子集斷言,不能要求整個帳本剛好只有這 4 筆。
+            assert {"戶外", "民宿", "露營", "雜費"} <= set(by_name)
 
-            auto_parent = by_name["生活"]
+            auto_parent = by_name["戶外"]
             assert auto_parent.level == 1
             assert not auto_parent.parent_name
 
-            for child_name in ("住宿", "旅行"):
+            for child_name in ("民宿", "露營"):
                 child = by_name[child_name]
                 assert child.level == 2
-                assert child.parent_name == "生活"
+                assert child.parent_name == "戶外"
 
             # 自我参照(名稱等於父分類)視為無父的一級分類,不建立自我挂靠。
-            self_ref = by_name["手續費"]
+            self_ref = by_name["雜費"]
             assert self_ref.level == 1
             assert not self_ref.parent_name
         finally:

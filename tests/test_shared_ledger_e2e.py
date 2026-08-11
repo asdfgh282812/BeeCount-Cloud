@@ -150,9 +150,11 @@ def test_shared_resources_endpoint():
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["owner_user_id"] == owner_id
-    assert len(data["categories"]) == 1
-    assert data["categories"][0]["name"] == "早餐"
-    assert data["categories"][0]["kind"] == "expense"
+    # 建帳本時 Owner 自動種了一批預設分類(見 services/default_categories.py),
+    # 所以清單不會只有這裡手灌的那一筆 —— 用 sync_id 精準撈出手灌的那筆驗證。
+    manual = next(c for c in data["categories"] if c["sync_id"] == "cat-1")
+    assert manual["name"] == "早餐"
+    assert manual["kind"] == "expense"
 
 
 def test_editor_cannot_patch_ledger_meta():
