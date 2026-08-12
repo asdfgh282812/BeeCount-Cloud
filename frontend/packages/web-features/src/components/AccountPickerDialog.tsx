@@ -23,7 +23,7 @@ type AccountPickerDialogProps = {
    *  帳戶讓他能原样保存 —— 呼叫方比照既有 accountOptionsWithPinned 邏輯決定)。
    *  `account_group`(純管理容器)本身不可被選中,但仍需要出現在候選裡才能
    *  當子帳戶的巢狀父列渲染。 */
-  accounts: ReadAccount[]
+  accounts: readonly ReadAccount[]
   /** 目前選中的帳戶名(比對 name,大小寫不敏感),用於高亮/搜尋清空後定位。 */
   value?: string
   onSelect: (row: ReadAccount) => void

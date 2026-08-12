@@ -28,6 +28,7 @@ import type {
 } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -99,12 +100,17 @@ export function RecurringRulesPanel({
   const [dialogOpen, setDialogOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
+  // Phase 19(帳戶選擇器全站統一):帳戶群組(account_group)本身是純管理
+  // 容器不能被選中,但仍要傳完整 accounts(含 account_group)給
+  // AccountPickerDialog,否則掛靠群組底下的子帳戶會因為找不到巢狀父列而
+  // 從清單裡整個消失(§2.9 群組模型;後端 _assert_account_not_group 仍是
+  // 最終防線)。
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false)
+  const [fromAccountPickerOpen, setFromAccountPickerOpen] = useState(false)
+  const [toAccountPickerOpen, setToAccountPickerOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReadRecurringRule | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
-  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
-  // 週期性收支掛账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
-  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
 
   const isTransfer = form.tx_type === 'transfer'
   const categoryKind = form.tx_type === 'income' ? 'income' : 'expense'
@@ -294,45 +300,29 @@ export function RecurringRulesPanel({
               <>
                 <div className="space-y-1">
                   <Label>{t('transactions.placeholder.fromAccountName')}</Label>
-                  <Select
-                    value={form.from_account_id || undefined}
-                    onValueChange={(value) => {
-                      const acc = accounts.find((a) => a.id === value)
-                      onFormChange({ ...form, from_account_id: value, from_account_name: acc?.name || '' })
-                    }}
+                  <button
+                    type="button"
+                    onClick={() => setFromAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tradableAccounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className={`flex-1 truncate ${form.from_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.from_account_name || t('transactions.placeholder.accountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
                 </div>
                 <div className="space-y-1">
                   <Label>{t('transactions.placeholder.toAccountName')}</Label>
-                  <Select
-                    value={form.to_account_id || undefined}
-                    onValueChange={(value) => {
-                      const acc = accounts.find((a) => a.id === value)
-                      onFormChange({ ...form, to_account_id: value, to_account_name: acc?.name || '' })
-                    }}
+                  <button
+                    type="button"
+                    onClick={() => setToAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tradableAccounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className={`flex-1 truncate ${form.to_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.to_account_name || t('transactions.placeholder.accountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
                 </div>
               </>
             ) : (
@@ -352,33 +342,16 @@ export function RecurringRulesPanel({
                 </div>
                 <div className="space-y-1">
                   <Label>{t('transactions.table.account')}</Label>
-                  <Select
-                    value={form.account_id || '__none__'}
-                    onValueChange={(value) => {
-                      if (value === '__none__') {
-                        onFormChange({ ...form, account_id: '', account_name: '' })
-                        return
-                      }
-                      const acc = accounts.find((a) => a.id === value)
-                      onFormChange({ ...form, account_id: value, account_name: acc?.name || '' })
-                    }}
+                  <button
+                    type="button"
+                    onClick={() => setAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">
-                        <span className="text-muted-foreground">
-                          {t('transactions.placeholder.noAccount')}
-                        </span>
-                      </SelectItem>
-                      {tradableAccounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className={`flex-1 truncate ${form.account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.account_name || t('transactions.placeholder.accountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
                 </div>
               </>
             )}
@@ -550,6 +523,39 @@ export function RecurringRulesPanel({
         title={t('transactions.placeholder.categoryName')}
         onSelect={(cat) =>
           onFormChange({ ...form, category_id: cat.id, category_name: cat.name })
+        }
+      />
+
+      <AccountPickerDialog
+        open={accountPickerOpen}
+        onClose={() => setAccountPickerOpen(false)}
+        accounts={accounts}
+        value={form.account_name}
+        allowNone
+        noneLabel={t('transactions.placeholder.noAccount')}
+        title={t('transactions.table.account')}
+        onSelect={(row) =>
+          onFormChange({ ...form, account_id: row.id, account_name: row.id ? row.name.trim() : '' })
+        }
+      />
+      <AccountPickerDialog
+        open={fromAccountPickerOpen}
+        onClose={() => setFromAccountPickerOpen(false)}
+        accounts={accounts}
+        value={form.from_account_name}
+        title={t('transactions.placeholder.fromAccountName')}
+        onSelect={(row) =>
+          onFormChange({ ...form, from_account_id: row.id, from_account_name: row.name.trim() })
+        }
+      />
+      <AccountPickerDialog
+        open={toAccountPickerOpen}
+        onClose={() => setToAccountPickerOpen(false)}
+        accounts={accounts}
+        value={form.to_account_name}
+        title={t('transactions.placeholder.toAccountName')}
+        onSelect={(row) =>
+          onFormChange({ ...form, to_account_id: row.id, to_account_name: row.name.trim() })
         }
       />
 

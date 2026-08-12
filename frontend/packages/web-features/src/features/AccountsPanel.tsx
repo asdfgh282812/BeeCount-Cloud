@@ -625,7 +625,7 @@ const ACCOUNT_ORDER: string[] = [
 
 /** 按账户类型分组。每组小计再按币种拆:同一类型若混多币种(只会出现在底部跨币种
  *  列表),各币种独立累计、不相加。单币种入参时每组只有 1 条 subtotal。 */
-export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string): AssetGroup[] {
+export function computeTypeGroups(rows: readonly ReadAccount[], t: (k: string) => string): AssetGroup[] {
   // 需求 #1(Phase 17):挂信用卡/银行子帐户的 account_group 主帐户按子帐户
   // 内容归到对应分组,不再永远自成一个独立的「主帐户」分组
   // (见 resolveRowDisplayType/resolveAccountGroupDisplayType)。

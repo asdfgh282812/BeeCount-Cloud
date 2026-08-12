@@ -38,6 +38,8 @@ import {
 } from '@beecount/ui'
 import { Copy, Gift, Pencil, Trash2 } from 'lucide-react'
 
+import { AccountPickerDialog } from '@beecount/web-features'
+
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
@@ -693,10 +695,14 @@ function CardRewardRuleFormDialog({
   const [settlementDayOfMonth, setSettlementDayOfMonth] = useState(
     source?.settlement_day_of_month != null ? String(source.settlement_day_of_month) : '',
   )
-  const [rewardAccountId, setRewardAccountId] = useState(source?.reward_account_id || '')
+  // Phase 19(需求 #8):新增規則時若是從某張卡的詳情頁開啟(accountId 有值),
+  // 直接預選這張卡自己當回饋帳戶——大多數情況下回饋就是入到卡片自己身上,
+  // 使用者仍可透過彈窗改選別的帳戶。編輯既有規則時 source 優先。
+  const [rewardAccountId, setRewardAccountId] = useState(source?.reward_account_id || accountId || '')
   const [note, setNote] = useState(source?.note || '')
   const [enabled, setEnabled] = useState(source?.enabled ?? true)
   const [submitting, setSubmitting] = useState(false)
+  const [rewardAccountPickerOpen, setRewardAccountPickerOpen] = useState(false)
 
   const [accounts, setAccounts] = useState<ReadAccount[]>([])
   const [allRules, setAllRules] = useState<ReadCardRewardRule[]>([])
@@ -872,6 +878,7 @@ function CardRewardRuleFormDialog({
   }
 
   return (
+    <>
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
@@ -1143,22 +1150,21 @@ function CardRewardRuleFormDialog({
             {needsRewardAccount ? (
               <div className="space-y-1 pt-1">
                 <Label>{t('cardRewards.field.rewardAccount')}</Label>
-                <Select value={rewardAccountId} onValueChange={setRewardAccountId} disabled={locked}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('cardRewards.field.rewardAccountPlaceholder')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {accounts
-                      .filter((a) => a.account_type !== 'account_group')
-                      .map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.id === accountId
-                            ? `${a.name}${t('cardRewards.field.rewardAccountSelfSuffix')}`
-                            : a.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => setRewardAccountPickerOpen(true)}
+                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className={`flex-1 truncate ${rewardAccountId ? '' : 'text-muted-foreground'}`}>
+                    {rewardAccountId
+                      ? rewardAccountId === accountId
+                        ? `${accountNameById.get(rewardAccountId) || rewardAccountId}${t('cardRewards.field.rewardAccountSelfSuffix')}`
+                        : accountNameById.get(rewardAccountId) || rewardAccountId
+                      : t('cardRewards.field.rewardAccountPlaceholder')}
+                  </span>
+                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                </button>
                 {rewardAccountId && !isCreditCardAccount(rewardAccountId) && rewardAccountId !== accountId ? (
                   <div className="text-[11px] text-muted-foreground">
                     {t('cardRewards.field.rewardAccountWalletHint')}
@@ -1191,6 +1197,15 @@ function CardRewardRuleFormDialog({
         </div>
       </DialogContent>
     </Dialog>
+    <AccountPickerDialog
+      open={rewardAccountPickerOpen}
+      onClose={() => setRewardAccountPickerOpen(false)}
+      title={t('cardRewards.field.rewardAccount')}
+      accounts={accounts}
+      value={accountNameById.get(rewardAccountId) || ''}
+      onSelect={(row) => setRewardAccountId(row.id)}
+    />
+    </>
   )
 }
 
@@ -1230,8 +1245,11 @@ function CardRewardRuleTransactionsDialog({
   const [accounts, setAccounts] = useState<ReadAccount[]>([])
   const [payoutOpen, setPayoutOpen] = useState(false)
   const [payoutAmount, setPayoutAmount] = useState('')
-  const [payoutAccountId, setPayoutAccountId] = useState('')
+  // Phase 19(需求 #8):預設帶入該規則已設定的回饋帳戶,而非空白,使用者仍
+  // 可透過彈窗改選。
+  const [payoutAccountId, setPayoutAccountId] = useState(rule.reward_account_id || '')
   const [payoutSubmitting, setPayoutSubmitting] = useState(false)
+  const [payoutAccountPickerOpen, setPayoutAccountPickerOpen] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -1264,6 +1282,8 @@ function CardRewardRuleTransactionsDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail])
 
+  const accountNameById = new Map(accounts.map((a) => [a.id, a.name]))
+
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
@@ -1289,6 +1309,7 @@ function CardRewardRuleTransactionsDialog({
   }
 
   return (
+    <>
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
@@ -1309,22 +1330,20 @@ function CardRewardRuleTransactionsDialog({
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <Label>{t('cardRewards.field.rewardAccount')}</Label>
-                    <Select value={payoutAccountId} onValueChange={setPayoutAccountId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder={t('cardRewards.field.rewardAccountPlaceholder')} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {accounts
-                          .filter((a) => a.account_type !== 'account_group')
-                          .map((a) => (
-                            <SelectItem key={a.id} value={a.id}>
-                              {a.id === accountId
-                                ? `${a.name}${t('cardRewards.field.rewardAccountSelfSuffix')}`
-                                : a.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
+                    <button
+                      type="button"
+                      onClick={() => setPayoutAccountPickerOpen(true)}
+                      className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-1.5 text-left text-xs shadow-sm transition-colors hover:bg-accent/40"
+                    >
+                      <span className={`flex-1 truncate ${payoutAccountId ? '' : 'text-muted-foreground'}`}>
+                        {payoutAccountId
+                          ? payoutAccountId === accountId
+                            ? `${accountNameById.get(payoutAccountId) || payoutAccountId}${t('cardRewards.field.rewardAccountSelfSuffix')}`
+                            : accountNameById.get(payoutAccountId) || payoutAccountId
+                          : t('cardRewards.field.rewardAccountPlaceholder')}
+                      </span>
+                      <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                    </button>
                   </div>
                   <div className="space-y-1">
                     <Label>{t('cardRewards.detail.manualPayoutAmount')}</Label>
@@ -1433,5 +1452,14 @@ function CardRewardRuleTransactionsDialog({
         </div>
       </DialogContent>
     </Dialog>
+    <AccountPickerDialog
+      open={payoutAccountPickerOpen}
+      onClose={() => setPayoutAccountPickerOpen(false)}
+      title={t('cardRewards.field.rewardAccount')}
+      accounts={accounts}
+      value={accountNameById.get(payoutAccountId) || ''}
+      onSelect={(row) => setPayoutAccountId(row.id)}
+    />
+    </>
   )
 }

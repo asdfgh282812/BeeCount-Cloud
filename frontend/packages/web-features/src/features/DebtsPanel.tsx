@@ -10,17 +10,13 @@ import {
   EmptyState,
   Input,
   Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   useT,
 } from '@beecount/ui'
 
 import type { ReadAccount, ReadDebt } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { DebtForm } from '../forms'
 import { debtDefaults } from '../forms'
@@ -91,9 +87,8 @@ export function DebtsPanel({
   const [repaymentAt, setRepaymentAt] = useState('')
   const [repaymentNote, setRepaymentNote] = useState('')
   const [recordingRepayment, setRecordingRepayment] = useState(false)
-  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
-  // 還款交易挂账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
-  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
+  const [repaymentAccountPickerOpen, setRepaymentAccountPickerOpen] = useState(false)
+  const accountNameById = new Map(accounts.map((a) => [a.id, a.name]))
 
   const handleOpenCreate = () => {
     onFormChange(debtDefaults())
@@ -349,26 +344,18 @@ export function DebtsPanel({
             </div>
             <div className="space-y-1">
               <Label>{t('installmentPlans.field.account')}</Label>
-              <Select
-                value={repaymentAccountId || '__none__'}
-                onValueChange={(value) => setRepaymentAccountId(value === '__none__' ? '' : value)}
+              <button
+                type="button"
+                onClick={() => setRepaymentAccountPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
               >
-                <SelectTrigger>
-                  <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">
-                    <span className="text-muted-foreground">
-                      {t('transactions.placeholder.noAccount')}
-                    </span>
-                  </SelectItem>
-                  {tradableAccounts.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <span className={`flex-1 truncate ${repaymentAccountId ? '' : 'text-muted-foreground'}`}>
+                  {repaymentAccountId
+                    ? accountNameById.get(repaymentAccountId) || repaymentAccountId
+                    : t('transactions.placeholder.accountName')}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
             </div>
             <div className="space-y-1">
               <Label>{t('recurringRules.field.nextRunAt')}</Label>
@@ -400,6 +387,17 @@ export function DebtsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AccountPickerDialog
+        open={repaymentAccountPickerOpen}
+        onClose={() => setRepaymentAccountPickerOpen(false)}
+        accounts={accounts}
+        value={repaymentAccountId ? accountNameById.get(repaymentAccountId) || '' : ''}
+        allowNone
+        noneLabel={t('transactions.placeholder.noAccount')}
+        title={t('installmentPlans.field.account')}
+        onSelect={(row) => setRepaymentAccountId(row.id)}
+      />
 
       <ConfirmDialog
         open={pendingDelete !== null}

@@ -59,7 +59,7 @@ export function hasCreditBillingFields(row: ReadAccount): boolean {
  * 挂了哪些子帐户。入参通常是同一批要一起分组/汇总的 rows(例如某个币种内的
  * 全量账户),顺序不影响结果。
  */
-export function buildParentChildrenMap(rows: ReadAccount[]): Map<string, ReadAccount[]> {
+export function buildParentChildrenMap(rows: readonly ReadAccount[]): Map<string, ReadAccount[]> {
   const map = new Map<string, ReadAccount[]>()
   for (const row of rows) {
     if (!row.parent_account_id) continue
@@ -130,7 +130,7 @@ export function splitByCurrency(rows: ReadAccount[]): Map<string, ReadAccount[]>
  * 小計變兩倍」的根因。呼叫方應該用這個集合把子帳戶從「加總」裡剔除(仍保留
  * 在 `rows` 清單裡供巢狀渲染),只在父帳戶身上算一次。
  */
-export function buildDoubleCountedChildIds(rows: ReadAccount[]): Set<string> {
+export function buildDoubleCountedChildIds(rows: readonly ReadAccount[]): Set<string> {
   const idSet = new Set(rows.map((r) => r.id))
   const result = new Set<string>()
   for (const row of rows) {

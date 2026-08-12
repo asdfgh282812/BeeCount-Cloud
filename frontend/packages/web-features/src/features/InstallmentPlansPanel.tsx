@@ -29,6 +29,7 @@ import type {
 } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -119,9 +120,7 @@ export function InstallmentPlansPanel({
   const [pendingDelete, setPendingDelete] = useState<ReadInstallmentPlan | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null)
-  // 主帳戶(§2.9,2026-08-02 群組模型):account_group 是純管理容器,不能被
-  // 分期付款掛账(後端 _assert_account_not_group 會拒),選擇器不該讓它出現。
-  const tradableAccounts = accounts.filter((a) => a.account_type !== 'account_group')
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false)
 
   const handleOpenCreate = () => {
     onFormChange(installmentPlanDefaults())
@@ -417,34 +416,17 @@ export function InstallmentPlansPanel({
 
             <div className="space-y-1">
               <Label>{t('installmentPlans.field.account')}</Label>
-              <Select
-                value={form.account_id || '__none__'}
+              <button
+                type="button"
                 disabled={!!form.editingId}
-                onValueChange={(value) => {
-                  if (value === '__none__') {
-                    onFormChange({ ...form, account_id: '', account_name: '' })
-                    return
-                  }
-                  const acc = accounts.find((a) => a.id === value)
-                  onFormChange({ ...form, account_id: value, account_name: acc?.name || '' })
-                }}
+                onClick={() => setAccountPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <SelectTrigger>
-                  <SelectValue placeholder={t('transactions.placeholder.accountName')} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">
-                    <span className="text-muted-foreground">
-                      {t('transactions.placeholder.noAccount')}
-                    </span>
-                  </SelectItem>
-                  {tradableAccounts.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <span className={`flex-1 truncate ${form.account_name ? '' : 'text-muted-foreground'}`}>
+                  {form.account_name || t('transactions.placeholder.accountName')}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
             </div>
 
             <div className="space-y-1">
@@ -478,6 +460,19 @@ export function InstallmentPlansPanel({
         title={t('transactions.placeholder.categoryName')}
         onSelect={(cat) =>
           onFormChange({ ...form, category_id: cat.id, category_name: cat.name })
+        }
+      />
+
+      <AccountPickerDialog
+        open={accountPickerOpen}
+        onClose={() => setAccountPickerOpen(false)}
+        accounts={accounts}
+        value={form.account_name}
+        allowNone
+        noneLabel={t('transactions.placeholder.noAccount')}
+        title={t('installmentPlans.field.account')}
+        onSelect={(row) =>
+          onFormChange({ ...form, account_id: row.id, account_name: row.id ? row.name.trim() : '' })
         }
       />
 
