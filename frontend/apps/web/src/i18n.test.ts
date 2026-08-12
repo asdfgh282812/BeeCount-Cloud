@@ -87,16 +87,21 @@ describe('compact amount locale unit', () => {
   // 需求 #12(2026-08 Phase 12):CNY/JPY 不再显示 ¥ 符号前缀,只显示数字
   // (见 lib/currencies.ts::currencySymbol)。
   it('formatBalanceCompact uses 万 for chinese', () => {
-    expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('5万')
+    expect(formatBalanceCompact(500000, 'CNY', { chinese: true })).toBe('50万')
     expect(formatBalanceCompact(2472500, 'CNY', { chinese: true })).toBe('247.25万')
     // < 1 万整数不带小数点(见「所有显示金额」需求)
     expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('980')
     expect(formatBalanceCompact(980.5, 'CNY', { chinese: true })).toBe('980.5')
+    // < 10 万完整显示数值、含千分位分组,不折算成「万」
+    // (2026-08-12 使用者反馈折算门槛太低,数字看不清楚,门槛从 1 万上调到 10 万)
+    expect(formatBalanceCompact(19400, 'CNY', { chinese: true })).toBe('19,400')
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('50,000')
+    expect(formatBalanceCompact(99999.5, 'CNY', { chinese: true })).toBe('99,999.5')
   })
 
   it('formatBalanceCompact honors traditional 萬 via wanUnit', () => {
     expect(formatBalanceCompact(2472500, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('247.25萬')
-    expect(formatBalanceCompact(50000, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('5萬')
+    expect(formatBalanceCompact(500000, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('50萬')
   })
 
   it('formatBalanceCompact uses k / M for english (even CNY)', () => {

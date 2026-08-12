@@ -664,6 +664,9 @@ export function AccountsPage() {
         onEdit={handleEditAccount}
         openSignal={editOpenSignal}
         avatarPreviewUrlByFileId={avatarPreviewByFileId}
+        baseCurrency={base}
+        fxRates={rates}
+        fxOverrides={rateOverrides}
         onUploadAvatar={async (file) => {
           try {
             const out = await uploadAccountAvatar(token, { file })

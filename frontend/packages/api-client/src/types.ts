@@ -403,6 +403,10 @@ export type WorkspaceAccount = ReadAccount & {
   income_total?: number | null
   expense_total?: number | null
   balance?: number | null
+  /** account_group 底下有跨幣別子帳戶、且至少一筆因缺匯率被剔除、沒有計入
+   *  balance/income_total/expense_total 時為 true。缺省 false(舊接口未提供
+   *  該字段時視為完整)。 */
+  balance_fx_incomplete?: boolean | null
 }
 
 export type WorkspaceCategory = ReadCategory & {

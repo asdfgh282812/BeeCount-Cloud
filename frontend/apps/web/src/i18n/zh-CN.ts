@@ -2285,6 +2285,8 @@ const zhCN = {
   'accounts.converted.detail': '详情',
   'accounts.converted.detailTitle': '分币种明细',
   'accounts.converted.composition': '资产构成(折{currency})',
+  'accounts.row.convertToggle': '切换原币 / 折算金额',
+  'accounts.row.fxIncomplete': '部分外币账户因缺少汇率未计入合计',
   'accounts.needBaseCurrency.title': '设置主币种以查看资产汇总',
   'accounts.needBaseCurrency.desc': '账户涉及多种币种,需先设置主币种,才能把各币种折算成同一口径汇总。',
   'accounts.needBaseCurrency.action': '去设置主币种',

@@ -2,10 +2,11 @@ import { useState } from 'react'
 
 import { useT } from '@beecount/ui'
 
-import type { ReadAccount } from '@beecount/api-client'
+import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
 import { Amount } from './Amount'
 import {
+  effectiveRateToBase,
   hasCreditBillingFields,
   LIABILITY_TYPES,
   resolveAccountGroupDisplayType,
@@ -25,6 +26,9 @@ export type AccountStats = {
   balance?: number | null
   income_total?: number | null
   expense_total?: number | null
+  /** account_group 底下有跨幣別子帳戶、且至少一筆因缺匯率被剔除時為 true,
+   *  詳見 `src/schemas.py::WorkspaceAccountOut.balance_fx_incomplete`。 */
+  balance_fx_incomplete?: boolean | null
 }
 
 // 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
@@ -140,7 +144,10 @@ export function AccountListRow({
   childRows,
   depth = 0,
   selectMode = false,
-  hiddenBadge = false
+  hiddenBadge = false,
+  baseCurrency,
+  fxRates,
+  fxOverrides
 }: {
   row: ReadAccount & AccountStats
   color: string
@@ -154,10 +161,27 @@ export function AccountListRow({
   depth?: number
   selectMode?: boolean
   hiddenBadge?: boolean
+  /** 外幣列原幣顯示 + 快速換算按鈕(2026-08-12):使用者主幣種 + 已 fetch 好的
+   *  匯率/手動 override。三者缺一,或 row 幣別跟 baseCurrency 相同,就不出現
+   *  幣別代碼標籤/換算按鈕(維持原樣零影響)。 */
+  baseCurrency?: string
+  fxRates?: ExchangeRatesResponse | null
+  fxOverrides?: ExchangeRateOverride[]
 }) {
   const t = useT()
   const [expanded, setExpanded] = useState(true)
+  // 換算按鈕本地開關:預設顯示原幣(對齊使用者需求「外幣戶應該預設顯示原始
+  // 外幣」),點按鈕才切成主幣種金額——單純本地 state,換算本身是同步純函式
+  // (effectiveRateToBase),不用另外 fetch。
+  const [showConverted, setShowConverted] = useState(false)
   const currency = row.currency || 'CNY'
+  const upperBase = (baseCurrency || '').trim().toUpperCase()
+  const isForeign = Boolean(upperBase) && currency.toUpperCase() !== upperBase
+  const fxEff = isForeign && fxRates
+    ? effectiveRateToBase(currency.toUpperCase(), upperBase, fxRates, fxOverrides || [])
+    : null
+  const canConvert = isForeign && fxEff !== null
+  const showConvertedNow = canConvert && showConverted
   const accountType = row.account_type || 'other'
   const isValuation = VALUATION_TYPES_SET.has(accountType)
   const hasStats =
@@ -215,6 +239,14 @@ export function AccountListRow({
         : 'positive'
       : 'default'
 
+  // 外幣列換算(2026-08-12):預設顯示原幣金額 + 幣別代碼標籤;點按鈕切成主
+  // 幣種金額時,標籤跟著換成「≈主幣種代碼」提示這是換算後的近似值,不是原始
+  // 記帳金額。fxEff 是純函式算出來的匯率,永遠跟 baseCurrency/fxRates/
+  // fxOverrides 同步,不需要額外 loading state。
+  const amountValue = showConvertedNow ? primaryValue * fxEff!.rate : primaryValue
+  const amountCurrency = showConvertedNow ? upperBase : currency
+  const currencyBadgeLabel = showConvertedNow ? `≈${upperBase}` : isForeign ? currency.toUpperCase() : null
+
   // 主帳戶列(有子帳戶且設了額度)顯示「可用額度」;子帳戶顯示卡號末四碼 ——
   // 两者互斥,不会同一列都出现。
   const showAvailableCredit = hasChildren && ccLimit !== null && ccAvailable !== null
@@ -269,6 +301,15 @@ export function AccountListRow({
                   {t('cardBilling.dueBadge', { date: dueBadgeDate })}
                 </span>
               ) : null}
+              {hasChildren && row.balance_fx_incomplete ? (
+                <span
+                  className="shrink-0 text-[10px] text-amber-500"
+                  title={t('accounts.row.fxIncomplete')}
+                  aria-label={t('accounts.row.fxIncomplete')}
+                >
+                  ⚠
+                </span>
+              ) : null}
             </div>
             {showAvailableCredit ? (
               <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -286,8 +327,27 @@ export function AccountListRow({
             ) : null}
           </div>
         </button>
-        <div className="flex shrink-0 items-center gap-2">
-          <Amount value={primaryValue} currency={currency} tone={primaryTone} bold size="sm" />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {currencyBadgeLabel ? (
+            <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+              {currencyBadgeLabel}
+            </span>
+          ) : null}
+          <Amount value={amountValue} currency={amountCurrency} tone={primaryTone} bold size="sm" />
+          {canConvert ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                setShowConverted((prev) => !prev)
+              }}
+              title={t('accounts.row.convertToggle')}
+              aria-label={t('accounts.row.convertToggle')}
+              className="shrink-0 rounded-full border border-border/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              ⇄
+            </button>
+          ) : null}
           {hasChildren ? (
             <button
               type="button"
@@ -348,6 +408,9 @@ export function AccountListRow({
               depth={depth + 1}
               selectMode={selectMode}
               hiddenBadge={hiddenBadge}
+              baseCurrency={baseCurrency}
+              fxRates={fxRates}
+              fxOverrides={fxOverrides}
             />
           ))}
         </div>

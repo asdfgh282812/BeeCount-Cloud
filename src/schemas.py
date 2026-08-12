@@ -1242,6 +1242,11 @@ class WorkspaceAccountOut(ReadAccountOut):
     income_total: float | None = None
     expense_total: float | None = None
     balance: float | None = None
+    # 多幣別群組合計(2026-08-12):account_group 底下有跨幣別子帳戶、且其中
+    # 至少一筆因為缺匯率被剔除、沒有計入 balance/income_total/expense_total
+    # 時為 True——前端據此顯示「部分外幣帳戶未計入合計」提示,避免使用者誤信
+    # 一個少算的數字。非 account_group、或群組內沒有缺匯率情況,恆為 False。
+    balance_fx_incomplete: bool = False
 
 
 class WorkspaceCategoryOut(ReadCategoryOut):

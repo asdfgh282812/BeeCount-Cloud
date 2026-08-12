@@ -18,7 +18,7 @@ import {
   useT
 } from '@beecount/ui'
 
-import type { ReadAccount } from '@beecount/api-client'
+import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
 import {
@@ -69,6 +69,14 @@ type MobileStyleAssetsProps = {
    *  跟 CategoryIcon 同款模式 —— 调用方(AccountsPage)负责从
    *  AttachmentCacheContext 拉取,这里只读不拉取。 */
   avatarPreviewUrlByFileId?: Record<string, string>
+  /** 外幣列原幣顯示 + 快速換算按鈕(2026-08-12 使用者回報群組合計跨幣別裸加
+   *  的 bug 之後一併補上):使用者主幣種 + 已 fetch 好的匯率/手動 override。
+   *  三者缺一就不顯示幣別代碼標籤/換算按鈕(調用方尚未接線,或單一幣種帳戶
+   *  沒有折算需求時零影響)。跟 `AccountsPage.tsx` 折算彙總卡共用同一份
+   *  fetch,不在這裡重新拉。 */
+  baseCurrency?: string
+  fxRates?: ExchangeRatesResponse | null
+  fxOverrides?: ExchangeRateOverride[]
 }
 
 /**
@@ -88,7 +96,10 @@ function MobileStyleAssets({
   onCreate,
   hideCurrencyCards = false,
   onRestore,
-  avatarPreviewUrlByFileId
+  avatarPreviewUrlByFileId,
+  baseCurrency,
+  fxRates,
+  fxOverrides
 }: MobileStyleAssetsProps) {
   const t = useT()
   // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
@@ -243,6 +254,9 @@ function MobileStyleAssets({
                         onClick={onClickAccount}
                         avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
                         childRows={childrenByParent.get(row.id)}
+                        baseCurrency={baseCurrency}
+                        fxRates={fxRates}
+                        fxOverrides={fxOverrides}
                       />
                     ))}
                 </div>
@@ -763,6 +777,11 @@ type AccountsPanelProps = {
    *  form;不传则不渲染上传 UI(调用方尚未接线时零影响,同 CategoriesPanel
    *  的 onUploadIcon 模式)。 */
   onUploadAvatar?: (file: File) => Promise<{ fileId: string; sha256: string } | null>
+  /** 外幣列原幣顯示 + 快速換算按鈕(2026-08-12):透傳給 MobileStyleAssets →
+   *  AccountListRow,詳見那邊的註解。全部不傳時零影響。 */
+  baseCurrency?: string
+  fxRates?: ExchangeRatesResponse | null
+  fxOverrides?: ExchangeRateOverride[]
 }
 
 export function AccountsPanel({
@@ -780,7 +799,10 @@ export function AccountsPanel({
   onRestore,
   openSignal,
   avatarPreviewUrlByFileId,
-  onUploadAvatar
+  onUploadAvatar,
+  baseCurrency,
+  fxRates,
+  fxOverrides
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -877,6 +899,9 @@ export function AccountsPanel({
           hideCurrencyCards={hideCurrencyCards}
           onRestore={onRestore}
           avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
+          baseCurrency={baseCurrency}
+          fxRates={fxRates}
+          fxOverrides={fxOverrides}
         />
       )}
 

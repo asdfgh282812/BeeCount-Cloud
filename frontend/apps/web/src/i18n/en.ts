@@ -2255,6 +2255,8 @@ const en = {
   'accounts.converted.detail': 'Details',
   'accounts.converted.detailTitle': 'By-currency breakdown',
   'accounts.converted.composition': 'Composition (in {currency})',
+  'accounts.row.convertToggle': 'Toggle original / converted amount',
+  'accounts.row.fxIncomplete': 'Some foreign-currency accounts are missing exchange rates and are not included in this total',
   'accounts.needBaseCurrency.title': 'Set a primary currency to see your asset summary',
   'accounts.needBaseCurrency.desc': 'Your accounts span multiple currencies. Set a primary currency to convert them into one summary.',
   'accounts.needBaseCurrency.action': 'Set primary currency',

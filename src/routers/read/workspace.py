@@ -14,6 +14,7 @@ from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 from ...models import ExchangeRateCache, UserExchangeRateProjection
+from ...services.exchange_rate import fetcher as _exchange_rate_fetcher
 
 # ---------------------------------------------------------------------------
 # 净值历史 — 响应 schema
@@ -635,7 +636,7 @@ def false_literal():
 
 
 @router.get("/workspace/accounts", response_model=list[WorkspaceAccountOut])
-def list_workspace_accounts(
+async def list_workspace_accounts(
     ledger_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     q: str | None = Query(default=None),
@@ -824,13 +825,90 @@ def list_workspace_accounts(
     for acc in all_accounts:
         if acc.parent_account_id:
             children_by_parent.setdefault(acc.parent_account_id, []).append(acc)
+
+    # 2026-08-12 使用者回報:子帳戶跨幣別時(例如 TWD 群組底下掛了 JPY/USD
+    # 子帳戶),上面「加總回填到群組自己身上」不能對 balance/income_total/
+    # expense_total 這些金額欄位不分幣別直接 sum() —— 19400 TWD + 10800 JPY
+    # 不能直接相加。這裡先找出「有跨幣別子帳戶」的群組各自需要的 target base
+    # (群組自己的 currency),批次備好匯率,rollup 迴圈才能按幣別分別換算。
+    _needed_bases: set[str] = set()
+    for _acc in all_accounts:
+        if _acc.account_type != "account_group":
+            continue
+        _group_cur = (_acc.currency or "CNY").upper()
+        for _kid in children_by_parent.get(_acc.id, []):
+            if (_kid.currency or "CNY").upper() != _group_cur:
+                _needed_bases.add(_group_cur)
+                break
+
+    # base(群組幣別)→ {quote(大寫): rate},即 1 quote = rate base。跟下方
+    # workspace_net_worth_history 的 _net() 同一套組法:自動快取(1 base = x
+    # quote,取倒數)先墊底,使用者手動 override(方向已經是 1 quote = rate base)
+    # 覆蓋掉自動值。抓不到匯率(代理關閉/上游全掛/從未快取過)的 base 就不會有
+    # 對應 entry——呼叫方對這個 base 底下缺匯率的幣別必須整筆剔除,絕不裸加
+    # 1.0(對齊 _net() 既有鐵律)。這裡直接複用惰性快取(`fetcher.get_rates`),
+    # 不強求前端事先靠別的頁面把匯率快取暖好。
+    _rates_to_base: dict[str, dict[str, float]] = {}
+    _fx_settings = get_settings()
+    for _base in _needed_bases:
+        _rates_to_base[_base] = {_base: 1.0}
+        if _fx_settings.exchange_rate_proxy_enabled:
+            try:
+                _cache_row, _ = await _exchange_rate_fetcher.get_rates(db, _base)
+            except Exception:  # noqa: BLE001 — 上游/代理任何錯誤都當這個 base 沒匯率,不讓帳戶列表整支 500
+                _cache_row = None
+            if _cache_row is not None and isinstance(_cache_row.payload_json, dict):
+                for _q, _x in _cache_row.payload_json.items():
+                    try:
+                        _xf = float(_x)
+                    except (TypeError, ValueError):
+                        continue
+                    if _xf > 0:
+                        _rates_to_base[_base][_q.upper()] = 1.0 / _xf
+        for _ov in db.execute(
+            select(
+                UserExchangeRateProjection.quote_currency,
+                UserExchangeRateProjection.rate,
+            ).where(
+                UserExchangeRateProjection.user_id == target_user_id,
+                UserExchangeRateProjection.base_currency == _base,
+            )
+        ).all():
+            try:
+                _r = float(_ov.rate)
+            except (TypeError, ValueError):
+                continue
+            if _r > 0:
+                _rates_to_base[_base][_ov.quote_currency.upper()] = _r
+
     for acc in all_accounts:
         if acc.account_type == "account_group":
             kids = children_by_parent.get(acc.id, [])
             acc.tx_count = (acc.tx_count or 0) + sum(k.tx_count or 0 for k in kids)
-            acc.income_total = (acc.income_total or 0.0) + sum(k.income_total or 0.0 for k in kids)
-            acc.expense_total = (acc.expense_total or 0.0) + sum(k.expense_total or 0.0 for k in kids)
-            acc.balance = (acc.balance or 0.0) + sum(k.balance or 0.0 for k in kids)
+            group_cur = (acc.currency or "CNY").upper()
+            base_rates = _rates_to_base.get(group_cur)
+            income_add = 0.0
+            expense_add = 0.0
+            balance_add = 0.0
+            incomplete = False
+            for k in kids:
+                kid_cur = (k.currency or "CNY").upper()
+                if kid_cur == group_cur:
+                    rate = 1.0
+                elif base_rates is not None and kid_cur in base_rates:
+                    rate = base_rates[kid_cur]
+                else:
+                    # 缺匯率:這筆子帳戶的金額整筆剔除,不裸加 1.0(對齊 _net() 鐵律)。
+                    incomplete = True
+                    continue
+                income_add += (k.income_total or 0.0) * rate
+                expense_add += (k.expense_total or 0.0) * rate
+                balance_add += (k.balance or 0.0) * rate
+            acc.income_total = (acc.income_total or 0.0) + income_add
+            acc.expense_total = (acc.expense_total or 0.0) + expense_add
+            acc.balance = (acc.balance or 0.0) + balance_add
+            if incomplete:
+                acc.balance_fx_incomplete = True
 
     # 「可繳款」提醒(§2.9 補強,2026-08-02):只對 billing-root(account_group,
     # 或沒有掛靠任何群組的獨立信用卡)且已設定 billing_day/payment_due_day 的

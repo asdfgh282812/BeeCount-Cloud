@@ -107,6 +107,25 @@ describe('asset aggregation — 绝不跨币种相加', () => {
     expect(naiveWrong).toBe(2_473_400)
     expect(cny.netWorth).not.toBe(naiveWrong)
   })
+
+  it('splitByCurrency 排除跨幣別 account_group 子帳戶,避免折算彙總卡雙重計入(2026-08-12)', () => {
+    // 後端 list_workspace_accounts 已把子帳戶換算後回填到 account_group 自己的
+    // balance 上(TWD 群組 = 19400 自己 + 換算後的 JPY/USD 子帳戶)。子帳戶因為
+    // 幣別跟群組不同,若在 splitByCurrency 分桶後才排除,會被切進不同 bucket、
+    // 逃過下游 computeCurrencySummary/computeTypeGroups 各自的
+    // buildDoubleCountedChildIds 檢查,導致這筆錢被群組(已折算)+子帳戶(原幣)
+    // 各算一次。這裡驗證分桶這一步就先排除,子帳戶完全不會出現在任何 bucket。
+    const rows = [
+      acc({ id: 'group', account_type: 'account_group', currency: 'TWD', balance: 22_989.196 }),
+      acc({ id: 'twd-child', parent_account_id: 'group', account_type: 'bank_card', currency: 'TWD', balance: 19_400 }),
+      acc({ id: 'jpy-child', parent_account_id: 'group', account_type: 'bank_card', currency: 'JPY', balance: 10_800 }),
+      acc({ id: 'usd-child', parent_account_id: 'group', account_type: 'bank_card', currency: 'USD', balance: 41.81 })
+    ]
+    const byCur = splitByCurrency(rows)
+    expect([...byCur.keys()]).toEqual(['TWD'])
+    expect(byCur.get('TWD')?.map((r) => r.id)).toEqual(['group'])
+    expect(computeCurrencySummary(byCur.get('TWD') ?? []).netWorth).toBeCloseTo(22_989.196, 3)
+  })
 })
 
 /**

@@ -2244,6 +2244,8 @@ const zhTW = {
   'accounts.converted.detail': '詳情',
   'accounts.converted.detailTitle': '分幣種明細',
   'accounts.converted.composition': '資產構成(折{currency})',
+  'accounts.row.convertToggle': '切換原幣 / 折算金額',
+  'accounts.row.fxIncomplete': '部分外幣帳戶因缺少匯率未計入合計',
   'accounts.needBaseCurrency.title': '設定主幣種以檢視資產彙總',
   'accounts.needBaseCurrency.desc': '帳戶涉及多種幣種,需先設定主幣種,才能將各幣種折算成同一口徑彙總。',
   'accounts.needBaseCurrency.action': '前往設定主幣種',

@@ -20,11 +20,15 @@ export function formatAmountCny(value: number | null | undefined): string {
 }
 
 /**
- * 紧凑金额格式化（对齐 mobile `utils/format_utils.dart#formatBalance`）。
+ * 紧凑金额格式化（原本对齐 mobile `utils/format_utils.dart#formatBalance`,
+ * 2026-08-12 使用者反馈「金额太快被折成'X万'看不出实际数字」后,中文环境的
+ * 折算门槛从 1 万上调到 10 万 —— web 端自此与 mobile 端門檻不同,是刻意分歧,
+ * 不是遗漏同步）。
  *
- * - 中文环境：< 1 万保留两位；≥ 1 万按 1-2 位小数折算成 "X.X万"。
- *   万字单位由 `wanUnit` 指定 —— zh-CN「万」/ zh-TW「萬」,默认「万」。
- * - 其他环境：≥ 100 万折算 M、≥ 1 千折算 k，< 1 千保留两位。
+ * - 中文环境：< 10 万完整显示数值（含千分位分组）；≥ 10 万才按 1-2 位小数
+ *   折算成 "X.X万"。万字单位由 `wanUnit` 指定 —— zh-CN「万」/ zh-TW「萬」,
+ *   默认「万」。
+ * - 其他环境：≥ 100 万折算 M、≥ 1 千折算 k，< 1 千保留两位（未变动）。
  * - currencyCode 传 null 时不带币种符号（BankCardTile 独立展示 currency pill，
  *   不想在金额字符串里再重复一次）。
  */
@@ -40,7 +44,13 @@ export function formatBalanceCompact(
   const sign = value >= 0 ? symbol : `-${symbol}`
 
   if (chinese) {
-    if (absVal < 10000) return `${sign}${trimZero(absVal.toFixed(2))}`
+    if (absVal < 100000) {
+      const formatted = absVal.toLocaleString('zh-CN', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+      })
+      return `${sign}${formatted}`
+    }
     const wan = absVal / 10000
     const r1 = Number(wan.toFixed(1))
     const err1 = Math.abs(r1 * 10000 - absVal)

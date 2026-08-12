@@ -107,10 +107,22 @@ export function resolveRowDisplayType(
 /**
  * 按币种切分账户 —— 所有跨币种聚合的第一步。币种缺省按 CNY,统一大写归一
  * (`usd` / `USD` 视作同一种)。返回的 Map 保持插入顺序。
+ *
+ * 2026-08-12 修正:account_group 主帳戶底下如果掛了「幣別跟群組自己不同」的
+ * 子帳戶(後端 `list_workspace_accounts` 已把子帳戶換算後回填到主帳戶自己的
+ * balance 上),子帳戶會因為幣別不同被切進另一個 bucket——下游
+ * `computeCurrencySummary`/`computeTypeGroups` 各自在單一 bucket 內部重算
+ * `buildDoubleCountedChildIds` 時,因為父帳戶不在同一個 bucket 裡而抓不到
+ * 這層父子關係,導致子帳戶的錢被「主帳戶(已換算)」+「子帳戶自己原幣」各算
+ * 一次,折算彙總卡淨資產因此虛增。這裡在「切分」這一步、父子還同在一份
+ * 未分桶 rows 裡時就先排除子帳戶,從根本避免任何下游 bucket 內部再犯這個
+ * 錯——即使子帳戶跟父帳戶同幣別,結果也不變(原本就會被下游排除)。
  */
 export function splitByCurrency(rows: ReadAccount[]): Map<string, ReadAccount[]> {
+  const doubleCountedIds = buildDoubleCountedChildIds(rows)
   const map = new Map<string, ReadAccount[]>()
   for (const row of rows) {
+    if (doubleCountedIds.has(row.id)) continue
     const cur = (row.currency || 'CNY').toUpperCase()
     const arr = map.get(cur)
     if (arr) arr.push(row)
