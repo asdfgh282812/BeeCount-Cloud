@@ -72,9 +72,11 @@ import {
   createTransaction,
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
+  fetchAccountSuggestions,
   fetchAdminUsers,
   fetchCardRecommendation,
   fetchCardRewardRules,
+  fetchCategorySuggestions,
   fetchReadDebts,
   fetchReadLedgerDetail,
   fetchReadLedgers,
@@ -473,6 +475,10 @@ export function TransactionsPage() {
   // 下拉的選項,按目前表單選中的信用卡帳戶單獨拉(規則綁在具體帳戶上,不是
   // ledger-scoped,也不进 loadTxDictionaries 的 user-global 字典)。
   const [txFormRewardRules, setTxFormRewardRules] = useState<ReadCardRewardRule[]>([])
+  // 分類智慧推薦(Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md):比照上面
+  // 信用卡紅利規則同款「按目前表單狀態單獨拉,不进 loadTxDictionaries」的
+  // 惯例。
+  const [txFormCategorySuggestions, setTxFormCategorySuggestions] = useState<string[]>([])
   // 标签详情弹窗：点击标签卡片时打开，内部用 TransactionList 无限滚动加载
   // 该标签关联的交易。
   // tagDetail * state + TAG_DETAIL_PAGE_SIZE 已迁到 TagsPage。
@@ -754,6 +760,44 @@ export function TransactionsPage() {
       cancelled = true
     }
   }, [txDialogOpen, txForm.tx_type, txForm.account_name, txWriteLedgerId, txWriteAccounts, token])
+
+  // 分類智慧推薦(Phase 21):開啟表單、切換交易類型、切換帳戶都要重新拉一次
+  // ——依「整體頻率＋同時段＋同帳戶」加權排序。transfer 沒有分類概念,不拉。
+  useEffect(() => {
+    if (!txDialogOpen || txForm.tx_type === 'transfer' || !txWriteLedgerId) {
+      setTxFormCategorySuggestions([])
+      return
+    }
+    const account = txWriteAccounts.find(
+      (row) => (row.name || '').trim().toLowerCase() === txForm.account_name.trim().toLowerCase(),
+    )
+    let cancelled = false
+    fetchCategorySuggestions(token, txWriteLedgerId, {
+      txType: txForm.tx_type,
+      accountId: account?.id,
+      hour: new Date().getHours(),
+      tzOffsetMinutes: -new Date().getTimezoneOffset(),
+    })
+      .then((res) => {
+        if (!cancelled) setTxFormCategorySuggestions(res.category_ids)
+      })
+      .catch(() => {
+        if (!cancelled) setTxFormCategorySuggestions([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [txDialogOpen, txForm.tx_type, txForm.account_name, txWriteLedgerId, txWriteAccounts, token])
+
+  // 依分類帶入常用帳戶(Phase 21):TransactionsPanel 選定分類後呼叫這支,
+  // 只回傳 account_id 清單,實際「要不要自動帶入/會不會覆蓋使用者已選值」
+  // 的判斷留給 panel 自己做(panel 才知道 form.account_name 目前是否為空)。
+  const txFetchAccountSuggestions = useCallback(
+    (ledgerId: string, categoryId: string) =>
+      fetchAccountSuggestions(token, ledgerId, categoryId).then((res) => res.account_ids),
+    [token]
+  )
+
   const txFilterAccountOptions = useMemo(
     () =>
       [...new Set(accounts.map((row) => (row.name || '').trim()).filter((value) => value.length > 0))].sort((a, b) =>
@@ -2607,6 +2651,8 @@ export function TransactionsPage() {
                 projects={txDictionaryProjects}
                 onCreateProject={txCanManageProjects ? onCreateTxProject : undefined}
                 rewardRules={txFormRewardRules}
+                categorySuggestions={txFormCategorySuggestions}
+                fetchAccountSuggestions={txFetchAccountSuggestions}
                 onCreateCategory={onCreateTxCategory}
                 onCreateTag={onCreateTxTag}
                 fetchCardRecommendations={handleFetchCardRecommendations}

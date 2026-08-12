@@ -1,4 +1,4 @@
-import { useCallback, type FocusEvent, type InputHTMLAttributes, type KeyboardEvent } from 'react'
+import { forwardRef, useCallback, type FocusEvent, type InputHTMLAttributes, type KeyboardEvent } from 'react'
 
 import { cn } from '../lib/cn'
 import { Input } from './input'
@@ -112,7 +112,10 @@ export type AmountInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'valu
  * 忘記按 `=` 直接切走欄位);算式無效時不理會,保留原始輸入文字讓使用者
  * 自己修正。
  */
-export function AmountInput({ value, onChange, onKeyDown, onBlur, ...props }: AmountInputProps) {
+export const AmountInput = forwardRef<HTMLInputElement, AmountInputProps>(function AmountInput(
+  { value, onChange, onKeyDown, onBlur, ...props },
+  ref
+) {
   const tryEvaluate = useCallback(() => {
     const result = evaluateAmountExpression(value)
     if (result !== null) {
@@ -142,6 +145,7 @@ export function AmountInput({ value, onChange, onKeyDown, onBlur, ...props }: Am
   return (
     <Input
       {...props}
+      ref={ref}
       className={cn(props.className)}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -150,4 +154,4 @@ export function AmountInput({ value, onChange, onKeyDown, onBlur, ...props }: Am
       inputMode="decimal"
     />
   )
-}
+})

@@ -856,6 +856,16 @@ export type AccountInterestFreeSuggestion = {
   max_interest_free_days: number
 }
 
+/** 分類智慧推薦(Phase 21):category_sync_id 清單,由高到低排序。 */
+export type ReadCategorySuggestions = {
+  category_ids: string[]
+}
+
+/** 依分類帶入常用帳戶(Phase 21):account_sync_id 清單,由高到低排序。 */
+export type ReadAccountSuggestions = {
+  account_ids: string[]
+}
+
 export type CardPaymentPayload = {
   amount: number
   from_account_id: string

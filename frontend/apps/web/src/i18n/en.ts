@@ -1024,6 +1024,7 @@ const en = {
   'categories.empty.byType': 'No categories under this type',
   'categories.picker.searchPlaceholder': 'Search categories',
   'categories.picker.createNew': 'Create "{name}"',
+  'categories.picker.suggestedBadge': 'Frequently used',
 
   'tags.empty.title': 'No tags yet',
   'tags.empty.desc': 'Tags created on mobile will appear here as cards.',

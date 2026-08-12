@@ -4,6 +4,11 @@ import { Input, useT } from '@beecount/ui'
 import type { WorkspaceCategory } from '@beecount/api-client'
 
 import { CategoryIcon } from './CategoryIcon'
+import {
+  buildSuggestionRank,
+  buildTopLevelSuggestionRank,
+  compareBySuggestionThenOrder,
+} from '../lib/categorySuggestionRank'
 
 type CategorySelectorKind = 'expense' | 'income'
 
@@ -35,6 +40,12 @@ type CategorySelectorProps = {
    *  點擊呼叫這個 callback(建立 + 選中的完整邏輯由呼叫方實作,同 create
    *  中呼叫方傳入即代表允許,不傳則不顯示新增入口)。 */
   onCreateNew?: (name: string) => void | Promise<void>
+  /** 分類智慧推薦(Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md):命中的
+   *  category id(sync_id)在網格裡加註「常用」徽章並排到最前面。頂級/子級
+   *  分別各自重排(不跨層級混排),依清單順序(高分在前)決定排序優先度,
+   *  未命中的維持原本 sort_order/name 排序當 tie-breaker。搜尋模式(有輸入
+   *  關鍵字時)不套用,找特定分類時排序反而增加视觉扫描成本。 */
+  suggestedCategoryIds?: string[]
 }
 
 /**
@@ -64,6 +75,7 @@ export function CategorySelector({
   className,
   showSearch = true,
   onCreateNew,
+  suggestedCategoryIds,
 }: CategorySelectorProps) {
   const t = useT()
   // 内部展开状态 —— 只有点击的父级允许同时展开 1 个,跟 mobile 一致。
@@ -78,7 +90,14 @@ export function CategorySelector({
   // 按 kind 过滤 + parent_name 分组(parent_name 空 = 顶级)。sort_order 升序,
   // 同 sort 再按 name。跟 app `getTopLevelCategories` / `getSubCategories` 行为
   // 对齐。
-  const { topLevels, childrenByParentName } = useMemo(() => {
+  // 推薦排名表:index 越小分數越高。不在清單裡的分類 rank = Infinity,排在
+  // 所有推薦項目之後,再用原本的 sort_order/name 當 tie-breaker。
+  const suggestionRank = useMemo(
+    () => buildSuggestionRank(suggestedCategoryIds),
+    [suggestedCategoryIds]
+  )
+
+  const { topLevels, childrenByParentName, topSuggestionRank } = useMemo(() => {
     const inKind = rows.filter((row) => row.kind === kind)
     const tops: WorkspaceCategory[] = []
     const children: Record<string, WorkspaceCategory[]> = {}
@@ -92,13 +111,15 @@ export function CategorySelector({
         tops.push(row)
       }
     }
-    const sorter = (a: WorkspaceCategory, b: WorkspaceCategory) =>
-      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
-      (a.name || '').localeCompare(b.name || '')
-    tops.sort(sorter)
-    for (const k of Object.keys(children)) children[k].sort(sorter)
-    return { topLevels: tops, childrenByParentName: children }
-  }, [rows, kind])
+    for (const k of Object.keys(children)) {
+      children[k].sort((a, b) => compareBySuggestionThenOrder(a, b, suggestionRank))
+    }
+    // Phase 21:父層要反映底下子分類是否命中推薦(見 buildTopLevelSuggestionRank
+    // docstring)。
+    const topRank = buildTopLevelSuggestionRank(tops, children, suggestionRank)
+    tops.sort((a, b) => compareBySuggestionThenOrder(a, b, topRank))
+    return { topLevels: tops, childrenByParentName: children, topSuggestionRank: topRank }
+  }, [rows, kind, suggestionRank])
 
   // 找到 selectedId 对应的行,用来决定是否要自动展开父级
   const selectedRow = useMemo(
@@ -193,6 +214,7 @@ export function CategorySelector({
                 category={cat}
                 iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                 selected={selectedId === cat.id}
+                suggested={suggestionRank?.has(cat.id) ?? false}
                 onTap={() => onSelect(cat)}
               />
             ))}
@@ -261,6 +283,7 @@ export function CategorySelector({
                     selected={isSelected}
                     expanded={isExpanded}
                     hasChildren={hasChildren}
+                    suggested={topSuggestionRank?.has(top.id) ?? false}
                     onTap={() => handleParentTap(top)}
                   />
                 )
@@ -286,6 +309,7 @@ export function CategorySelector({
                         iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                         selected={isSelected}
                         compact
+                        suggested={suggestionRank?.has(child.id) ?? false}
                         onTap={() => onSelect(child)}
                       />
                     )
@@ -311,6 +335,7 @@ function CategoryCell({
   expanded,
   hasChildren,
   compact,
+  suggested,
   onTap,
 }: {
   category: WorkspaceCategory
@@ -319,8 +344,11 @@ function CategoryCell({
   expanded?: boolean
   hasChildren?: boolean
   compact?: boolean
+  /** 命中分類智慧推薦(Phase 21):圆圈左上角加一个「常」小徽章。 */
+  suggested?: boolean
   onTap: () => void
 }) {
+  const t = useT()
   const iconSize = compact ? 22 : 26
   const circleSize = compact ? 'h-12 w-12' : 'h-14 w-14'
   const labelSize = compact ? 'text-[11px]' : 'text-xs'
@@ -348,6 +376,18 @@ function CategoryCell({
             size={iconSize}
           />
         </div>
+
+        {/* 分類智慧推薦(Phase 21):左上角「常」小徽章,標示這個分類是依「整
+            體頻率＋同時段＋同帳戶」加權算出的常用推薦,不影響點擊行為。 */}
+        {suggested ? (
+          <span
+            aria-hidden
+            className="absolute -left-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-background bg-amber-500 px-0.5 text-[9px] font-medium leading-none text-white"
+            title={t('categories.picker.suggestedBadge')}
+          >
+            常
+          </span>
+        ) : null}
 
         {/* 父级带子分类的右下角"…"徽章 —— 跟 app category_selector 一致的视觉
             提示:点击会展开。compact(子级)不显示。 */}

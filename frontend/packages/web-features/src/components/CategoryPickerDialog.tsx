@@ -38,6 +38,8 @@ type CategoryPickerDialogProps = {
   /** 表單內直接新增(需求 #10,Phase 11):透传给 `CategorySelector`,不传
    *  则不显示内嵌新增入口。 */
   onCreateNew?: (name: string) => void | Promise<void>
+  /** 分類智慧推薦(Phase 21):透传给 `CategorySelector`。 */
+  suggestedCategoryIds?: string[]
 }
 
 /**
@@ -64,6 +66,7 @@ export function CategoryPickerDialog({
   emptyText,
   columns = 4,
   onCreateNew,
+  suggestedCategoryIds,
 }: CategoryPickerDialogProps) {
   const t = useT()
   return (
@@ -86,6 +89,7 @@ export function CategoryPickerDialog({
             columns={columns}
             emptyText={emptyText}
             onCreateNew={onCreateNew}
+            suggestedCategoryIds={suggestedCategoryIds}
             onSelect={(cat) => {
               onSelect(cat)
               onClose()

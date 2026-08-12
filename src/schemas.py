@@ -760,6 +760,19 @@ class ReadInterestFreeSuggestionOut(BaseModel):
     max_interest_free_days: int
 
 
+class ReadCategorySuggestionsOut(BaseModel):
+    """分類智慧推薦(§Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md)。依「整體
+    使用頻率＋同時段＋同帳戶」加權排序，`category_ids` 是 category_sync_id
+    清單，由高到低排序。純唯讀彙總，不落庫。"""
+    category_ids: list[str]
+
+
+class ReadAccountSuggestionsOut(BaseModel):
+    """依分類帶入常用帳戶(§Phase 21)。`account_ids` 是 account_sync_id 清單,
+    依「該分類最近/最常使用的帳戶」由高到低排序。純唯讀彙總,不落庫。"""
+    account_ids: list[str]
+
+
 CardRewardRateType = Literal["percentage", "fixed_amount"]
 # Phase 8 #4(2026-08 使用者反饋):新增 "keep"(保留小數,不取整)。
 # rounding = 單筆取整方式;total_rounding(見下方)= 總額取整方式,兩者共用

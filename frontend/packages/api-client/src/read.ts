@@ -9,11 +9,13 @@ import type {
   ComparisonReport,
   NetWorthHistory,
   ReadAccount,
+  ReadAccountSuggestions,
   ReadBudget,
   ReadCardRewardRule,
   ReadCardRewardRuleTransactions,
   ReadCardRewards,
   ReadCategory,
+  ReadCategorySuggestions,
   ReadDebt,
   ReadInstallmentPeriod,
   ReadInstallmentPlan,
@@ -93,6 +95,41 @@ export async function fetchAccountInterestFreeSuggestion(
 ): Promise<AccountInterestFreeSuggestion> {
   return authedGet<AccountInterestFreeSuggestion>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/interest-free-suggestion`,
+    token
+  )
+}
+
+/** 分類智慧推薦(Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md):依「整體
+ *  頻率＋同時段＋同帳戶」加權排序,回傳 category_sync_id 清單。`hour`/
+ *  `tzOffsetMinutes` 比照既有 analytics 端點慣例(tzOffsetMinutes =
+ *  `-new Date().getTimezoneOffset()`);純唯讀彙總,不落庫。 */
+export async function fetchCategorySuggestions(
+  token: string,
+  ledgerId: string,
+  options?: { txType?: string; accountId?: string; hour?: number; tzOffsetMinutes?: number }
+): Promise<ReadCategorySuggestions> {
+  const query = new URLSearchParams()
+  if (options?.txType) query.set('tx_type', options.txType)
+  if (options?.accountId) query.set('account_id', options.accountId)
+  if (typeof options?.hour === 'number') query.set('hour', `${options.hour}`)
+  if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<ReadCategorySuggestions>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/category-suggestions${suffix}`,
+    token
+  )
+}
+
+/** 依分類帶入常用帳戶(Phase 21):依「該分類最近/最常使用的帳戶」排序,回傳
+ *  account_sync_id 清單。純唯讀彙總,不落庫。 */
+export async function fetchAccountSuggestions(
+  token: string,
+  ledgerId: string,
+  categoryId: string
+): Promise<ReadAccountSuggestions> {
+  const query = new URLSearchParams({ category_id: categoryId })
+  return authedGet<ReadAccountSuggestions>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/account-suggestions?${query.toString()}`,
     token
   )
 }

@@ -534,6 +534,7 @@ const zhCN = {
   'categories.empty.byType': '该类型下暂无分类',
   'categories.picker.searchPlaceholder': '搜索分类',
   'categories.picker.createNew': '新建「{name}」',
+  'categories.picker.suggestedBadge': '常用分类推荐',
 
   // 标签页
   'tags.empty.title': '还没有标签',

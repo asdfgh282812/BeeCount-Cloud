@@ -1025,6 +1025,7 @@ const zhTW = {
   'categories.empty.byType': '該類型下暫無分類',
   'categories.picker.searchPlaceholder': '搜尋分類',
   'categories.picker.createNew': '新增「{name}」',
+  'categories.picker.suggestedBadge': '常用分類推薦',
 
   'tags.empty.title': '還沒有標籤',
   'tags.empty.desc': '在行動端新增標籤後，這裡會以卡片方式展示。',

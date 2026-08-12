@@ -1109,6 +1109,121 @@ def list_categories(
     ]
 
 
+# ---------------------------------------------------------------------------
+# 分類/帳戶智慧推薦(Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md)
+# 純唯讀彙總查詢,不寫入任何資料,不影響既有 sync entity 結構,不適用
+# CLAUDE.md「新增或修改 Sync Entity 檢查清單」7 步 SOP。
+# ---------------------------------------------------------------------------
+
+_SUGGESTION_LOOKBACK_DAYS = 180
+_SUGGESTION_HALF_LIFE_DAYS = 30.0
+_SUGGESTION_HOUR_BONUS = 1.5
+_SUGGESTION_ACCOUNT_BONUS = 1.5
+_SUGGESTION_HOUR_TOLERANCE_HOURS = 2
+
+
+def _suggestion_decay_weight(happened_at: datetime, *, now: datetime) -> float:
+    """近期交易權重較高,半衰期 30 天(具體衰減公式留待實作後依實際資料量
+    調校,SD 階段不鎖死精確參數)。"""
+    age_days = max((now - _to_utc(happened_at)).total_seconds() / 86400.0, 0.0)
+    return 0.5 ** (age_days / _SUGGESTION_HALF_LIFE_DAYS)
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/category-suggestions",
+    response_model=ReadCategorySuggestionsOut,
+)
+def get_category_suggestions(
+    ledger_external_id: str,
+    tx_type: str | None = Query(default=None),
+    account_id: str | None = Query(default=None),
+    hour: int | None = Query(default=None, ge=0, le=23),
+    tz_offset_minutes: int = Query(default=0),
+    limit: int = Query(default=10, ge=1, le=20),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadCategorySuggestionsOut:
+    """依「同 tx_type 整體使用頻率＋同時段＋同帳戶」三種訊號加權排序回傳
+    category_id 清單(由高到低)。`hour`/`tz_offset_minutes` 比照
+    `_bucket_key` 既有慣例:`tz_offset_minutes` 是客户端本地时区偏移
+    (`-new Date().getTimezoneOffset()`,CST 传 +480),用来把 `happened_at`
+    折成使用者本地時區的小時,再跟 `hour`(使用者本地當下小時)比對。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=_SUGGESTION_LOOKBACK_DAYS)
+    query = select(
+        ReadTxProjection.category_sync_id,
+        ReadTxProjection.account_sync_id,
+        ReadTxProjection.happened_at,
+    ).where(
+        ReadTxProjection.ledger_id == ledger.id,
+        ReadTxProjection.user_id == current_user.id,
+        ReadTxProjection.category_sync_id.is_not(None),
+        ReadTxProjection.happened_at >= since,
+    )
+    if tx_type:
+        query = query.where(ReadTxProjection.tx_type == tx_type)
+    rows = db.execute(query).all()
+
+    now = datetime.now(timezone.utc)
+    scores: dict[str, float] = {}
+    for category_sync_id, account_sync_id, happened_at in rows:
+        weight = _suggestion_decay_weight(happened_at, now=now)
+        if hour is not None:
+            local_hour = (_to_utc(happened_at) + timedelta(minutes=tz_offset_minutes)).hour
+            diff = abs(local_hour - hour)
+            diff = min(diff, 24 - diff)
+            if diff <= _SUGGESTION_HOUR_TOLERANCE_HOURS:
+                weight += _SUGGESTION_HOUR_BONUS
+        if account_id and account_sync_id == account_id:
+            weight += _SUGGESTION_ACCOUNT_BONUS
+        scores[category_sync_id] = scores.get(category_sync_id, 0.0) + weight
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return ReadCategorySuggestionsOut(category_ids=[cid for cid, _ in ranked[:limit]])
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/account-suggestions",
+    response_model=ReadAccountSuggestionsOut,
+)
+def get_account_suggestions(
+    ledger_external_id: str,
+    category_id: str = Query(...),
+    limit: int = Query(default=10, ge=1, le=20),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadAccountSuggestionsOut:
+    """依「該分類最近/最常使用的帳戶」加權排序回傳 account_id 清單(由高到
+    低)。只吃 `account_sync_id` 非空的交易(轉帳沒有這個欄位,天然排除)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=_SUGGESTION_LOOKBACK_DAYS)
+    rows = db.execute(
+        select(ReadTxProjection.account_sync_id, ReadTxProjection.happened_at).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.user_id == current_user.id,
+            ReadTxProjection.category_sync_id == category_id,
+            ReadTxProjection.account_sync_id.is_not(None),
+            ReadTxProjection.happened_at >= since,
+        )
+    ).all()
+
+    now = datetime.now(timezone.utc)
+    scores: dict[str, float] = {}
+    for account_sync_id, happened_at in rows:
+        scores[account_sync_id] = scores.get(account_sync_id, 0.0) + _suggestion_decay_weight(happened_at, now=now)
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return ReadAccountSuggestionsOut(account_ids=[aid for aid, _ in ranked[:limit]])
+
+
 @router.get("/ledgers/{ledger_external_id}/budgets", response_model=list[ReadBudgetOut])
 def list_budgets(
     ledger_external_id: str,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   AmountInput,
@@ -92,6 +92,15 @@ type TransactionsPanelProps = {
     amount: number,
     merchant: string
   ) => Promise<SwipeSmartCardRecommendation[]>
+  /** 分類智慧推薦(Phase 21,docs/PH17_USER_FEEDBACK_2026-08_SD.md):依「整體
+   *  頻率＋同時段＋同帳戶」排序的 category id 清單,呼叫方按目前 tx_type/
+   *  account_name/當下小時單獨拉,傳入後在 `CategoryPickerDialog` 網格裡
+   *  加註「常用」徽章並排到最前面。不傳則不顯示推薦。 */
+  categorySuggestions?: string[]
+  /** 依分類帶入常用帳戶(Phase 21):選定分類後,如果帳戶欄位還是空的(使用者
+   *  沒手動選過),用這支拉「該分類最近/最常用的帳戶」清單第一名自動帶入。
+   *  不傳則不觸發自動帶入,使用者仍可照常手動選帳戶。 */
+  fetchAccountSuggestions?: (ledgerId: string, categoryId: string) => Promise<string[]>
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -295,6 +304,8 @@ export function TransactionsPanel({
   onCreateCategory,
   onCreateTag,
   fetchCardRecommendations,
+  categorySuggestions,
+  fetchAccountSuggestions,
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -327,6 +338,17 @@ export function TransactionsPanel({
   const t = useT()
   const open = dialogOpen
   const setOpen = onDialogOpenChange
+  // 金額欄位自動 focus(Phase 20,2026-08 使用者回饋):開啟表單時直接可以打字,
+  // 不用先點一下金額欄位。編輯既有交易時全選原有數值,方便直接輸入新數字覆蓋。
+  const amountInputRef = useRef<HTMLInputElement>(null)
+  // 依分類帶入常用帳戶(Phase 21):account-suggestions 是異步拉的,resolve
+  // 當下要讀「使用者這期間有沒有自己選了帳戶」的最新值,不能靠 onSelect
+  // callback 捕獲到的舊 form closure(選分類當下 account_name 是空的,但
+  // resolve 前使用者可能已經手動選好了)。
+  const formRef = useRef(form)
+  useEffect(() => {
+    formRef.current = form
+  }, [form])
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
@@ -563,171 +585,63 @@ export function TransactionsPanel({
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+        <DialogContent
+          className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0"
+          onOpenAutoFocus={(event) => {
+            // 用 Radix 內建的 onOpenAutoFocus 取代 useEffect+ref 手動聚焦
+            // (SD 建議優先用內建機制)。編輯既有交易時額外全選數值,方便
+            // 使用者直接輸入新數字覆蓋,不強制清空重打。
+            event.preventDefault()
+            amountInputRef.current?.focus()
+            if (form.editingId) amountInputRef.current?.select()
+          }}
+        >
           <DialogHeader className="border-b border-border/60 px-6 py-4">
             <DialogTitle>{form.editingId ? t('transactions.button.update') : t('transactions.button.create')}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1">
-              <Label>{t('shell.ledger')}</Label>
-              <Select value={writeLedgerId || undefined} onValueChange={onWriteLedgerIdChange} disabled={Boolean(form.editingId)}>
-                <SelectTrigger>
-                  <SelectValue placeholder={t('shell.ledger')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {ledgerOptions.map((ledger) => (
-                    <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
-                      {ledger.ledger_name}
-                    </SelectItem>
+              <div className="space-y-1 md:col-span-2">
+                <Label>{t('shell.ledger')}</Label>
+                <Select value={writeLedgerId || undefined} onValueChange={onWriteLedgerIdChange} disabled={Boolean(form.editingId)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('shell.ledger')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ledgerOptions.map((ledger) => (
+                      <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
+                        {ledger.ledger_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* 交易類型(Phase 20,2026-08 使用者回饋):比照 Moze 參考圖改成頁籤
+                  樣式取代下拉選單,放在表單最上方(帳本欄位之下)。 */}
+              <div className="space-y-1 md:col-span-2">
+                <Label>{t('transactions.table.type')}</Label>
+                <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted/40 p-1">
+                  {(['expense', 'income', 'transfer'] as const).map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => applyTxType(type)}
+                      className={`rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+                        form.tx_type === type
+                          ? 'bg-background text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {t(`enum.txType.${type}`)}
+                    </button>
                   ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label>{t('transactions.table.type')}</Label>
-              <Select value={form.tx_type} onValueChange={(value) => applyTxType(value as TxForm['tx_type'])}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="expense">{t('enum.txType.expense')}</SelectItem>
-                  <SelectItem value="income">{t('enum.txType.income')}</SelectItem>
-                  <SelectItem value="transfer">{t('enum.txType.transfer')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label>{t('transactions.table.amount')}</Label>
-                {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction
-                    金額旁邊的「+」):只在 expense/income 顯示,轉帳沒有明確
-                    方向語意(server 端也會拒絕)。 */}
-                {form.tx_type !== 'transfer' && !form.fee_enabled ? (
-                  <button
-                    type="button"
-                    onClick={() => onFormChange({ ...form, fee_enabled: true })}
-                    className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
-                    title={t('transactions.field.feeDiscountToggle')}
-                  >
-                    +
-                  </button>
-                ) : null}
-              </div>
-              <AmountInput
-                placeholder={t('transactions.placeholder.amount')}
-                value={form.amount}
-                onChange={(value) => onFormChange({ ...form, amount: value })}
-              />
-              {/* v30 多币种:币种另起一行,全宽显示币种全名+国旗(挨金额太窄会截断);
-                  选非本位币 → 账户下拉按币种过滤 + 已选账户清空(币种优先联动,
-                  transfer 不支持)。 */}
-              {form.tx_type !== 'transfer' ? (
-                <CurrencySelectorTrigger
-                  value={form.currency || baseCurrency}
-                  onChange={(code) =>
-                    onFormChange({
-                      ...form,
-                      currency:
-                        code.toUpperCase() === baseCurrency.toUpperCase()
-                          ? ''
-                          : code,
-                      account_name: ''
-                    })
-                  }
-                  ratesToBase={currencyRates}
-                  rateBase={baseCurrency}
-                />
-              ) : null}
-              {form.tx_type !== 'transfer' && form.fee_enabled ? (
-                <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
-                  <div className="flex items-center gap-2">
-                    <Input
-                      className="h-8 w-24 text-xs"
-                      placeholder={t('transactions.field.fee')}
-                      value={form.fee_label}
-                      onChange={(e) => onFormChange({ ...form, fee_label: e.target.value })}
-                    />
-                    <AmountInput
-                      className="h-8"
-                      placeholder="0"
-                      value={form.fee_amount}
-                      onChange={(value) => onFormChange({ ...form, fee_amount: value })}
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      className="h-8 w-24 text-xs"
-                      placeholder={t('transactions.field.discount')}
-                      value={form.discount_label}
-                      onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
-                    />
-                    <AmountInput
-                      className="h-8"
-                      placeholder="0"
-                      value={form.discount_amount}
-                      onChange={(value) => onFormChange({ ...form, discount_amount: value })}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <div className="flex items-center gap-2">
-                      <span>{t('transactions.field.total')}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onFormChange({
-                            ...form,
-                            fee_enabled: false,
-                            fee_amount: '',
-                            fee_label: '',
-                            discount_amount: '',
-                            discount_label: ''
-                          })
-                        }
-                        className="text-muted-foreground/70 hover:text-foreground"
-                      >
-                        {t('transactions.field.feeDiscountRemove')}
-                      </button>
-                    </div>
-                    <span className="font-medium text-foreground">
-                      {computeTxTotalAmount(
-                        form.tx_type,
-                        Number(form.amount) || 0,
-                        Number(form.fee_amount) || 0,
-                        Number(form.discount_amount) || 0
-                      )}
-                    </span>
-                  </div>
                 </div>
-              ) : null}
-            </div>
-            <div className="space-y-1">
-              <Label>{t('transactions.table.time')}</Label>
-              <Input
-                type="datetime-local"
-                step={60}
-                value={isoToDatetimeLocal(form.happened_at)}
-                onChange={(e) =>
-                  onFormChange({
-                    ...form,
-                    happened_at: datetimeLocalToIso(e.target.value, form.happened_at)
-                  })
-                }
-              />
-              {/* 商店(需求 #11,Phase 11;2026-08-09 使用者反饋改順序):跟時間
-                  同一個 grid cell,疊在時間欄位下面,寬度跟時間欄位一樣(不佔滿
-                  整行),视觉上跟左邊金額欄位下方的幣別選擇器同高。不加 Label,
-                  placeholder 本身已經寫「商店」,不需要重複的標題。純展示用途,選填。 */}
-              <div className="pt-2">
-                <Input
-                  placeholder={t('transactions.placeholder.merchant')}
-                  value={form.merchant}
-                  onChange={(e) => onFormChange({ ...form, merchant: e.target.value })}
-                />
               </div>
-            </div>
-
-            <div className={form.split_enabled && !isTransfer ? 'space-y-1 md:col-span-2' : 'space-y-1'}>
+            {/* 分類(Phase 20,2026-08 使用者回饋):比照 Moze 參考圖搬到類型頁籤
+                正下方、金額之前——對齊「先選類別再輸入金額」的操作順序。原本依
+                是否拆帳決定 col-span 的寫法(未拆帳時只占一半寬)改成一律
+                col-span-2 全寬,呼應 Moze 類別區塊在此位置的視覺份量。 */}
+            <div className="space-y-1 md:col-span-2">
               <div className="flex items-center justify-between">
                 <Label>{t('transactions.table.category')}</Label>
                 {/* 拆帳(§2.4):只对 expense/income 有意义,跟 transfer 互斥。
@@ -865,6 +779,111 @@ export function TransactionsPanel({
               )}
             </div>
 
+            <div className="space-y-1 md:col-span-2">
+              <div className="flex items-center justify-between">
+                <Label>{t('transactions.table.amount')}</Label>
+                {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction
+                    金額旁邊的「+」):只在 expense/income 顯示,轉帳沒有明確
+                    方向語意(server 端也會拒絕)。 */}
+                {form.tx_type !== 'transfer' && !form.fee_enabled ? (
+                  <button
+                    type="button"
+                    onClick={() => onFormChange({ ...form, fee_enabled: true })}
+                    className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                    title={t('transactions.field.feeDiscountToggle')}
+                  >
+                    +
+                  </button>
+                ) : null}
+              </div>
+              <AmountInput
+                ref={amountInputRef}
+                placeholder={t('transactions.placeholder.amount')}
+                value={form.amount}
+                onChange={(value) => onFormChange({ ...form, amount: value })}
+              />
+              {/* v30 多币种:币种另起一行,全宽显示币种全名+国旗(挨金额太窄会截断);
+                  选非本位币 → 账户下拉按币种过滤 + 已选账户清空(币种优先联动,
+                  transfer 不支持)。 */}
+              {form.tx_type !== 'transfer' ? (
+                <CurrencySelectorTrigger
+                  value={form.currency || baseCurrency}
+                  onChange={(code) =>
+                    onFormChange({
+                      ...form,
+                      currency:
+                        code.toUpperCase() === baseCurrency.toUpperCase()
+                          ? ''
+                          : code,
+                      account_name: ''
+                    })
+                  }
+                  ratesToBase={currencyRates}
+                  rateBase={baseCurrency}
+                />
+              ) : null}
+              {form.tx_type !== 'transfer' && form.fee_enabled ? (
+                <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.fee')}
+                      value={form.fee_label}
+                      onChange={(e) => onFormChange({ ...form, fee_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.fee_amount}
+                      onChange={(value) => onFormChange({ ...form, fee_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.discount')}
+                      value={form.discount_label}
+                      onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.discount_amount}
+                      onChange={(value) => onFormChange({ ...form, discount_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span>{t('transactions.field.total')}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            fee_enabled: false,
+                            fee_amount: '',
+                            fee_label: '',
+                            discount_amount: '',
+                            discount_label: ''
+                          })
+                        }
+                        className="text-muted-foreground/70 hover:text-foreground"
+                      >
+                        {t('transactions.field.feeDiscountRemove')}
+                      </button>
+                    </div>
+                    <span className="font-medium text-foreground">
+                      {computeTxTotalAmount(
+                        form.tx_type,
+                        Number(form.amount) || 0,
+                        Number(form.fee_amount) || 0,
+                        Number(form.discount_amount) || 0
+                      )}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             {isTransfer ? (
               <>
                 <div className="space-y-1">
@@ -913,16 +932,33 @@ export function TransactionsPanel({
               </div>
             )}
 
-            {/* 備註(需求 #11,Phase 11):從原本緊鄰「實際入帳日」的位置往上移到
-                帳戶/分類附近,對齊使用者反饋的欄位順序需求。2026-08-09 使用者
-                反饋:跟下面的 SwipeSmart 建議區塊左右交換,備註留在帳戶同一列
-                (右側欄位),建議區塊改成佔滿整行、放在帳戶下面一整排。 */}
-            <div className="space-y-1">
-              <Label>{t('transactions.table.note')}</Label>
+            {/* 專案(Phase 13,docs/PH13_PROJECT_SD.md;Phase 20 搬到帳戶旁邊同一
+                列):只支援 expense/income(跟債務/退款同款排除 transfer),手動
+                指定這筆交易屬於哪個專案。 */}
+            {!isTransfer ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.project')}</Label>
+                <button
+                  type="button"
+                  disabled={dictionariesLoading}
+                  onClick={() => setProjectPickerOpen(true)}
+                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className={`flex-1 truncate ${form.project_name ? '' : 'text-muted-foreground'}`}>
+                    {form.project_name || t('transactions.placeholder.project')}
+                  </span>
+                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                </button>
+              </div>
+            ) : null}
+
+            {/* 商家(Phase 20,2026-08 使用者回饋):從原本跟時間疊在同一個 grid
+                cell 拆開,獨立一整行放在帳戶/專案之後。 */}
+            <div className="space-y-1 md:col-span-2">
               <Input
-                placeholder={t('transactions.placeholder.note')}
-                value={form.note}
-                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
+                placeholder={t('transactions.placeholder.merchant')}
+                value={form.merchant}
+                onChange={(e) => onFormChange({ ...form, merchant: e.target.value })}
               />
             </div>
 
@@ -938,16 +974,15 @@ export function TransactionsPanel({
                 即時重新過濾)去跟規則的生效窗比對,不在窗內就不出現在候選
                 清單——但如果這條規則已經被這筆交易勾選過,即使已經不在窗內
                 也要保留顯示,讓使用者可以取消勾選(跟已停用規則若曾被勾選
-                仍要顯示同一個既有慣例)。2026-08-09 使用者反饋:從原本跟
-                標籤管理同一列的位置往上移到備註旁邊——備註只佔一個 grid
-                cell,右側原本是空的(建議刷卡區塊改成佔滿整行後空出來的
-                位置),剛好用來放這個。 */}
+                仍要顯示同一個既有慣例)。Phase 20(2026-08 使用者回饋)欄位重排
+                後,原本的搭配欄位「備註」搬到表單尾端跟標籤同一列,這裡改成
+                獨立佔滿整行(md:col-span-2),避免右側留白。 */}
             {form.tx_type === 'expense' &&
             accounts.find(
               (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
             )?.account_type === 'credit_card' &&
             rewardRules.length > 0 ? (
-              <div className="space-y-1">
+              <div className="space-y-1 md:col-span-2">
                 <Label>{t('transactions.field.rewardRules')}</Label>
                 <div className="flex flex-wrap gap-1.5">
                   {rewardRules
@@ -1134,78 +1169,9 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
-            {/* 專案(Phase 13,docs/PH13_PROJECT_SD.md):只支援 expense/income
-                (跟債務/退款同款排除 transfer),手動指定這筆交易屬於哪個專案。 */}
-            {!isTransfer ? (
-              <div className="space-y-1">
-                <Label>{t('transactions.field.project')}</Label>
-                <button
-                  type="button"
-                  disabled={dictionariesLoading}
-                  onClick={() => setProjectPickerOpen(true)}
-                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <span className={`flex-1 truncate ${form.project_name ? '' : 'text-muted-foreground'}`}>
-                    {form.project_name || t('transactions.placeholder.project')}
-                  </span>
-                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
-                </button>
-              </div>
-            ) : null}
-
-            <div className="space-y-1">
-              <Label>{t('tags.title')}</Label>
-              {/* tag 多选改用 TagPickerDialog —— mobile 风格的 chip 选择,带搜索
-                  + 颜色块,比 DropdownMenu 直观。trigger 按钮里把已选标签缩略
-                  显示成彩色 chip,空时占位文案。视觉上跟同行的 SelectTrigger 同高。 */}
-              <button
-                type="button"
-                disabled={dictionariesLoading}
-                onClick={() => setTagPickerOpen(true)}
-                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <span className="flex flex-1 items-center gap-1 overflow-hidden">
-                  {selectedTags.length === 0 ? (
-                    <span className="text-muted-foreground">
-                      {t('common.none')}
-                    </span>
-                  ) : (
-                    <span className="flex flex-wrap items-center gap-1 overflow-hidden">
-                      {selectedTags.slice(0, 3).map((name) => {
-                        const color = tagColorByName.get(name.toLowerCase()) || '#94a3b8'
-                        const fg = tagTextColorOn(color)
-                        return (
-                          <span
-                            key={name}
-                            className="inline-flex h-5 max-w-[120px] items-center rounded-full px-1.5 text-[11px] leading-none"
-                            style={{ background: color, color: fg }}
-                            title={name}
-                          >
-                            <span className="truncate">{name}</span>
-                          </span>
-                        )
-                      })}
-                      {selectedTags.length > 3 ? (
-                        <span className="text-[11px] text-muted-foreground">
-                          +{selectedTags.length - 3}
-                        </span>
-                      ) : null}
-                    </span>
-                  )}
-                </span>
-                <span className="text-xs text-muted-foreground opacity-60">▾</span>
-              </button>
-            </div>
-            {/* 退款(§2.6 / §2.12.3):發起入口已搬到交易明細頁的「退款」按鈕
-                (TransactionDetailDialog),這裡不再提供手動挑選退款對象的
-                下拉——編輯既有退款交易時 `form.refund_of_id` 原樣保留,只是
-                沒有 UI 能再手動改它,對齊 Moze「退款關聯只能從發起流程建立」
-                的設計。 */}
-
-            {/* 延後入帳(§2.10 Phase 5):進階/選填欄位,不常用 —— 只在消費日
-                跟實際入帳日不同時填(比如信用卡商戶延遲請款),用於對帳 /
-                信用卡帳單週期歸屬。刻意放在筆記欄位旁,不做成顯眼的必填
-                欄位。 */}
+            {/* 延後入帳(§2.10 Phase 5;Phase 20 搬到債務欄位旁邊同一列):進階/
+                選填欄位,不常用 —— 只在消費日跟實際入帳日不同時填(比如信用卡
+                商戶延遲請款),用於對帳/信用卡帳單週期歸屬。 */}
             <div className="space-y-1">
               <Label>{t('tx.form.deferredPostingAt.label')}</Label>
               <Input
@@ -1217,6 +1183,11 @@ export function TransactionsPanel({
                 {t('tx.form.deferredPostingAt.hint')}
               </div>
             </div>
+            {/* 退款(§2.6 / §2.12.3):發起入口已搬到交易明細頁的「退款」按鈕
+                (TransactionDetailDialog),這裡不再提供手動挑選退款對象的
+                下拉——編輯既有退款交易時 `form.refund_of_id` 原樣保留,只是
+                沒有 UI 能再手動改它,對齊 Moze「退款關聯只能從發起流程建立」
+                的設計。 */}
             {/* Phase 1.5(§2.12.1/§2.12.2):建交易当下顺便设成週期性收支/
                 分期付款起点。只在新建(非编辑)时显示,两者互斥(挂在同一笔
                 amount/happened_at 上,语意冲突);分期只对 expense 有意义。 */}
@@ -1562,6 +1533,76 @@ export function TransactionsPanel({
                 </button>
               </div>
             ) : null}
+
+            {/* 日期+時間(Phase 20,2026-08 使用者回饋):比照 Moze 參考圖搬到表單
+                尾端,貼近儲存按鈕,標籤/備註維持在其後的最後一段。 */}
+            <div className="space-y-1 md:col-span-2">
+              <Label>{t('transactions.table.time')}</Label>
+              <Input
+                type="datetime-local"
+                step={60}
+                value={isoToDatetimeLocal(form.happened_at)}
+                onChange={(e) =>
+                  onFormChange({
+                    ...form,
+                    happened_at: datetimeLocalToIso(e.target.value, form.happened_at)
+                  })
+                }
+              />
+            </div>
+
+            {/* 標籤/備註(Phase 20):維持在表單最後一段,兩者並列同一列。 */}
+            <div className="space-y-1">
+              <Label>{t('tags.title')}</Label>
+              {/* tag 多选改用 TagPickerDialog —— mobile 风格的 chip 选择,带搜索
+                  + 颜色块,比 DropdownMenu 直观。trigger 按钮里把已选标签缩略
+                  显示成彩色 chip,空时占位文案。视觉上跟同行的 SelectTrigger 同高。 */}
+              <button
+                type="button"
+                disabled={dictionariesLoading}
+                onClick={() => setTagPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="flex flex-1 items-center gap-1 overflow-hidden">
+                  {selectedTags.length === 0 ? (
+                    <span className="text-muted-foreground">
+                      {t('common.none')}
+                    </span>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-1 overflow-hidden">
+                      {selectedTags.slice(0, 3).map((name) => {
+                        const color = tagColorByName.get(name.toLowerCase()) || '#94a3b8'
+                        const fg = tagTextColorOn(color)
+                        return (
+                          <span
+                            key={name}
+                            className="inline-flex h-5 max-w-[120px] items-center rounded-full px-1.5 text-[11px] leading-none"
+                            style={{ background: color, color: fg }}
+                            title={name}
+                          >
+                            <span className="truncate">{name}</span>
+                          </span>
+                        )
+                      })}
+                      {selectedTags.length > 3 ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          +{selectedTags.length - 3}
+                        </span>
+                      ) : null}
+                    </span>
+                  )}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
+            </div>
+            <div className="space-y-1">
+              <Label>{t('transactions.table.note')}</Label>
+              <Input
+                placeholder={t('transactions.placeholder.note')}
+                value={form.note}
+                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
+              />
+            </div>
           </div>
           </div>
           <DialogFooter className="shrink-0 border-t border-border/60 bg-card px-6 py-4">
@@ -1648,6 +1689,7 @@ export function TransactionsPanel({
         }
         title={t('transactions.placeholder.categoryName')}
         onCreateNew={handleCreateCategory}
+        suggestedCategoryIds={categorySuggestions}
         onSelect={(cat) => {
           // 拆帳(§2.4):splitPickerIndex 非 null = 这次选的是某个 split 行的
           // 分类,写回 form.splits[index] 而不是主 category 字段。
@@ -1665,6 +1707,21 @@ export function TransactionsPanel({
             category_name: cat.name.trim(),
             category_kind: form.tx_type,
           })
+          // 依分類帶入常用帳戶(Phase 21):只在帳戶欄位還是空的(使用者沒
+          // 手動選過)才自動帶入,不覆蓋使用者自己已經選好的帳戶。
+          if (!isTransfer && fetchAccountSuggestions && writeLedgerId && !form.account_name.trim()) {
+            fetchAccountSuggestions(writeLedgerId, cat.id)
+              .then((ids) => {
+                if (formRef.current.account_name.trim()) return
+                const suggestedAccountId = ids[0]
+                if (!suggestedAccountId) return
+                const row = accounts.find((a) => a.id === suggestedAccountId)
+                if (!row) return
+                if (formRef.current.account_name.trim()) return
+                onFormChange({ ...formRef.current, account_name: row.name.trim() })
+              })
+              .catch(() => {})
+          }
         }}
       />
 
