@@ -804,6 +804,7 @@ def list_workspace_accounts(
                 avatar_cloud_file_id=acct.avatar_cloud_file_id,
                 avatar_cloud_sha256=acct.avatar_cloud_sha256,
                 swipesmart_card_id=acct.swipesmart_card_id,
+                include_in_total=acct.include_in_total,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,

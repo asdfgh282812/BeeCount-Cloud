@@ -521,6 +521,10 @@ def upsert_account(
         "avatar_cloud_sha256": _as_str(payload.get("avatarCloudSha256")),
         # SwipeSmart 卡片對照(Phase 14)。
         "swipesmart_card_id": _as_str(payload.get("swipesmartCardId")),
+        # 納入總餘額(Phase 18)。merge_with_existing_user 已把缺鍵的
+        # includeInTotal 從舊行補齊,這裡直接取 merged payload 的值;全新
+        # insert 首次缺失時給 True(預設納入)。
+        "include_in_total": _as_bool(payload.get("includeInTotal"), default=True),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)

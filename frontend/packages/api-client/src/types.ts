@@ -326,6 +326,10 @@ export type ReadAccount = {
   /** SwipeSmart 卡片對照(Phase 14):對應 SwipeSmart 的 CardId,null = 尚未
    *  對照。 */
   swipesmart_card_id?: string | null
+  /** 納入總餘額(Phase 18):false = 這個帳戶的餘額不列入淨資產/資產構成
+   *  總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響(跟 hidden
+   *  是兩個獨立維度)。缺省 true(旧接口未提供该字段时视为納入)。 */
+  include_in_total?: boolean
 }
 
 export type ReadCategory = {
@@ -787,6 +791,8 @@ export type AccountPayload = {
   avatar_cloud_sha256?: string | null
   /** SwipeSmart 卡片對照(Phase 14):update 传空字串解除對照;不传 = 不改。 */
   swipesmart_card_id?: string | null
+  /** 納入總餘額(Phase 18):create 缺省 true;update 不传 = 不改。 */
+  include_in_total?: boolean | null
 }
 
 export type AccountBillingMember = {

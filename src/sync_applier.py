@@ -160,6 +160,9 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("avatarCloudSha256", "avatar_cloud_sha256"),
         # SwipeSmart 卡片對照(Phase 14):None/空字串 = 沒有對照。
         ("swipesmartCardId", "swipesmart_card_id"),
+        # 納入總餘額(Phase 18):缺鍵時 _merge_from_spec 從 existing 行補齊,
+        # 不被 partial-update 沖成 False。
+        ("includeInTotal", "include_in_total"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),

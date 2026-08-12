@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -755,6 +756,14 @@ class UserAccountProjection(Base):
     # 意義。None = 使用者尚未在卡片對照設定視窗裡勾選對應,不參與「反查帳戶」
     # 但推薦建議仍會顯示(降級為純文字)。
     swipesmart_card_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 納入總餘額(Phase 18,docs/PH17_USER_FEEDBACK_2026-08_SD.md):對齊 Moze
+    # 「納入總餘額」開關,關閉後這個帳戶的餘額不列入淨資產/資產構成總額,但
+    # 帳戶本身、個別餘額顯示、底部分組列表都不受影響 —— 跟 `hidden` 是兩個
+    # 獨立維度(封存/隱藏管「要不要出現在列表」,這個欄位管「要不要計入總
+    # 數」)。default true:既有帳戶升級後預設維持現況「全部計入」不變。
+    include_in_total: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=true(), default=True
+    )
 
 
 class UserExchangeRateProjection(Base):

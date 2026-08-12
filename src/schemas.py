@@ -653,6 +653,9 @@ class ReadAccountOut(BaseModel):
     # SwipeSmart 卡片對照(Phase 14):對應 SwipeSmart 的 `CardId`,None = 尚未
     # 對照。前端卡片對照設定視窗用來顯示目前的對應狀態。
     swipesmart_card_id: str | None = None
+    # 納入總餘額(Phase 18):對齊 Moze,關閉後帳戶餘額不列入淨資產/資產構成
+    # 總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響。
+    include_in_total: bool = True
 
 
 class ReadCardRecommendationOut(BaseModel):
@@ -1554,6 +1557,8 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     # SwipeSmart 卡片對照(Phase 14):新建一般不设,建完卡再透過卡片對照
     # 設定視窗 PATCH。
     swipesmart_card_id: str | None = None
+    # 納入總餘額(Phase 18):新建預設 True(納入)。
+    include_in_total: bool = True
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -1579,6 +1584,8 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     avatar_cloud_sha256: str | None = None
     # SwipeSmart 卡片對照(Phase 14):None = 不改;空字串 = 解除對照。
     swipesmart_card_id: str | None = None
+    # 納入總餘額(Phase 18):None = 不改(PATCH exclude_unset)。
+    include_in_total: bool | None = None
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

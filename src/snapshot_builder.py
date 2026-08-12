@@ -264,6 +264,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.avatar_cloud_file_id,
         UserAccountProjection.avatar_cloud_sha256,
         UserAccountProjection.swipesmart_card_id,
+        UserAccountProjection.include_in_total,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -284,6 +285,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         avatar_cloud_file_id,
         avatar_cloud_sha256,
         swipesmart_card_id,
+        include_in_total,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -327,6 +329,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # SwipeSmart 卡片對照(Phase 14)。
         if swipesmart_card_id:
             acc["swipesmartCardId"] = swipesmart_card_id
+        # 納入總餘額(Phase 18):NOT NULL 布尔列,同 hidden/autoPayEnabled 无
+        # 条件输出,避免这个 SELECT 漏选导致 diff-emit 重建基线时静默清空。
+        acc["includeInTotal"] = bool(include_in_total)
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。

@@ -41,6 +41,69 @@ export function accountBalance(row: ReadAccount): number {
     : row.initial_balance ?? 0
 }
 
+/** `account_group`(主帳戶)自身有沒有掛信用卡帳單欄位(額度/帳單日/還款日
+ *  任一有值)—— 判斷"这个群组具体是信用卡群组还是别的"的既有推断法(区别于
+ *  真正的 account_type)。单一来源,供 {@link resolveAccountGroupDisplayType}
+ *  (分组归属)与 AccountListRow(单列信用卡样式渲染)共用,避免各自维护一份。 */
+export function hasCreditBillingFields(row: ReadAccount): boolean {
+  return (
+    typeof row.credit_limit === 'number' ||
+    Boolean(row.billing_day) ||
+    Boolean(row.payment_due_day)
+  )
+}
+
+/**
+ * 需求 #1(2026-08 Phase 17):按 `parent_account_id` 建立「父帳戶 id → 子帳戶
+ * 列表」的桶,供 {@link resolveRowDisplayType} 判断某个 `account_group` 底下
+ * 挂了哪些子帐户。入参通常是同一批要一起分组/汇总的 rows(例如某个币种内的
+ * 全量账户),顺序不影响结果。
+ */
+export function buildParentChildrenMap(rows: ReadAccount[]): Map<string, ReadAccount[]> {
+  const map = new Map<string, ReadAccount[]>()
+  for (const row of rows) {
+    if (!row.parent_account_id) continue
+    const arr = map.get(row.parent_account_id)
+    if (arr) arr.push(row)
+    else map.set(row.parent_account_id, [row])
+  }
+  return map
+}
+
+/**
+ * 需求 #1(2026-08 Phase 17):`account_group`(主帳戶,合併帳單容器)分组归属
+ * 判断 —— 底下挂的子帐户类型决定它该归到「信用卡」分组还是「银行」分组等,
+ * 而不是永远自成一个独立的「主帐户」分组(对齐 Moze:主帳戶按其子帳戶內容歸類,
+ * 使用者截图里"玉山信用卡"主帐户留在信用卡分组正是这个预期)。
+ *
+ * - 已有子帐户:全部同一种 account_type → 用该类型;混合多种类型 → 保守
+ *   fallback 回 'account_group' 独立分组(避免猜错,混挂视为边界情况)。
+ * - 还没有子帐户(刚建立):退回既有的 credit-billing 字段推断(见
+ *   {@link hasCreditBillingFields})—— 有额度/帐单日/还款日任一有值 →
+ *   'credit_card';否则维持 'account_group',等挂上子帐户后才会正确归类
+ *   (过渡状态,不影响资料正确性,只影响新建当下的视觉分组)。
+ */
+export function resolveAccountGroupDisplayType(group: ReadAccount, childRows: ReadAccount[]): string {
+  if (childRows.length > 0) {
+    const types = new Set(childRows.map((c) => c.account_type || 'other'))
+    if (types.size === 1) return [...types][0]
+    return 'account_group'
+  }
+  return hasCreditBillingFields(group) ? 'credit_card' : 'account_group'
+}
+
+/** 单行的「显示用类型」:非 `account_group` 原样返回 `account_type`;
+ *  `account_group` 则走 {@link resolveAccountGroupDisplayType}。分组
+ *  (`computeTypeGroups`)与净值统计(`computeCurrencySummary`)都要用这个显示
+ *  用类型而非原始 `account_type`,才能让信用卡主帳戶群組正确歸類且计入负债。 */
+export function resolveRowDisplayType(
+  row: ReadAccount,
+  childrenByParent: Map<string, ReadAccount[]>
+): string {
+  if (row.account_type !== 'account_group') return row.account_type || 'other'
+  return resolveAccountGroupDisplayType(row, childrenByParent.get(row.id) || [])
+}
+
 /**
  * 按币种切分账户 —— 所有跨币种聚合的第一步。币种缺省按 CNY,统一大写归一
  * (`usd` / `USD` 视作同一种)。返回的 Map 保持插入顺序。
@@ -67,11 +130,16 @@ export function splitByCurrency(rows: ReadAccount[]): Map<string, ReadAccount[]>
  * 得到的就是那个错的合并数字,这正是本模块要避免的。
  */
 export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
+  // 掛信用卡子帳戶的 account_group 主帳戶要计入负债(需求 #1,Phase 17)——
+  // 用显示用类型(resolveRowDisplayType)而非原始 account_type 判断,否则这类
+  // 主帳戶群組的小计仍会被当资产而非负债计入净值。
+  const childrenByParent = buildParentChildrenMap(rows)
   let assetTotal = 0
   let liabilityTotal = 0
   for (const row of rows) {
     const raw = accountBalance(row)
-    if (LIABILITY_TYPES.has(row.account_type || '')) liabilityTotal += raw
+    const displayType = resolveRowDisplayType(row, childrenByParent)
+    if (LIABILITY_TYPES.has(displayType)) liabilityTotal += raw
     else assetTotal += raw
   }
   return { assetTotal, liabilityTotal, netWorth: assetTotal + liabilityTotal }

@@ -489,6 +489,7 @@ def list_accounts(
             avatar_cloud_file_id=row.avatar_cloud_file_id,
             avatar_cloud_sha256=row.avatar_cloud_sha256,
             swipesmart_card_id=row.swipesmart_card_id,
+            include_in_total=row.include_in_total,
         )
         for row in rows
     ]

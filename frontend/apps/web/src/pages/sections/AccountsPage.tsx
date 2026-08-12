@@ -245,6 +245,7 @@ export function AccountsPage() {
       auto_pay_from_account_id: row.auto_pay_from_account_id ?? '',
       avatar_cloud_file_id: row.avatar_cloud_file_id ?? '',
       avatar_cloud_sha256: row.avatar_cloud_sha256 ?? '',
+      include_in_total: row.include_in_total !== false,
     })
   }, [])
 
@@ -344,6 +345,8 @@ export function AccountsPage() {
         // credit_limit 等只对 billing-root 生效那样要清空。
         avatar_cloud_file_id: form.avatar_cloud_file_id.trim() || null,
         avatar_cloud_sha256: form.avatar_cloud_sha256.trim() || null,
+        // 納入總餘額(Phase 18):新建默认 true;编辑时带当前切换状态。
+        include_in_total: form.include_in_total,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -441,8 +444,17 @@ export function AccountsPage() {
   //     此时折算率恒为 1、missing 必空、rateDate 置 undefined 不显脚注/≈)。
   //   - buckets:每币种 summary + 分组,既给合并 donut(mergeGroupsToBase),也给详情 dialog 的分币种卡复用。
   //   - mergedGroups:各币种 groups × 汇率折算后按 type 聚合成一份主币种构成,喂 donut(currency=effectiveBase)。
+  // 納入總餘額(Phase 18):这个过滤独立于 hidden 切分——一个账户可以「隱藏
+  // 但仍計入總額」，也可以「顯示但不計入總額」，两者互不耦合。只影响这张
+  // 折算匯總卡（淨資產/資產/負債/構成 donut），不影响 AccountsPanel 内部
+  // 的 listGroups 底部分組列表。
+  const totalIncludedRows = useMemo(
+    () => rows.filter((row) => row.include_in_total !== false),
+    [rows]
+  )
+
   const converted = useMemo(() => {
-    const byCur = splitByCurrency(rows)
+    const byCur = splitByCurrency(totalIncludedRows)
     if (byCur.size === 0) return null
     // 主币种未设时:单币种回退到该唯一币种(折算率 1,零误差);多币种则无从折算。
     const effectiveBase = base || (byCur.size === 1 ? [...byCur.keys()][0] : '')
@@ -488,7 +500,7 @@ export function AccountsPage() {
       missing: [...missing].sort(),
       rateDate: singleCurrency ? undefined : rates?.rate_date,
     }
-  }, [base, rows, rates, rateOverrides, t])
+  }, [base, totalIncludedRows, rates, rateOverrides, t])
 
   return (
     <>

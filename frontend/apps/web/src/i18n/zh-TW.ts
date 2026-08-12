@@ -1673,6 +1673,8 @@ const zhTW = {
   'accounts.hidden.toggleHint': '隱藏後無法再記帳到它,新增記帳時也不再顯示;歷史交易與餘額保留,可隨時恢復。',
   'accounts.hidden.badge': '已隱藏',
   'accounts.hidden.restore': '恢復',
+  'accounts.includeInTotal.toggleLabel': '納入總餘額',
+  'accounts.includeInTotal.toggleHint': '關閉後,這個帳戶的餘額不列入淨資產/資產構成總額;帳戶本身、個別餘額顯示與底部分組列表都不受影響,仍可正常記帳。',
   'accounts.autoPay.toggleLabel': '自動扣繳',
   'accounts.autoPay.toggleHint': '到了繳款截止日,自動從指定帳戶轉帳繳清應繳金額(該帳戶需有足夠餘額)。',
   'accounts.autoPay.sourceAccount': '扣款來源帳戶',

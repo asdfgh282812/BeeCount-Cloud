@@ -124,6 +124,9 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     ("avatar_cloud_sha256", "avatarCloudSha256", "str"),
     # SwipeSmart 卡片對照(Phase 14):空字串/None=解除對照。
     ("swipesmart_card_id", "swipesmartCardId", "str"),
+    # 納入總餘額(Phase 18):Web create/update 请求体带 include_in_total(bool)
+    # 时才写;不带 key → 保留原值(不冲掉已有设置,契约对齐 hidden 的既有语义)。
+    ("include_in_total", "includeInTotal", "bool"),
 )
 
 

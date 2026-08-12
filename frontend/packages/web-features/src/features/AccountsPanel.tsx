@@ -35,8 +35,10 @@ import {
   accountBalance,
   type AssetGroup,
   type AssetSummary,
+  buildParentChildrenMap,
   computeCurrencySummary,
   LIABILITY_TYPES,
+  resolveRowDisplayType,
   splitByCurrency
 } from '../lib/assetAggregation'
 
@@ -604,9 +606,13 @@ const ACCOUNT_ORDER: string[] = [
 /** 按账户类型分组。每组小计再按币种拆:同一类型若混多币种(只会出现在底部跨币种
  *  列表),各币种独立累计、不相加。单币种入参时每组只有 1 条 subtotal。 */
 export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string): AssetGroup[] {
+  // 需求 #1(Phase 17):挂信用卡/银行子帐户的 account_group 主帐户按子帐户
+  // 内容归到对应分组,不再永远自成一个独立的「主帐户」分组
+  // (见 resolveRowDisplayType/resolveAccountGroupDisplayType)。
+  const childrenByParent = buildParentChildrenMap(rows)
   const buckets: Record<string, ReadAccount[]> = {}
   for (const row of rows) {
-    const key = row.account_type || 'other'
+    const key = resolveRowDisplayType(row, childrenByParent)
     buckets[key] = buckets[key] || []
     buckets[key].push(row)
   }
@@ -768,8 +774,15 @@ export function AccountsPanel({
   // 按币种切分后再聚合 —— 资产统计绝不跨币种相加(见 computeCurrencySummary)。
   // 单币种(绝大多数场景)→ currencyBuckets 只有 1 条,顶部展示完全维持原样。
   // 用全量 rows(含隐藏)算,对齐 D1:隐藏账户仍计入净资产/资产构成。
+  // 納入總餘額(Phase 18):这个过滤独立于 hidden/visibleRows 切分——一个
+  // 账户可以「隐藏但仍计入总额」,也可以「显示但不计入总额」,两个开关互不
+  // 耦合。只影响顶部净资产 hero / 资产构成饼图,不影响下方 listGroups。
+  const totalIncludedRows = useMemo(
+    () => rows.filter((row) => row.include_in_total !== false),
+    [rows]
+  )
   const currencyBuckets = useMemo<CurrencyBucket[]>(() => {
-    return [...splitByCurrency(rows).entries()]
+    return [...splitByCurrency(totalIncludedRows).entries()]
       .map(([currency, curRows]) => ({
         currency,
         summary: computeCurrencySummary(curRows),
@@ -782,7 +795,7 @@ export function AccountsPanel({
           Math.abs(b.summary.liabilityTotal) -
           (a.summary.assetTotal + Math.abs(a.summary.liabilityTotal))
       )
-  }, [rows, t])
+  }, [totalIncludedRows, t])
 
   // 底部列表:跨币种按类型分组(每组小计按币种拆,见 computeTypeGroups)。
   // 只用在用账户 —— 隐藏账户退场到底部「已隐藏」分区(HiddenAccountsSection)。
@@ -1232,6 +1245,34 @@ export function AccountsPanel({
                 </button>
               </div>
             ) : null}
+
+            {/* 納入總餘額(Phase 18):對齊 Moze,跟 hidden 是兩個獨立維度
+                (封存/隱藏管「要不要出現在列表」,這個開關管「要不要計入總
+                數」)。新建/編輯都可設,預設開啟。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <div className="min-w-0 pr-3">
+                <p className="text-sm font-medium">{t('accounts.includeInTotal.toggleLabel')}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t('accounts.includeInTotal.toggleHint')}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.include_in_total}
+                aria-label={t('accounts.includeInTotal.toggleLabel') as string}
+                onClick={() => onFormChange({ ...form, include_in_total: !form.include_in_total })}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  form.include_in_total ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    form.include_in_total ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
           <DialogFooter>
             <Button

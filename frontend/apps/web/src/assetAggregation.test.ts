@@ -3,8 +3,10 @@ import {
   accountBalance,
   type AssetGroup,
   computeCurrencySummary,
+  computeTypeGroups,
   effectiveRateToBase,
   mergeGroupsToBase,
+  resolveAccountGroupDisplayType,
   splitByCurrency
 } from '@beecount/web-features'
 import { describe, expect, it } from 'vitest'
@@ -213,5 +215,182 @@ describe('mergeGroupsToBase — 折算合并构成', () => {
     // 只剩 CNY 的 1000;EUR 的 999 既没按 1 加、也没生成新组。
     expect(cash.subtotals[0].value).toBe(1000)
     expect(cash.subtotals[0].value).not.toBe(1999)
+  })
+})
+
+/**
+ * Phase 17(需求 #1)—— 主帐户(account_group)按子帐户内容归组,而非永远独立
+ * 成一个「主帐户」分组。锁住 resolveAccountGroupDisplayType 三个分支 +
+ * computeTypeGroups/computeCurrencySummary 的落地效果。
+ */
+describe('resolveAccountGroupDisplayType — 主帳戶依子帳戶內容分組(Phase 17)', () => {
+  function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount {
+    return p as ReadAccount
+  }
+
+  it('已有子帳戶且類型一致 → 用該類型', () => {
+    const group = acc({ id: 'g1', account_type: 'account_group' })
+    const children = [
+      acc({ id: 'c1', account_type: 'credit_card', parent_account_id: 'g1' }),
+      acc({ id: 'c2', account_type: 'credit_card', parent_account_id: 'g1' })
+    ]
+    expect(resolveAccountGroupDisplayType(group, children)).toBe('credit_card')
+  })
+
+  it('子帳戶類型混合 → 保守 fallback 回 account_group', () => {
+    const group = acc({ id: 'g1', account_type: 'account_group' })
+    const children = [
+      acc({ id: 'c1', account_type: 'credit_card', parent_account_id: 'g1' }),
+      acc({ id: 'c2', account_type: 'bank_card', parent_account_id: 'g1' })
+    ]
+    expect(resolveAccountGroupDisplayType(group, children)).toBe('account_group')
+  })
+
+  it('沒有子帳戶時 → 退回既有 credit-fields 推斷(有帳單日/額度/還款日 → credit_card)', () => {
+    expect(resolveAccountGroupDisplayType(acc({ id: 'g1', account_type: 'account_group', credit_limit: 10000 }), [])).toBe(
+      'credit_card'
+    )
+    expect(resolveAccountGroupDisplayType(acc({ id: 'g1', account_type: 'account_group', billing_day: 5 }), [])).toBe(
+      'credit_card'
+    )
+    expect(resolveAccountGroupDisplayType(acc({ id: 'g1', account_type: 'account_group', payment_due_day: 20 }), [])).toBe(
+      'credit_card'
+    )
+  })
+
+  it('沒有子帳戶也沒有 credit 欄位 → 維持獨立 account_group', () => {
+    expect(resolveAccountGroupDisplayType(acc({ id: 'g1', account_type: 'account_group' }), [])).toBe('account_group')
+  })
+})
+
+describe('computeTypeGroups — 分組歸屬 + 負債計入(Phase 17)', () => {
+  const t = (k: string) => k
+  function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount {
+    return p as ReadAccount
+  }
+
+  it('掛信用卡子帳戶的主帳戶歸類到信用卡分組,且小計計入負債', () => {
+    const rows = [
+      acc({ id: 'g1', name: '玉山信用卡', account_type: 'account_group', balance: 0 }),
+      acc({ id: 'c1', name: 'U Bear', account_type: 'credit_card', parent_account_id: 'g1', balance: -7566 }),
+      acc({ id: 'c2', name: 'Pi', account_type: 'credit_card', parent_account_id: 'g1', balance: -600 })
+    ]
+    const groups = computeTypeGroups(rows, t)
+    // 不应再出现独立的 account_group 分组。
+    expect(groups.find((g) => g.type === 'account_group')).toBeUndefined()
+    const ccGroup = groups.find((g) => g.type === 'credit_card')!
+    expect(ccGroup).toBeDefined()
+    expect(ccGroup.isLiability).toBe(true)
+    expect(ccGroup.rows.map((r) => r.id).sort()).toEqual(['c1', 'c2', 'g1'].sort())
+  })
+
+  it('掛銀行子帳戶的主帳戶歸類到銀行分組', () => {
+    const rows = [
+      acc({ id: 'g1', name: '主帳戶', account_type: 'account_group', balance: 0 }),
+      acc({ id: 'c1', name: '子卡', account_type: 'bank_card', parent_account_id: 'g1', balance: 100 })
+    ]
+    const groups = computeTypeGroups(rows, t)
+    expect(groups.find((g) => g.type === 'account_group')).toBeUndefined()
+    const bankGroup = groups.find((g) => g.type === 'bank_card')!
+    expect(bankGroup).toBeDefined()
+    expect(bankGroup.isLiability).toBe(false)
+  })
+
+  it('沒有子帳戶時退回既有 credit-fields 推斷', () => {
+    const rows = [acc({ id: 'g1', name: '主帳戶', account_type: 'account_group', billing_day: 5, balance: -500 })]
+    const groups = computeTypeGroups(rows, t)
+    expect(groups.find((g) => g.type === 'credit_card')).toBeDefined()
+    expect(groups.find((g) => g.type === 'account_group')).toBeUndefined()
+  })
+
+  it('混合子帳戶類型時 fallback 維持獨立主帳戶分組', () => {
+    const rows = [
+      acc({ id: 'g1', name: '主帳戶', account_type: 'account_group', balance: 0 }),
+      acc({ id: 'c1', name: '信用卡子卡', account_type: 'credit_card', parent_account_id: 'g1', balance: -100 }),
+      acc({ id: 'c2', name: '銀行子卡', account_type: 'bank_card', parent_account_id: 'g1', balance: 200 })
+    ]
+    const groups = computeTypeGroups(rows, t)
+    const fallbackGroup = groups.find((g) => g.type === 'account_group')!
+    expect(fallbackGroup).toBeDefined()
+    expect(fallbackGroup.rows.map((r) => r.id)).toEqual(['g1'])
+  })
+})
+
+describe('computeCurrencySummary — 信用卡主帳戶群組計入負債(Phase 17 連帶修正)', () => {
+  function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount {
+    return p as ReadAccount
+  }
+
+  it('掛信用卡子帳戶的 account_group 主帳戶本身也計入負債(不再誤計資產)', () => {
+    const rows = [
+      acc({ id: 'cash1', account_type: 'cash', balance: 1000 }),
+      acc({ id: 'g1', account_type: 'account_group', balance: 0 }),
+      acc({ id: 'c1', account_type: 'credit_card', parent_account_id: 'g1', balance: -300 })
+    ]
+    const s = computeCurrencySummary(rows)
+    expect(s.assetTotal).toBe(1000)
+    expect(s.liabilityTotal).toBe(-300)
+    expect(s.netWorth).toBe(700)
+  })
+})
+
+/**
+ * Phase 18(需求 #4)—— 帳戶「納入總餘額」開關。過濾邏輯是純呼叫端行為
+ * (`rows.filter(r => r.include_in_total !== false)`,不塞進
+ * `computeCurrencySummary`/`computeTypeGroups` 內部),這裡直接鎖同一個過濾
+ * 謂詞 + 兩個純函式的組合行為,對齊實際用法。
+ *
+ * 手測踩到的坑:實際渲染路徑是 `AccountsPage.tsx`(apps/web)的「折算匯總卡」
+ * `converted` useMemo(`splitByCurrency`→`computeCurrencySummary`/
+ * `mergeGroupsToBase`),不是 `AccountsPanel.tsx` 內部的 `currencyBuckets`
+ * ——後者只有在 `hideCurrencyCards=false` 時才會渲染,但 `AccountsPage.tsx`
+ * 唯一的呼叫點永遠傳 `hideCurrencyCards`(true),所以 `AccountsPanel.tsx`
+ * 那份 hero/donut 其實是死路徑。兩處都要套用同一個過濾謂詞,只改
+ * `AccountsPanel.tsx` 會讓瀏覽器手測看到「關掉開關但頂部總額沒變」——
+ * SD 原本假設「只有 AccountsPanel.tsx 這一處」已經過時,`AccountsPage.tsx`
+ * 的折算匯總卡是後來新增、SD 撰寫時還不存在的第二個總額計算點。
+ */
+describe('include_in_total 過濾(Phase 18)—— 獨立於 hidden 維度', () => {
+  function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount {
+    return p as ReadAccount
+  }
+  const totalIncluded = (rows: ReadAccount[]) => rows.filter((r) => r.include_in_total !== false)
+
+  it('include_in_total=false 的帳戶不計入 assetTotal/liabilityTotal/netWorth', () => {
+    const rows = [
+      acc({ id: 'a1', account_type: 'cash', balance: 1000 }),
+      acc({ id: 'a2', account_type: 'cash', balance: 500, include_in_total: false }),
+      acc({ id: 'a3', account_type: 'credit_card', balance: -300 }),
+      acc({ id: 'a4', account_type: 'credit_card', balance: -200, include_in_total: false })
+    ]
+    const s = computeCurrencySummary(totalIncluded(rows))
+    expect(s.assetTotal).toBe(1000) // a2(500)被排除
+    expect(s.liabilityTotal).toBe(-300) // a4(-200)被排除
+    expect(s.netWorth).toBe(700)
+  })
+
+  it('未設置(undefined)視同 true —— 舊資料/新帳戶預設納入', () => {
+    const rows = [acc({ id: 'a1', account_type: 'cash', balance: 1000 })]
+    expect(totalIncluded(rows)).toHaveLength(1)
+    expect(computeCurrencySummary(totalIncluded(rows)).assetTotal).toBe(1000)
+  })
+
+  it('與 hidden 互不耦合:隱藏但納入總額的帳戶仍計入總額;顯示但不納入總額的帳戶不計入', () => {
+    const rows = [
+      acc({ id: 'a1', account_type: 'cash', balance: 100, hidden: true, include_in_total: true }),
+      acc({ id: 'a2', account_type: 'cash', balance: 200, hidden: false, include_in_total: false })
+    ]
+    const s = computeCurrencySummary(totalIncluded(rows))
+    expect(s.assetTotal).toBe(100) // a1(隱藏但納入)算進去,a2(顯示但不納入)被排除
+  })
+
+  it('底部分組列表(computeTypeGroups)不受 include_in_total 影響 —— 帳戶仍正常顯示', () => {
+    const rows = [
+      acc({ id: 'a1', account_type: 'cash', balance: 100, include_in_total: false })
+    ]
+    const groups = computeTypeGroups(rows, (k: string) => k)
+    const cashGroup = groups.find((g) => g.type === 'cash')!
+    expect(cashGroup).toBeDefined()
+    expect(cashGroup.rows.map((r) => r.id)).toEqual(['a1'])
   })
 })

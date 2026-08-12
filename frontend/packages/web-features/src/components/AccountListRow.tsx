@@ -5,7 +5,7 @@ import { useT } from '@beecount/ui'
 import type { ReadAccount } from '@beecount/api-client'
 
 import { Amount } from './Amount'
-import { LIABILITY_TYPES, type AssetGroup } from '../lib/assetAggregation'
+import { hasCreditBillingFields, LIABILITY_TYPES, type AssetGroup } from '../lib/assetAggregation'
 
 export const VALUATION_TYPES_SET = new Set([
   'real_estate',
@@ -167,9 +167,7 @@ export function AccountListRow({
   // account_group(主帳戶)未来也会挂靠银行帐户群组，不是天生就该走信用卡样式——
   // 用「自己身上是否设了额度/帳單日/還款日」这个既有的 credit-billing-root 信号
   // 来分辨这个群组具体是信用卡群组还是别的，不看 account_type 本身。
-  const isCreditStyleGroup =
-    accountType === 'account_group' &&
-    (typeof row.credit_limit === 'number' || Boolean(row.billing_day) || Boolean(row.payment_due_day))
+  const isCreditStyleGroup = accountType === 'account_group' && hasCreditBillingFields(row)
   const isCreditCard = accountType === 'credit_card' || isCreditStyleGroup
   const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
   const ccOwed = Math.max(0, -displayBalance)

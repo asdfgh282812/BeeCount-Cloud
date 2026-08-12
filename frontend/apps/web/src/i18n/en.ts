@@ -1675,6 +1675,9 @@ const en = {
     "It won't be selectable for new records. History and balance are kept, and you can restore it anytime.",
   'accounts.hidden.badge': 'Hidden',
   'accounts.hidden.restore': 'Restore',
+  'accounts.includeInTotal.toggleLabel': 'Include in total balance',
+  'accounts.includeInTotal.toggleHint':
+    "When off, this account's balance is excluded from the net worth / asset breakdown totals. The account itself, its own balance display, and the grouped list below are unaffected — you can still record transactions on it.",
   'accounts.autoPay.toggleLabel': 'Auto-pay',
   'accounts.autoPay.toggleHint':
     'On the due date, automatically transfer from the selected account to pay off the balance (requires sufficient funds).',

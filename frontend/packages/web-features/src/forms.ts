@@ -178,6 +178,10 @@ export type AccountForm = {
   /** 帳戶頭像(2026-08-02 補強):`AttachmentFile.id`,空字符串 = 沒有頭像。 */
   avatar_cloud_file_id: string
   avatar_cloud_sha256: string
+  /** 納入總餘額(Phase 18):對齊 Moze,關閉後這個帳戶的餘額不列入淨資產/
+   *  資產構成總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響。
+   *  新建/未設置一律預設 true(納入)。 */
+  include_in_total: boolean
 }
 
 export type CategoryForm = {
@@ -395,6 +399,7 @@ export const accountDefaults = (): AccountForm => ({
   auto_pay_from_account_id: '',
   avatar_cloud_file_id: '',
   avatar_cloud_sha256: '',
+  include_in_total: true,
 })
 
 export const categoryDefaults = (): CategoryForm => ({

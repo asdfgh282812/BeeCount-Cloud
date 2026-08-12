@@ -1713,6 +1713,8 @@ const zhCN = {
   'accounts.hidden.toggleHint': '隐藏后无法再记账到它,新增记账时也不再显示;历史交易与余额保留,可随时恢复。',
   'accounts.hidden.badge': '已隐藏',
   'accounts.hidden.restore': '恢复',
+  'accounts.includeInTotal.toggleLabel': '纳入总余额',
+  'accounts.includeInTotal.toggleHint': '关闭后,这个账户的余额不列入净资产/资产构成总额;账户本身、个别余额显示与底部分组列表都不受影响,仍可正常记账。',
   'accounts.autoPay.toggleLabel': '自动扣缴',
   'accounts.autoPay.toggleHint': '到了还款截止日,自动从指定账户转账缴清应缴金额(该账户需有足够余额)。',
   'accounts.autoPay.sourceAccount': '扣款来源账户',
