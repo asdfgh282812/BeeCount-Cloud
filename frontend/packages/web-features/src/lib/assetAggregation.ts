@@ -120,9 +120,34 @@ export function splitByCurrency(rows: ReadAccount[]): Map<string, ReadAccount[]>
 }
 
 /**
- * 单币种净值汇总。资产、负债都**带符号**累加,净值 = 资产 + 负债,跟 mobile
- * `local_account_repository.getNetWorthBreakdown` 口径一致:负债账户余额通常为负
- * (欠款,扣减净值),为正表示溢缴款(还多了的钱,经济上是资产头寸,增加净值)。
+ * 找出「父帳戶(account_group)也在同一批 rows 裡」的子帳戶 id 集合。後端
+ * (`routers/read/workspace.py`)已經把子帳戶的 `balance`/`income_total`/
+ * `expense_total` 加總回填到 `account_group` 主帳戶自己身上(見該檔案
+ * "主帳戶…子帳戶的統計要加總回填到群組自己身上"註解),所以主帳戶的
+ * `accountBalance()` 本身就已經是「自己 + 全部子帳戶」的合計。前端任何對
+ * 一批 rows 做金額加總(淨值 / 分組小計)時,若同時把主帳戶跟它的子帳戶都算
+ * 進去,子帳戶的錢就會被重複計一次 —— 這正是使用者回報「掛了子帳戶的分組
+ * 小計變兩倍」的根因。呼叫方應該用這個集合把子帳戶從「加總」裡剔除(仍保留
+ * 在 `rows` 清單裡供巢狀渲染),只在父帳戶身上算一次。
+ */
+export function buildDoubleCountedChildIds(rows: ReadAccount[]): Set<string> {
+  const idSet = new Set(rows.map((r) => r.id))
+  const result = new Set<string>()
+  for (const row of rows) {
+    if (row.parent_account_id && idSet.has(row.parent_account_id)) {
+      result.add(row.id)
+    }
+  }
+  return result
+}
+
+/**
+ * 单币种净值汇总。净值 = 资产 + 负债,跟 mobile `local_account_repository.getNetWorthBreakdown`
+ * 口径一致。负债类账户(信用卡/贷款)逐账户按正负拆开算,而不是先加总再看整组净额的正负
+ * (2026-08-12 使用者回报:同一张卡溢缴 500,顶部「负债」方块却仍算成负债、没被当资产)——
+ * 欠款(负)留在 liabilityTotal 扣减净值;溢缴(正,还多缴的钱,经济上是应收/资产头寸)记进
+ * assetTotal。两个账户一张欠 300、一张溢缴 800 这种混合场景,也要先各自拆完再加总,不能
+ * 把两张卡的余额先加成净额 500 才拆 —— 那样欠款的 300 会凭空消失。
  * 历史教训:这里曾逐账户 `Math.abs` 再做减法,正常数据(欠款为负)下结果碰巧相同,
  * 直到溢缴/正余额负债账户出现才暴露 —— 把多打进去的钱又反向当欠款扣了一遍。
  *
@@ -134,13 +159,21 @@ export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
   // 用显示用类型(resolveRowDisplayType)而非原始 account_type 判断,否则这类
   // 主帳戶群組的小计仍会被当资产而非负债计入净值。
   const childrenByParent = buildParentChildrenMap(rows)
+  // 主帳戶的 balance 已含子帳戶加總(見 buildDoubleCountedChildIds 註解),
+  // 子帳戶自己不能再重複計一次,否則淨值/資產/負債都會膨脹成兩倍。
+  const doubleCountedIds = buildDoubleCountedChildIds(rows)
   let assetTotal = 0
   let liabilityTotal = 0
   for (const row of rows) {
+    if (doubleCountedIds.has(row.id)) continue
     const raw = accountBalance(row)
     const displayType = resolveRowDisplayType(row, childrenByParent)
-    if (LIABILITY_TYPES.has(displayType)) liabilityTotal += raw
-    else assetTotal += raw
+    if (LIABILITY_TYPES.has(displayType)) {
+      if (raw > 0) assetTotal += raw
+      else liabilityTotal += raw
+    } else {
+      assetTotal += raw
+    }
   }
   return { assetTotal, liabilityTotal, netWorth: assetTotal + liabilityTotal }
 }

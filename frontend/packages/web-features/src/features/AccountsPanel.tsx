@@ -35,6 +35,7 @@ import {
   accountBalance,
   type AssetGroup,
   type AssetSummary,
+  buildDoubleCountedChildIds,
   buildParentChildrenMap,
   computeCurrencySummary,
   LIABILITY_TYPES,
@@ -189,7 +190,11 @@ function MobileStyleAssets({
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">
-                      {group.isLiability ? t('accounts.totalOwed') : t('accounts.totalBalance')}
+                      {/* 淨額為正(溢繳,例如信用卡繳超額)時不該再說「合計欠款」——
+                          文案跟著色調(見下方 Amount tone)一起翻轉才不會自相矛盾。 */}
+                      {group.isLiability && group.subtotals.every((st) => st.value <= 0)
+                        ? t('accounts.totalOwed')
+                        : t('accounts.totalBalance')}
                     </div>
                   </div>
                 </div>
@@ -205,7 +210,10 @@ function MobileStyleAssets({
                         showCurrency={multiCurrency}
                         size={group.subtotals.length > 1 ? 'md' : 'xl'}
                         bold
-                        tone={group.isLiability ? 'negative' : 'default'}
+                        // 負債分組小計帶符號展示色調:欠款(負)才是警示紅,溢繳(正,
+                        // 例如信用卡繳超額)經濟上是資產頭寸,不該跟欠款同一種色
+                        // (2026-08-12 使用者回報:信用卡溢繳 500 卻顯示欠款配色)。
+                        tone={group.isLiability ? (st.value > 0 ? 'positive' : 'negative') : 'default'}
                       />
                     ))}
                   </div>
@@ -280,9 +288,13 @@ function HiddenAccountsSection({
 
   if (rows.length === 0) return null
 
-  // 小计按币种分别累加,绝不跨币种相加(与 computeTypeGroups 同口径)。
+  // 小计按币种分别累加,绝不跨币种相加(与 computeTypeGroups 同口径)。主帳戶
+  // 的 balance 已含子帳戶加總,子帳戶要排除避免重複計(見
+  // buildDoubleCountedChildIds 註解)。
+  const doubleCountedIds = buildDoubleCountedChildIds(rows)
   const byCurrency = new Map<string, number>()
   for (const row of rows) {
+    if (doubleCountedIds.has(row.id)) continue
     const cur = (row.currency || 'CNY').toUpperCase()
     byCurrency.set(cur, (byCurrency.get(cur) ?? 0) + accountBalance(row))
   }
@@ -434,7 +446,7 @@ function AssetsSummaryHero({
               size="xl"
               bold
               showCurrency
-              tone="negative"
+              tone={summary.liabilityTotal > 0 ? 'positive' : 'negative'}
               className="mt-0.5 block"
             />
           </div>
@@ -468,17 +480,25 @@ export function AssetsCompositionMini({
   approx?: boolean
 }) {
   const t = useT()
-  // 「资产构成」只含资产类：负债（信用卡/贷款）不进饼图，也不计入中心合计/百分比 ——
-  // 它们体现在「负债」汇总里，不属于资产构成。groups 含负债类型，按 isLiability 过滤掉。
-  // 资产小计带符号（透支资产为负），饼图分段要的是体量 —— 对资产组合计取 abs。
+  // 「资产构成」只含资产头寸：负债类型（信用卡/贷款）里真正欠款的部分不进饼图 ——
+  // 它体现在「负债」汇总里，不属于资产构成。但同一组里溢缴（正值,例如信用卡缴超额）
+  // 经济上是资产头寸,要跟 computeCurrencySummary 的 assetTotal 拆法保持一致地计入
+  // 饼图,否则会出现「资产」方块 1500 但饼图中心合计仍是 1000 的自相矛盾
+  // (2026-08-12 使用者回报)。逐账户拆分、且要排除主帐户/子帐户重复计的部分
+  // （group.rows 里父子都在,金额已回填到父身上，子帐户不能再算一次）。
   const data = groups
-    .filter((g) => !g.isLiability)
-    .map((g) => ({
-      type: g.type,
-      label: g.label,
-      color: g.color,
-      value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
-    }))
+    .map((g) => {
+      if (!g.isLiability) {
+        return { type: g.type, label: g.label, color: g.color, value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0)) }
+      }
+      const doubleCounted = buildDoubleCountedChildIds(g.rows)
+      const overpaid = g.rows.reduce(
+        (s, r) => (doubleCounted.has(r.id) ? s : s + Math.max(0, accountBalance(r))),
+        0
+      )
+      return overpaid > 0 ? { type: g.type, label: g.label, color: g.color, value: overpaid } : null
+    })
+    .filter((d): d is { type: string; label: string; color: string; value: number } => d !== null)
   // 中心合计 / 扇区 / 百分比分母都用「资产合计」（资产组之和）—— 绝不把 |负债|
   // 算进来，否则信用卡等负债会被计入资产构成（这正是之前的 bug）。
   const assetTotal = data.reduce((s, d) => s + d.value, 0)
@@ -610,6 +630,11 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
   // 内容归到对应分组,不再永远自成一个独立的「主帐户」分组
   // (见 resolveRowDisplayType/resolveAccountGroupDisplayType)。
   const childrenByParent = buildParentChildrenMap(rows)
+  // 主帳戶(account_group)的 balance 已含子帳戶加總(見
+  // buildDoubleCountedChildIds 註解),子帳戶跟主帳戶又常被歸進同一個
+  // type 分組(單一子帳戶類型時,見 resolveAccountGroupDisplayType)——分組
+  // 小計加總時子帳戶要排除,否則「合計餘額」會把子帳戶的錢再加一次而變兩倍。
+  const doubleCountedIds = buildDoubleCountedChildIds(rows)
   const buckets: Record<string, ReadAccount[]> = {}
   for (const row of rows) {
     const key = resolveRowDisplayType(row, childrenByParent)
@@ -624,6 +649,7 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
     // 会显示成欠 30w)。
     const byCur = new Map<string, number>()
     for (const r of groupRows) {
+      if (doubleCountedIds.has(r.id)) continue
       const cur = (r.currency || 'CNY').toUpperCase()
       byCur.set(cur, (byCur.get(cur) ?? 0) + accountBalance(r))
     }
@@ -691,7 +717,7 @@ export function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
             showCurrency
             size="md"
             bold
-            tone="negative"
+            tone={summary.liabilityTotal > 0 ? 'positive' : 'negative'}
             className="mt-0.5 block"
           />
         </div>

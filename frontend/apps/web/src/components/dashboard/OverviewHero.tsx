@@ -1,7 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ReadAccount, ReadLedger } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
-import { accountBalance } from '@beecount/web-features'
+import { accountBalance, buildDoubleCountedChildIds } from '@beecount/web-features'
 
 interface Props {
   ledgers: ReadLedger[]
@@ -37,7 +37,12 @@ export function OverviewHero({
   const t = useT()
   const scopeLabel = periodLabel ?? t('home.scope.year')
   const currency = currencyLabel(ledgers)
-  const totalBalance = (accounts || []).reduce((sum, a) => sum + accountBalance(a), 0)
+  // 主帳戶(account_group)的 balance 已含子帳戶加總,子帳戶要排除避免重複計
+  // (見 assetAggregation.ts::buildDoubleCountedChildIds 註解)。
+  const doubleCountedIds = buildDoubleCountedChildIds(accounts || [])
+  const totalBalance = (accounts || [])
+    .filter((a) => !doubleCountedIds.has(a.id))
+    .reduce((sum, a) => sum + accountBalance(a), 0)
   // 优先吃后端给的 summary（无论 series 空不空都是权威值）；fallback 到 series 聚合。
   const periodIncome =
     periodSummary?.income_total ??

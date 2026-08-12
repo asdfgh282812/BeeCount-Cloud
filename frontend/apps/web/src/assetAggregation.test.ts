@@ -2,6 +2,7 @@ import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@
 import {
   accountBalance,
   type AssetGroup,
+  buildDoubleCountedChildIds,
   computeCurrencySummary,
   computeTypeGroups,
   effectiveRateToBase,
@@ -54,25 +55,36 @@ describe('asset aggregation — 绝不跨币种相加', () => {
     expect(s.netWorth).toBe(0) // 800 + (−800)
   })
 
-  it('溢缴款:负债账户正余额**增加**净值,绝不反向当欠款扣减(历史 bug:abs 后减)', () => {
+  it('溢缴款:负债账户正余额记入资产而非负债,绝不反向当欠款扣减(历史 bug:abs 后减)', () => {
     // 复盘场景:脏数据把 76 万收入灌进信用卡,余额 +761779.84。app 端净资产
     // 正确地 +76 万,web 端旧逻辑 abs 后减、又扣 76 万,两端差 152 万。
+    // 2026-08-12 使用者进一步回报:溢缴的这笔钱经济上是应收/资产头寸,顶部
+    // 「负债」方块显示它仍算欠款不合理("溢缴應該是收入，而非負債")——
+    // 改成逐账户按正负拆:负债类型账户余额为正时记入 assetTotal,不再留在
+    // liabilityTotal 里(哪怕只是符号为正、数字上不再被当欠款扣)。
     const s = computeCurrencySummary([
       acc({ account_type: 'cash', balance: 1_000_000 }),
-      acc({ account_type: 'credit_card', balance: 761_779.84 }) // 溢缴/正余额负债
+      acc({ account_type: 'credit_card', balance: 761_779.84 }) // 溢缴/正余额负债 → 记入资产
     ])
-    expect(s.liabilityTotal).toBe(761_779.84)
+    expect(s.assetTotal).toBeCloseTo(1_761_779.84, 2)
+    expect(s.liabilityTotal).toBe(0) // 没有真实欠款
     expect(s.netWorth).toBeCloseTo(1_761_779.84, 2) // 加上,而不是 1_000_000 − 761_779.84
   })
 
-  it('负债内部正负互抵:+10w 信用卡 + −20w 贷款 → 合计 −10w(展示欠 10w,而非逐账户 abs 的 30w)', () => {
+  it('负债类型账户不互相netting:+10w 信用卡(溢缴)记资产、−20w 贷款(欠款)留负债,不合并抵销', () => {
+    // 2026-08-12 之前的口径是把同为「负债类型」的不同账户余额直接相加再看正负
+    // (+10w 信用卡抵掉 −20w 贷款的一部分,显示欠 10w)—— 但这两张是完全不同的
+    // 账户/债权债务关系,信用卡溢缴的钱不会自动拿去还别笔贷款,不该被netting掉。
+    // 改成逐账户拆分:溢缴的信用卡进 assetTotal,欠款的贷款留在 liabilityTotal,
+    // 净值总和不变,但「负债」方块只反映真实欠款(−20w),不再被溢缴冲淡成 −10w。
     const s = computeCurrencySummary([
       acc({ account_type: 'credit_card', balance: 100_000 }),
       acc({ account_type: 'loan', balance: -200_000 })
     ])
-    expect(s.liabilityTotal).toBe(-100_000)
-    expect(Math.abs(s.liabilityTotal)).toBe(100_000) // 展示层口径
-    expect(s.netWorth).toBe(-100_000)
+    expect(s.assetTotal).toBe(100_000)
+    expect(s.liabilityTotal).toBe(-200_000)
+    expect(Math.abs(s.liabilityTotal)).toBe(200_000) // 展示层口径:真实欠款 20w
+    expect(s.netWorth).toBe(-100_000) // 总和不变
   })
 
   it('每币种汇总各自独立 —— CNY 与 USD 不合并', () => {
@@ -322,15 +334,68 @@ describe('computeCurrencySummary — 信用卡主帳戶群組計入負債(Phase 
   }
 
   it('掛信用卡子帳戶的 account_group 主帳戶本身也計入負債(不再誤計資產)', () => {
+    // g1.balance 對齊後端實際契約(routers/read/workspace.py):account_group
+    // 的 balance 已經把子帳戶加總回填到自己身上,不會是 0(那是不存在的資料
+    // 形狀,見 buildDoubleCountedChildIds 的雙倍計算修復)。
     const rows = [
       acc({ id: 'cash1', account_type: 'cash', balance: 1000 }),
-      acc({ id: 'g1', account_type: 'account_group', balance: 0 }),
+      acc({ id: 'g1', account_type: 'account_group', balance: -300 }),
       acc({ id: 'c1', account_type: 'credit_card', parent_account_id: 'g1', balance: -300 })
     ]
     const s = computeCurrencySummary(rows)
     expect(s.assetTotal).toBe(1000)
     expect(s.liabilityTotal).toBe(-300)
     expect(s.netWorth).toBe(700)
+  })
+})
+
+/**
+ * 使用者回報(2026-08-12):掛了子帳戶的主帳戶「合計餘額」變兩倍 —— 銀行帳戶
+ * 實際只有 1000,主帳戶(account_group)顯示 1000 沒問題(後端已把子帳戶加總
+ * 回填到主帳戶自己的 balance),但銀行 type 分組的「合計餘額」卻算出 2000,
+ * 因為分組小計把主帳戶(已含子帳戶)跟子帳戶自己都各加了一次。
+ * `buildDoubleCountedChildIds` + `computeCurrencySummary`/`computeTypeGroups`
+ * 的排除邏輯要把這種雙倍鎖住。
+ */
+describe('主帳戶 + 子帳戶金額雙倍問題(2026-08-12 使用者回報)', () => {
+  function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount {
+    return p as ReadAccount
+  }
+
+  it('buildDoubleCountedChildIds:父帳戶在同一批 rows 裡時,子帳戶 id 才算雙重計算', () => {
+    const rows = [
+      acc({ id: 'g1', account_type: 'account_group', balance: 1000 }),
+      acc({ id: 'c1', account_type: 'bank_card', parent_account_id: 'g1', balance: 1000 }),
+      acc({ id: 'standalone', account_type: 'bank_card', balance: 500 })
+    ]
+    const ids = buildDoubleCountedChildIds(rows)
+    expect(ids.has('c1')).toBe(true)
+    expect(ids.has('g1')).toBe(false)
+    expect(ids.has('standalone')).toBe(false)
+  })
+
+  it('computeTypeGroups:單一銀行子帳戶掛在主帳戶下,分組小計只算一次(不是子帳戶+主帳戶相加)', () => {
+    const rows = [
+      acc({ id: 'g1', name: '測試', account_type: 'account_group', balance: 1000 }),
+      acc({ id: 'c1', name: '銀行', account_type: 'bank_card', parent_account_id: 'g1', balance: 1000 })
+    ]
+    const groups = computeTypeGroups(rows, (k: string) => k)
+    const bankGroup = groups.find((g) => g.type === 'bank_card')!
+    expect(bankGroup).toBeDefined()
+    // 反例:修復前的錯誤行為是 1000(主帳戶,已含子帳戶) + 1000(子帳戶自己) = 2000。
+    expect(bankGroup.subtotals[0].value).toBe(1000)
+    // rows 清單本身仍要保留兩筆(渲染巢狀清單用),只有「加總」排除子帳戶。
+    expect(bankGroup.rows.map((r) => r.id).sort()).toEqual(['c1', 'g1'])
+  })
+
+  it('computeCurrencySummary:同樣的主帳戶+子帳戶組合,淨資產不能雙倍計算', () => {
+    const rows = [
+      acc({ id: 'g1', account_type: 'account_group', balance: 1000 }),
+      acc({ id: 'c1', account_type: 'bank_card', parent_account_id: 'g1', balance: 1000 })
+    ]
+    const s = computeCurrencySummary(rows)
+    expect(s.assetTotal).toBe(1000)
+    expect(s.netWorth).toBe(1000)
   })
 })
 

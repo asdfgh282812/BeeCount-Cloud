@@ -5,7 +5,12 @@ import { useT } from '@beecount/ui'
 import type { ReadAccount } from '@beecount/api-client'
 
 import { Amount } from './Amount'
-import { hasCreditBillingFields, LIABILITY_TYPES, type AssetGroup } from '../lib/assetAggregation'
+import {
+  hasCreditBillingFields,
+  LIABILITY_TYPES,
+  resolveAccountGroupDisplayType,
+  type AssetGroup
+} from '../lib/assetAggregation'
 
 export const VALUATION_TYPES_SET = new Set([
   'real_estate',
@@ -163,14 +168,22 @@ export function AccountListRow({
   const displayBalance = hasStats ? (row.balance as number) : row.initial_balance ?? 0
   // 估值账户：负债显示绝对值欠款，资产显示当前估值。
   const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
-  // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
+  // 信用卡：已用(欠款) = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
   // account_group(主帳戶)未来也会挂靠银行帐户群组，不是天生就该走信用卡样式——
-  // 用「自己身上是否设了额度/帳單日/還款日」这个既有的 credit-billing-root 信号
-  // 来分辨这个群组具体是信用卡群组还是别的，不看 account_type 本身。
-  const isCreditStyleGroup = accountType === 'account_group' && hasCreditBillingFields(row)
+  // 「自己身上是否设了额度/帳單日/還款日」(hasCreditBillingFields)或「底下子帳戶
+  // 是否全是信用卡」(resolveAccountGroupDisplayType,跟分組歸類同一份判斷) 任一
+  // 成立就算信用卡群組;只看前者會漏掉「額度/帳單日設在群組上但這次沒填、純粹
+  // 靠子帳戶類型歸類」的情況,導致主帳戶列跟子帳戶列的樣式判斷不一致(2026-08-12
+  // 使用者回報:子帳戶顯示溢繳餘額,主帳戶卻走一般帳戶樣式)。
+  const isCreditStyleGroup =
+    accountType === 'account_group' &&
+    (hasCreditBillingFields(row) ||
+      resolveAccountGroupDisplayType(row, childRows || []) === 'credit_card')
   const isCreditCard = accountType === 'credit_card' || isCreditStyleGroup
   const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
+  // 欠款金額(負債方向);溢繳金額(balance 為正,卡片欠使用者錢,經濟上是資產頭寸)。
   const ccOwed = Math.max(0, -displayBalance)
+  const ccOverpaid = Math.max(0, displayBalance)
   const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
   // 「可繳款」提醒(§2.9 補強,2026-08-02):server 只在 billing-root 且真的
   // 欠款(> 0)時才回這两个字段,不用在这里重新判断是不是信用卡/群组。
@@ -186,14 +199,20 @@ export function AccountListRow({
 
   const hasChildren = Boolean(childRows && childRows.length > 0)
   // 一行只留一个「主要金额」:估值账户看估值/欠款,信用卡(含主帳戶群组)看
-  // 欠款,其余可交易账户看余额——跟旧 BankCardTile 的主要数字口径一致。
-  const primaryValue = isValuation ? valuationValue : isCreditCard ? ccOwed : displayBalance
+  // 欠款或溢繳金額的絕對值(不能只顯示 ccOwed——溢繳時 ccOwed 恆為 0,會把
+  // 使用者真實存在的溢繳餘額顯示成「0」,2026-08-12 使用者回報的根因),
+  // 其余可交易账户看余额——跟旧 BankCardTile 的主要数字口径一致。
+  const primaryValue = isValuation ? valuationValue : isCreditCard ? Math.abs(displayBalance) : displayBalance
   const primaryTone: 'default' | 'negative' | 'positive' = isCreditCard
     ? ccOwed > 0
       ? 'negative'
-      : 'positive'
-    : isLiability && valuationValue > 0
-      ? 'negative'
+      : ccOverpaid > 0
+        ? 'positive'
+        : 'default'
+    : isLiability && displayBalance !== 0
+      ? displayBalance < 0
+        ? 'negative'
+        : 'positive'
       : 'default'
 
   // 主帳戶列(有子帳戶且設了額度)顯示「可用額度」;子帳戶顯示卡號末四碼 ——
