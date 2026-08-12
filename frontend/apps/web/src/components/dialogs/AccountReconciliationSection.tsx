@@ -72,6 +72,71 @@ type AccountLike = {
   balance?: number | null
 }
 
+// 對齊 compute_cycle_period_billing.new_spend 的正負號口徑:expense 為正
+// (增加應繳),income/退款/轉入(還款、預繳)為負(減少應繳)——後端
+// `get_account_statement`/`StatementRow` 都是同一套公式,樂觀更新本地小計
+// (2026-08 使用者反饋 #3)要用同一個 helper 才不會兩邊算出不同答案。
+function signedStatementAmount(tx: StatementTransaction): number {
+  return tx.tx_type === 'expense' ? tx.amount : -tx.amount
+}
+
+/** 本地樂觀更新後重算 `statement_total`/`confirmed_count`/`confirmed_total`
+ *  (2026-08 使用者反饋 #3:確認/延後入帳不用整份重新跟後端算一次)。
+ *  `statement_total` 口徑對齐後端:只算 expense/income,轉帳(還款/預繳)
+ *  不算消費,不計入這一格——但仍計入分卡小計(見 groupStatementByAccount)
+ *  跟 confirmed_total(確認的錢不分是不是轉帳,勾了就算)。 */
+function recomputeStatementTotals(transactions: StatementTransaction[]): {
+  statement_total: number
+  confirmed_count: number
+  confirmed_total: number
+} {
+  let statement_total = 0
+  let confirmed_count = 0
+  let confirmed_total = 0
+  for (const tx of transactions) {
+    const signed = signedStatementAmount(tx)
+    if (tx.tx_type !== 'transfer') statement_total += signed
+    if (tx.reconciled_at) {
+      confirmed_count += 1
+      confirmed_total += signed
+    }
+  }
+  return {
+    statement_total: Math.round(statement_total * 100) / 100,
+    confirmed_count,
+    confirmed_total: Math.round(confirmed_total * 100) / 100
+  }
+}
+
+/** 依卡分組(需求 #4,2026-08 使用者反饋:對帳清單混在一起很亂,看不出是
+ *  哪張卡)——直接從目前的 `transactions`(已經套用本地樂觀更新)分桶,
+ *  不依賴後端 `statement.accounts`(那份快照在本地樂觀更新後就跟清單內容
+ *  對不上,例如延後入帳把一筆交易移出清單後,舊的 accounts 小計還是原數字)。
+ *  小計口徑對齐後端 `account_totals`:不分是不是轉帳,一律加總(跟
+ *  `statement_total` 排除轉帳不同)。保留交易在原本的排序(依 happened_at,
+ *  由呼叫端決定升冪/降冪),只是分桶,不重新排序。 */
+function groupStatementByAccount(
+  transactions: StatementTransaction[]
+): { accountId: string; accountName: string; total: number; rows: StatementTransaction[] }[] {
+  const order: string[] = []
+  const byAccount = new Map<string, { accountId: string; accountName: string; total: number; rows: StatementTransaction[] }>()
+  for (const tx of transactions) {
+    const key = tx.account_id || ''
+    let bucket = byAccount.get(key)
+    if (!bucket) {
+      bucket = { accountId: key, accountName: tx.account_name || '', total: 0, rows: [] }
+      byAccount.set(key, bucket)
+      order.push(key)
+    }
+    bucket.rows.push(tx)
+    bucket.total += signedStatementAmount(tx)
+  }
+  return order.map((key) => {
+    const bucket = byAccount.get(key)!
+    return { ...bucket, total: Math.round(bucket.total * 100) / 100 }
+  })
+}
+
 /**
  * 餘額調整(§2.10 Phase 5)。獨立於下面的 `AccountStatementSection` 掛載
  * ——餘額調整對任何非群組帳戶都有意義(現金/銀行/信用卡皆可),對帳模式
@@ -218,10 +283,18 @@ function BalanceAdjustmentDialog({
  */
 export function AccountStatementSection({
   billingAccountId,
-  cycleOffset
+  cycleOffset,
+  onFinished
 }: {
   billingAccountId: string
   cycleOffset: number
+  /** 完成對帳(2026-08 使用者反饋 #3):對帳過程中每次確認/延後入帳都只做
+   *  本地樂觀更新,不整份重新跟後端算一次(避免「計算中」逐筆閃爍)——離開
+   *  對帳彈窗時才是唯一一次真正的重新計算,這時順便通知外層(帳單摘要區塊
+   *  的 `useAccountBilling.reload`)一起刷新,不然使用者關掉彈窗後,上面
+   *  「本期已消費」/「可用額度」看到的還是舊金額,要手動關掉整個帳戶詳情
+   *  再打開才會更新。 */
+  onFinished?: () => void
 }) {
   const t = useT()
   const { token } = useAuth()
@@ -250,6 +323,19 @@ export function AccountStatementSection({
       .finally(() => setLoading(false))
   }
 
+  // 背景靜默重新整理(2026-08 使用者反饋 #3 的另一半):不設 `loading`,不會
+  // 讓清單整片變成「計算中」的空白 —— 給 `useSyncRefresh` 用,確保透過全局
+  // 編輯彈窗(見下面 handleEdit 的說明)或其它裝置改動的交易還是會被同步
+  // 進來,只是不再逐次閃爍。確認/延後入帳這兩個「每次點擊都觸發」的動作改
+  // 走本地樂觀更新(見 toggleConfirmed / postponeTarget 的 onSaved),不叫
+  // 這個或 reload()。
+  const silentReload = () => {
+    if (!token || !activeLedgerId || !billingAccountId) return
+    fetchAccountStatement(token, activeLedgerId, billingAccountId, cycleOffset, sortDesc)
+      .then(setStatement)
+      .catch(() => {})
+  }
+
   useEffect(() => {
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -262,8 +348,21 @@ export function AccountStatementSection({
   // 使用者反饋(2026-08,對帳明細可編輯既有交易):編輯彈窗是全局的
   // (GlobalEditDialogs 監聽 dispatchOpenEditTx),存檔成功後不會直接通知這裡
   // ——跟其它 *Page 同款訂閱 sync_change,寫入落地後自動重新拉一次對帳清單,
-  // 不需要另外設計一條 callback 通道。
-  useSyncRefresh(reload)
+  // 不需要另外設計一條 callback 通道。改用 silentReload:這個訂閱也會被
+  // 「確認/延後入帳」自己那次 PATCH 產生的 sync_change 回音觸發,用一般
+  // reload() 會在使用者剛點完的當下又跳出一次「計算中」,體感上跟沒優化
+  // 一樣。
+  useSyncRefresh(silentReload)
+
+  const handleDialogOpenChange = (open: boolean) => {
+    setDialogOpen(open)
+    if (!open) {
+      // 完成對帳:離開彈窗這一刻才是唯一一次「真正」的重新計算(對齐後端
+      // 最新狀態),同時讓外層帳單摘要一起刷新。
+      reload()
+      onFinished?.()
+    }
+  }
 
   if (!activeLedgerId) return null
 
@@ -314,7 +413,19 @@ export function AccountStatementSection({
         tx.reconciled_at ? t('statement.notice.unconfirmed') : t('statement.notice.confirmed'),
         t('notice.success')
       )
-      reload()
+      // 本地樂觀更新(2026-08 使用者反饋 #3):不整份重新跟後端算一次,只
+      // 更新這一列的 reconciled_at + 重算小計,離開彈窗時才真正重新計算
+      // (見 handleDialogOpenChange)。這一列本身(不管是不是回饋合併列)
+      // 永遠是「全員一起確認/取消確認」(targetIds 涵蓋所有成員),樂觀更新
+      // 直接改這一列自己的 reconciled_at 即可,跟後端 all_confirmed 語意
+      // 一致,不會有部分成員確認、部分沒確認的中間態需要處理。
+      setStatement((prev) => {
+        if (!prev) return prev
+        const nextTransactions = prev.transactions.map((row) =>
+          row.id === tx.id ? { ...row, reconciled_at: nextReconciledAt } : row
+        )
+        return { ...prev, transactions: nextTransactions, ...recomputeStatementTotals(nextTransactions) }
+      })
     } catch (err) {
       toast.error(localizeError(err, t), t('notice.error'))
     } finally {
@@ -341,7 +452,25 @@ export function AccountStatementSection({
     }
   }
 
-  const showAccountName = Boolean(statement && statement.accounts.length > 1)
+  // 延後入帳把交易移出目前這一期(2026-08 使用者反饋 #3):跟確認同一套
+  // 樂觀更新精神,但這裡是「整列移除」而不是改欄位——不用等 reload() 也知道
+  // 這筆不再屬於目前正在看的週期(見 handleFinish 附近的 handleDialogOpenChange,
+  // 離開彈窗時才會用真正的後端計算校正一次)。
+  const removeTransactionLocally = (tx: StatementTransaction) => {
+    setStatement((prev) => {
+      if (!prev) return prev
+      const nextTransactions = prev.transactions.filter((row) => row.id !== tx.id)
+      return {
+        ...prev,
+        transactions: nextTransactions,
+        statement_count: nextTransactions.length,
+        ...recomputeStatementTotals(nextTransactions)
+      }
+    })
+  }
+
+  const groups = statement ? groupStatementByAccount(statement.transactions) : []
+  const showGroups = groups.length > 1
 
   return (
     <div className="space-y-3 border-b border-border/60 bg-muted/10 px-6 py-4">
@@ -363,7 +492,7 @@ export function AccountStatementSection({
 
       {/* 2026-08-05 使用者反饋:對帳清單改到彈出視窗裡顯示,不再原地展開
           （原地展開即使收合仍會把下面的交易明細往下推)。 */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="flex max-h-[80vh] max-w-lg flex-col gap-0 p-0">
           <DialogHeader className="flex flex-row items-center justify-between gap-2 border-b border-border/60 px-5 py-3">
             <DialogTitle className="flex items-center gap-1.5 text-base">
@@ -437,25 +566,52 @@ export function AccountStatementSection({
                     {t('statement.empty')}
                   </div>
                 ) : (
-                  <div className="space-y-1.5">
-                    {statement.transactions.map((tx) => (
-                      <StatementRow
-                        key={tx.id}
-                        tx={tx}
-                        showAccountName={showAccountName}
-                        busy={busyTxId === tx.id}
-                        fmt={fmt}
-                        t={t}
-                        onToggleConfirm={() => void toggleConfirmed(tx)}
-                        onPostpone={() => setPostponeTarget(tx)}
-                        onEdit={() => void handleEdit(tx)}
-                        onOpenRewardDetail={tx.reward_rule_id ? () => setRewardDetailTarget(tx) : undefined}
-                      />
+                  <div className="space-y-3">
+                    {groups.map((group) => (
+                      <div key={group.accountId} className="space-y-1.5">
+                        {/* 依卡分組(需求 #4,2026-08 使用者反饋:混在一起很亂,
+                            看不出是哪張卡)——只有 account_group 底下不只一張
+                            卡時才顯示分組標題,單卡自己的詳情頁維持原本的
+                            平鋪清單,不多一層視覺雜訊。 */}
+                        {showGroups ? (
+                          <div className="flex items-center justify-between px-1 text-[11px] font-medium text-muted-foreground">
+                            <span className="truncate">
+                              {group.accountName || t('statement.row.uncategorized')}
+                            </span>
+                            <span className="shrink-0 font-mono tabular-nums">
+                              {group.rows.length} · {fmt(group.total)}
+                            </span>
+                          </div>
+                        ) : null}
+                        {group.rows.map((tx) => (
+                          <StatementRow
+                            key={tx.id}
+                            tx={tx}
+                            showAccountName={false}
+                            busy={busyTxId === tx.id}
+                            fmt={fmt}
+                            t={t}
+                            onToggleConfirm={() => void toggleConfirmed(tx)}
+                            onPostpone={() => setPostponeTarget(tx)}
+                            onEdit={() => void handleEdit(tx)}
+                            onOpenRewardDetail={tx.reward_rule_id ? () => setRewardDetailTarget(tx) : undefined}
+                          />
+                        ))}
+                      </div>
                     ))}
                   </div>
                 )}
               </>
             )}
+          </div>
+          <div className="flex justify-end border-t border-border/60 px-5 py-3">
+            <button
+              type="button"
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+              onClick={() => handleDialogOpenChange(false)}
+            >
+              {t('statement.action.finish')}
+            </button>
           </div>
         </DialogContent>
       </Dialog>
@@ -469,8 +625,12 @@ export function AccountStatementSection({
           retryOnConflict={retryOnConflict}
           onClose={() => setPostponeTarget(null)}
           onSaved={() => {
+            const tx = postponeTarget
             setPostponeTarget(null)
-            reload()
+            // 本地樂觀更新(2026-08 使用者反饋 #3):延後入帳把交易移出目前
+            // 這一期,不用 reload() 跟後端整份重算——見 removeTransactionLocally
+            // 的說明。
+            if (tx) removeTransactionLocally(tx)
           }}
         />
       ) : null}

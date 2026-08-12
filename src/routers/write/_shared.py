@@ -1645,6 +1645,19 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 入帳交易的其它字段时,不带上这个会让 rewardSourceTxId 反查被静默清空。
     if row.reward_source_tx_sync_id is not None:
         item["rewardSourceTxId"] = row.reward_source_tx_sync_id
+    # 延後入帳/對帳模式(§2.10 Phase 5,2026-08-09 改版):同理,fast path
+    # 编辑一笔已標記延後入帳/已確認的交易的其它字段时(例如只改 reconciled_at
+    # 却不带 deferred_posting_at,或反过来),不带上这两个会让另一个字段在
+    # 这次 upsert 后被静默清空——`projection.upsert_tx` 对这两个字段的处理
+    # 明确写着「缺键保留由上游 merge_with_existing 负责」,但 fast path 是
+    # 直接拿这个函式的返回值当 upsert payload,并不会经过
+    # `sync_applier.apply_change_to_projection` 那层「跟 DB 既有值合并」,
+    # 所以「上游」指的就是这里——漏了就真的会被冲成 NULL,交易因此从它
+    # 应该归属的对帳週期消失(2026-08 使用者反饋)。
+    if row.deferred_posting_at is not None:
+        item["deferredPostingAt"] = _to_iso_utc(row.deferred_posting_at)
+    if row.reconciled_at is not None:
+        item["reconciledAt"] = _to_iso_utc(row.reconciled_at)
     return item
 
 

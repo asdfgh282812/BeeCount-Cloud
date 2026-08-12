@@ -127,11 +127,11 @@ function clearUserScopedStorage(userId: string): void {
   if (typeof window === 'undefined' || !userId) return
   try {
     window.localStorage.removeItem(`beecount.active-ledger.${userId}`)
-    const prefix = `beecount:web:txFilter:v1:${userId}:`
+    const prefixes = [`beecount:web:txFilter:v1:${userId}:`, `beecount:web:cardPaymentAccount:v1:${userId}:`]
     const doomed: string[] = []
     for (let i = 0; i < window.localStorage.length; i += 1) {
       const key = window.localStorage.key(i)
-      if (key && key.startsWith(prefix)) doomed.push(key)
+      if (key && prefixes.some((prefix) => key.startsWith(prefix))) doomed.push(key)
     }
     for (const key of doomed) window.localStorage.removeItem(key)
   } catch {

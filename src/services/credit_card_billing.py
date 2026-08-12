@@ -371,6 +371,12 @@ def compute_cycle_period_billing(
 
     cycle_start_dt = date_to_utc_dt(cycle_start, end_of_day=True)
     cycle_end_dt = date_to_utc_dt(cycle_end, end_of_day=True)
+    # `cycle_offset=+1`(目前還在累積、尚未結束的那期)時 `cycle_end_dt` 會落在
+    # 未來——查詢用的上界要 clamp 在 `now`,不然使用者先記一筆未來日期的交易
+    # (例如下個月才扣款的訂閱)會被算進「新增花費」/「本期應繳」,顯示金額
+    # 比實際已發生的還高(2026-08 使用者反饋 #1)。`cycle_end`/`due_date` 這些
+    # 純日期標籤維持不變,只有查詢邊界 clamp。
+    query_end_dt = min(cycle_end_dt, now)
 
     # 2026-08-07 使用者反饋(§2.9.6 Phase 7,子卡詳情不該顯示合併金額):除了
     # 整組加總的 `new_spend`,順便按 `account_sync_id` 分組算出每張子卡自己
@@ -395,7 +401,7 @@ def compute_cycle_period_billing(
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
                 _ATTR_DATE > cycle_start_dt,
-                _ATTR_DATE <= cycle_end_dt,
+                _ATTR_DATE <= query_end_dt,
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
         per_member_new_spend = {acc: float(amt) for acc, amt in spend_rows}
@@ -435,7 +441,7 @@ def compute_cycle_period_billing(
         ) or 0.0)
 
     carryover_due = max(_charged_as_of(cycle_start_dt) - paid_total, 0.0)
-    remaining_due = max(_charged_as_of(cycle_end_dt) - paid_total, 0.0)
+    remaining_due = max(_charged_as_of(query_end_dt) - paid_total, 0.0)
     total_due = carryover_due + new_spend
     paid_in_cycle = round(total_due - remaining_due, 2)
 

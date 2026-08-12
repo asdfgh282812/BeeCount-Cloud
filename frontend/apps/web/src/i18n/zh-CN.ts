@@ -2329,6 +2329,7 @@ const zhCN = {
   'statement.action.unconfirm': '已确认,点击取消',
   'statement.action.postpone': '延后入账',
   'statement.action.edit': '编辑这笔交易',
+  'statement.action.finish': '完成对账',
   'statement.rewardDetail.notice.updated': '回馈金额已更新',
   'statement.postpone.dialog.title': '延后到下期账单',
   'statement.postpone.dialog.hint': '如果这笔消费商户还没有请款,可以延后入账——它会依你选的日期归到对应的账单周期。',

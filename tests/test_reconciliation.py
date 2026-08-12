@@ -528,6 +528,51 @@ def test_statement_postpone_moves_transaction_to_next_cycle():
         client.close()
 
 
+def test_statement_confirm_after_defer_keeps_transaction_in_target_cycle():
+    """2026-08 使用者反饋:上期交易延後入帳跑到這期後,「確認」不能把
+    deferred_posting_at 靜默沖掉——web PATCH 快路徑的 prev_item 轉換
+    (`_shared.py::_projection_row_to_tx_dict`)漏帶 deferredPostingAt/
+    reconciledAt 兩個欄位,導致只改其中一個欄位的後續 PATCH 會把另一個已經
+    設好的欄位擠成 NULL,交易因此從目標週期的對帳清單裡消失(而不是如預期
+    地繼續留在清單裡、變成「已確認」狀態)。"""
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st12@t.com", device_id="d-app")
+        web_tok = _login(client, "st12@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st12", "ledger", "st12",
+              {"syncId": "st12", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st12", "card12", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+        tx_id = _create_tx(client, hdr_web, "st12", account_id="card12", amount=60.0,
+                            happened_at=_dt(cycle_start + timedelta(days=1)))
+
+        data0 = _get_statement(client, hdr_web, "st12", "card12", cycle_offset=0).json()
+        next_start = date.fromisoformat(data0["cycle_end"]) + timedelta(days=1)
+        upd = _patch_tx(client, hdr_web, "st12", tx_id, deferred_posting_at=_dt(next_start))
+        assert upd.status_code == 200, upd.text
+
+        # 確認(reconciled_at)是後續一個「只帶這個欄位」的獨立 PATCH,不該
+        # 把上一步剛設好的 deferred_posting_at 沖掉。
+        confirm = _patch_tx(client, hdr_web, "st12", tx_id, reconciled_at=_iso())
+        assert confirm.status_code == 200, confirm.text
+
+        data_next = _get_statement(client, hdr_web, "st12", "card12", cycle_offset=1).json()
+        assert data_next["statement_count"] == 1
+        assert data_next["transactions"][0]["id"] == tx_id
+        assert data_next["transactions"][0]["deferred_posting_at"] is not None
+        assert data_next["transactions"][0]["reconciled_at"] is not None
+
+        data_orig = _get_statement(client, hdr_web, "st12", "card12", cycle_offset=0).json()
+        assert data_orig["statement_count"] == 0
+    finally:
+        client.close()
+
+
 # ---------------------------------------------------------------------------
 # 範圍限制 / 錯誤情境
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ notifications 表内容。
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -622,6 +622,61 @@ def test_period_end_skips_when_no_billing_schedule():
             db.commit()
         assert result == {"tx_payouts": 0, "period_payouts": 0}
         assert len(_income_tx_to(TS, "acc-wallet")) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_period_end_delayed_settlement_offset_waits_and_backfills_older_period():
+    """2026-08-12 使用者反饋:規則設定「次二月28日」入帳(`settlement_month_
+    offset=2`, `settlement_day_of_month=28`),結果 7 月的消費在週期一結束
+    (7/31)就直接入帳了,完全沒等到 9/28。根因是 `_materialize_period_end`
+    只看 `period_offset=-1`(剛結束的那一期)且忽略 `compute_settlement_date`
+    ——這裡鎖住修正後的行為:①還沒到規則設定的入帳日之前,即使那期已經
+    結束也不能入帳;②真正到了入帳日時,`period_offset=-1` 早就滑到更新的
+    週期,必須往回找到原本那期才能補上,入帳交易的 `happened_at` 要是規則
+    算出來的入帳日(2026-03-28),不是週期結束日(2026-01-31)。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-delay@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-delay", email)  # calendar_month 不需要 billing_day
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-delay",
+            interval="calendar_month", settlement_type="period_end",
+            settlement_month_offset=2, settlement_day_of_month=28,
+            reward_account_id="acc-wallet",
+        )
+        spend_at = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        _push(client, hdr_app, "lgp-delay", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 300.0, "happenedAt": _iso(spend_at),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        # 週期(1月)已經結束,但入帳日(3/28)還沒到——不該入帳。
+        too_early = datetime(2026, 2, 10, tzinfo=timezone.utc)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=too_early)
+            db.commit()
+        assert result == {"tx_payouts": 0, "period_payouts": 0}
+        assert len(_income_tx_to(TS, "acc-wallet")) == 0
+
+        # 到了入帳日(3/28)——這時候 period_offset=-1 相對 3 月已經是 2 月,
+        # 必須往回多看才找得到 1 月那期。
+        due_now = datetime(2026, 3, 28, tzinfo=timezone.utc)
+        with TS() as db:
+            result2 = card_reward_payout.materialize_due_card_reward_payouts(db, now=due_now)
+            db.commit()
+        assert result2 == {"tx_payouts": 0, "period_payouts": 1}
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert len(incomes) == 1
+        assert incomes[0].amount == 30.0  # 300 * 10%
+        assert incomes[0].happened_at.date() == date(2026, 3, 28)
+
+        # 重跑不重複入帳。
+        with TS() as db:
+            result3 = card_reward_payout.materialize_due_card_reward_payouts(db, now=due_now)
+            db.commit()
+        assert result3 == {"tx_payouts": 0, "period_payouts": 0}
+        assert len(_income_tx_to(TS, "acc-wallet")) == 1
     finally:
         app.dependency_overrides.clear()
 

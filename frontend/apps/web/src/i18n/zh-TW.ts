@@ -2288,6 +2288,7 @@ const zhTW = {
   'statement.action.unconfirm': '已確認,點擊取消',
   'statement.action.postpone': '延後入帳',
   'statement.action.edit': '編輯這筆交易',
+  'statement.action.finish': '完成對帳',
   'statement.rewardDetail.notice.updated': '回饋金額已更新',
   'statement.postpone.dialog.title': '延後到下期帳單',
   'statement.postpone.dialog.hint': '如果這筆消費商戶還沒有請款,可以延後入帳——它會依你選的日期歸到對應的帳單週期。',

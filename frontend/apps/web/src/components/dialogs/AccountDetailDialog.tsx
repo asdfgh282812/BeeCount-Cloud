@@ -36,7 +36,12 @@ import {
   useT,
   useToast
 } from '@beecount/ui'
-import { interestRateToPercentDisplay, percentDisplayToInterestRate, TransactionList } from '@beecount/web-features'
+import {
+  AccountPickerDialog,
+  interestRateToPercentDisplay,
+  percentDisplayToInterestRate,
+  TransactionList
+} from '@beecount/web-features'
 import {
   Banknote,
   Calendar as CalendarIcon,
@@ -51,6 +56,7 @@ import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { localizeError } from '../../i18n/errors'
+import { jwtUserId } from '../../state/jwt'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialogEvents'
 import { AccountStatementSection, BalanceAdjustmentButton } from './AccountReconciliationSection'
@@ -392,6 +398,7 @@ export function AccountDetailDialog({
               <AccountStatementSection
                 billingAccountId={billing.billingAccountId}
                 cycleOffset={billing.cycleOffset}
+                onFinished={billing.reload}
               />
             ) : null}
 
@@ -805,9 +812,17 @@ function CreditCardBillingSection({
   const [payAmount, setPayAmount] = useState('')
   const [payFromAccountId, setPayFromAccountId] = useState('')
   const [payAccounts, setPayAccounts] = useState<ReadAccount[]>([])
+  const [payAccountPickerOpen, setPayAccountPickerOpen] = useState(false)
   const [paying, setPaying] = useState(false)
 
   const [installOpen, setInstallOpen] = useState(false)
+
+  // 繳費來源帳戶記憶功能(2026-08 使用者反饋 #5):per-user + per-卡(billing
+  // Account,子卡時是它掛靠的主帳戶)各記一個,不同卡常用不同的繳費來源。
+  const userId = jwtUserId(token || '')
+  const payAccountStorageKey = billing.billingAccountId
+    ? `beecount:web:cardPaymentAccount:v1:${userId || 'anon'}:${billing.billingAccountId}`
+    : ''
 
   if (!billing.canViewBilling || !activeLedgerId) return null
   if (billing.loading) {
@@ -825,24 +840,35 @@ function CreditCardBillingSection({
 
   const openPayDialog = () => {
     setPayAmount(summary.remaining_due > 0 ? String(summary.remaining_due) : '')
-    setPayFromAccountId('')
+    let remembered = ''
+    if (payAccountStorageKey) {
+      try {
+        remembered = window.localStorage.getItem(payAccountStorageKey) || ''
+      } catch {
+        remembered = ''
+      }
+    }
+    setPayFromAccountId(remembered)
     setPayOpen(true)
     if (token && activeLedgerId) {
       fetchReadAccounts(token, activeLedgerId)
-        .then((accts) =>
+        .then((accts) => {
           // 付款來源不能是實際被繳款的那個帳戶(billingAccountId,子卡時是
           // 它掛靠的主帳戶而不是子卡自己)、也不能是正在瀏覽的這張子卡自己
           // 、也不能是任何 account_group(§2.9 Phase 4:群組沒有自己的資金,
           // 不能拿來當繳費來源,對齊後端 `_assert_account_not_group` 校驗)。
-          setPayAccounts(
-            accts.filter(
-              (a) =>
-                a.id !== account.id &&
-                a.id !== billing.billingAccountId &&
-                a.account_type !== 'account_group',
-            ),
-          ),
-        )
+          const filtered = accts.filter(
+            (a) =>
+              a.id !== account.id &&
+              a.id !== billing.billingAccountId &&
+              a.account_type !== 'account_group',
+          )
+          setPayAccounts(filtered)
+          // 上次記住的帳戶如果已經不在候選清單裡(刪除/隱藏),放棄這個殘留值。
+          if (remembered && !filtered.some((a) => a.id === remembered)) {
+            setPayFromAccountId('')
+          }
+        })
         .catch(() => setPayAccounts([]))
     }
   }
@@ -859,6 +885,13 @@ function CreditCardBillingSection({
           from_account_id: payFromAccountId,
         }),
       )
+      if (payAccountStorageKey) {
+        try {
+          window.localStorage.setItem(payAccountStorageKey, payFromAccountId)
+        } catch {
+          // localStorage 在 private mode / 超配額時可能拋異常,記憶功能失效不影響繳費本身。
+        }
+      }
       toast.success(t('cardPayment.notice.success'), t('notice.success'))
       setPayOpen(false)
       billing.reload()
@@ -1051,18 +1084,18 @@ function CreditCardBillingSection({
             </div>
             <div className="space-y-1">
               <Label>{t('cardPayment.dialog.fromAccount')}</Label>
-              <Select value={payFromAccountId} onValueChange={setPayFromAccountId}>
-                <SelectTrigger>
-                  <SelectValue placeholder={t('cardPayment.dialog.fromAccountPlaceholder')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {payAccounts.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <button
+                type="button"
+                onClick={() => setPayAccountPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
+              >
+                <span className={`flex-1 truncate ${payFromAccountId ? '' : 'text-muted-foreground'}`}>
+                  {payFromAccountId
+                    ? payAccounts.find((a) => a.id === payFromAccountId)?.name || payFromAccountId
+                    : t('cardPayment.dialog.fromAccountPlaceholder')}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
             </div>
           </div>
           <div className="mt-4 flex justify-end gap-2">
@@ -1084,6 +1117,14 @@ function CreditCardBillingSection({
           </div>
         </DialogContent>
       </Dialog>
+      <AccountPickerDialog
+        open={payAccountPickerOpen}
+        onClose={() => setPayAccountPickerOpen(false)}
+        title={t('cardPayment.dialog.fromAccount')}
+        accounts={payAccounts}
+        value={payAccounts.find((a) => a.id === payFromAccountId)?.name || ''}
+        onSelect={(row) => setPayFromAccountId(row.id)}
+      />
 
       {installOpen && billing.billingAccountId ? (
         <InstallmentQuickCreateDialog

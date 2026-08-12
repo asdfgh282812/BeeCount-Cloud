@@ -667,6 +667,15 @@ async def list_workspace_accounts(
     # 用户可见 ledger 范围靠 `ledger_id IN ledger_internal_ids` 限定。
     from sqlalchemy import case as sa_case
 
+    # 帳戶餘額(balance)只該反映「已經發生」的交易 —— 使用者可以在記帳表單
+    # 自由選未來日期(例如先記一筆下個月才會扣款的訂閱),這種交易在它真正
+    # 發生前不該被算進目前餘額/信用卡欠款,否則帳戶列表的金額會比實際偏高
+    # (2026-08 使用者反饋 #1:信用卡顯示的消費金額不該連未來的都算進去)。
+    # 這裡刻意維持 `happened_at` 口徑(不是 `attribution_date_expr()`)—— 對齐
+    # `deferred_posting.py` 文件說明,workspace 主要收支統計刻意不採用「入帳日」
+    # 口徑,只是額外加一個「不算未來」的上界。
+    now = datetime.now(timezone.utc)
+
     # Main account stats: income + expense,按 account_sync_id 聚合
     main_stats = db.execute(
         select(
@@ -682,6 +691,7 @@ async def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.account_sync_id.is_not(None),
             ReadTxProjection.tx_type.in_(["income", "expense"]),
+            ReadTxProjection.happened_at <= now,
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
@@ -696,6 +706,7 @@ async def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "adjustment",
             ReadTxProjection.account_sync_id.is_not(None),
+            ReadTxProjection.happened_at <= now,
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
@@ -709,6 +720,7 @@ async def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
             ReadTxProjection.from_account_sync_id.is_not(None),
+            ReadTxProjection.happened_at <= now,
         ).group_by(ReadTxProjection.from_account_sync_id)
     ).all()
     transfer_to = db.execute(
@@ -720,6 +732,7 @@ async def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
             ReadTxProjection.to_account_sync_id.is_not(None),
+            ReadTxProjection.happened_at <= now,
         ).group_by(ReadTxProjection.to_account_sync_id)
     ).all()
 

@@ -392,66 +392,86 @@ def _materialize_period_end(
     db: Session, *, rule: ReadCardRewardRuleProjection, account: UserAccountProjection,
     ledger_id: str, now: datetime,
 ) -> bool:
-    """只結算「最近一次已結束的那期」(`period_offset=-1`),比照
-    `credit_card_autopay`/`credit_card_reminders` 既有的「只看最近一期,
-    長時間離線=錯過一次自動化」的既有限制,不另外做補窗機制。"""
-    group_rules = card_rewards.fetch_cap_group_rules(db, user_id=rule.user_id, base_rules=[rule])
-    results = card_rewards.compute_account_card_rewards(
-        db, ledger_id=ledger_id, account=account, rules=group_rules, now=now, period_offset=-1,
-    )
-    card_rewards.apply_caps(results)
-    this_result = next((r for r in results if r["rule"].sync_id == rule.sync_id), None)
-    if this_result is None or this_result["status"] != "ok":
-        return False  # 排程/資料還沒修好,留到下次重試,不記去重
-
-    period_end = this_result["period_end"]
-    dedup_key = period_end.isoformat()
+    """結算「已結束但還沒入帳」的週期。原本只看`period_offset=-1`(剛結束
+    的那一期),比照 `credit_card_autopay`/`credit_card_reminders` 既有的
+    「只看最近一期,長時間離線=錯過一次自動化」限制。但這個假設在加入
+    `settlement_month_offset`(延後 N 個月才入帳,見 `card_rewards.
+    compute_settlement_date`)之後不成立了:`period_offset=-1` 是相對『當下
+    』算的,設定「次二月28日」入帳時,等真的到了入帳日,`period_offset=-1`
+    早就滑到更新的週期,原本那期永遠對不上、永遠不會被結算
+    (2026-08-12 使用者反饋:規則設定次二月28日入帳,7月消費卻在7/31當天
+    ——也就是週期一結束——就直接入帳了)。修法:往回多看
+    `settlement_month_offset` 期,逐一檢查有沒有「已到入帳日但還沒記去重」
+    的舊週期,一次 tick 內可以連續補齊多期(離線很久時不用等好幾個 tick 才
+    追上)。`settlement_month_offset` 為 `None`(維持現況『期間結束當天入帳
+    』)時只看 -1,跟修正前行為完全一致。"""
     already_paid = _already_paid_keys(db, user_id=rule.user_id, rule_sync_id=rule.sync_id)
-    if dedup_key in already_paid:
-        return False
+    group_rules = card_rewards.fetch_cap_group_rules(db, user_id=rule.user_id, base_rules=[rule])
+    lookback = (rule.settlement_month_offset or 0) + 1
+    paid_any = False
 
-    reward_amount = this_result["capped_reward"]
-    if reward_amount <= 0:
-        # 不記去重:跟逐筆結算(per-tx dedup_key = 交易自己的 sync_id)不同,
-        # 這裡的 dedup_key 是整期共用的日期字串——如果在使用者於這期結束後
-        # 才補記/回溯一筆合格交易之前,剛好有一次 tick 先以 0 元跑過這期,
-        # 提前記下去重會讓這期永遠卡在 0,之後補的交易再也不會被結算。留到
-        # 下次 tick 重新算,直到这期不再是 period_offset=-1(自然過期,跟
-        # 既有的「長時間離線=錯過一次自動化」限制一致)。
-        return False
-    assert rule.reward_account_id is not None
-    payout_tx_sync_id = _emit_reward_tx(
-        db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
-        happened_at=card_rewards._date_to_utc_dt(period_end),
-        reward_account_id=rule.reward_account_id, amount=reward_amount,
-        note=(
-            f"信用卡回饋入帳：{rule.label}"
-            f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
-        ),
-    )
-    _record_payout(
-        db, user_id=rule.user_id, rule_sync_id=rule.sync_id, dedup_key=dedup_key,
-        amount=reward_amount, payout_tx_sync_id=payout_tx_sync_id, now=now,
-    )
+    for period_offset in range(-1, -lookback - 1, -1):
+        results = card_rewards.compute_account_card_rewards(
+            db, ledger_id=ledger_id, account=account, rules=group_rules, now=now,
+            period_offset=period_offset,
+        )
+        card_rewards.apply_caps(results)
+        this_result = next((r for r in results if r["rule"].sync_id == rule.sync_id), None)
+        if this_result is None or this_result["status"] != "ok":
+            continue  # 排程/資料還沒修好,留到下次重試,不記去重
 
-    ledger_external_id = notification_service.resolve_ledger_external_id(db, ledger_id)
-    notification_service.create_notification(
-        db,
-        user_id=rule.user_id,
-        category="card_reward",
-        title=f"信用卡回饋入帳：{rule.label}",
-        body=(
-            f"本期回饋 {reward_amount:.2f} 已存入"
-            f"{_account_name(db, user_id=rule.user_id, sync_id=rule.reward_account_id) or '指定帳戶'}。"
-        ),
-        payload={
-            "ruleId": rule.sync_id,
-            "accountId": rule.account_sync_id,
-            "periodEnd": dedup_key,
-            "ledgerId": ledger_external_id,
-        },
-    )
-    return True
+        period_end = this_result["period_end"]
+        dedup_key = period_end.isoformat()
+        if dedup_key in already_paid:
+            continue  # 這期已經結算過,看更早一期有沒有還沒入帳的
+
+        settlement_date = card_rewards.compute_settlement_date(rule, period_end=period_end)
+        if settlement_date is None or now.date() < settlement_date:
+            continue  # 這期還沒到規則設定的入帳日,留到下次 tick 重試
+
+        reward_amount = this_result["capped_reward"]
+        if reward_amount <= 0:
+            # 不記去重:跟逐筆結算(per-tx dedup_key = 交易自己的 sync_id)不同,
+            # 這裡的 dedup_key 是整期共用的日期字串——如果在使用者於這期結束後
+            # 才補記/回溯一筆合格交易之前,剛好有一次 tick 先以 0 元跑過這期,
+            # 提前記下去重會讓這期永遠卡在 0,之後補的交易再也不會被結算。留到
+            # 下次 tick 重新算。
+            continue
+        assert rule.reward_account_id is not None
+        payout_tx_sync_id = _emit_reward_tx(
+            db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
+            happened_at=card_rewards._date_to_utc_dt(settlement_date),
+            reward_account_id=rule.reward_account_id, amount=reward_amount,
+            note=(
+                f"信用卡回饋入帳：{rule.label}"
+                f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
+            ),
+        )
+        _record_payout(
+            db, user_id=rule.user_id, rule_sync_id=rule.sync_id, dedup_key=dedup_key,
+            amount=reward_amount, payout_tx_sync_id=payout_tx_sync_id, now=now,
+        )
+
+        ledger_external_id = notification_service.resolve_ledger_external_id(db, ledger_id)
+        notification_service.create_notification(
+            db,
+            user_id=rule.user_id,
+            category="card_reward",
+            title=f"信用卡回饋入帳：{rule.label}",
+            body=(
+                f"本期回饋 {reward_amount:.2f} 已存入"
+                f"{_account_name(db, user_id=rule.user_id, sync_id=rule.reward_account_id) or '指定帳戶'}。"
+            ),
+            payload={
+                "ruleId": rule.sync_id,
+                "accountId": rule.account_sync_id,
+                "periodEnd": dedup_key,
+                "ledgerId": ledger_external_id,
+            },
+        )
+        paid_any = True
+
+    return paid_any
 
 
 def materialize_due_card_reward_payouts(db: Session, *, now: datetime | None = None) -> dict[str, int]:

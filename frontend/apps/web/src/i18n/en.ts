@@ -2299,6 +2299,7 @@ const en = {
   'statement.action.unconfirm': 'Confirmed — tap to undo',
   'statement.action.postpone': 'Postpone',
   'statement.action.edit': 'Edit this transaction',
+  'statement.action.finish': 'Finish reconciling',
   'statement.rewardDetail.notice.updated': 'Reward amount updated',
   'statement.postpone.dialog.title': 'Postpone to next statement',
   'statement.postpone.dialog.hint': "If this charge hasn't posted to your card yet, postpone it — it will move to whichever billing period contains the date you pick.",
