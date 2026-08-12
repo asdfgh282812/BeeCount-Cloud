@@ -17,6 +17,7 @@ import type { ReadProject } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { DatePicker } from '../components/DatePicker'
 import type { ProjectForm, ProjectPeriodType } from '../forms'
 import { projectDefaults } from '../forms'
 
@@ -212,18 +213,18 @@ export function ProjectsPanel({
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <Label>{t('projects.field.periodStart')}</Label>
-                  <Input
-                    type="date"
+                  <DatePicker
                     value={form.period_start}
-                    onChange={(e) => onFormChange({ ...form, period_start: e.target.value })}
+                    onChange={(next) => onFormChange({ ...form, period_start: next })}
+                    clearable
                   />
                 </div>
                 <div className="space-y-1">
                   <Label>{t('projects.field.periodEnd')}</Label>
-                  <Input
-                    type="date"
+                  <DatePicker
                     value={form.period_end}
-                    onChange={(e) => onFormChange({ ...form, period_end: e.target.value })}
+                    onChange={(next) => onFormChange({ ...form, period_end: next })}
+                    clearable
                   />
                 </div>
               </div>

@@ -32,6 +32,7 @@ import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { DateTimePicker } from '../components/DateTimePicker'
 import type { RecurringRuleForm } from '../forms'
 import { recurringRuleDefaults } from '../forms'
 import { formatAmountTrimmed } from '../format'
@@ -391,19 +392,18 @@ export function RecurringRulesPanel({
 
             <div className="space-y-1">
               <Label>{t('recurringRules.field.nextRunAt')}</Label>
-              <Input
-                type="datetime-local"
+              <DateTimePicker
                 value={form.next_run_at}
-                onChange={(e) => onFormChange({ ...form, next_run_at: e.target.value })}
+                onChange={(next) => onFormChange({ ...form, next_run_at: next })}
               />
             </div>
 
             <div className="space-y-1">
               <Label>{t('recurringRules.field.endAt')}</Label>
-              <Input
-                type="datetime-local"
+              <DateTimePicker
                 value={form.end_at}
-                onChange={(e) => onFormChange({ ...form, end_at: e.target.value })}
+                onChange={(next) => onFormChange({ ...form, end_at: next })}
+                clearable
               />
             </div>
 

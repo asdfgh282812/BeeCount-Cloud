@@ -18,6 +18,8 @@ import type { ReadAccount, ReadDebt } from '@beecount/api-client'
 import { Amount } from '../components/Amount'
 import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { DatePicker } from '../components/DatePicker'
+import { DateTimePicker } from '../components/DateTimePicker'
 import type { DebtForm } from '../forms'
 import { debtDefaults } from '../forms'
 
@@ -294,10 +296,10 @@ export function DebtsPanel({
 
             <div className="space-y-1">
               <Label>{t('debts.field.dueAt')}</Label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.due_at}
-                onChange={(e) => onFormChange({ ...form, due_at: e.target.value })}
+                onChange={(next) => onFormChange({ ...form, due_at: next })}
+                clearable
               />
             </div>
 
@@ -359,11 +361,7 @@ export function DebtsPanel({
             </div>
             <div className="space-y-1">
               <Label>{t('recurringRules.field.nextRunAt')}</Label>
-              <Input
-                type="datetime-local"
-                value={repaymentAt}
-                onChange={(e) => setRepaymentAt(e.target.value)}
-              />
+              <DateTimePicker value={repaymentAt} onChange={(next) => setRepaymentAt(next)} />
             </div>
             <div className="space-y-1">
               <Label>{t('transactions.table.note')}</Label>

@@ -33,6 +33,7 @@ import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { DateTimePicker } from '../components/DateTimePicker'
 import { interestRateToPercentDisplay, percentDisplayToInterestRate } from '../format'
 import type { InstallmentPlanForm } from '../forms'
 import { installmentPlanDefaults } from '../forms'
@@ -280,11 +281,10 @@ export function InstallmentPlansPanel({
 
             <div className="space-y-1">
               <Label>{t('installmentPlans.field.firstPeriodAt')}</Label>
-              <Input
-                type="datetime-local"
+              <DateTimePicker
                 disabled={!!form.editingId}
                 value={form.first_period_at}
-                onChange={(e) => onFormChange({ ...form, first_period_at: e.target.value })}
+                onChange={(next) => onFormChange({ ...form, first_period_at: next })}
               />
             </div>
 

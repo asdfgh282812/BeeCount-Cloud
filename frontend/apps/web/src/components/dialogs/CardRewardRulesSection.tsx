@@ -38,7 +38,7 @@ import {
 } from '@beecount/ui'
 import { Copy, Gift, Pencil, Trash2 } from 'lucide-react'
 
-import { AccountPickerDialog } from '@beecount/web-features'
+import { AccountPickerDialog, DatePicker } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -1010,11 +1010,11 @@ function CardRewardRuleFormDialog({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>{t('cardRewards.field.startsAt')}</Label>
-              <Input type="date" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
+              <DatePicker value={startsAt} onChange={(next) => setStartsAt(next)} clearable />
             </div>
             <div className="space-y-1">
               <Label>{t('cardRewards.field.endsAt')}</Label>
-              <Input type="date" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
+              <DatePicker value={endsAt} onChange={(next) => setEndsAt(next)} clearable />
             </div>
           </div>
           <div className="space-y-1">

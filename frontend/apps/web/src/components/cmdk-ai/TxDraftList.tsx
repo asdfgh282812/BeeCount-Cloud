@@ -23,7 +23,7 @@ import {
   useT,
   useToast,
 } from '@beecount/ui'
-import { CategoryPickerDialog } from '@beecount/web-features'
+import { CategoryPickerDialog, DateTimePicker } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 
@@ -359,11 +359,9 @@ function TxCard({
       {/* 时间 + 备注 */}
       <div className="mt-2 grid grid-cols-2 gap-2">
         <FieldRow label={t('cmdk.parseTx.time')}>
-          <Input
-            type="datetime-local"
+          <DateTimePicker
             value={toLocalInput(draft.happenedAtIso)}
-            onChange={(e) => onChange({ happenedAtIso: fromLocalInput(e.target.value) })}
-            className="h-8 text-xs"
+            onChange={(next) => onChange({ happenedAtIso: fromLocalInput(next) })}
           />
         </FieldRow>
         <FieldRow label={t('cmdk.parseTx.note')}>

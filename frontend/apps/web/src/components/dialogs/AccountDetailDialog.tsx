@@ -38,6 +38,7 @@ import {
 } from '@beecount/ui'
 import {
   AccountPickerDialog,
+  DatePicker,
   interestRateToPercentDisplay,
   percentDisplayToInterestRate,
   TransactionList
@@ -1333,7 +1334,7 @@ function InstallmentQuickCreateDialog({
           </div>
           <div className="space-y-1">
             <Label>{t('installmentPlans.field.firstPeriodAt')}</Label>
-            <Input type="date" value={firstPeriodAt} onChange={(e) => setFirstPeriodAt(e.target.value)} />
+            <DatePicker value={firstPeriodAt} onChange={(next) => setFirstPeriodAt(next)} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">

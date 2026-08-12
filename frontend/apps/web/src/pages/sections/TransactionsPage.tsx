@@ -105,6 +105,7 @@ import {
   computeTxTotalAmount,
   CategoryPickerDialog,
   ConfirmDialog,
+  DatePicker,
   TagPickerDialog,
   TransactionsPanel,
   canManageLedger,
@@ -2870,12 +2871,12 @@ export function TransactionsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label>{t('shell.filter.dateFrom')}</Label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={txFilterDraft.dateFrom}
-                  onChange={(event) =>
-                    setTxFilterDraft((prev) => ({ ...prev, dateFrom: event.target.value }))
+                  onChange={(next) =>
+                    setTxFilterDraft((prev) => ({ ...prev, dateFrom: next }))
                   }
+                  clearable
                 />
                 {txFilterDraft.dateFrom && !txFilterDraft.dateTo ? (
                   <p className="text-xs text-muted-foreground">
@@ -2885,12 +2886,12 @@ export function TransactionsPage() {
               </div>
               <div className="space-y-1">
                 <Label>{t('shell.filter.dateTo')}</Label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={txFilterDraft.dateTo}
-                  onChange={(event) =>
-                    setTxFilterDraft((prev) => ({ ...prev, dateTo: event.target.value }))
+                  onChange={(next) =>
+                    setTxFilterDraft((prev) => ({ ...prev, dateTo: next }))
                   }
+                  clearable
                 />
                 {txFilterDraft.dateTo && !txFilterDraft.dateFrom ? (
                   <p className="text-xs text-muted-foreground">

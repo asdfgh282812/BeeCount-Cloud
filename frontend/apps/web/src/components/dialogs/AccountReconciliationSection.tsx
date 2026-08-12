@@ -29,7 +29,7 @@ import {
   useT,
   useToast
 } from '@beecount/ui'
-import { ConfirmDialog } from '@beecount/web-features'
+import { ConfirmDialog, DatePicker } from '@beecount/web-features'
 import { ArrowDownUp, Check, ChevronRight, Clock3, ListChecks, MoreVertical, Pencil, X } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -864,7 +864,7 @@ function PostponeDialog({
           <p className="text-xs text-muted-foreground">{t('statement.postpone.dialog.hint')}</p>
           <div className="space-y-1">
             <Label>{t('statement.postpone.dialog.date')}</Label>
-            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <DatePicker value={date} onChange={(next) => setDate(next)} />
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">

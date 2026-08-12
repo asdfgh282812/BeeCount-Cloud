@@ -35,6 +35,8 @@ import type {
 
 import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
+import { DatePicker } from '../components/DatePicker'
+import { DateTimePicker } from '../components/DateTimePicker'
 import { interestRateToPercentDisplay, percentDisplayToInterestRate } from '../format'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
@@ -1091,98 +1093,30 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
-            {/* 借還款追蹤(§2.5 體驗補強):expense/income 都能掛欠款(跟退款
-                同样排除 transfer),不強制連動 tx_type,使用者自己判斷要記
-                支出還收入。只列未結案的欠款(closed/settled 已经没有继续
-                记还款的意义)。 */}
-            {!isTransfer ? (
-              <div className="space-y-1">
-                <Label>{t('transactions.field.debt')}</Label>
-                <Select
-                  value={form.debt_id ? form.debt_id : '__none__'}
-                  disabled={dictionariesLoading}
-                  onValueChange={(value) =>
-                    onFormChange({ ...form, debt_id: value === '__none__' ? '' : value })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('transactions.placeholder.debt')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
-                      <span className="text-muted-foreground">
-                        {t('transactions.placeholder.debt')}
-                      </span>
-                    </SelectItem>
-                    {canCreateDebt ? (
-                      <SelectItem value="__new__">
-                        {t('transactions.placeholder.newDebt')}
-                      </SelectItem>
-                    ) : null}
-                    {debts
-                      .filter((d) => d.status !== 'closed' && d.status !== 'settled')
-                      .map((d) => (
-                        <SelectItem key={d.id} value={d.id}>
-                          {d.counterparty_name}
-                          <span className="ml-1 text-xs text-muted-foreground">
-                            {t(`debts.direction.${d.direction}`)}
-                          </span>
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-                {/* 「建立新欠款」(體驗補強第二輪):这笔交易本身是欠款起点,
-                    不是还款 —— 只补对方名字/到期日,direction 由 tx_type
-                    自动推算并展示提示,不让用户重复选一遍(收入=借入=我欠
-                    对方,支出=借出=对方欠我)。 */}
-                {form.debt_id === '__new__' ? (
-                  <div className="mt-2 space-y-2 rounded-md border border-dashed border-input p-2">
-                    <p className="text-xs text-muted-foreground">
-                      {t(
-                        form.tx_type === 'income'
-                          ? 'transactions.hint.newDebtDirection.payable'
-                          : 'transactions.hint.newDebtDirection.receivable'
-                      )}
-                    </p>
-                    <div className="space-y-1">
-                      <Label>{t('transactions.field.newDebtCounterparty')}</Label>
-                      <Input
-                        value={form.new_debt_counterparty_name}
-                        placeholder={t('transactions.placeholder.newDebtCounterparty')}
-                        onChange={(e) =>
-                          onFormChange({ ...form, new_debt_counterparty_name: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>{t('transactions.field.newDebtDueAt')}</Label>
-                      <Input
-                        type="date"
-                        value={form.new_debt_due_at}
-                        onChange={(e) =>
-                          onFormChange({ ...form, new_debt_due_at: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {/* 延後入帳(§2.10 Phase 5;Phase 20 搬到債務欄位旁邊同一列):進階/
-                選填欄位,不常用 —— 只在消費日跟實際入帳日不同時填(比如信用卡
-                商戶延遲請款),用於對帳/信用卡帳單週期歸屬。 */}
+            {/* 日期+時間(Phase 22,2026-08-13 使用者回饋):搬到表單最前段,
+                取代原本這裡的關聯欠款/實際入帳日(兩者移到下方、原本時間
+                欄位的位置);備註跟著時間一起搬上來,填寫時間時同時記備註
+                更順手。原生 `<input type="datetime-local">` 桌機要手動打字、
+                行動裝置原生選擇器體驗不一致,改用自製 DateTimePicker(Dialog
+                內嵌月曆 + 時分下拉)。 */}
             <div className="space-y-1">
-              <Label>{t('tx.form.deferredPostingAt.label')}</Label>
-              <Input
-                type="date"
-                value={form.deferred_posting_at}
-                onChange={(e) => onFormChange({ ...form, deferred_posting_at: e.target.value })}
+              <Label>{t('transactions.table.time')}</Label>
+              <DateTimePicker
+                value={isoToDatetimeLocal(form.happened_at)}
+                onChange={(next) =>
+                  onFormChange({ ...form, happened_at: datetimeLocalToIso(next, form.happened_at) })
+                }
               />
-              <div className="text-[11px] text-muted-foreground">
-                {t('tx.form.deferredPostingAt.hint')}
-              </div>
             </div>
+            <div className="space-y-1">
+              <Label>{t('transactions.table.note')}</Label>
+              <Input
+                placeholder={t('transactions.placeholder.note')}
+                value={form.note}
+                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
+              />
+            </div>
+
             {/* 退款(§2.6 / §2.12.3):發起入口已搬到交易明細頁的「退款」按鈕
                 (TransactionDetailDialog),這裡不再提供手動挑選退款對象的
                 下拉——編輯既有退款交易時 `form.refund_of_id` 原樣保留,只是
@@ -1251,10 +1185,10 @@ export function TransactionsPanel({
                     </div>
                     <div className="space-y-1">
                       <Label>{t('recurringRules.field.endAt')}</Label>
-                      <Input
-                        type="datetime-local"
+                      <DateTimePicker
                         value={form.recurring_end_at}
-                        onChange={(e) => onFormChange({ ...form, recurring_end_at: e.target.value })}
+                        onChange={(next) => onFormChange({ ...form, recurring_end_at: next })}
+                        clearable
                       />
                     </div>
                     <div className="space-y-1">
@@ -1534,25 +1468,103 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
-            {/* 日期+時間(Phase 20,2026-08 使用者回饋):比照 Moze 參考圖搬到表單
-                尾端,貼近儲存按鈕,標籤/備註維持在其後的最後一段。 */}
-            <div className="space-y-1 md:col-span-2">
-              <Label>{t('transactions.table.time')}</Label>
-              <Input
-                type="datetime-local"
-                step={60}
-                value={isoToDatetimeLocal(form.happened_at)}
-                onChange={(e) =>
-                  onFormChange({
-                    ...form,
-                    happened_at: datetimeLocalToIso(e.target.value, form.happened_at)
-                  })
-                }
+            {/* 借還款追蹤(§2.5 體驗補強;Phase 22 搬到表單尾端、原本時間
+                欄位的位置):expense/income 都能掛欠款(跟退款同样排除
+                transfer),不強制連動 tx_type,使用者自己判斷要記支出還
+                收入。只列未結案的欠款(closed/settled 已经没有继续记还款
+                的意义)。 */}
+            {!isTransfer ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.debt')}</Label>
+                <Select
+                  value={form.debt_id ? form.debt_id : '__none__'}
+                  disabled={dictionariesLoading}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, debt_id: value === '__none__' ? '' : value })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('transactions.placeholder.debt')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      <span className="text-muted-foreground">
+                        {t('transactions.placeholder.debt')}
+                      </span>
+                    </SelectItem>
+                    {canCreateDebt ? (
+                      <SelectItem value="__new__">
+                        {t('transactions.placeholder.newDebt')}
+                      </SelectItem>
+                    ) : null}
+                    {debts
+                      .filter((d) => d.status !== 'closed' && d.status !== 'settled')
+                      .map((d) => (
+                        <SelectItem key={d.id} value={d.id}>
+                          {d.counterparty_name}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {t(`debts.direction.${d.direction}`)}
+                          </span>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {/* 「建立新欠款」(體驗補強第二輪):这笔交易本身是欠款起点,
+                    不是还款 —— 只补对方名字/到期日,direction 由 tx_type
+                    自动推算并展示提示,不让用户重复选一遍(收入=借入=我欠
+                    对方,支出=借出=对方欠我)。 */}
+                {form.debt_id === '__new__' ? (
+                  <div className="mt-2 space-y-2 rounded-md border border-dashed border-input p-2">
+                    <p className="text-xs text-muted-foreground">
+                      {t(
+                        form.tx_type === 'income'
+                          ? 'transactions.hint.newDebtDirection.payable'
+                          : 'transactions.hint.newDebtDirection.receivable'
+                      )}
+                    </p>
+                    <div className="space-y-1">
+                      <Label>{t('transactions.field.newDebtCounterparty')}</Label>
+                      <Input
+                        value={form.new_debt_counterparty_name}
+                        placeholder={t('transactions.placeholder.newDebtCounterparty')}
+                        onChange={(e) =>
+                          onFormChange({ ...form, new_debt_counterparty_name: e.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>{t('transactions.field.newDebtDueAt')}</Label>
+                      <DatePicker
+                        value={form.new_debt_due_at}
+                        onChange={(next) =>
+                          onFormChange({ ...form, new_debt_due_at: next })
+                        }
+                        clearable
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/* 延後入帳(§2.10 Phase 5;Phase 22 跟著關聯欠款一起搬到這裡):
+                進階/選填欄位,不常用 —— 只在消費日跟實際入帳日不同時填(比如
+                信用卡商戶延遲請款),用於對帳/信用卡帳單週期歸屬。 */}
+            <div className="space-y-1">
+              <Label>{t('tx.form.deferredPostingAt.label')}</Label>
+              <DatePicker
+                value={form.deferred_posting_at}
+                onChange={(next) => onFormChange({ ...form, deferred_posting_at: next })}
+                clearable
               />
+              <div className="text-[11px] text-muted-foreground">
+                {t('tx.form.deferredPostingAt.hint')}
+              </div>
             </div>
 
-            {/* 標籤/備註(Phase 20):維持在表單最後一段,兩者並列同一列。 */}
-            <div className="space-y-1">
+            {/* 標籤(Phase 22):備註搬到表單最前段跟時間同一列,這裡只留標籤,
+                改成單獨佔滿一整列。 */}
+            <div className="space-y-1 md:col-span-2">
               <Label>{t('tags.title')}</Label>
               {/* tag 多选改用 TagPickerDialog —— mobile 风格的 chip 选择,带搜索
                   + 颜色块,比 DropdownMenu 直观。trigger 按钮里把已选标签缩略
@@ -1594,14 +1606,6 @@ export function TransactionsPanel({
                 </span>
                 <span className="text-xs text-muted-foreground opacity-60">▾</span>
               </button>
-            </div>
-            <div className="space-y-1">
-              <Label>{t('transactions.table.note')}</Label>
-              <Input
-                placeholder={t('transactions.placeholder.note')}
-                value={form.note}
-                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
-              />
             </div>
           </div>
           </div>

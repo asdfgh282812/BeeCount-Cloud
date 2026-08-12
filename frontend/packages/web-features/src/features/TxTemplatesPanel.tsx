@@ -25,6 +25,7 @@ import { AccountPickerDialog } from '../components/AccountPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { DateTimePicker } from '../components/DateTimePicker'
 import type { TxTemplateForm } from '../forms'
 import { txTemplateDefaults } from '../forms'
 
@@ -401,7 +402,7 @@ export function TxTemplatesPanel({
           <div className="space-y-3">
             <div className="space-y-1">
               <Label>{t('recurringRules.field.nextRunAt')}</Label>
-              <Input type="datetime-local" value={applyAt} onChange={(e) => setApplyAt(e.target.value)} />
+              <DateTimePicker value={applyAt} onChange={(next) => setApplyAt(next)} />
             </div>
             <div className="space-y-1">
               <Label>{t('budgets.field.amount')}</Label>
