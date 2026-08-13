@@ -1,4 +1,4 @@
-import { API_BASE } from '@beecount/api-client'
+import { authedGet } from '@beecount/api-client'
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -61,13 +61,18 @@ export async function drainPull(
     params.set('since', String(cursor))
     params.set('limit', '1000')
     if (deviceId) params.set('device_id', deviceId)
-    const url = `${API_BASE}/sync/pull?${params.toString()}`
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-    if (!res.ok) {
-      // Non-OK stops the drain; callers decide how to surface.
+    let body: SyncPullResponse
+    try {
+      // 之前这里是裸 fetch,token 过期后会永远带着同一个过期 token 重试且
+      // 401 静默吞掉,WS reconnect 闭包也不会跟着换新 token(见 connection
+      // rejected 日志里同一个 jti 被重放几小时)。改走 authedGet 让 401 触发
+      // http.ts 的单飞 refresh,新 token 会 setState 回 App.tsx 并带动 WS
+      // reconnect。
+      body = await authedGet<SyncPullResponse>(`/sync/pull?${params.toString()}`, token)
+    } catch (_) {
+      // Non-OK / network error 停止本轮 drain;调用方决定要不要重试。
       break
     }
-    const body = (await res.json()) as SyncPullResponse
     if (Array.isArray(body.changes) && body.changes.length > 0) {
       collected.push(...body.changes)
     }
