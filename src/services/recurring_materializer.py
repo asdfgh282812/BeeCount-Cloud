@@ -309,8 +309,14 @@ def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) 
             ReadTxProjection.from_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
         )
     ) or 0.0)
+    # 跨幣別轉帳(2026-08):轉入端要用轉入帳戶自身幣別的金額,不是轉出端的
+    # amount——同幣種轉帳 to_amount 是 NULL,COALESCE 回退 amount,行為不變。
     transfer_in = float(db.scalar(
-        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+        select(
+            func.coalesce(
+                func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+            )
+        ).where(
             ReadTxProjection.to_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
         )
     ) or 0.0)

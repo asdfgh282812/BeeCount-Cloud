@@ -2061,6 +2061,68 @@ def _assert_category_required(
         )
 
 
+def _assert_transfer_to_amount_valid(
+    db: Session, *, user_id: str, ledger_id: str, tx_id: str | None, payload: dict,
+) -> None:
+    """跨幣別轉帳(2026-08):轉出(`amount`)/轉入(`to_amount`)帳戶幣別不同時,
+    `to_amount` 必須有值——沒有的話轉入帳戶的餘額增減會沿用轉出帳戶的原幣
+    金額,兩邊帳本的錢對不上。幣別相同(含任一帳戶查不到幣別的寬鬆情形)則
+    不要求,`to_amount` 為 None 時下游一律 `COALESCE(to_amount, amount)` 回退。
+
+    create(tx_id=None):`payload` 是完整 model_dump,直接讀。
+    update(tx_id 給值):`payload` 是 `exclude_unset=True` 的差量——
+    tx_type/from_account_id/to_account_id/to_amount 一個都沒出現時整個
+    no-op(這次 PATCH 沒動轉帳的任何一端,沿用既有已驗證過的狀態);
+    出現任一個時,缺的欄位 fallback 現有 DB 值(partial update 慣例,同
+    `_normalize_fee_discount_amount`)。
+    """
+    _relevant_keys = ("tx_type", "from_account_id", "to_account_id", "to_amount")
+    existing = None
+    if tx_id is not None:
+        if not any(k in payload for k in _relevant_keys):
+            return
+        existing = db.execute(
+            select(
+                ReadTxProjection.tx_type,
+                ReadTxProjection.from_account_sync_id,
+                ReadTxProjection.to_account_sync_id,
+                ReadTxProjection.to_amount,
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id == tx_id,
+            )
+        ).first()
+
+    def _eff(key: str, existing_attr: str | None = None):
+        if key in payload:
+            return payload.get(key)
+        return getattr(existing, existing_attr or key) if existing else None
+
+    tx_type = _eff("tx_type")
+    if tx_type != "transfer":
+        return
+    from_account_id = _eff("from_account_id", "from_account_sync_id")
+    to_account_id = _eff("to_account_id", "to_account_sync_id")
+    to_amount = _eff("to_amount")
+    if not from_account_id or not to_account_id or to_amount is not None:
+        return
+    currencies = dict(
+        db.execute(
+            select(UserAccountProjection.sync_id, UserAccountProjection.currency).where(
+                UserAccountProjection.user_id == user_id,
+                UserAccountProjection.sync_id.in_([from_account_id, to_account_id]),
+            )
+        ).all()
+    )
+    from_currency = (currencies.get(from_account_id) or "").strip().upper()
+    to_currency = (currencies.get(to_account_id) or "").strip().upper()
+    if from_currency and to_currency and from_currency != to_currency:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="to_amount is required when from/to accounts have different currencies",
+        )
+
+
 def _assert_can_modify_entity(
     *,
     db: Session,  # noqa: ARG001 — retained for signature compat
@@ -2214,6 +2276,7 @@ __all__ = [
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
     '_assert_category_required',
+    '_assert_transfer_to_amount_valid',
     '_assert_valid_adjustment_tx',
     '_normalize_fee_discount_amount',
     '_USER_PROJECTION_UPSERTERS',

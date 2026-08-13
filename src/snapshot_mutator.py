@@ -406,6 +406,12 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["currencyCode"] = str(payload.get("currency_code")).upper()
     if payload.get("native_amount") is not None:
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
+    # 跨幣別轉帳(2026-08):轉入帳戶自身幣別的金額,顯式傳入才寫;不傳不產生
+    # key(upsert 落 NULL → COALESCE(to_amount, amount) 回退,同幣種轉帳的
+    # 舊行為)。write/_shared.py::_assert_transfer_to_amount_valid 已擋掉
+    # 「轉出/轉入幣別不同卻不帶 to_amount」的情形。
+    if payload.get("to_amount") is not None:
+        item["toAmount"] = _to_float(payload.get("to_amount"))
     # 手續費/折扣(2026-08 使用者需求):base_amount 是使用者輸入的原始金額
     # (回饋計算權威基準),只在 write/_shared.py::_normalize_fee_discount_amount
     # 認定「這筆交易有用到這個功能」時才會出現在 payload,不傳 → 不產生 key
@@ -538,10 +544,25 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             if new_amount != old_amount:
                 item["nativeAmount"] = rescale_native_amount(
                     old_amount, old_native, new_amount)
+        # 跨幣別轉帳(2026-08):item 帶 toAmount(轉入帳戶幣別跟轉出不同的
+        # 既有轉帳)時,改 amount(轉出金額)要照同一個隱含匯率等比縮放
+        # toAmount,規則跟上面 nativeAmount 完全一致——沿用同一個
+        # rescale_native_amount(舊名沒改,函式本身就是通用的 old/new 縮放,
+        # 不是 native_amount 專屬)。payload 顯式帶 to_amount 時以傳入為準
+        # (下方統一寫入),跳過聯動。
+        if "toAmount" in item and payload.get("to_amount") is None:
+            old_amount = _to_float(item.get("amount"))
+            old_to = _to_float(item.get("toAmount"))
+            if new_amount != old_amount:
+                item["toAmount"] = rescale_native_amount(
+                    old_amount, old_to, new_amount)
         item["amount"] = new_amount
     if payload.get("native_amount") is not None:
         # 显式传入优先(Web 折算录入);None = 不变。
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
+    if payload.get("to_amount") is not None:
+        # 跨幣別轉帳(2026-08):顯式傳入優先;None = 不變。
+        item["toAmount"] = _to_float(payload.get("to_amount"))
     # 手續費/折扣(2026-08 使用者需求):"key" in payload 才动作(PATCH 缺键
     # 保留既有值,同 amount/nativeAmount 惯例);显式传 None = 使用者关掉这个
     # 功能,清掉该 key(upsert 落 NULL,回饋計算/顯示 fallback 回 amount)。

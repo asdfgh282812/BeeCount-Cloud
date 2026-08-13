@@ -29,6 +29,7 @@ import { useT, useToast } from '@beecount/ui'
 import {
   resolveCurrencyFields,
   loadRatesToBase,
+  resolveEffectiveRate,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
@@ -544,21 +545,53 @@ export function GlobalEditDialogs() {
       return false
     }
 
-    // v30 多币种:共享 helper(override 口径/编辑防漂移/改回本位币),与
-    // TransactionsPage 提交完全同一实现。
+    // v30 多币种 + 跨幣別自動換算(2026-08):跟 TransactionsPage.onSaveTransaction
+    // 同一實現——把「入帳幣別」金額換算成使用者選的帳戶自己的幣別(不是帳本
+    // 本位幣),帳戶餘額口徑永遠是帳戶自身幣別。手續費/折扣、拆帳的每個分量
+    // 都要跟著同一個匯率縮放,否則 server 端會用「未換算的分量」重新算出
+    // 權威 amount(見 write/_shared.py::_normalize_fee_discount_amount)。
     const ledgerBase = (
       ledgers.find((l) => l.ledger_id === ledgerId)?.currency || 'CNY'
     )
       .trim()
       .toUpperCase()
-    const accountCurrencyOfForm = editTxAccounts
-      .find((a) => (a.name || '').trim() === editTxForm.account_name.trim())
-      ?.currency?.toUpperCase()
-    const effCurrency = (
-      editTxForm.currency ||
-      (editTxForm.tx_type !== 'transfer' ? accountCurrencyOfForm : '') ||
-      ledgerBase
+    const entryCurrency = (editTxForm.currency || ledgerBase).toUpperCase()
+    const accountCurrencyOfForm = (
+      editTxAccounts
+        .find((a) => (a.name || '').trim() === editTxForm.account_name.trim())
+        ?.currency || ledgerBase
     ).toUpperCase()
+    let finalAmountNum = totalAmountNum
+    let finalBaseAmountNum = amountNum
+    let finalFeeNum = feeNum
+    let finalDiscountNum = discountNum
+    let finalSplitsPayload = buildTxSplitsPayload(editTxForm)
+    if (editTxForm.tx_type !== 'transfer' && accountCurrencyOfForm !== entryCurrency) {
+      // baseAmountNum 用 amountNum,跟 TransactionsPanel.tsx::entryFxPreview
+      // 显示给使用者看的换算基准一致(见 TransactionsPage.tsx 同款注释)。
+      const effectiveRate = resolveEffectiveRate(
+        editTxForm.fx_rate_override,
+        editTxForm.fx_amount_override,
+        amountNum,
+        entryCurrency,
+        accountCurrencyOfForm,
+        editTxRates,
+        ledgerBase
+      )
+      if (effectiveRate == null) {
+        notifyError(new Error(t('transactions.error.rateMissing')))
+        return false
+      }
+      finalAmountNum = totalAmountNum * effectiveRate
+      finalBaseAmountNum = amountNum * effectiveRate
+      finalFeeNum = feeNum * effectiveRate
+      finalDiscountNum = discountNum * effectiveRate
+      finalSplitsPayload = finalSplitsPayload.map((row) => ({
+        ...row,
+        amount: (row.amount || 0) * effectiveRate,
+      }))
+    }
+    const effCurrency = editTxForm.tx_type !== 'transfer' ? accountCurrencyOfForm : entryCurrency
     let currencyFields: { currency_code?: string; native_amount?: number } = {}
     if (editTxForm.tx_type !== 'transfer') {
       try {
@@ -566,9 +599,7 @@ export function GlobalEditDialogs() {
           token,
           ledgerBase,
           currency: effCurrency,
-          // 手續費/折扣:折算快照要跟著實際入帳總額走,不是調整前的
-          // base_amount(否則外幣交易的 native_amount 會跟 amount 對不上)。
-          amount: totalAmountNum,
+          amount: finalAmountNum,
           originalCurrency: editTxForm.editingId
             ? editTxForm.original_currency
             : undefined
@@ -577,6 +608,37 @@ export function GlobalEditDialogs() {
       } catch {
         notifyError(new Error(t('transactions.error.rateMissing')))
         return false
+      }
+    }
+
+    // 跨幣別轉帳(2026-08):同 TransactionsPage.onSaveTransaction——轉出/
+    // 轉入帳戶幣別不同時要算出 to_amount,否則後端會擋下這筆;幣別相同不送
+    // 這個欄位。
+    let transferToAmount: number | undefined
+    if (editTxForm.tx_type === 'transfer') {
+      const fromAccountRow = editTxAccounts.find(
+        (a) => (a.name || '').trim().toLowerCase() === editTxForm.from_account_name.trim().toLowerCase(),
+      )
+      const toAccountRow = editTxAccounts.find(
+        (a) => (a.name || '').trim().toLowerCase() === editTxForm.to_account_name.trim().toLowerCase(),
+      )
+      const fromCurrency = (fromAccountRow?.currency || ledgerBase).trim().toUpperCase()
+      const toCurrency = (toAccountRow?.currency || ledgerBase).trim().toUpperCase()
+      if (fromAccountRow && toAccountRow && fromCurrency !== toCurrency) {
+        const effectiveRate = resolveEffectiveRate(
+          editTxForm.fx_rate_override,
+          editTxForm.fx_amount_override,
+          totalAmountNum,
+          fromCurrency,
+          toCurrency,
+          editTxRates,
+          ledgerBase
+        )
+        if (effectiveRate == null) {
+          notifyError(new Error(t('transactions.fx.rateMissing')))
+          return false
+        }
+        transferToAmount = totalAmountNum * effectiveRate
       }
     }
 
@@ -620,15 +682,15 @@ export function GlobalEditDialogs() {
 
     const payload = {
       tx_type: editTxForm.tx_type,
-      amount: totalAmountNum,
+      amount: finalAmountNum,
       // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
       // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
       ...(editTxForm.fee_enabled
         ? {
-            base_amount: amountNum,
-            fee_amount: feeNum,
+            base_amount: finalBaseAmountNum,
+            fee_amount: finalFeeNum,
             fee_label: editTxForm.fee_label.trim() || null,
-            discount_amount: discountNum,
+            discount_amount: finalDiscountNum,
             discount_label: editTxForm.discount_label.trim() || null,
           }
         : {}),
@@ -660,6 +722,11 @@ export function GlobalEditDialogs() {
           ? editTxForm.to_account_name.trim()
           : null,
       to_account_id: editTxForm.tx_type === 'transfer' ? resolvedToAccountId : null,
+      // 跨幣別轉帳(2026-08):同幣種轉帳(transferToAmount undefined)不送
+      // 這個欄位,server 端 COALESCE(to_amount, amount) 回退,行為不變。
+      ...(editTxForm.tx_type === 'transfer' && transferToAmount !== undefined
+        ? { to_amount: transferToAmount }
+        : {}),
       tags: editTxForm.tags.filter((s) => s.length > 0),
       attachments: editTxForm.attachments,
       // §三 标记按 type 条件落库:转账两者都置 false;收入只允许 stats;支出两者都允许。
@@ -684,7 +751,7 @@ export function GlobalEditDialogs() {
       recurring: !editTxForm.editingId ? buildRecurringInlinePayload(editTxForm) : null,
       // 拆帳(§2.4):disabled → 空数组(create 场景等同"没有 splits";update
       // 场景显式清空既有 splits,回到单一 category)。
-      splits: buildTxSplitsPayload(editTxForm),
+      splits: finalSplitsPayload,
       ...currencyFields
     }
 
@@ -743,6 +810,8 @@ export function GlobalEditDialogs() {
   }, [
     editTxLedgerId,
     editTxForm,
+    editTxAccounts,
+    editTxRates,
     token,
     retryOnConflict,
     isWriteConflict,
@@ -842,12 +911,7 @@ export function GlobalEditDialogs() {
       total={0}
       page={1}
       pageSize={20}
-      accounts={editTxAccounts.filter((a) => {
-        // 币种优先联动:账户下拉只显示「表单所选币种(默认=账本主币种)」的
-        // 账户,防止选出币种与账户不一致的组合(与 TransactionsPage 同规则)
-        const wanted = (editTxForm.currency || editTxBase).toUpperCase()
-        return ((a.currency || 'CNY').trim().toUpperCase()) === wanted
-      })}
+      accounts={editTxAccounts}
       categories={editTxCategories}
       tags={editTxTags}
       debts={editTxDebts}

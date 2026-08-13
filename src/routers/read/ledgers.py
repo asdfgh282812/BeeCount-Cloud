@@ -400,6 +400,7 @@ def list_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                to_amount=row.to_amount,
                 base_amount=row.base_amount,
                 fee_amount=row.fee_amount,
                 fee_label=row.fee_label,
@@ -1948,8 +1949,11 @@ def get_account_statement(
         is_transfer = row.tx_type == "transfer"
         if is_transfer:
             # 轉入視為還款/預繳,比照 income 記為負值(減少應繳餘額);金額
-            # 歸屬欄位改用 to_account_sync_id/to_account_name。
-            signed = -row.amount
+            # 歸屬欄位改用 to_account_sync_id/to_account_name。跨幣別轉帳
+            # (2026-08):這張卡看到的應該是轉入卡片自身幣別的金額,不是轉出
+            # 端的 amount——同幣種轉帳 to_amount 是 NULL,回退 amount。
+            transfer_amount = row.to_amount if row.to_amount is not None else row.amount
+            signed = -transfer_amount
             bucket_account_id = row.to_account_sync_id
             bucket_account_name = row.to_account_name
         else:
@@ -1971,7 +1975,7 @@ def get_account_statement(
                 account_id=bucket_account_id or "",
                 account_name=bucket_account_name,
                 tx_type=row.tx_type,
-                amount=row.amount,
+                amount=transfer_amount if is_transfer else row.amount,
                 category_name=row.category_name,
                 note=row.note,
                 happened_at=row.happened_at,

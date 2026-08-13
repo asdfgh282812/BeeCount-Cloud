@@ -244,10 +244,14 @@ def compute_group_billing(
         for cid, amt in offset_totals.items():
             per_child_lifetime_charged[cid] = per_child_lifetime_charged.get(cid, 0.0) - amt
 
+        # 跨幣別轉帳(2026-08):同 paid_total 下方的注釋,轉入卡片端要用卡片
+        # 自身幣別的金額。
         paid_rows = db.execute(
             select(
                 ReadTxProjection.to_account_sync_id,
-                func.coalesce(func.sum(ReadTxProjection.amount), 0.0),
+                func.coalesce(
+                    func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+                ),
             ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.to_account_sync_id.in_(member_ids),
@@ -432,8 +436,15 @@ def compute_cycle_period_billing(
     if member_ids:
         # member_ids 已经包含 group.sync_id(见 billing_member_ids),不用再
         # 额外 union 一次。
+        # 跨幣別轉帳(2026-08):繳款轉入卡片端要用卡片自身幣別的金額,不是
+        # 轉出端的 amount——同幣種繳款 to_amount 是 NULL,COALESCE 回退
+        # amount,行為不變。
         paid_total = float(db.scalar(
-            select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            select(
+                func.coalesce(
+                    func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+                )
+            ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.to_account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type == "transfer",

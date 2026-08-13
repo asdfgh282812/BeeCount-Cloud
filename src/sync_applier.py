@@ -348,6 +348,9 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # _sync_native_amount_after_merge。
         ("currencyCode", "currency_code"),
         ("nativeAmount", "native_amount"),
+        # 跨幣別轉帳(2026-08):缺键保留既有轉入金額快照;payload 带 amount
+        # 不带 toAmount 时的联动缩放见 _sync_to_amount_after_merge。
+        ("toAmount", "to_amount"),
         # 手續費/折扣(2026-08 使用者需求):缺键保留既有值,同 nativeAmount
         # 惯例。base_amount 是信用卡回饋計算的權威基準(見
         # services/card_rewards.py::_reward_base_amount)。
@@ -700,6 +703,34 @@ def _sync_native_amount_after_merge(existing, payload: dict, merged: dict) -> di
     return merged
 
 
+def _sync_to_amount_after_merge(existing, payload: dict, merged: dict) -> dict:
+    """跨幣別轉帳(2026-08):結構完全比照 {@link _sync_native_amount_after_merge}
+    ——payload 带新 amount(轉出金額)但不带 toAmount(舊客戶端只知道轉出端)
+    時,merge 從 existing 補回的舊 to_amount 會與新 amount 失配。只在既有
+    row 本身就是轉帳(tx_type=="transfer")且已有 to_amount 快照時才聯動,
+    非轉帳 / 同幣別轉帳(to_amount 為 None)不受影響。
+    """
+    if getattr(existing, "tx_type", None) != "transfer":
+        return merged
+    if payload.get("amount") is None or payload.get("toAmount") is not None:
+        return merged
+    old_to = getattr(existing, "to_amount", None)
+    if old_to is None:
+        return merged
+    try:
+        new_amount = float(payload["amount"])
+        old_amount = float(getattr(existing, "amount", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return merged
+    if new_amount == old_amount:
+        return merged
+    from .snapshot_mutator import rescale_native_amount
+
+    merged["toAmount"] = rescale_native_amount(
+        old_amount, old_to, new_amount)
+    return merged
+
+
 def merge_with_existing(
     db: Session,
     entity_type: str,
@@ -724,6 +755,7 @@ def merge_with_existing(
     merged = _merge_from_spec(spec, existing, payload)
     if entity_type == "transaction":
         merged = _sync_native_amount_after_merge(existing, payload, merged)
+        merged = _sync_to_amount_after_merge(existing, payload, merged)
     return merged
 
 

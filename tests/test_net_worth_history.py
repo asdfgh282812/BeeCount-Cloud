@@ -202,3 +202,44 @@ def test_net_worth_history_converts_to_base():
         assert body["multi_currency"] is True
     finally:
         app.dependency_overrides.clear()
+
+
+def test_net_worth_history_excludes_include_in_total_false():
+    """納入總餘額(Phase 18)關閉的帳戶——初始餘額跟後續交易增減都不進淨值序列,
+    跟資產頁淨資產卡(computeCurrencySummary)同口徑。"""
+    client, _ = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "nwh4@t.com")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        hdr_web = {"Authorization": f"Bearer {web_token}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "个人账本", "currency": "CNY"})
+        _push(client, hdr_app, "lg1", "account", "acc-cash",
+              {"syncId": "acc-cash", "name": "现金", "type": "cash",
+               "initialBalance": 1000.0, "currency": "CNY"})
+        # 不納入總餘額的帳戶:初始餘額 5000,之后又收入 100——两者都不该出现在净值里。
+        _push(client, hdr_app, "lg1", "account", "acc-excluded",
+              {"syncId": "acc-excluded", "name": "估值用帐户", "type": "other",
+               "initialBalance": 5000.0, "currency": "CNY",
+               "includeInTotal": False})
+        _push(client, hdr_app, "lg1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 200,
+               "accountId": "acc-cash",
+               "happenedAt": "2026-01-15T00:00:00+00:00"})
+        _push(client, hdr_app, "lg1", "transaction", "tx-2",
+              {"syncId": "tx-2", "type": "income", "amount": 100,
+               "accountId": "acc-excluded",
+               "happenedAt": "2026-01-20T00:00:00+00:00"})
+
+        r = client.get(
+            "/api/v1/read/workspace/net-worth-history",
+            headers=hdr_web,
+            params={"scope": "all"},
+        )
+        assert r.status_code == 200, r.text
+        series = {s["bucket"]: s["net_worth"] for s in r.json()["series"]}
+        # 1000(现金初始) - 200(1月支出) = 800;acc-excluded 的 5000 初始 + 100 收入都不计入。
+        assert series["2026-01"] == 800.0
+    finally:
+        app.dependency_overrides.clear()

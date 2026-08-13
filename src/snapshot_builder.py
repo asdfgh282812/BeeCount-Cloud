@@ -81,6 +81,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 全量同步后外币折算全部丢失(apply 缺省 nativeAmount=amount 退化 1:1)。
         ReadTxProjection.currency_code,
         ReadTxProjection.native_amount,
+        # 跨幣別轉帳(2026-08),同样必须进 full snapshot,原因同上(漏 SELECT
+        # 新欄位的既有 bug 模式:全量同步後轉入端外幣折算全部丟失)。
+        ReadTxProjection.to_amount,
         # 手續費/折扣(2026-08 使用者需求),同样必须进 full snapshot,原因同上
         # (CLAUDE.md 記過的既有 bug 模式:漏 SELECT 新欄位 → 下一次
         # `_commit_write` 的 diff 把它當「本來就沒有」靜默清空)。
@@ -137,7 +140,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          to_sid, to_name,
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
-         currency_code, native_amount,
+         currency_code, native_amount, to_amount,
          base_amount, fee_amount, fee_label, discount_amount, discount_label,
          refund_of_id, installment_plan_id,
          recurring_rule_id, recurring_occurrence_overridden,
@@ -197,6 +200,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["currencyCode"] = currency_code
         if native_amount is not None:
             item["nativeAmount"] = native_amount
+        if to_amount is not None:
+            item["toAmount"] = to_amount
         if base_amount is not None:
             item["baseAmount"] = base_amount
         if fee_amount is not None:

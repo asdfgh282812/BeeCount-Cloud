@@ -47,6 +47,10 @@ async def create_tx(
     # 主帳戶(§2.9 Phase 4):account_group 是純管理容器,不能被一般交易挂上。
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 跨幣別轉帳(2026-08):轉出/轉入帳戶幣別不同時必須帶 to_amount。
+    _assert_transfer_to_amount_valid(
+        db, user_id=current_user.id, ledger_id=ledger.id, tx_id=None, payload=payload,
+    )
     # 手續費/折扣(2026-08 使用者需求):在 mutate_payload 复制前重算 amount,
     # 之后所有分支(fast path / recurring inline)读到的都是校正后的总额。
     _normalize_fee_discount_amount(db=db, ledger_id=ledger.id, tx_id=None, payload=payload)
@@ -216,6 +220,10 @@ async def update_tx(
     )
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 跨幣別轉帳(2026-08):轉出/轉入帳戶幣別不同時必須帶 to_amount。
+    _assert_transfer_to_amount_valid(
+        db, user_id=current_user.id, ledger_id=ledger.id, tx_id=tx_id, payload=payload,
+    )
     # 手續費/折扣(2026-08 使用者需求):PATCH 缺鍵的分量 fallback 現有 DB 值。
     _normalize_fee_discount_amount(db=db, ledger_id=ledger.id, tx_id=tx_id, payload=payload)
     # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,

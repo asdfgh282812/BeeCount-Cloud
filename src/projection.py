@@ -370,6 +370,10 @@ def upsert_tx(
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),
         "native_amount": _as_float_or_none(payload.get("nativeAmount")),
+        # 跨幣別轉帳(2026-08):缺键保留由上游 merge_with_existing 负责;首次
+        # 插入且旧 payload 无字段 → NULL(讀取端 COALESCE(to_amount, amount)
+        # 回退,同幣種轉帳的既有行為)。
+        "to_amount": _as_float_or_none(payload.get("toAmount")),
         # 手續費/折扣(2026-08 使用者需求):base_amount 缺失必须落 NULL(=
         # 從未使用過這個功能),用 _as_float_or_none 保留 NULL 语义,同
         # native_amount 写法。

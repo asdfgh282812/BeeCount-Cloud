@@ -207,6 +207,10 @@ export type ReadTransaction = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(记账时汇率,保存即定)。null 时 fallback 用 amount。 */
   native_amount?: number | null
+  /** 跨幣別轉帳(2026-08):僅 tx_type=transfer 且轉出/轉入帳戶幣別不同時有
+   *  值——轉入帳戶自身幣別的金額(既有 amount 欄位語意不變,仍是轉出帳戶
+   *  自身幣別)。null = 同幣別轉帳,fallback 用 amount。 */
+  to_amount?: number | null
   /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
    *  base_amount=使用者輸入的原始金額(信用卡回饋計算的權威基準,null=
    *  沒用過這個功能,fallback 用 amount);fee_amount/discount_amount=
@@ -671,6 +675,10 @@ export type TxPayload = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(前端按 server 汇率算好传入)。 */
   native_amount?: number | null
+  /** 跨幣別轉帳(2026-08):僅 tx_type=transfer 且轉出/轉入帳戶幣別不同時
+   *  需要傳——轉入帳戶自身幣別的金額(前端按匯率算好傳入,或使用者手動
+   *  覆蓋)。不傳/同幣別轉帳 = server 端 COALESCE(to_amount, amount) 回退。 */
+  to_amount?: number | null
   /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
    *  base_amount=使用者輸入的原始金額(server 端據此 + fee/discount 重新
    *  算出權威的 amount,見 write/_shared.py::_normalize_fee_discount_amount);

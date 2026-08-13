@@ -551,6 +551,10 @@ class ReadTransactionOut(BaseModel):
     # native_amount=折账本本位币快照(null 时前端 fallback 用 amount)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 跨幣別轉帳(2026-08):僅 tx_type=transfer 且轉出/轉入帳戶幣別不同時
+    # 有值 = 轉入帳戶自身幣別的金額;null = 同幣別轉帳,前端 fallback 用
+    # amount(COALESCE 同口徑)。
+    to_amount: float | None = None
     # 手續費/折扣(2026-08 使用者需求):base_amount=使用者輸入的原始金額
     # (null=沒用過這個功能,前端 fallback 用 amount);fee_amount/
     # discount_amount=額外調整金額;fee_label/discount_label=自訂名稱
@@ -1438,6 +1442,11 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 折账本本位币快照(前端按汇率算好传入)。不传 → item 不产生字段(旧行为)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 跨幣別轉帳(2026-08):僅 tx_type=transfer 且轉出/轉入帳戶幣別不同時
+    # 需要傳——轉入帳戶自身幣別的金額(前端按匯率算好傳入,或使用者手動
+    # 覆蓋)。不傳/同幣別轉帳 → item 不產生欄位,COALESCE(to_amount, amount)
+    # 回退(見 write/transactions.py 的必填驗證)。
+    to_amount: float | None = Field(default=None, gt=0)
     # 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
     # base_amount=使用者輸入的原始金額(信用卡回饋計算的權威基準);
     # fee_amount/discount_amount=額外調整金額;fee_label/discount_label=
@@ -1504,6 +1513,10 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 交易级多币种(0018):显式传入优先(mutator 不再联动);None = 不变。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 跨幣別轉帳(2026-08):同 create——key 不出現 = 不變(保留既有轉入金額
+    # 快照);傳值 = 更新。轉出/轉入帳戶幣別不同時必須有值,見
+    # write/transactions.py 的必填驗證。
+    to_amount: float | None = Field(default=None, gt=0)
     # 手續費/折扣(2026-08 使用者需求):key 不出現 = 不變;傳 null = 清除該
     # 分量(關掉手續費/折扣功能);傳值 = 更新。server 端一律用最終三個分量
     # 重算 amount,見 write/_shared.py::_normalize_fee_discount_amount。

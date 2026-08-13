@@ -571,6 +571,11 @@ class ReadTxProjection(Base):
     fee_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     discount_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 跨幣別轉帳(2026-08):僅 tx_type=transfer 且轉出/轉入帳戶幣別不同時有值
+    # ——轉入帳戶自身幣別的金額(既有 amount 欄位語意不變,仍是轉出帳戶自身
+    # 幣別、驅動轉出帳戶餘額增減的那個數)。NULL = 同幣別轉帳(舊資料/舊版
+    # App 皆是如此),讀取一律 COALESCE(to_amount, amount) 回退,不需要回填。
+    to_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 退款(§2.6 MOZE_FEATURE_GAP_SD.md):指向被退款的那笔支出 tx 的 sync_id。
     # 有值 = 这笔(通常是 income)交易是对某笔支出的退款,统计口径从"当期收入"
     # 挪走,改冲抵该笔支出净额(见 read/_shared._projection_totals、

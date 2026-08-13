@@ -1568,6 +1568,7 @@ const en = {
   'transactions.table.amount': 'amount',
   'transactions.convertedToBase': 'Converted to ledger base currency at the rate recorded at entry time',
   'transactions.error.rateMissing': 'Failed to get exchange rate; cannot convert to ledger base currency. Try again later.',
+  'transactions.fx.rateMissing': 'Exchange rate unavailable — enter a rate manually.',
   'transactions.error.splitTransferNotAllowed': 'Transfers cannot be split across categories.',
   'transactions.error.splitNeedsTwo': 'A split transaction needs at least 2 category entries.',
   'transactions.error.splitAmountInvalid': 'Each split amount must be greater than zero.',

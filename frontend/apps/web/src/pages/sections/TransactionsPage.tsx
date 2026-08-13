@@ -98,6 +98,7 @@ import {
 import {
   resolveCurrencyFields,
   loadRatesToBase,
+  resolveEffectiveRate,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
@@ -708,21 +709,16 @@ export function TransactionsPage() {
     }
   }, [route.section, token, txContextLedgerId])
 
-  // v30 多币种(币种优先联动):账户下拉按表单所选币种过滤(默认=账本本位币,
-  // 与旧行为一致;选了 JPY → 只显示 JPY 账户)。
+  // 跨幣別自動換算:帳戶下拉不再按表單所選幣別過濾(任何幣別的帳戶都能選,
+  // 選到跟入帳幣別不同的帳戶時由 TransactionsPanel 顯示換算列 + 送出前換算,
+  // 見 forms.ts::fx_rate_override / currencies.ts::convertBetween)。
   const txFormCurrency = (txForm.currency || txWriteLedgerCurrency).toUpperCase()
   const txWriteAccounts = useMemo(() => {
     const source =
       txIsSharedEditor && sharedBundle ? sharedAsRead.accounts : txDictionaryAccounts
-    return source.filter((row) => {
-      const currency = (row.currency || 'CNY').trim().toUpperCase()
-      if (currency !== txFormCurrency) return false
-      if (VALUATION_ACCOUNT_TYPES.has(row.account_type || '')) return false
-      return true
-    })
+    return source.filter((row) => !VALUATION_ACCOUNT_TYPES.has(row.account_type || ''))
   }, [
     txDictionaryAccounts,
-    txFormCurrency,
     VALUATION_ACCOUNT_TYPES,
     txIsSharedEditor,
     sharedBundle,
@@ -2014,26 +2010,106 @@ export function TransactionsPage() {
         .map((value) => tagByName.get(value.trim().toLowerCase()))
         .filter((value): value is string => Boolean(value))
 
+      // 跨幣別自動換算(2026-08):expense/income 把「入帳幣別」金額換算成
+      // 使用者選的帳戶自己的幣別(不是帳本本位幣)——帳戶餘額口徑永遠是帳戶
+      // 自身幣別。手續費/折扣、拆帳的每個分量都要跟著同一個匯率縮放,否則
+      // server 端會用「未換算的分量」重新算出權威 amount,把這裡的換算悄悄
+      // 蓋掉(見 write/_shared.py::_normalize_fee_discount_amount)。
+      let finalAmountNum = totalAmountNum
+      let finalBaseAmountNum = amountNum
+      let finalFeeNum = feeNum
+      let finalDiscountNum = discountNum
+      let finalSplitsPayload = buildTxSplitsPayload(txForm)
+      let accountCurrencyForFields = txFormCurrency
+      if (!isTransfer) {
+        const accountRow = txWriteAccounts.find(
+          (row) => row.name.trim().toLowerCase() === accountName.toLowerCase()
+        )
+        const accountCurrency = (accountRow?.currency || txWriteLedgerCurrency).trim().toUpperCase()
+        accountCurrencyForFields = accountCurrency
+        if (accountCurrency !== txFormCurrency) {
+          // baseAmountNum 用 amountNum(不含手續費/折扣的原始金額)——跟
+          // TransactionsPanel.tsx::entryFxPreview 顯示給使用者看的換算基準
+          // 一致(手續費/折扣是另外各自乘同一個 effectiveRate,不能反过来
+          // 拿 totalAmountNum 当基准,否则手動輸入的換算後金額会跟畫面上
+          // 預覽的數字對不上)。
+          const effectiveRate = resolveEffectiveRate(
+            txForm.fx_rate_override,
+            txForm.fx_amount_override,
+            amountNum,
+            txFormCurrency,
+            accountCurrency,
+            txCurrencyRates,
+            txWriteLedgerCurrency
+          )
+          if (effectiveRate == null) {
+            setErrorNotice(t('transactions.error.rateMissing'))
+            return false
+          }
+          finalAmountNum = totalAmountNum * effectiveRate
+          finalBaseAmountNum = amountNum * effectiveRate
+          finalFeeNum = feeNum * effectiveRate
+          finalDiscountNum = discountNum * effectiveRate
+          finalSplitsPayload = finalSplitsPayload.map((row) => ({
+            ...row,
+            amount: (row.amount || 0) * effectiveRate,
+          }))
+        }
+      }
+
       // v30 多币种:共享 helper(手动 override > 自动源;编辑模式币种未变
       // 返回 null 不发字段 —— 金额变化由 server L14 按隐含汇率联动,避免
       // 「只改备注被今日汇率重算」的快照漂移;改回本位币显式发 base+amount)。
       // 拉不到汇率阻断保存(绝不静默 1:1,与 App L8 一致)。transfer 不带。
+      // 注意:餵進去的 currency 是「所選帳戶的幣別」,不是入帳幣別(見上方
+      // accountCurrencyForFields)——resolveCurrencyFields 的語意本來就是
+      // 「amount 現在是哪個幣別,要不要折算成帳本本位幣」。
       let currencyFields: { currency_code?: string; native_amount?: number } = {}
       if (!isTransfer) {
         try {
           const resolved = await resolveCurrencyFields({
             token,
             ledgerBase: txWriteLedgerCurrency,
-            currency: txFormCurrency,
-            // 手續費/折扣:折算快照要跟著實際入帳總額走,不是調整前的
-            // base_amount(否則外幣交易的 native_amount 會跟 amount 對不上)。
-            amount: totalAmountNum,
+            currency: accountCurrencyForFields,
+            amount: finalAmountNum,
             originalCurrency: txForm.editingId ? txForm.original_currency : undefined
           })
           if (resolved) currencyFields = resolved
         } catch {
           setErrorNotice(t('transactions.error.rateMissing'))
           return false
+        }
+      }
+
+      // 跨幣別轉帳(2026-08):轉出/轉入帳戶幣別不同時要算出 to_amount(轉入
+      // 帳戶自身幣別的金額),否則後端 write/_shared.py::
+      // _assert_transfer_to_amount_valid 會擋下這筆。幣別相同就不送這個
+      // 欄位(維持既有「同幣種轉帳只有一個 amount」行為)。
+      let transferToAmount: number | undefined
+      if (isTransfer) {
+        const fromAccountRow = txWriteAccounts.find(
+          (row) => row.name.trim().toLowerCase() === fromAccountName.toLowerCase()
+        )
+        const toAccountRow = txWriteAccounts.find(
+          (row) => row.name.trim().toLowerCase() === toAccountName.toLowerCase()
+        )
+        const fromCurrency = (fromAccountRow?.currency || txWriteLedgerCurrency).trim().toUpperCase()
+        const toCurrency = (toAccountRow?.currency || txWriteLedgerCurrency).trim().toUpperCase()
+        if (fromAccountRow && toAccountRow && fromCurrency !== toCurrency) {
+          const effectiveRate = resolveEffectiveRate(
+            txForm.fx_rate_override,
+            txForm.fx_amount_override,
+            totalAmountNum,
+            fromCurrency,
+            toCurrency,
+            txCurrencyRates,
+            txWriteLedgerCurrency
+          )
+          if (effectiveRate == null) {
+            setErrorNotice(t('transactions.fx.rateMissing'))
+            return false
+          }
+          transferToAmount = totalAmountNum * effectiveRate
         }
       }
 
@@ -2051,15 +2127,15 @@ export function TransactionsPage() {
 
       const payload = {
         tx_type: txForm.tx_type,
-        amount: totalAmountNum,
+        amount: finalAmountNum,
         // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
         // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
         ...(txForm.fee_enabled
           ? {
-              base_amount: amountNum,
-              fee_amount: feeNum,
+              base_amount: finalBaseAmountNum,
+              fee_amount: finalFeeNum,
               fee_label: txForm.fee_label.trim() || null,
-              discount_amount: discountNum,
+              discount_amount: finalDiscountNum,
               discount_label: txForm.discount_label.trim() || null,
             }
           : {}),
@@ -2081,6 +2157,9 @@ export function TransactionsPage() {
         from_account_id: isTransfer ? accountByName.get(fromAccountName.toLowerCase()) || null : null,
         to_account_name: isTransfer ? toAccountName || null : null,
         to_account_id: isTransfer ? accountByName.get(toAccountName.toLowerCase()) || null : null,
+        // 跨幣別轉帳(2026-08):同幣種轉帳(transferToAmount undefined)不送
+        // 這個欄位,server 端 COALESCE(to_amount, amount) 回退,行為不變。
+        ...(isTransfer && transferToAmount !== undefined ? { to_amount: transferToAmount } : {}),
         tags: txForm.tags.length > 0 ? txForm.tags : null,
         tag_ids: txTagIds.length > 0 ? txTagIds : null,
         attachments: txForm.attachments.length > 0 ? txForm.attachments : null,
@@ -2111,7 +2190,7 @@ export function TransactionsPage() {
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
         // 拆帳(§2.4):disabled → 空数组(create 场景等同"没有 splits";update
         // 场景显式清空既有 splits,回到单一 category)。
-        splits: buildTxSplitsPayload(txForm),
+        splits: finalSplitsPayload,
         ...currencyFields
       }
       // eslint-disable-next-line no-console

@@ -44,7 +44,99 @@ import { ProjectPickerDialog } from '../components/ProjectPickerDialog'
 import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { tagTextColorOn } from '../lib/tagColorPalette'
+import { convertBetween, resolveEffectiveRate } from '../lib/currencies'
 import { computeTxTotalAmount, txSplitItemDefaults, type TxForm } from '../forms'
+
+/**
+ * 跨幣別自動換算(2026-08;2026-08-14 補充「換算後金額」優先於匯率):
+ * 優先序 `amountOverrideStr`(使用者直接輸入的換算後金額)>
+ * `rateOverrideStr`(使用者手動輸入的匯率)> {@link convertBetween} 算出的
+ * 自動匯率。缺自動匯率又沒有任何手動覆蓋 → 回傳 `null`,呼叫端顯示
+ * 「缺匯率」並阻斷送出(跟 `resolveCurrencyFields` 同一原則)。實際邏輯見
+ * `lib/currencies.ts::resolveEffectiveRate`(送出邏輯共用同一份)。
+ */
+function resolveFxPreview(
+  rateOverrideStr: string,
+  amountOverrideStr: string,
+  amountNum: number,
+  fromCode: string,
+  toCode: string,
+  ratesToBase: Record<string, number>,
+  base: string
+): { rate: number; amount: number } | null {
+  const rate = resolveEffectiveRate(
+    rateOverrideStr,
+    amountOverrideStr,
+    amountNum,
+    fromCode,
+    toCode,
+    ratesToBase,
+    base
+  )
+  if (rate == null) return null
+  const amountOverride = Number(amountOverrideStr)
+  const usingAmountOverride =
+    amountNum > 0 &&
+    amountOverrideStr.trim() &&
+    Number.isFinite(amountOverride) &&
+    amountOverride > 0
+  return { rate, amount: usingAmountOverride ? amountOverride : amountNum * rate }
+}
+
+/** 跨幣別自動換算(2026-08;2026-08-14 改版)的可編輯換算列:換算後金額為
+ *  主要編輯欄位(使用者需求:換算金額有誤時應該直接改這個,而非先反推
+ *  匯率),下方的匯率欄位仍可編輯、改了一樣會連動換算後金額——兩個輸入
+ *  互斥,各自的 onChange 要把另一個 override 欄位清空(見呼叫端)。缺匯率
+ *  時顯示錯誤提示,不當作 0 或 1:1 靜默放行。 */
+function FxRateRow({
+  fromCode,
+  toCode,
+  preview,
+  amountValue,
+  onAmountChange,
+  rateValue,
+  onRateChange,
+  missingLabel
+}: {
+  fromCode: string
+  toCode: string
+  preview: { rate: number; amount: number } | null
+  amountValue: string
+  onAmountChange: (v: string) => void
+  rateValue: string
+  onRateChange: (v: string) => void
+  missingLabel: string
+}) {
+  return (
+    <div className="space-y-1.5 rounded-md border border-input/60 bg-muted/30 p-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-muted-foreground">≈</span>
+        <Input
+          className="h-7 flex-1 text-xs"
+          type="number"
+          inputMode="decimal"
+          placeholder={preview ? preview.amount.toFixed(2) : '—'}
+          value={amountValue}
+          onChange={(e) => onAmountChange(e.target.value)}
+        />
+        <span className="shrink-0 text-muted-foreground">{toCode}</span>
+      </div>
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <span className="shrink-0">1 {fromCode} =</span>
+        <Input
+          className="h-6 max-w-[110px] text-[11px]"
+          type="number"
+          inputMode="decimal"
+          placeholder={preview ? preview.rate.toPrecision(6) : '—'}
+          value={rateValue}
+          onChange={(e) => onRateChange(e.target.value)}
+        />
+        <span className="shrink-0">{toCode}</span>
+      </div>
+      {!preview && <div className="text-destructive">{missingLabel}</div>}
+    </div>
+  )
+}
 
 type TransactionsPanelProps = {
   form: TxForm
@@ -290,7 +382,7 @@ function AttachmentCarouselCell({
 export function TransactionsPanel({
   form,
   baseCurrency = 'CNY',
-  currencyRates,
+  currencyRates = {},
   rows,
   total,
   page,
@@ -497,16 +589,75 @@ export function TransactionsPanel({
     .filter((row) => row.category_id.trim().length > 0)
     .reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
 
+  // 跨幣別自動換算(2026-08):expense/income 選中帳戶的幣別跟入帳幣別不同時
+  // 顯示換算列;transfer 轉出/轉入帳戶幣別不同時同理。帳戶下拉已不再按幣別
+  // 過濾(見呼叫端 accounts prop),這裡純粹算「要不要顯示換算 UI」。
+  const entryCurrency = (form.currency || baseCurrency).toUpperCase()
+  const selectedAccountRow = useMemo(
+    () =>
+      accounts.find(
+        (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
+      ) || null,
+    [accounts, form.account_name]
+  )
+  const accountCurrency = (selectedAccountRow?.currency || entryCurrency).toUpperCase()
+  const showEntryFx = !isTransfer && Boolean(selectedAccountRow) && accountCurrency !== entryCurrency
+  const entryFxPreview = showEntryFx
+    ? resolveFxPreview(
+        form.fx_rate_override,
+        form.fx_amount_override,
+        Number(form.amount) || 0,
+        entryCurrency,
+        accountCurrency,
+        currencyRates,
+        baseCurrency
+      )
+    : null
+
+  const fromAccountRow = useMemo(
+    () =>
+      accounts.find(
+        (a) => a.name.trim().toLowerCase() === form.from_account_name.trim().toLowerCase()
+      ) || null,
+    [accounts, form.from_account_name]
+  )
+  const toAccountRow = useMemo(
+    () =>
+      accounts.find(
+        (a) => a.name.trim().toLowerCase() === form.to_account_name.trim().toLowerCase()
+      ) || null,
+    [accounts, form.to_account_name]
+  )
+  const fromCurrency = (fromAccountRow?.currency || baseCurrency).toUpperCase()
+  const toCurrency = (toAccountRow?.currency || baseCurrency).toUpperCase()
+  const showTransferFx =
+    isTransfer && Boolean(fromAccountRow) && Boolean(toAccountRow) && fromCurrency !== toCurrency
+  const transferFxPreview = showTransferFx
+    ? resolveFxPreview(
+        form.fx_rate_override,
+        form.fx_amount_override,
+        Number(form.amount) || 0,
+        fromCurrency,
+        toCurrency,
+        currencyRates,
+        baseCurrency
+      )
+    : null
+
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
-      // 转账两个标记都隐藏 → 清掉,避免残留脏值。
-      // currency 一并清空:转账不支持跨币种且币种控件隐藏,不清会把转出/
-      // 转入账户下拉锁死在之前手选的外币过滤里(审查发现)。
+      // 转账两个标记都隐藏 → 清掉,避免残留脏值。currency 一并清空:那顆整
+      // 笔交易用的币种选择器只对 expense/income 有意义(转帐改用转出/转入
+      // 帳戶自身幣別換算,見 FxRateRow),transfer 不使用这个欄位。
+      // fx_rate_override 也一并清空——避免切换类型后残留的手动匯率覆盖
+      // 误套到新類型下完全不同的幣別對(入帳↔帳戶 vs 轉出↔轉入)。
       onFormChange({
         ...form,
         tx_type: nextType,
         account_name: '',
         currency: '',
+        fx_rate_override: '',
+        fx_amount_override: '',
         category_name: '',
         category_kind: 'transfer',
         exclude_from_stats: false,
@@ -540,6 +691,8 @@ export function TransactionsPanel({
       splits: keepSplits,
       from_account_name: '',
       to_account_name: '',
+      fx_rate_override: '',
+      fx_amount_override: '',
       // 不计入预算仅 expense 显示;切到 income 时清掉
       exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false,
       installment_enabled: nextType === 'expense' ? form.installment_enabled : false
@@ -804,9 +957,10 @@ export function TransactionsPanel({
                 value={form.amount}
                 onChange={(value) => onFormChange({ ...form, amount: value })}
               />
-              {/* v30 多币种:币种另起一行,全宽显示币种全名+国旗(挨金额太窄会截断);
-                  选非本位币 → 账户下拉按币种过滤 + 已选账户清空(币种优先联动,
-                  transfer 不支持)。 */}
+              {/* 跨幣別自動換算(2026-08):币种另起一行,全宽显示币种全名+国旗
+                  (挨金额太窄会截断)。帐户下拉不再按这个币种过滤——选到跟
+                  帐户幣別不同的入帳幣別时,下面 FxRateRow 顯示換算列并允许
+                  手動覆蓋匯率(transfer 不适用,用自己的转出/转入幣別换算)。 */}
               {form.tx_type !== 'transfer' ? (
                 <CurrencySelectorTrigger
                   value={form.currency || baseCurrency}
@@ -817,11 +971,28 @@ export function TransactionsPanel({
                         code.toUpperCase() === baseCurrency.toUpperCase()
                           ? ''
                           : code,
-                      account_name: ''
+                      fx_rate_override: '',
+                      fx_amount_override: ''
                     })
                   }
                   ratesToBase={currencyRates}
                   rateBase={baseCurrency}
+                />
+              ) : null}
+              {showEntryFx ? (
+                <FxRateRow
+                  fromCode={entryCurrency}
+                  toCode={accountCurrency}
+                  preview={entryFxPreview}
+                  amountValue={form.fx_amount_override}
+                  onAmountChange={(v) =>
+                    onFormChange({ ...form, fx_amount_override: v, fx_rate_override: '' })
+                  }
+                  rateValue={form.fx_rate_override}
+                  onRateChange={(v) =>
+                    onFormChange({ ...form, fx_rate_override: v, fx_amount_override: '' })
+                  }
+                  missingLabel={t('transactions.fx.rateMissing')}
                 />
               ) : null}
               {form.tx_type !== 'transfer' && form.fee_enabled ? (
@@ -916,6 +1087,26 @@ export function TransactionsPanel({
                     <span className="text-xs text-muted-foreground opacity-60">▾</span>
                   </button>
                 </div>
+                {/* 跨幣別轉帳自動換算(2026-08):轉出/轉入帳戶幣別不同時顯示
+                    換算列,允許手動覆蓋匯率(共用 form.fx_rate_override)。 */}
+                {showTransferFx ? (
+                  <div className="md:col-span-2">
+                    <FxRateRow
+                      fromCode={fromCurrency}
+                      toCode={toCurrency}
+                      preview={transferFxPreview}
+                      amountValue={form.fx_amount_override}
+                      onAmountChange={(v) =>
+                        onFormChange({ ...form, fx_amount_override: v, fx_rate_override: '' })
+                      }
+                      rateValue={form.fx_rate_override}
+                      onRateChange={(v) =>
+                        onFormChange({ ...form, fx_rate_override: v, fx_amount_override: '' })
+                      }
+                      missingLabel={t('transactions.fx.rateMissing')}
+                    />
+                  </div>
+                ) : null}
               </>
             ) : (
               <div className="space-y-1">
@@ -1643,7 +1834,14 @@ export function TransactionsPanel({
         accounts={pickerAccountRows}
         value={form.account_name}
         allowNone
-        onSelect={(row) => onFormChange({ ...form, account_name: row.id ? row.name.trim() : '' })}
+        onSelect={(row) =>
+          onFormChange({
+            ...form,
+            account_name: row.id ? row.name.trim() : '',
+            fx_rate_override: '',
+            fx_amount_override: ''
+          })
+        }
       />
       <AccountPickerDialog
         open={fromAccountPickerOpen}
@@ -1651,7 +1849,14 @@ export function TransactionsPanel({
         title={t('transactions.placeholder.fromAccountName')}
         accounts={pickerAccountRows}
         value={form.from_account_name}
-        onSelect={(row) => onFormChange({ ...form, from_account_name: row.name.trim() })}
+        onSelect={(row) =>
+          onFormChange({
+            ...form,
+            from_account_name: row.name.trim(),
+            fx_rate_override: '',
+            fx_amount_override: ''
+          })
+        }
       />
       <AccountPickerDialog
         open={toAccountPickerOpen}
@@ -1659,7 +1864,14 @@ export function TransactionsPanel({
         title={t('transactions.placeholder.toAccountName')}
         accounts={pickerAccountRows}
         value={form.to_account_name}
-        onSelect={(row) => onFormChange({ ...form, to_account_name: row.name.trim() })}
+        onSelect={(row) =>
+          onFormChange({
+            ...form,
+            to_account_name: row.name.trim(),
+            fx_rate_override: '',
+            fx_amount_override: ''
+          })
+        }
       />
 
       {/* 标签 picker —— chip 多选,跟 TagsPanel 卡片视觉一致。 */}

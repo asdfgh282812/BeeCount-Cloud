@@ -1567,6 +1567,7 @@ const zhTW = {
   'transactions.table.amount': '金額',
   'transactions.convertedToBase': '已按記帳時匯率折算為帳本本位幣',
   'transactions.error.rateMissing': '匯率取得失敗,無法折算為帳本本位幣,請稍後重試',
+  'transactions.fx.rateMissing': '缺少匯率,請手動輸入換算匯率',
   'transactions.error.splitTransferNotAllowed': '轉帳交易不支援拆分到多個分類',
   'transactions.error.splitNeedsTwo': '拆分交易至少需要 2 個分類',
   'transactions.error.splitAmountInvalid': '每個分類的金額必須大於 0',

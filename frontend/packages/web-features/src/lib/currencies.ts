@@ -185,6 +185,68 @@ export async function resolveCurrencyFields(opts: {
   return { currency_code: eff, native_amount: opts.amount / rate }
 }
 
+/**
+ * 跨幣別自動換算(2026-08):任兩個幣別之間換算,透過 `ratesToBase`(見
+ * {@link loadRatesToBase},已含手動 override 合併)以帳本本位幣當 pivot ——
+ * `fromCode`/`toCode` 任一邊等於 `base` 就省一次除法,兩邊都不是 base 則
+ * 先折成 base 金額再折成目標幣別。缺其中一邊的匯率回傳 `null`,呼叫端要
+ * 阻斷送出(比照 {@link resolveCurrencyFields} 既有「拉不到匯率絕不靜默
+ * 1:1」原則),不是這個函式自己 throw——因為呼叫端(表單即時預覽)通常
+ * 需要區分「還沒選好帳戶/幣別」跟「真的缺匯率」兩種情境。
+ */
+export function convertBetween(
+  amount: number,
+  fromCode: string,
+  toCode: string,
+  ratesToBase: Record<string, number>,
+  base: string
+): number | null {
+  const from = fromCode.trim().toUpperCase()
+  const to = toCode.trim().toUpperCase()
+  const b = base.trim().toUpperCase()
+  if (from === to) return amount
+  const fromRate = from === b ? 1 : ratesToBase[from]
+  if (!Number.isFinite(fromRate) || (fromRate as number) <= 0) return null
+  const amountInBase = amount * (fromRate as number)
+  if (to === b) return amountInBase
+  const toRate = ratesToBase[to]
+  if (!Number.isFinite(toRate) || toRate <= 0) return null
+  return amountInBase / toRate
+}
+
+/**
+ * 跨幣別自動換算(2026-08-14 補充)的「有效匯率」判定優先序:使用者需求
+ * 是「換算金額有誤時,應該以直接改換算後金額為主要修正手段,而非先反推
+ * 該改多少匯率(雖然改匯率一樣能連動改變換算後金額)」,所以優先序是
+ * `amountOverrideStr`(換算後金額) > `rateOverrideStr`(匯率) > 自動匯率
+ * ({@link convertBetween})。`baseAmountNum`(換算前/from 幣別金額)<= 0
+ * 時 amountOverride 無法反推匯率(除以 0),視為不可用、退回下一順位。
+ */
+export function resolveEffectiveRate(
+  rateOverrideStr: string,
+  amountOverrideStr: string,
+  baseAmountNum: number,
+  fromCode: string,
+  toCode: string,
+  ratesToBase: Record<string, number>,
+  base: string
+): number | null {
+  const amountOverride = Number(amountOverrideStr)
+  if (
+    baseAmountNum > 0 &&
+    amountOverrideStr.trim() &&
+    Number.isFinite(amountOverride) &&
+    amountOverride > 0
+  ) {
+    return amountOverride / baseAmountNum
+  }
+  const rateOverride = Number(rateOverrideStr)
+  if (rateOverrideStr.trim() && Number.isFinite(rateOverride) && rateOverride > 0) {
+    return rateOverride
+  }
+  return convertBetween(1, fromCode, toCode, ratesToBase, base)
+}
+
 /** 列表/详情的「外币交易」判定:折算快照存在且 ≠ 原币值。 */
 export function isForeignTx(row: {
   currency_code?: string | null

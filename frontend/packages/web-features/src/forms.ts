@@ -38,6 +38,21 @@ export type TxForm = {
   /** 编辑模式:该笔原币种(''=本位币)。提交时币种未变 → 不发字段,金额
    *  变化由 server 按隐含汇率联动(防快照漂移);仅前端用,不进 payload。 */
   original_currency: string
+  /** 跨幣別自動換算(2026-08):使用者手動覆蓋的匯率,''=自動抓匯率。
+   *  expense/income 時代表「入帳幣別 → 所選帳戶幣別」;transfer 時代表
+   *  「轉出帳戶幣別 → 轉入帳戶幣別」——兩種 tx_type 互斥,共用同一欄位。
+   *  只在幣別/帳戶欄位改變時清空(見 forms.ts 呼叫端),避免舊幣別對的
+   *  手動匯率誤套到新的幣別對。純前端 UI 狀態,不進 payload。
+   *  跟 {@link fx_amount_override} 互斥:使用者編輯其中一個時,呼叫端要把
+   *  另一個清空(見 TransactionsPanel.tsx 的 onRateChange/onAmountChange)。 */
+  fx_rate_override: string
+  /** 跨幣別自動換算(2026-08-14 補充):使用者直接手動輸入的「換算後金額」,
+   *  ''=未手動輸入。使用者需求:換算金額有誤時,應該以直接改這個「換算後
+   *  金額」為主要修正手段(而非先反推該改多少匯率),所以這個欄位在
+   *  {@link fx_rate_override} 都有值時優先生效(見
+   *  currencies.ts::resolveEffectiveRate)——仍然可以改匯率來連動改變換算
+   *  後金額,只是換算後金額本身也能直接編輯。純前端 UI 狀態,不進 payload。 */
+  fx_amount_override: string
   /** 不计入收支统计(income/expense 显示开关,transfer 隐藏)。 */
   exclude_from_stats: boolean
   /** 不计入预算用量(仅 expense 显示开关)。 */
@@ -346,6 +361,8 @@ export const txDefaults = (): TxForm => ({
   attachments: [],
   currency: '',
   original_currency: '',
+  fx_rate_override: '',
+  fx_amount_override: '',
   exclude_from_stats: false,
   exclude_from_budget: false,
   refund_of_id: '',

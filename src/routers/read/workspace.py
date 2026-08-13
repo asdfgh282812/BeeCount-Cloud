@@ -289,6 +289,7 @@ def list_workspace_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                to_amount=row.to_amount,
                 base_amount=row.base_amount,
                 fee_amount=row.fee_amount,
                 fee_label=row.fee_label,
@@ -727,7 +728,12 @@ async def list_workspace_accounts(
         select(
             ReadTxProjection.to_account_sync_id,
             func.count().label("cnt"),
-            func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
+            # 跨幣別轉帳(2026-08):轉入端要用轉入帳戶自身幣別的金額,不是
+            # 轉出端的 amount——同幣種轉帳 to_amount 是 NULL,COALESCE 退回
+            # amount,行為不變。
+            func.coalesce(
+                func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+            ).label("amt"),
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
@@ -1791,8 +1797,12 @@ def workspace_net_worth_history(
             UserAccountProjection.account_type,
             UserAccountProjection.currency,
             UserAccountProjection.initial_balance,
+            UserAccountProjection.include_in_total,
         ).where(UserAccountProjection.user_id == current_user.id)
     ).all()
+    # 納入總餘額(Phase 18):跟資產頁淨資產卡同口徑,include_in_total=False 的
+    # 帳戶整條(初始餘額 + 後續交易增減)都不進淨值序列,而不是只濾掉初始餘額。
+    accts = [a for a in accts if a.include_in_total is not False]
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
     is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
     acc_currency = {a.sync_id: (a.currency or "CNY").upper() for a in accts}
@@ -1853,6 +1863,10 @@ def workspace_net_worth_history(
         select(
             ReadTxProjection.tx_type,
             ReadTxProjection.amount,
+            # 跨幣別轉帳(2026-08):轉入端要用轉入帳戶自身幣別的金額,不是
+            # 轉出端的 amount——同幣種轉帳 to_amount 是 NULL,下面 _apply
+            # COALESCE 回 amount,行為不變。
+            ReadTxProjection.to_amount,
             ReadTxProjection.happened_at,
             ReadTxProjection.account_sync_id,
             ReadTxProjection.from_account_sync_id,
@@ -1864,7 +1878,7 @@ def workspace_net_worth_history(
 
     bal = dict(init_by_acc)
 
-    def _apply(tx_type, amt, acc, from_acc, to_acc):
+    def _apply(tx_type, amt, to_amt, acc, from_acc, to_acc):
         if tx_type == "income" and acc in bal:
             bal[acc] += amt
         elif tx_type == "expense" and acc in bal:
@@ -1876,7 +1890,7 @@ def workspace_net_worth_history(
             if fa in bal:
                 bal[fa] -= amt
             if ta in bal:
-                bal[ta] += amt
+                bal[ta] += to_amt
 
     def _net():
         # 折算到主币种:各账户余额 × 该币种汇率;缺汇率(或无 base)的账户整条剔除,
@@ -1908,6 +1922,7 @@ def workspace_net_worth_history(
             ))
         _apply(
             tx.tx_type, float(tx.amount or 0.0),
+            float(tx.to_amount) if tx.to_amount is not None else float(tx.amount or 0.0),
             tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id,
         )
         last_bucket = bucket
