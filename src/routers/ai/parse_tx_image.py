@@ -108,6 +108,11 @@ async def parse_tx_image(
         len(cats), len(accts), cats[:10],
     )
 
+    # db 后面用不到了 —— 显式提前 close 归还连接池,别占着连接等下面的 vision
+    # LLM 调用(可能几秒到几十秒,取决于 provider)。同款修复见 ai/ask.py 顶部
+    # 注释(2026-08-13 稳定性问题排查:连接池被慢 AI 请求吃满导致全站 500/卡死)。
+    db.close()
+
     # 4. 拼 prompt + 调 vision LLM
     custom = get_user_custom_prompt(profile, key="parseTxImagePrompt")
     image_data_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode()}"

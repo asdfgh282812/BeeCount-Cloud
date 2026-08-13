@@ -70,6 +70,10 @@ async def parse_tx_text(
         len(cats), len(accts), cats[:10],
     )
 
+    # db 后面用不到了 —— 显式提前 close 归还连接池,别占着连接等下面的 chat
+    # LLM 调用。同款修复见 ai/ask.py 顶部注释(2026-08-13 稳定性问题排查)。
+    db.close()
+
     custom = get_user_custom_prompt(profile, key="parseTxTextPrompt")
     messages = build_parse_tx_text_messages(
         text=req.text,

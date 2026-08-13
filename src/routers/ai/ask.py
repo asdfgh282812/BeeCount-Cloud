@@ -80,6 +80,13 @@ async def ask(
             detail={"error_code": "AI_NO_CHAT_PROVIDER", "message": str(exc)},
         )
 
+    # db 后面用不到了 —— 显式提前 close 归还连接池。FastAPI 的 `Depends(get_db)`
+    # 要等整个 response(含下面的 SSE stream,可能持续几十秒到几分钟)发完才会
+    # 关,不提前 close 的话这条连接会占着连接池位置直到 stream 结束,几个并发
+    # AI 请求就能把默认 pool_size=5+overflow=10 吃满,拖累全站其它请求排队
+    # 30s 后 500(2026-08-13 稳定性问题排查)。
+    db.close()
+
     # 2. 索引可用性检查 — 不可用也直接 503,不进 stream
     docs_idx = get_docs_index(req.locale)
     if docs_idx.is_empty:
