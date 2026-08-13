@@ -13,6 +13,15 @@ export interface UseSyncSocketOptions {
   onOpen?: () => void
   /** Fires when the supervisor loses the socket and starts backing off. */
   onDisconnect?: () => void
+  /**
+   * Called with the current token immediately before every connect attempt;
+   * return a (possibly refreshed) token to use for that attempt. Lets the
+   * caller proactively refresh an expired token even when nothing else in
+   * the app is making REST calls to trigger the usual 401-driven refresh
+   * (e.g. a backgrounded tab, where the REST poller no-ops while hidden but
+   * this reconnect loop keeps running). Defaults to a passthrough.
+   */
+  ensureFreshToken?: (token: string) => Promise<string>
 }
 
 export interface SyncSocketState {
@@ -43,7 +52,8 @@ export function useSyncSocket({
   buildUrl,
   onEvent,
   onOpen,
-  onDisconnect
+  onDisconnect,
+  ensureFreshToken
 }: UseSyncSocketOptions): SyncSocketState {
   const [status, setStatus] = useState<SyncSocketStatus>('idle')
   const socketRef = useRef<WebSocket | null>(null)
@@ -52,8 +62,8 @@ export function useSyncSocket({
   const heartbeatTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const destroyedRef = useRef(false)
-  const handlersRef = useRef({ onEvent, onOpen, onDisconnect })
-  handlersRef.current = { onEvent, onOpen, onDisconnect }
+  const handlersRef = useRef({ onEvent, onOpen, onDisconnect, ensureFreshToken })
+  handlersRef.current = { onEvent, onOpen, onDisconnect, ensureFreshToken }
 
   useEffect(() => {
     destroyedRef.current = false
@@ -118,12 +128,25 @@ export function useSyncSocket({
       }, HEARTBEAT_TIMEOUT_MS)
     }
 
-    function connect() {
+    async function connect() {
       if (destroyedRef.current) return
       setStatus('connecting')
+      let tok = token!
+      const ensure = handlersRef.current.ensureFreshToken
+      if (ensure) {
+        try {
+          tok = await ensure(tok)
+        } catch (_) {
+          // Fall through with the original token — connect failure below
+          // will still drive the normal backoff/retry path.
+        }
+        // A refresh may have propagated a new token prop, which re-runs this
+        // effect and tears the current one down while we were awaiting.
+        if (destroyedRef.current) return
+      }
       let socket: WebSocket
       try {
-        socket = new WebSocket(buildUrl(token!))
+        socket = new WebSocket(buildUrl(tok))
       } catch (_) {
         scheduleReconnect()
         return

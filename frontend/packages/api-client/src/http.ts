@@ -128,6 +128,48 @@ async function doRefresh(): Promise<string> {
   return refreshInFlight
 }
 
+/** JWT payload 的 `exp`(秒)。解析失败(格式非法等)时返回 null —— 调用方
+ *  应把这当成"不知道是否过期",不要当成"已过期"处理。*/
+function decodeTokenExp(token: string): number | null {
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const json = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))
+    const payload = JSON.parse(json)
+    return typeof payload.exp === 'number' ? payload.exp : null
+  } catch (_) {
+    return null
+  }
+}
+
+/**
+ * 长连接(WebSocket)重连前的主动 token 保鲜检查。
+ *
+ * 背景:REST 请求靠 `authedFetch` 收到 401 才触发刷新,但轮询(startPoller)
+ * 在分页隐藏(document.hidden)时整个跳过 tick,不会发任何请求 —— 这种情况下
+ * 分页在背景放上一小时以上,token 早过期了却没有任何 REST 调用去触发刷新。
+ * WS supervisor 的重连 timer 不受页面可见性影响(参见 useSyncSocket.ts),
+ * 会一直拿着这个"没人去刷新"的过期 token 反复重连,永远 403/1008。
+ *
+ * 在每次实际发起 WS 连接前调用这个函数:token 还没过期(留 10s 容错)就原样
+ * 返回;已经过期或临近过期,就借用跟 REST 401 相同的单飞 refreshFn 主动刷新
+ * 一次 —— 这条路径本来就会把新 token setState 回 App 层,WS 用到的 token
+ * prop 会自然跟着更新。无法判断(decode 失败)或没配置 refreshFn 时原样返回
+ * 旧 token,交给连接失败后的既有 backoff 重试逻辑兜底,不引入新的失败模式。
+ */
+export async function ensureFreshToken(token: string): Promise<string> {
+  const exp = decodeTokenExp(token)
+  if (exp === null) return token
+  const nowSec = Date.now() / 1000
+  if (exp - nowSec > 10) return token
+  if (!refreshFn) return token
+  try {
+    return await doRefresh()
+  } catch (_) {
+    return token
+  }
+}
+
 type FetchMaker = (token: string) => Promise<Response>
 
 /**

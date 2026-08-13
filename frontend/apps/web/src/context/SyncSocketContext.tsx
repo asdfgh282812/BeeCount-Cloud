@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
+import { ensureFreshToken, getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
 
 import { useSyncSocket } from '../hooks/useSyncSocket'
 import { drainPull, startPoller, type SyncChangeEnvelope } from '../state/sync-client'
@@ -132,6 +132,7 @@ export function SyncSocketProvider({ children }: { children: ReactNode }) {
   useSyncSocket({
     token,
     buildUrl: wsBuildUrl,
+    ensureFreshToken,
     onEvent: (payload: unknown) => {
       if (!payload || typeof payload !== 'object') return
       emit(payload as SyncEventPayload)
