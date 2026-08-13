@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { AuthExhaustedError } from '@beecount/api-client'
+
 export type SyncSocketStatus = 'idle' | 'connecting' | 'connected' | 'disconnected'
 
 export interface UseSyncSocketOptions {
@@ -136,9 +138,16 @@ export function useSyncSocket({
       if (ensure) {
         try {
           tok = await ensure(tok)
-        } catch (_) {
-          // Fall through with the original token — connect failure below
-          // will still drive the normal backoff/retry path.
+        } catch (err) {
+          if (err instanceof AuthExhaustedError) {
+            // Token is expired and refresh failed too — ensureFreshToken has
+            // already triggered a global logout. Don't schedule another
+            // reconnect with a token we know is dead; the token prop will
+            // go null shortly and this effect's cleanup will tear itself down.
+            return
+          }
+          // Any other failure: fall through with the original token —
+          // connect failure below will still drive the normal backoff/retry path.
         }
         // A refresh may have propagated a new token prop, which re-runs this
         // effect and tears the current one down while we were awaiting.

@@ -142,6 +142,17 @@ function decodeTokenExp(token: string): number | null {
   }
 }
 
+/** 由 `ensureFreshToken` 在"token 已过期且 refresh 也救不回来"时抛出——
+ *  调用方(WS 重连 supervisor)看到这个应该立刻停手,不要再拿着这个已知
+ *  死掉的 token 排 backoff 重试;`ensureFreshToken` 在抛出前已经调用过
+ *  `logoutFn`,全局登出/跳转登录页已经在路上了。 */
+export class AuthExhaustedError extends Error {
+  constructor() {
+    super('token expired and refresh failed')
+    this.name = 'AuthExhaustedError'
+  }
+}
+
 /**
  * 长连接(WebSocket)重连前的主动 token 保鲜检查。
  *
@@ -153,9 +164,15 @@ function decodeTokenExp(token: string): number | null {
  *
  * 在每次实际发起 WS 连接前调用这个函数:token 还没过期(留 10s 容错)就原样
  * 返回;已经过期或临近过期,就借用跟 REST 401 相同的单飞 refreshFn 主动刷新
- * 一次 —— 这条路径本来就会把新 token setState 回 App 层,WS 用到的 token
- * prop 会自然跟着更新。无法判断(decode 失败)或没配置 refreshFn 时原样返回
- * 旧 token,交给连接失败后的既有 backoff 重试逻辑兜底,不引入新的失败模式。
+ * 一次,新 token 会 setState 回 App 层,WS 用到的 token prop 跟着更新。
+ * 无法判断新鲜度(decode 失败)或没配置 refreshFn(还没登录成功前的窗口期)
+ * 时原样返回旧 token,交给连接失败后的既有 backoff 重试逻辑兜底。
+ *
+ * 但如果 token 确实过期、refreshFn 也配置了、refresh 本身却失败(refresh
+ * token 同样过期/失效,或多次拿着这个 refresh token 都换不回新 access
+ * token)—— 这时候不该再假装"再试一次也许会好",跟 `authedFetch` 的 401
+ * 处理路径一致,直接调用 `logoutFn` 触发全局登出、清空本地会话、导回登录
+ * 页,并抛出 `AuthExhaustedError` 让调用方知道不用再排队重连了。
  */
 export async function ensureFreshToken(token: string): Promise<string> {
   const exp = decodeTokenExp(token)
@@ -166,7 +183,8 @@ export async function ensureFreshToken(token: string): Promise<string> {
   try {
     return await doRefresh()
   } catch (_) {
-    return token
+    logoutFn?.()
+    throw new AuthExhaustedError()
   }
 }
 
