@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
@@ -100,6 +100,13 @@ async def set_swipesmart_key(
     db.commit()
     logger.info("swipesmart.key_set user=%s", current_user.id)
 
+    # db 后面只在拿到 cards 后才可能用到 —— 显式提前 close 归还连接池,别占
+    # 着连接空等下面的 SwipeSmart 外部调用(可能耗时到 swipesmart_timeout,
+    # 默认 8s)。同款修复见 ai/ask.py 顶部注释(2026-08-13 稳定性问题排查:
+    # 连接池被慢/挂起的外部请求吃满导致全站 500/卡死)。
+    bind = db.get_bind()
+    db.close()
+
     # §3.3.1(b) 修訂:貼上 Key 當下順帶跑一次自動比對,尚未對照的信用卡帳戶
     # 名稱跟卡片目錄相近/相同就直接寫入,不用每個使用者都手動一一勾選。
     # SwipeSmart 呼叫失敗/回空目錄時 auto_match_unmapped_accounts 直接短路
@@ -107,9 +114,14 @@ async def set_swipesmart_key(
     auto_mapped = 0
     cards = await swipesmart_client.get_cards(plaintext)
     if cards:
-        auto_mapped = auto_match_unmapped_accounts(db, user_id=current_user.id, cards=cards)
-        if auto_mapped:
-            db.commit()
+        # 独立 session(绑同一个 engine,尊重 dependency_overrides[get_db] 测试
+        # 换库),不复用已 close 的 db —— 跟 exchange_rate/fetcher.py::get_rates
+        # 同一模式。
+        ScopedSession = sessionmaker(bind=bind, autocommit=False, autoflush=False)
+        with ScopedSession() as session:
+            auto_mapped = auto_match_unmapped_accounts(session, user_id=current_user.id, cards=cards)
+            if auto_mapped:
+                session.commit()
     return SwipeSmartKeyStatusOut(has_key=True, masked=_mask(plaintext), auto_mapped=auto_mapped)
 
 
@@ -152,6 +164,13 @@ async def list_swipesmart_cards(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="SwipeSmart personal API key not configured",
         ) from None
+
+    # db 后面只在拿到 cards 后才可能用到 —— 显式提前 close 归还连接池,别占
+    # 着连接空等下面的 SwipeSmart 外部调用。同款修复见 ai/ask.py 顶部注释
+    # (2026-08-13 稳定性问题排查)。
+    bind = db.get_bind()
+    db.close()
+
     cards = await swipesmart_client.get_cards(plaintext)
     # §3.3.1(b) 修訂:每次打開卡片對照視窗都重跑一次自動比對(不只貼 Key
     # 當下那一次)——之後使用者新增信用卡帳戶或 SwipeSmart 卡片目錄擴充,
@@ -159,8 +178,11 @@ async def list_swipesmart_cards(
     # 之後才去拉帳戶列表(見 SettingsSwipeSmartSection.tsx::openMapping),
     # 確保看到的是配對後的最新狀態。
     if cards:
-        if auto_match_unmapped_accounts(db, user_id=current_user.id, cards=cards):
-            db.commit()
+        # 独立 session,同上 set_swipesmart_key 的理由 —— db 已 close,不能複用。
+        ScopedSession = sessionmaker(bind=bind, autocommit=False, autoflush=False)
+        with ScopedSession() as session:
+            if auto_match_unmapped_accounts(session, user_id=current_user.id, cards=cards):
+                session.commit()
     return [
         SwipeSmartCardOut(card_id=c["cardId"], bank_name=c["bankName"], card_name=c["cardName"])
         for c in cards

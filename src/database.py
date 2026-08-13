@@ -7,7 +7,23 @@ from .config import get_settings
 
 settings = get_settings()
 
-engine_kwargs: dict = {"pool_pre_ping": True}
+
+# 默认 QueuePool(pool_size=5, max_overflow=10)总共只有 15 个连接 —— 正常读写
+# 请求都很快、够用,但一旦有 endpoint 在持有 `Depends(get_db)` 连接的同时去
+# await 慢/挂起的外部 I/O(LLM provider、SwipeSmart、汇率上游等),几个并发
+# 请求就能把 15 个连接全部占满,导致其它无关的 `/api/v1/read/...`、WebSocket
+# 等请求排队 30s 后超时(2026-08-13 稳定性问题排查:根因是 ai/ask.py 等几个
+# endpoint 在慢调用期间没有提前 db.close() 归还连接,已在对应文件修复;这里
+# 同时加大池子上限作为纵深防御,避免同类疏漏再次把全站拖垮)。
+engine_kwargs: dict = {
+    "pool_pre_ping": True,
+    "pool_size": 20,
+    "max_overflow": 40,
+    # 连接超过 30 分钟就回收重建,避免连接在数据库端/网络中间设备被悄悄断开
+    # 后仍留在池里,下次借出才报错(对 Postgres 部署尤其重要;sqlite 连接
+    # 本地进程内建立,回收开销可忽略)。
+    "pool_recycle": 1800,
+}
 if settings.database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 engine = create_engine(settings.database_url, **engine_kwargs)

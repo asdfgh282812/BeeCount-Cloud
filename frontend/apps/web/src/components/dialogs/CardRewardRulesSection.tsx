@@ -18,6 +18,7 @@ import {
   fetchCardRewardRuleTransactions,
   fetchCardRewards,
   fetchReadAccounts,
+  fetchWorkspaceAccounts,
   manualCardRewardPayout,
   updateCardRewardRule
 } from '@beecount/api-client'
@@ -715,7 +716,7 @@ function CardRewardRuleFormDialog({
     // catch,任一個失敗(例如帳戶數量多時 fetchAllCardRewardRules 較慢/偶發
     // 逾時)會連帶把已經成功的 accounts 也清空,導致回饋帳戶下拉選單看起來
     // 「什麼都選不到」,但其實只是共用上限群組那份資料沒抓到而已。
-    fetchReadAccounts(token, ledgerId)
+    fetchWorkspaceAccounts(token, { limit: 500 })
       .then(setAccounts)
       .catch(() => setAccounts([]))
     fetchAllCardRewardRules(token, ledgerId)
@@ -1270,7 +1271,7 @@ function CardRewardRuleTransactionsDialog({
 
   useEffect(() => {
     if (rule.settlement_type !== 'manual') return
-    fetchReadAccounts(token, ledgerId)
+    fetchWorkspaceAccounts(token, { limit: 500 })
       .then(setAccounts)
       .catch(() => setAccounts([]))
   }, [token, ledgerId, rule.settlement_type])

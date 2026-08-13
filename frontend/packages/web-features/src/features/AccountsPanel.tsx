@@ -257,6 +257,7 @@ function MobileStyleAssets({
                         baseCurrency={baseCurrency}
                         fxRates={fxRates}
                         fxOverrides={fxOverrides}
+                        amountSize="lg"
                       />
                     ))}
                 </div>

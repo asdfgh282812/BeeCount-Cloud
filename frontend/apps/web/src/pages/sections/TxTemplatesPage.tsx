@@ -4,8 +4,8 @@ import {
   applyTxTemplate,
   createTxTemplate,
   deleteTxTemplate,
-  fetchReadAccounts,
   fetchReadTxTemplates,
+  fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   updateTxTemplate,
   type ReadAccount,
@@ -66,7 +66,7 @@ export function TxTemplatesPage() {
       const [r, c, a] = await Promise.all([
         fetchReadTxTemplates(token, activeLedgerId),
         fetchWorkspaceCategories(token, {}),
-        fetchReadAccounts(token, activeLedgerId),
+        fetchWorkspaceAccounts(token, { limit: 500 }),
       ])
       setTemplates(r)
       setCategories(c)

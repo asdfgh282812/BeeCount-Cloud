@@ -5,8 +5,8 @@ import {
   createDebt,
   createTransaction,
   deleteDebt,
-  fetchReadAccounts,
   fetchReadDebts,
+  fetchWorkspaceAccounts,
   fetchWorkspaceTransactions,
   updateDebt,
   type ReadAccount,
@@ -64,7 +64,7 @@ export function DebtsPage() {
     try {
       const [d, a] = await Promise.all([
         fetchReadDebts(token, activeLedgerId),
-        fetchReadAccounts(token, activeLedgerId),
+        fetchWorkspaceAccounts(token, { limit: 500 }),
       ])
       setDebts(d)
       setAccounts(a)

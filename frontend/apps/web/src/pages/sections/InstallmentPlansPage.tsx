@@ -6,8 +6,8 @@ import {
   deleteInstallmentPlan,
   earlyRepayInstallmentPrincipal,
   fetchInstallmentPeriods,
-  fetchReadAccounts,
   fetchReadInstallmentPlans,
+  fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   payoffInstallmentPlan,
   rebalanceInstallmentPlan,
@@ -117,7 +117,7 @@ export function InstallmentPlansPage() {
       const [p, c, a] = await Promise.all([
         fetchReadInstallmentPlans(token, activeLedgerId),
         fetchWorkspaceCategories(token, {}),
-        fetchReadAccounts(token, activeLedgerId),
+        fetchWorkspaceAccounts(token, { limit: 500 }),
       ])
       setPlans(p)
       setCategories(c)

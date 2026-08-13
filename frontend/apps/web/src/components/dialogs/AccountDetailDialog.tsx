@@ -18,7 +18,7 @@ import {
   createInstallmentPlan,
   fetchAccountBillingSummary,
   fetchAccountInterestFreeSuggestion,
-  fetchReadAccounts,
+  fetchWorkspaceAccounts,
   fetchWorkspaceCategories
 } from '@beecount/api-client'
 import {
@@ -852,7 +852,7 @@ function CreditCardBillingSection({
     setPayFromAccountId(remembered)
     setPayOpen(true)
     if (token && activeLedgerId) {
-      fetchReadAccounts(token, activeLedgerId)
+      fetchWorkspaceAccounts(token, { limit: 500 })
         .then((accts) => {
           // 付款來源不能是實際被繳款的那個帳戶(billingAccountId,子卡時是
           // 它掛靠的主帳戶而不是子卡自己)、也不能是正在瀏覽的這張子卡自己

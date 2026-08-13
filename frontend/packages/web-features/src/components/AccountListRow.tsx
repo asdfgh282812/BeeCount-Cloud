@@ -4,7 +4,7 @@ import { useT } from '@beecount/ui'
 
 import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
-import { Amount } from './Amount'
+import { Amount, type AmountSize } from './Amount'
 import {
   effectiveRateToBase,
   hasCreditBillingFields,
@@ -147,7 +147,8 @@ export function AccountListRow({
   hiddenBadge = false,
   baseCurrency,
   fxRates,
-  fxOverrides
+  fxOverrides,
+  amountSize = 'sm'
 }: {
   row: ReadAccount & AccountStats
   color: string
@@ -167,6 +168,10 @@ export function AccountListRow({
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  /** 主要金額字號(2026-08-13 使用者回報資產頁列表金額太小):預設 `sm`(帳戶
+   *  選擇彈窗等緊湊情境維持原樣),`AccountsPanel` 資產頁列表傳大一號的字級。
+   *  子帳戶巢狀渲染時不繼續往下傳,保持子列比主列小一號的既有視覺層級。 */
+  amountSize?: AmountSize
 }) {
   const t = useT()
   const [expanded, setExpanded] = useState(true)
@@ -333,7 +338,7 @@ export function AccountListRow({
               {currencyBadgeLabel}
             </span>
           ) : null}
-          <Amount value={amountValue} currency={amountCurrency} tone={primaryTone} bold size="sm" />
+          <Amount value={amountValue} currency={amountCurrency} tone={primaryTone} bold size={amountSize} />
           {canConvert ? (
             <button
               type="button"

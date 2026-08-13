@@ -5,9 +5,9 @@ import {
   createRecurringRule,
   deleteRecurringOccurrence,
   deleteRecurringRule,
-  fetchReadAccounts,
   fetchReadRecurringRules,
   fetchReadTransactions,
+  fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   terminateRecurringRuleFuture,
   updateRecurringOccurrence,
@@ -80,7 +80,7 @@ export function RecurringRulesPage() {
       const [r, c, a] = await Promise.all([
         fetchReadRecurringRules(token, activeLedgerId),
         fetchWorkspaceCategories(token, {}),
-        fetchReadAccounts(token, activeLedgerId),
+        fetchWorkspaceAccounts(token, { limit: 500 }),
       ])
       setRules(r)
       setCategories(c)
