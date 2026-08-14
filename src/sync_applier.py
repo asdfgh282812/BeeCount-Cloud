@@ -237,6 +237,10 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("accountId", "account_sync_id"),
         ("fromAccountId", "from_account_sync_id"),
         ("toAccountId", "to_account_sync_id"),
+        # Phase 24:商家/專案/標籤,搭配「連同未來週期」批次轉發。
+        ("merchant", "merchant"),
+        ("projectId", "project_sync_id"),
+        ("tagIds", "tag_sync_ids_json", _json_loads_safe),
         ("frequency", "frequency"),
         ("interval", "interval"),
         ("nextRunAt", "next_run_at", _isoformat_or_none),

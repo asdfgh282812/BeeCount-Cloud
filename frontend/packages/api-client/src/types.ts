@@ -1303,6 +1303,11 @@ export type ReadRecurringRule = {
   account_id?: string | null
   from_account_id?: string | null
   to_account_id?: string | null
+  /** Phase 24(問題 B 第二層):商家/專案/標籤,可被「連同未來週期」批次更新。 */
+  merchant?: string | null
+  project_id?: string | null
+  project_name?: string | null
+  tag_ids?: string[]
   frequency: RecurringFrequency
   interval: number
   next_run_at: string
@@ -1366,13 +1371,21 @@ export type RecurringOccurrenceUpdatePayload = {
 }
 
 /** §2.12.2:修改連同未來 —— 更新规则本身字段 + 该期以后所有未 overridden
- * 的已生成交易(不动 happened_at)。 */
+ * 的已生成交易(不动 happened_at)。Phase 24 補齊 from_account_id/
+ * to_account_id(entity 本來就有,原本這支 payload 漏轉發)+ 新增的
+ * merchant/project_id/tag_ids(見 docs/PH17_USER_FEEDBACK_2026-08_SD.md
+ * Phase 24 問題 B)。 */
 export type RecurringUpdateFromPayload = {
   tx_type?: 'expense' | 'income' | 'transfer'
   amount?: number
   note?: string | null
   category_id?: string | null
   account_id?: string | null
+  from_account_id?: string | null
+  to_account_id?: string | null
+  merchant?: string | null
+  project_id?: string | null
+  tag_ids?: string[]
   frequency?: RecurringFrequency
   interval?: number
   advanced_rule_json?: RecurringAdvancedRule | null

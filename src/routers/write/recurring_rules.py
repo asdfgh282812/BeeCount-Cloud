@@ -117,12 +117,14 @@ async def create_recurring_rule_ep(
         to_account_name = _resolve_account_display(
             db, user_id=current_user.id, account_id=req.to_account_id,
         )
+        tag_names = _resolve_tag_names(db, user_id=current_user.id, tag_ids=req.tag_ids)
         for occ in occurrences:
             tx_payload = {
                 "tx_type": req.tx_type,
                 "amount": req.amount,
                 "happened_at": occ,
                 "note": req.note,
+                "merchant": req.merchant,
                 "category_id": req.category_id,
                 "category_name": category_name,
                 "category_kind": category_kind,
@@ -132,6 +134,9 @@ async def create_recurring_rule_ep(
                 "from_account_name": from_account_name,
                 "to_account_id": req.to_account_id,
                 "to_account_name": to_account_name,
+                "project_id": req.project_id,
+                "tag_ids": req.tag_ids,
+                "tags": tag_names,
                 "recurring_rule_id": rule_id,
                 **actor_fields,
             }
@@ -343,6 +348,8 @@ async def update_recurring_rule_from_ep(
     )
     if replay:
         return replay
+    for field in ("account_id", "from_account_id", "to_account_id"):
+        _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
     # 需求 #14(Phase 12):同 update_recurring_rule_ep 的檢查——「這期以後」
     # 批次改分類時也不能把非轉帳規則的分類改成空的。
     if "category_id" in payload:
@@ -375,7 +382,8 @@ async def update_recurring_rule_from_ep(
         rule_payload = dict(actor_fields)
         for key in (
             "tx_type", "amount", "note", "category_id", "account_id",
-            "frequency", "interval", "advanced_rule_json",
+            "from_account_id", "to_account_id", "merchant", "project_id",
+            "tag_ids", "frequency", "interval", "advanced_rule_json",
         ):
             if key in payload:
                 rule_payload[key] = payload[key]
@@ -383,9 +391,19 @@ async def update_recurring_rule_from_ep(
             next_snapshot = update_recurring_rule(next_snapshot, rule_id, rule_payload)
 
         tx_payload = dict(actor_fields)
-        for key in ("tx_type", "amount", "note", "category_id", "account_id"):
+        for key in (
+            "tx_type", "amount", "note", "category_id", "account_id",
+            "from_account_id", "to_account_id", "merchant", "project_id",
+            "tag_ids",
+        ):
             if key in payload:
                 tx_payload[key] = payload[key]
+        if "tag_ids" in payload:
+            # 同 create_recurring_rule_ep:tags(展示 CSV)跟 tag_ids 是两个
+            # 独立字段,一起转发,否则交易列表页显示的标签名称会跟 tag_ids 脱节。
+            tx_payload["tags"] = _resolve_tag_names(
+                db, user_id=current_user.id, tag_ids=payload.get("tag_ids"),
+            )
         if len(tx_payload) > len(actor_fields):
             for it in targets:
                 next_snapshot = update_transaction(next_snapshot, it["syncId"], tx_payload)

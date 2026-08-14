@@ -995,6 +995,11 @@ class ReadRecurringRuleOut(BaseModel):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    # Phase 24(問題 B 第二層):商家/專案/標籤。
+    merchant: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
     frequency: RecurringFrequency
     interval: int
     next_run_at: datetime
@@ -1669,6 +1674,11 @@ class WriteRecurringRuleCreateRequest(WriteBaseRequest):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    # Phase 24(問題 B 第二層):商家/專案/標籤,「重複性交易的固定屬性」,
+    # 隨每期生成的 occurrence 交易一起帶入,也可被「連同未來週期」批次更新。
+    merchant: str | None = None
+    project_id: str | None = None
+    tag_ids: list[str] | None = None
     frequency: RecurringFrequency = "monthly"
     interval: int = Field(default=1, ge=1, le=365)
     next_run_at: datetime
@@ -1688,6 +1698,9 @@ class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    merchant: str | None = None
+    project_id: str | None = None
+    tag_ids: list[str] | None = None
     frequency: RecurringFrequency | None = None
     interval: int | None = Field(default=None, ge=1, le=365)
     next_run_at: datetime | None = None
@@ -1709,12 +1722,22 @@ class WriteRecurringOccurrenceUpdateRequest(WriteBaseRequest):
 
 class WriteRecurringUpdateFromRequest(WriteBaseRequest):
     """§2.12.2:修改連同未來 —— 更新规则本身字段,并套用到该期以后所有未
-    `overridden` 的已生成交易(不动 `happened_at`,只改内容)。"""
+    `overridden` 的已生成交易(不动 `happened_at`,只改内容)。
+
+    Phase 24 補齊轉發缺口(問題 A/B):原本這裡漏了 `from_account_id`/
+    `to_account_id`(RecurringRule entity 本來就有的欄位,純粹是這支端點沒
+    轉發),以及新增的 `merchant`/`project_id`/`tag_ids` 三個欄位。
+    """
     tx_type: Literal["expense", "income", "transfer"] | None = None
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     category_id: str | None = None
     account_id: str | None = None
+    from_account_id: str | None = None
+    to_account_id: str | None = None
+    merchant: str | None = None
+    project_id: str | None = None
+    tag_ids: list[str] | None = None
     frequency: RecurringFrequency | None = None
     interval: int | None = Field(default=None, ge=1, le=365)
     advanced_rule_json: dict[str, Any] | None = None

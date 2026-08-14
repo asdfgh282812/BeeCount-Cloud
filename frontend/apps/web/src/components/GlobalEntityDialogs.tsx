@@ -37,6 +37,7 @@ import { AccountDetailDialog } from './dialogs/AccountDetailDialog'
 import { CategoryDetailDialog } from './dialogs/CategoryDetailDialog'
 import { InstallmentEditChoiceDialog } from './dialogs/InstallmentEditChoiceDialog'
 import { InstallmentRefundChoiceDialog } from './dialogs/InstallmentRefundChoiceDialog'
+import { RecurringEditChoiceDialog } from './dialogs/RecurringEditChoiceDialog'
 import { TagDetailDialog } from './dialogs/TagDetailDialog'
 import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
 
@@ -89,6 +90,10 @@ export function GlobalEntityDialogs() {
   // 2026-08-03 使用者反饋 #4:分期產生的交易編輯發起點 —— 先問要做哪一種
   // 差異化操作,見 InstallmentEditChoiceDialog 說明。
   const [installmentEdit, setInstallmentEdit] = useState<WorkspaceTransaction | null>(null)
+
+  // Phase 24(需求 #5):週期性收支產生的交易編輯發起點 —— 先問「修改此
+  // 記錄」還是「修改連同未來週期」,見 RecurringEditChoiceDialog 說明。
+  const [recurringEdit, setRecurringEdit] = useState<WorkspaceTransaction | null>(null)
 
   const [account, setAccount] = useState<WorkspaceAccount | null>(null)
   const [accountScope, setAccountScope] = useState<DetailScope>('current')
@@ -418,6 +423,14 @@ export function GlobalEntityDialogs() {
         setInstallmentEdit(target)
         return
       }
+      // Phase 24(需求 #5):週期性收支產生的交易——先問「修改此記錄」還是
+      // 「修改連同未來週期」,而不是直接開一般編輯表單(比照分期的既有模
+      // 式,但這裡選完之後沿用同一個編輯表單,不導頁——見
+      // RecurringEditChoiceDialog 說明)。
+      if (target.recurring_rule_id) {
+        setRecurringEdit(target)
+        return
+      }
       dispatchOpenEditTx(target)
     },
     [],
@@ -440,6 +453,19 @@ export function GlobalEntityDialogs() {
       navigate(`/app/installment-plans?${params.toString()}`)
     },
     [installmentEdit, navigate],
+  )
+
+  // Phase 24:两选一之后关掉选择弹窗,派发 dispatchOpenEditTx 时带上
+  // recurringEditMode——GlobalEditDialogs 打开的仍是同一份编辑表单,只是
+  // 存档时按这个 mode 分流到 occurrence PATCH 或 update-from POST。
+  const handleRecurringEditChoice = useCallback(
+    (mode: 'single' | 'future') => {
+      if (!recurringEdit) return
+      const target = recurringEdit
+      setRecurringEdit(null)
+      dispatchOpenEditTx(target, { recurringEditMode: mode })
+    },
+    [recurringEdit],
   )
 
   // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原交易的
@@ -484,6 +510,17 @@ export function GlobalEntityDialogs() {
     },
     [toast, t],
   )
+
+  // 複製交易(2026-08 使用者回饋):關掉詳情,開「新建交易」表單並帶上原
+  // 交易的備註/帳戶/分類/回饋項目/專案/標籤/拆帳等屬性欄位預填,時間欄位
+  // 不複製(用現在時間),使用者可直接修改時間或其它內容再存成新交易。
+  const handleDuplicateTx = useCallback((target: WorkspaceTransaction) => {
+    setTx(null)
+    dispatchOpenNewTx({
+      ledgerId: target.ledger_id,
+      duplicateOf: target,
+    })
+  }, [])
 
   // 退款双向勾稽(ph1.5+):点击退款徽章 / 反查清单里的某一笔,原地把 detail
   // 弹窗切换成那笔交易 —— 用 tx_sync_id 精确查(跨分页/跨账本都能查到,不
@@ -612,6 +649,7 @@ export function GlobalEntityDialogs() {
         onClose={() => setTx(null)}
         onEdit={handleEditTx}
         onRefund={handleRefundTx}
+        onDuplicate={handleDuplicateTx}
         onJumpToTx={(txId) => void handleJumpToTx(txId)}
         onJumpToDebt={handleJumpToDebt}
         rewardRules={txRewardRules}
@@ -635,6 +673,12 @@ export function GlobalEntityDialogs() {
         loading={installmentRefundBusy}
         onCancel={() => setInstallmentRefund(null)}
         onConfirm={() => void handleConfirmWholeInstallmentPlanRefund()}
+      />
+      <RecurringEditChoiceDialog
+        open={recurringEdit !== null}
+        onCancel={() => setRecurringEdit(null)}
+        onChooseEditThis={() => handleRecurringEditChoice('single')}
+        onChooseEditFuture={() => handleRecurringEditChoice('future')}
       />
       <InstallmentEditChoiceDialog
         open={installmentEdit !== null}

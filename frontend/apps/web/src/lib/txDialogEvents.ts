@@ -39,6 +39,12 @@ let editCategoryHandlerCount = 0
  *   分类/账户 + 把 refund_of_id 指向原交易。§2.6:income 也能被退款后,
  *   退款交易的 tx_type 不再固定 income,而是原交易 origTxType 的反向类型
  *   (expense 被退→income 退款交易;income 被退→expense 退款交易)。
+ * - duplicateOf:2026-08 使用者回饋,从交易明细点「複製」发起 —— 把備註/
+ *   帳戶/分類/回饋項目/專案/標籤/拆帳等「屬性」欄位複製一份帶進新建表單,
+ *   時間欄位不跟著複製(維持 txDefaults() 的「現在時間」),讓使用者自己
+ *   改時間或其它內容再存成一筆新交易。故意不帶 refund_of_id/debt_id/
+ *   attachments/reconciled_at/deferred_posting_at 這類「綁定特定原始事件」
+ *   的欄位 —— 複製出來的是一筆全新、不relates 到原交易的獨立記錄。
  */
 export type NewTxPrefill = {
   happenedAt?: string
@@ -52,14 +58,26 @@ export type NewTxPrefill = {
     /** 原交易的类型 —— 决定退款交易反向应该是 income 还是 expense。 */
     origTxType: 'expense' | 'income'
   }
+  duplicateOf?: WorkspaceTransaction
 }
 
 export function dispatchOpenNewTx(prefill?: NewTxPrefill) {
   window.dispatchEvent(new CustomEvent(NEW_TX_EVENT, { detail: prefill }))
 }
 
-export function dispatchOpenEditTx(tx: WorkspaceTransaction) {
-  window.dispatchEvent(new CustomEvent(EDIT_TX_EVENT, { detail: tx }))
+/**
+ * Phase 24(docs/PH17_USER_FEEDBACK_2026-08_SD.md 需求 #5):週期性收支產生
+ * 的交易差異化編輯 —— 'single' 存檔時呼叫 `PATCH .../occurrences/{tx_id}`
+ * (標記 overridden,只影響這一筆);'future' 呼叫
+ * `POST .../update-from/{tx_id}`(套用到這期以後所有未 overridden 的已生成
+ * 交易)。undefined = 一般交易,走既有 `updateTransaction`。
+ */
+export type EditTxOptions = {
+  recurringEditMode?: 'single' | 'future'
+}
+
+export function dispatchOpenEditTx(tx: WorkspaceTransaction, options?: EditTxOptions) {
+  window.dispatchEvent(new CustomEvent(EDIT_TX_EVENT, { detail: { tx, options } }))
 }
 
 export function dispatchOpenDetailTx(tx: WorkspaceTransaction) {
@@ -80,11 +98,11 @@ export function onOpenNewTx(handler: (prefill?: NewTxPrefill) => void): () => vo
 }
 
 export function onOpenEditTx(
-  handler: (tx: WorkspaceTransaction) => void,
+  handler: (tx: WorkspaceTransaction, options?: EditTxOptions) => void,
 ): () => void {
   const wrapped = (e: Event) => {
-    const detail = (e as CustomEvent<WorkspaceTransaction>).detail
-    if (detail) handler(detail)
+    const detail = (e as CustomEvent<{ tx: WorkspaceTransaction; options?: EditTxOptions } | undefined>).detail
+    if (detail?.tx) handler(detail.tx, detail.options)
   }
   window.addEventListener(EDIT_TX_EVENT, wrapped)
   editTxHandlerCount += 1

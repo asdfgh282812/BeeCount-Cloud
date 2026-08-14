@@ -679,6 +679,12 @@ def upsert_recurring_rule(
         "account_sync_id": _as_str(payload.get("accountId")),
         "from_account_sync_id": _as_str(payload.get("fromAccountId")),
         "to_account_sync_id": _as_str(payload.get("toAccountId")),
+        "merchant": _as_str(payload.get("merchant")),
+        "project_sync_id": _as_str(payload.get("projectId")),
+        "tag_sync_ids_json": (
+            json.dumps(payload.get("tagIds"))
+            if isinstance(payload.get("tagIds"), list) else None
+        ),
         "frequency": _as_str(payload.get("frequency")) or "monthly",
         "interval": _as_int(payload.get("interval"), default=1) or 1,
         "next_run_at": _parse_happened_at(payload.get("nextRunAt")),

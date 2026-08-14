@@ -1094,3 +1094,259 @@ def test_update_recurring_rule_cannot_clear_category():
         assert rules[0]["category_id"] == "cat-1", "被拒绝的更新不该动到既有分类"
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 24(docs/PH17_USER_FEEDBACK_2026-08_SD.md 問題 A/B):RecurringRule
+# 擴充 merchant/project_id/tag_ids + update-from 補齊 from_account_id/
+# to_account_id/merchant/project_id/tag_ids 轉發
+# ---------------------------------------------------------------------------
+
+
+def test_create_recurring_rule_forwards_merchant_project_tags_to_occurrences():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recext1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECEXT1"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        _push(client, hdr_app, ledger_id, "project", "proj-1",
+              {"syncId": "proj-1", "name": "旅遊基金"})
+        _push(client, hdr_app, ledger_id, "tag", "tag-1", {"syncId": "tag-1", "name": "固定支出"})
+
+        web = _login_web(client, "recext1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = next_run + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 50.0,
+                "category_id": "cat-1",
+                "merchant": "全聯",
+                "project_id": "proj-1",
+                "tag_ids": ["tag-1"],
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["merchant"] == "全聯"
+        assert rules[0]["project_id"] == "proj-1"
+        assert rules[0]["tag_ids"] == ["tag-1"]
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 1
+        assert txs[0]["merchant"] == "全聯"
+        assert txs[0]["project_id"] == "proj-1"
+        assert txs[0]["tag_ids"] == ["tag-1"]
+        assert txs[0]["tags_list"] == ["固定支出"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_update_from_forwards_merchant_project_tags_and_account():
+    """Phase 24 問題 A/B:update-from 原本漏轉發新增的 merchant/project_id/
+    tag_ids,這裡用一條會批次預生成的 expense 規則驗證「連同未來」正確帶到
+    規則本身跟未來的 occurrence 交易,而 overridden 的那期依然被跳過。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recext2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECEXT2"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        _push(client, hdr_app, ledger_id, "account", "acc-a",
+              {"syncId": "acc-a", "name": "帳戶A", "type": "cash", "currency": "CNY"})
+        _push(client, hdr_app, ledger_id, "account", "acc-b",
+              {"syncId": "acc-b", "name": "帳戶B", "type": "cash", "currency": "CNY"})
+        _push(client, hdr_app, ledger_id, "project", "proj-2", {"syncId": "proj-2", "name": "專案二"})
+        _push(client, hdr_app, ledger_id, "tag", "tag-2", {"syncId": "tag-2", "name": "標籤二"})
+
+        web = _login_web(client, "recext2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = next_run + timedelta(days=32)  # next_run/+1mo 两次
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 100.0,
+                "category_id": "cat-1",
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+                "account_id": "acc-a",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        txs = sorted(_transactions(client, hdr, ledger_id), key=lambda t: t["happened_at"])
+        assert len(txs) == 2
+        occ0, occ1 = [t["id"] for t in txs]
+
+        # 单独覆盖 occ1,之后不该被 update-from 动到。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/occurrences/{occ1}",
+            headers=hdr,
+            json={"base_change_id": base, "amount": 999.0},
+        )
+        assert res.status_code == 200, res.text
+
+        # 連同未來:改帳戶 + merchant/project_id/tag_ids。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/update-from/{occ0}",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "account_id": "acc-b",
+                "merchant": "新商家",
+                "project_id": "proj-2",
+                "tag_ids": ["tag-2"],
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["account_id"] == "acc-b", "update-from 也要更新规则本身的 account_id"
+        assert rules[0]["merchant"] == "新商家"
+        assert rules[0]["project_id"] == "proj-2"
+        assert rules[0]["tag_ids"] == ["tag-2"]
+
+        txs = {t["id"]: t for t in _transactions(client, hdr, ledger_id)}
+        assert txs[occ0]["account_id"] == "acc-b"
+        assert txs[occ0]["merchant"] == "新商家"
+        assert txs[occ0]["project_id"] == "proj-2"
+        assert txs[occ0]["tag_ids"] == ["tag-2"]
+        assert txs[occ0]["tags_list"] == ["標籤二"]
+
+        assert txs[occ1]["account_id"] == "acc-a", "overridden 的期数不该被 update-from 覆盖"
+        assert txs[occ1]["amount"] == 999.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_update_from_forwards_transfer_from_to_account():
+    """Phase 24 問題 A:update-from 原本完全漏轉發 from_account_id/
+    to_account_id(即使 RecurringRule entity 本身早就有這兩個欄位)。轉帳規
+    則建立當下不預生成 occurrence(見
+    test_transfer_recurring_rule_not_bulk_generated_at_creation),這裡先用
+    `materialize_due_transfer_rules` 生一筆起點交易當 update-from 的 anchor,
+    驗證「連同未來」能正確改到轉出/轉入帳戶。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "recext3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECEXT3"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        for acc_id, name in (("acc-a", "帳戶A"), ("acc-b", "帳戶B"), ("acc-c", "帳戶C")):
+            _push(client, hdr_app, ledger_id, "account", acc_id,
+                  {"syncId": acc_id, "name": name, "type": "cash", "currency": "CNY",
+                   "initialBalance": 1000.0})
+
+        web = _login_web(client, "recext3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)  # 已到期
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 100.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-a",
+                "to_account_id": "acc-b",
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+            result = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result["materialized"] == 1
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 1
+        occ0 = txs[0]["id"]
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/update-from/{occ0}",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "from_account_id": "acc-a",
+                "to_account_id": "acc-c",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["to_account_id"] == "acc-c", "update-from 也要更新规则本身的 to_account_id"
+
+        txs = {t["id"]: t for t in _transactions(client, hdr, ledger_id)}
+        assert txs[occ0]["to_account_id"] == "acc-c"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_recurring_rule_merchant_project_tags_partial_update_keeps_existing_fields():
+    client, TS = _make_client()
+    try:
+        tok = _register(client, "recmerge2@example.com")["access_token"]
+        hdr = {"Authorization": f"Bearer {tok}"}
+        next_run = datetime.now(timezone.utc) + timedelta(days=5)
+
+        _push(client, hdr, "lg1", "recurring_rule", "rec-2", {
+            "syncId": "rec-2",
+            "amount": 100.0,
+            "nextRunAt": next_run.isoformat(),
+            "merchant": "星巴克",
+            "projectId": "proj-x",
+            "tagIds": ["tag-x", "tag-y"],
+        })
+        # partial update:只改 amount
+        _push(client, hdr, "lg1", "recurring_rule", "rec-2", {
+            "syncId": "rec-2",
+            "amount": 150.0,
+        })
+
+        with TS() as db:
+            row = db.scalar(
+                select(ReadRecurringRuleProjection).where(
+                    ReadRecurringRuleProjection.sync_id == "rec-2",
+                )
+            )
+            assert row is not None
+            assert row.amount == 150.0
+            assert row.merchant == "星巴克", "partial update 不该冲掉 merchant"
+            assert row.project_sync_id == "proj-x", "partial update 不该冲掉 project_sync_id"
+            import json as _json
+            assert _json.loads(row.tag_sync_ids_json) == ["tag-x", "tag-y"]
+    finally:
+        app.dependency_overrides.clear()

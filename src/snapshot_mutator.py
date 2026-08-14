@@ -1318,6 +1318,19 @@ def create_recurring_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
         rule["fromAccountId"] = str(payload.get("from_account_id"))
     if payload.get("to_account_id") is not None:
         rule["toAccountId"] = str(payload.get("to_account_id"))
+    if payload.get("merchant") is not None:
+        rule["merchant"] = str(payload.get("merchant"))
+    if payload.get("project_id") is not None:
+        rule["projectId"] = str(payload.get("project_id"))
+    tag_ids_raw = payload.get("tag_ids")
+    if isinstance(tag_ids_raw, list):
+        tag_ids: list[str] = []
+        for raw in tag_ids_raw:
+            value = str(raw).strip()
+            if value and value not in tag_ids:
+                tag_ids.append(value)
+        if tag_ids:
+            rule["tagIds"] = tag_ids
     if payload.get("end_at") is not None:
         rule["endAt"] = _to_iso8601(payload.get("end_at"))
     # Phase 1.5(§2.12.2):进阶规则(snapshot 层保持嵌套 dict,序列化成 JSON
@@ -1374,6 +1387,8 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
         ("account_id", "accountId"),
         ("from_account_id", "fromAccountId"),
         ("to_account_id", "toAccountId"),
+        ("merchant", "merchant"),
+        ("project_id", "projectId"),
     ):
         if req_key in payload:
             value = payload.get(req_key)
@@ -1381,6 +1396,20 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
                 rule.pop(snapshot_key, None)
             else:
                 rule[snapshot_key] = str(value)
+    if "tag_ids" in payload:
+        raw = payload.get("tag_ids")
+        if isinstance(raw, list):
+            tag_ids: list[str] = []
+            for value in raw:
+                text = str(value).strip()
+                if text and text not in tag_ids:
+                    tag_ids.append(text)
+            if tag_ids:
+                rule["tagIds"] = tag_ids
+            else:
+                rule.pop("tagIds", None)
+        elif raw is None:
+            rule.pop("tagIds", None)
     if "advanced_rule_json" in payload:
         value = payload.get("advanced_rule_json")
         if value is None:

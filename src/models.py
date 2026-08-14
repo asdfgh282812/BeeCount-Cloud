@@ -882,6 +882,13 @@ class ReadRecurringRuleProjection(Base):
     account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     from_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Phase 24(§問題 B 第二層):「連同未來週期」批次更新希望也能涵蓋的
+    # 「重複性交易固定屬性」——跟 note/category/account 同一批轉發字段,
+    # 不像 currency/手續費折扣/拆帳/欠款/回饋規則那樣是「每一筆交易當下的
+    # 獨立決定」,故不新增後者那幾個欄位。
+    merchant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 'daily' / 'weekly' / 'monthly' / 'yearly'
     frequency: Mapped[str] = mapped_column(String(16), default="monthly")
     # 每隔几个 frequency 单位触发一次(1 = 每次都触发)

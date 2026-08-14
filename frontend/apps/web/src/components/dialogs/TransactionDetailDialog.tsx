@@ -17,7 +17,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Briefcase, Calendar, ChevronLeft, ChevronRight, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
+import { Briefcase, Calendar, ChevronLeft, ChevronRight, Copy, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -33,6 +33,9 @@ interface Props {
    *  交易表单并预填退款信息。已经被退过款的交易(tx.refunds.length > 0)
    *  不再显示为可点击 —— 一笔交易只能被退款一次,见按钮 disabled 逻辑。 */
   onRefund?: (tx: WorkspaceTransaction) => void
+  /** 複製交易(2026-08 使用者回饋):把備註/帳戶/分類/回饋項目等欄位複製
+   *  一份,開啟「新增交易」表單讓使用者修改時間或其它內容再存成新交易。 */
+  onDuplicate?: (tx: WorkspaceTransaction) => void
   /** 退款双向勾稽(ph1.5+):点击「退款」徽章跳原交易,或点反查清单里的某笔
    *  退款跳去那笔退款交易 —— 用同一个 detail 弹窗原地切换展示对象。 */
   onJumpToTx?: (txId: string) => void
@@ -65,6 +68,7 @@ export function TransactionDetailDialog({
   onClose,
   onEdit,
   onRefund,
+  onDuplicate,
   onJumpToTx,
   onJumpToDebt,
   rewardRules,
@@ -466,6 +470,17 @@ export function TransactionDetailDialog({
             >
               <RotateCcw className="mr-1 h-3.5 w-3.5" />
               {t('transactions.button.refund')}
+            </Button>
+          ) : null}
+          {tx && onDuplicate ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!canManage}
+              onClick={() => onDuplicate(tx)}
+            >
+              <Copy className="mr-1 h-3.5 w-3.5" />
+              {t('transactions.button.duplicate')}
             </Button>
           ) : null}
           <Button variant="outline" size="sm" onClick={onClose}>

@@ -55,6 +55,7 @@ from ...models import (
     User,
     UserAccountProjection,
     UserCategoryProjection,
+    UserTagProjection,
 )
 from ...schemas import (
     WriteAccountCreateRequest,
@@ -2001,6 +2002,26 @@ def _resolve_category_display(
     return row[0], row[1]
 
 
+def _resolve_tag_names(
+    db: Session, *, user_id: str, tag_ids: list[str] | None,
+) -> list[str]:
+    """Phase 24:週期性收支的 merchant/tag_ids 转发给逐笔交易时,
+    `update_transaction` 的 `tags`(展示用 CSV,驱动 `tags_list`)与
+    `tag_ids`(驱动筛选/勾选)是两个独立字段,必须一起给,否则交易列表页
+    显示的标签名称会跟实际 tag_ids 脱节。这里查一次 UserTagProjection
+    补上名称列表。"""
+    if not tag_ids:
+        return []
+    rows = db.execute(
+        select(UserTagProjection.sync_id, UserTagProjection.name).where(
+            UserTagProjection.user_id == user_id,
+            UserTagProjection.sync_id.in_(tag_ids),
+        )
+    ).all()
+    name_by_id = {r[0]: (r[1] or "") for r in rows}
+    return [name_by_id[t] for t in tag_ids if t in name_by_id and name_by_id[t]]
+
+
 def _resolve_account_display(
     db: Session, *, user_id: str, account_id: str | None,
 ) -> str | None:
@@ -2304,5 +2325,6 @@ __all__ = [
     '_payload_with_actor',
     '_resolve_category_display',
     '_resolve_account_display',
+    '_resolve_tag_names',
     '_assert_can_modify_entity',
 ]

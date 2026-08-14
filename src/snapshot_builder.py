@@ -434,6 +434,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadRecurringRuleProjection.account_sync_id,
         ReadRecurringRuleProjection.from_account_sync_id,
         ReadRecurringRuleProjection.to_account_sync_id,
+        ReadRecurringRuleProjection.merchant,
+        ReadRecurringRuleProjection.project_sync_id,
+        ReadRecurringRuleProjection.tag_sync_ids_json,
         ReadRecurringRuleProjection.frequency,
         ReadRecurringRuleProjection.interval,
         ReadRecurringRuleProjection.next_run_at,
@@ -443,6 +446,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadRecurringRuleProjection.advanced_rule_json,
     ).where(ReadRecurringRuleProjection.ledger_id == ledger_id)
     for (sid, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
+         merchant, project_sid, tag_ids_json,
          frequency, interval, next_run_at, end_at, enabled,
          generated_until_at, advanced_rule_json) in db.execute(rec_stmt).all():
         r: dict[str, Any] = {
@@ -464,6 +468,17 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             r["fromAccountId"] = from_sid
         if to_sid:
             r["toAccountId"] = to_sid
+        if merchant is not None:
+            r["merchant"] = merchant
+        if project_sid:
+            r["projectId"] = project_sid
+        if tag_ids_json:
+            try:
+                parsed_tag_ids = json.loads(tag_ids_json)
+                if isinstance(parsed_tag_ids, list):
+                    r["tagIds"] = [str(v) for v in parsed_tag_ids]
+            except json.JSONDecodeError:
+                pass
         if end_at is not None:
             r["endAt"] = _to_iso_utc(end_at)
         if generated_until_at is not None:

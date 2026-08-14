@@ -61,6 +61,8 @@ import {
   type ReadProject,
   type ReadTag,
   type ReadTransaction,
+  type RecurringOccurrenceUpdatePayload,
+  type RecurringUpdateFromPayload,
   type SwipeSmartCardRecommendation,
   type WorkspaceTag,
   type ProfileMe,
@@ -92,6 +94,8 @@ import {
   fetchWorkspaceTransactions,
   patchProfileMe,
   updateLedgerMeta,
+  updateRecurringOccurrence,
+  updateRecurringRuleFrom,
   updateTransaction
 } from '@beecount/api-client'
 
@@ -119,6 +123,7 @@ import {
 } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
+import { RecurringEditChoiceDialog } from '../../components/dialogs/RecurringEditChoiceDialog'
 import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
 import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
@@ -561,6 +566,14 @@ export function TransactionsPage() {
   // 行(panel 自己不再渲染按钮 + dialog state)。编辑流程通过 onEdit 回调
   // 设 form 后 page 这里 setOpen(true)。
   const [txDialogOpen, setTxDialogOpen] = useState(false)
+  // Phase 24(需求 #5):列表行內「編輯」按鈕(不經過 GlobalEntityDialogs 的
+  // 詳情彈窗)點到週期性收支產生的交易時,先問「修改此記錄」還是「修改連同
+  // 未來週期」——recurringEditChoice 是待選擇的目標交易,recurringEditContext
+  // 是選完之後記錄的 { ruleId, mode },存檔時 onSaveTransaction 依此分流。
+  const [recurringEditChoice, setRecurringEditChoice] = useState<WorkspaceTransaction | null>(null)
+  const [recurringEditContext, setRecurringEditContext] = useState<
+    { ruleId: string; mode: 'single' | 'future' } | null
+  >(null)
   // CSV 导出 in-flight 标记 — 大账本流式下载 1-3s,期间按钮 disabled + 防重复点击
   const [exportingCsv, setExportingCsv] = useState(false)
   // accountForm state 已迁到 AccountsPage。
@@ -2201,13 +2214,49 @@ export function TransactionsPage() {
         payload_account_name: payload.account_name,
         payload_account_id: payload.account_id
       })
-      const res = await retryOnConflict(ledgerId, (base) =>
-        installmentPayload
-          ? createInstallmentPlan(token, ledgerId, base, installmentPayload)
-          : txForm.editingId
-            ? updateTransaction(token, ledgerId, txForm.editingId, base, payload)
-            : createTransaction(token, ledgerId, base, payload)
-      )
+      const res = await retryOnConflict(ledgerId, (base) => {
+        if (installmentPayload) {
+          return createInstallmentPlan(token, ledgerId, base, installmentPayload)
+        }
+        // Phase 24(需求 #5):週期性收支差異化編輯——只送目標端點支援的窄
+        // 欄位子集(見 WriteRecurringOccurrenceUpdateRequest /
+        // WriteRecurringUpdateFromRequest),不是整個 payload。表單裡其它
+        // 這兩支端點不接受的欄位(回饋項目/標籤單筆編輯等)不會被存到,是
+        // 既有的已知限制,同 GlobalEditDialogs.tsx::handleSaveTx。
+        if (txForm.editingId && recurringEditContext && recurringEditContext.mode === 'single') {
+          const occurrencePayload: RecurringOccurrenceUpdatePayload = {
+            amount: finalAmountNum,
+            note: payload.note ?? undefined,
+            category_id: payload.category_id ?? undefined,
+            account_id: payload.account_id ?? undefined,
+            happened_at: payload.happened_at,
+          }
+          return updateRecurringOccurrence(
+            token, ledgerId, recurringEditContext.ruleId, txForm.editingId, base, occurrencePayload,
+          )
+        }
+        if (txForm.editingId && recurringEditContext && recurringEditContext.mode === 'future') {
+          const updateFromPayload: RecurringUpdateFromPayload = {
+            tx_type: txForm.tx_type,
+            amount: finalAmountNum,
+            note: payload.note ?? undefined,
+            category_id: isTransfer ? undefined : payload.category_id ?? undefined,
+            account_id: isTransfer ? undefined : payload.account_id ?? undefined,
+            from_account_id: isTransfer ? payload.from_account_id ?? undefined : undefined,
+            to_account_id: isTransfer ? payload.to_account_id ?? undefined : undefined,
+            merchant: payload.merchant ?? undefined,
+            project_id: payload.project_id ?? undefined,
+            tag_ids: txTagIds,
+          }
+          return updateRecurringRuleFrom(
+            token, ledgerId, recurringEditContext.ruleId, txForm.editingId, base, updateFromPayload,
+          )
+        }
+        if (txForm.editingId) {
+          return updateTransaction(token, ledgerId, txForm.editingId, base, payload)
+        }
+        return createTransaction(token, ledgerId, base, payload)
+      })
       // eslint-disable-next-line no-console
       console.info('[tx-save] response', {
         entity_id: res.entity_id,
@@ -2245,6 +2294,7 @@ export function TransactionsPage() {
       }
       const editingTxId = txForm.editingId
       setTxForm(txDefaults())
+      setRecurringEditContext(null)
       const refreshLedger = activeLedgerId || ledgerId
       await refreshSectionData(refreshLedger, 'transactions')
       // 再打一次查询看服务端回给我们的具体这条 tx 的 tags/account_name；
@@ -2275,6 +2325,85 @@ export function TransactionsPage() {
       setErrorNotice(renderError(err))
       return false
     }
+  }
+
+  // Phase 24(需求 #5):把「打開編輯表單、把 tx 欄位塞進 txForm」這段邏輯
+  // 抽成獨立函式——原本是 <TransactionsPanel onEdit> 的 inline callback,
+  // 現在週期性收支的「修改此記錄」/「修改連同未來週期」選完之後也要能呼叫
+  // 同一段邏輯(見下面 onEdit callback 與 handleRecurringEditChoice)。
+  const openTxEditForm = (tx: WorkspaceTransaction) => {
+    setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
+    setTxDialogOpen(true)
+    setTxForm({
+      ...txDefaults(),
+      editingId: tx.id,
+      editingOwnerUserId: tx.created_by_user_id || '',
+      // §2.10 Phase 5:同 GlobalEditDialogs.tsx —— 'adjustment'
+      // 只由餘額調整語意化端點產生,一般編輯表單收窄成 'expense'
+      // 顯示(行內編輯按鈕已經對這種交易灰掉,這裡是防禦性 cast,
+      // 不會真的被使用者從這條路径觸發)。
+      tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
+      // 手續費/折扣(2026-08 使用者需求):金額欄位回填
+      // base_amount(原始金額),沒用過這個功能時 fallback 回
+      // amount,對既有交易的顯示完全沒有影響。
+      amount: String(tx.base_amount ?? tx.amount),
+      fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
+      fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
+      fee_label: tx.fee_label || '',
+      discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
+      discount_label: tx.discount_label || '',
+      happened_at: tx.happened_at,
+      deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
+      note: tx.note || '',
+      merchant: tx.merchant || '',
+      category_name: tx.category_name || '',
+      category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
+      account_name: tx.account_name || '',
+      original_account_name: tx.account_name || '',
+      from_account_name: tx.from_account_name || '',
+      to_account_name: tx.to_account_name || '',
+      currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency
+        ? ''
+        : (tx.currency_code || '').toUpperCase(),
+      original_currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency
+        ? ''
+        : (tx.currency_code || '').toUpperCase(),
+      tags:
+        tx.tags_list && tx.tags_list.length > 0
+          ? tx.tags_list
+          : (tx.tags || '')
+              .split(',')
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0),
+      attachments: normalizeAttachmentRefs(tx.attachments),
+      exclude_from_stats: Boolean(tx.exclude_from_stats),
+      exclude_from_budget: Boolean(tx.exclude_from_budget),
+      refund_of_id: tx.refund_of_id || '',
+      debt_id: tx.debt_id || '',
+      project_id: tx.project_id || '',
+      project_name: tx.project_name || '',
+      reward_rule_ids: tx.reward_rule_ids || [],
+      // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
+      split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
+      splits: Boolean(tx.has_splits)
+        ? (tx.splits || []).map((s) => ({
+            category_id: s.category_id || '',
+            category_name: s.category_name || '',
+            amount: String(s.amount),
+            note: s.note || ''
+          }))
+        : []
+    })
+  }
+
+  // Phase 24:兩選一之後打開同一個編輯表單(openTxEditForm),但先記住要
+  // 分流到哪支 API——onSaveTransaction 存檔時依 recurringEditContext 分流。
+  const handleRecurringEditChoice = (mode: 'single' | 'future') => {
+    const target = recurringEditChoice
+    setRecurringEditChoice(null)
+    if (!target || !target.recurring_rule_id) return
+    setRecurringEditContext({ ruleId: target.recurring_rule_id, mode })
+    openTxEditForm(target)
   }
 
   const onDeleteTransaction = async (txId: string, ledgerId: string) => {
@@ -2646,6 +2775,7 @@ export function TransactionsPage() {
                     className="h-9"
                     onClick={() => {
                       setTxForm(txDefaults())
+                      setRecurringEditContext(null)
                       if (
                         activeLedgerId &&
                         txWriteLedgerOptions.some((option) => option.ledger_id === activeLedgerId)
@@ -2758,6 +2888,7 @@ export function TransactionsPage() {
                 onSave={onSaveTransaction}
                 onReset={() => {
                   setTxForm(txDefaults())
+                  setRecurringEditContext(null)
                   if (
                     activeLedgerId &&
                     txWriteLedgerOptions.some((option) => option.ledger_id === activeLedgerId)
@@ -2771,68 +2902,15 @@ export function TransactionsPage() {
                 onPreviewAttachment={onPreviewTxAttachment}
                 resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
                 onEdit={(tx) => {
-                  setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
-                  setTxDialogOpen(true)
-                  setTxForm({
-                    ...txDefaults(),
-                    editingId: tx.id,
-                    editingOwnerUserId: tx.created_by_user_id || '',
-                    // §2.10 Phase 5:同 GlobalEditDialogs.tsx —— 'adjustment'
-                    // 只由餘額調整語意化端點產生,一般編輯表單收窄成 'expense'
-                    // 顯示(行內編輯按鈕已經對這種交易灰掉,這裡是防禦性 cast,
-                    // 不會真的被使用者從這條路径觸發)。
-                    tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
-                    // 手續費/折扣(2026-08 使用者需求):金額欄位回填
-                    // base_amount(原始金額),沒用過這個功能時 fallback 回
-                    // amount,對既有交易的顯示完全沒有影響。
-                    amount: String(tx.base_amount ?? tx.amount),
-                    fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
-                    fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
-                    fee_label: tx.fee_label || '',
-                    discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
-                    discount_label: tx.discount_label || '',
-                    happened_at: tx.happened_at,
-                    deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
-                    note: tx.note || '',
-                    merchant: tx.merchant || '',
-                    category_name: tx.category_name || '',
-                    category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
-                    account_name: tx.account_name || '',
-                    original_account_name: tx.account_name || '',
-                    from_account_name: tx.from_account_name || '',
-                    to_account_name: tx.to_account_name || '',
-                    currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency
-                      ? ''
-                      : (tx.currency_code || '').toUpperCase(),
-                    original_currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency
-                      ? ''
-                      : (tx.currency_code || '').toUpperCase(),
-                    tags:
-                      tx.tags_list && tx.tags_list.length > 0
-                        ? tx.tags_list
-                        : (tx.tags || '')
-                            .split(',')
-                            .map((value) => value.trim())
-                            .filter((value) => value.length > 0),
-                    attachments: normalizeAttachmentRefs(tx.attachments),
-                    exclude_from_stats: Boolean(tx.exclude_from_stats),
-                    exclude_from_budget: Boolean(tx.exclude_from_budget),
-                    refund_of_id: tx.refund_of_id || '',
-                    debt_id: tx.debt_id || '',
-                    project_id: tx.project_id || '',
-                    project_name: tx.project_name || '',
-                    reward_rule_ids: tx.reward_rule_ids || [],
-                    // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
-                    split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
-                    splits: Boolean(tx.has_splits)
-                      ? (tx.splits || []).map((s) => ({
-                          category_id: s.category_id || '',
-                          category_name: s.category_name || '',
-                          amount: String(s.amount),
-                          note: s.note || ''
-                        }))
-                      : []
-                  })
+                  // Phase 24(需求 #5):週期性收支產生的交易——先問「修改此
+                  // 記錄」還是「修改連同未來週期」,而不是直接開一般編輯
+                  // 表單(比照 GlobalEntityDialogs.handleEditTx 的既有模式)。
+                  if (tx.recurring_rule_id) {
+                    setRecurringEditChoice(tx as WorkspaceTransaction)
+                    return
+                  }
+                  setRecurringEditContext(null)
+                  openTxEditForm(tx as WorkspaceTransaction)
                 }}
                 onDelete={(row) =>
                   setPendingDelete({
@@ -2853,6 +2931,12 @@ export function TransactionsPage() {
                 saving={batchSaving}
                 onConfirm={handleBatchDeleteConfirm}
                 onClose={() => setBatchDeleteOpen(false)}
+              />
+              <RecurringEditChoiceDialog
+                open={recurringEditChoice !== null}
+                onCancel={() => setRecurringEditChoice(null)}
+                onChooseEditThis={() => handleRecurringEditChoice('single')}
+                onChooseEditFuture={() => handleRecurringEditChoice('future')}
               />
             </div>
           ) : null}

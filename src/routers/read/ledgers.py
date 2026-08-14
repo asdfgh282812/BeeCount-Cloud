@@ -1467,36 +1467,55 @@ def list_recurring_rules(
         .where(UserCategoryProjection.user_id == current_user.id)
     ).all()
     cat_name_by_sync = {r.sync_id: (r.name or "").strip() for r in cat_rows}
+    proj_rows = db.execute(
+        select(ReadProjectProjection.sync_id, ReadProjectProjection.name)
+        .where(ReadProjectProjection.ledger_id == ledger.id)
+    ).all()
+    proj_name_by_sync = {r.sync_id: (r.name or "").strip() for r in proj_rows}
 
     rows = db.scalars(
         select(ReadRecurringRuleProjection).where(
             ReadRecurringRuleProjection.ledger_id == ledger.id,
         ).order_by(ReadRecurringRuleProjection.next_run_at.asc())
     ).all()
-    return [
-        ReadRecurringRuleOut(
-            id=row.sync_id,
-            tx_type=row.tx_type,
-            amount=float(row.amount or 0),
-            note=row.note,
-            category_id=row.category_sync_id,
-            category_name=cat_name_by_sync.get(row.category_sync_id) if row.category_sync_id else None,
-            account_id=row.account_sync_id,
-            from_account_id=row.from_account_sync_id,
-            to_account_id=row.to_account_sync_id,
-            frequency=cast("Any", row.frequency or "monthly"),
-            interval=int(row.interval or 1),
-            next_run_at=row.next_run_at,
-            end_at=row.end_at,
-            enabled=bool(row.enabled),
-            generated_until_at=row.generated_until_at,
-            advanced_rule_json=_parse_advanced_rule_json(row.advanced_rule_json),
-            last_change_id=source_change_id,
-            ledger_id=ledger.external_id,
-            ledger_name=ledger_name,
+    out: list[ReadRecurringRuleOut] = []
+    for row in rows:
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                parsed = json.loads(row.tag_sync_ids_json)
+                if isinstance(parsed, list):
+                    tag_ids = [str(v) for v in parsed]
+            except json.JSONDecodeError:
+                pass
+        out.append(
+            ReadRecurringRuleOut(
+                id=row.sync_id,
+                tx_type=row.tx_type,
+                amount=float(row.amount or 0),
+                note=row.note,
+                category_id=row.category_sync_id,
+                category_name=cat_name_by_sync.get(row.category_sync_id) if row.category_sync_id else None,
+                account_id=row.account_sync_id,
+                from_account_id=row.from_account_sync_id,
+                to_account_id=row.to_account_sync_id,
+                merchant=row.merchant,
+                project_id=row.project_sync_id,
+                project_name=proj_name_by_sync.get(row.project_sync_id) if row.project_sync_id else None,
+                tag_ids=tag_ids,
+                frequency=cast("Any", row.frequency or "monthly"),
+                interval=int(row.interval or 1),
+                next_run_at=row.next_run_at,
+                end_at=row.end_at,
+                enabled=bool(row.enabled),
+                generated_until_at=row.generated_until_at,
+                advanced_rule_json=_parse_advanced_rule_json(row.advanced_rule_json),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
         )
-        for row in rows
-    ]
+    return out
 
 
 def _parse_advanced_rule_json(raw: str | None) -> dict[str, Any] | None:

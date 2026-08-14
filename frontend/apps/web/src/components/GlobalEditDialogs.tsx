@@ -15,11 +15,15 @@ import {
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
   updateCategory,
+  updateRecurringOccurrence,
+  updateRecurringRuleFrom,
   updateTransaction,
   uploadAttachment,
   type ReadCardRewardRule,
   type ReadDebt,
   type ReadProject,
+  type RecurringOccurrenceUpdatePayload,
+  type RecurringUpdateFromPayload,
   type SwipeSmartCardRecommendation,
   type WorkspaceAccount,
   type WorkspaceCategory,
@@ -50,6 +54,11 @@ import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
 import { localizeError } from '../i18n/errors'
 import { onOpenEditCategory, onOpenEditTx, onOpenNewTx } from '../lib/txDialogEvents'
+
+/** Phase 24:週期性收支差異化編輯的上下文——由 onOpenEditTx 的
+ * `recurringEditMode` option 帶入,存檔時決定分流到哪支 API(見
+ * handleSaveTx 底部)。 */
+type RecurringEditContext = { ruleId: string; mode: 'single' | 'future' }
 
 /** 延後入帳(§2.10 Phase 5)回显/提交用:同 CardRewardRulesSection.tsx/
  *  DebtsPanel.tsx 的 isoToDateInput/dateInputToIso —— 后端这类"纯日期"字段
@@ -91,6 +100,9 @@ export function GlobalEditDialogs() {
 
   const [editTxOpen, setEditTxOpen] = useState(false)
   const [editTxForm, setEditTxForm] = useState<TxForm>(txDefaults())
+  // Phase 24:非 null 時,存檔要分流到 occurrence PATCH / update-from POST
+  // 而不是一般的 updateTransaction——見 onOpenEditTx 監聽器與 handleSaveTx。
+  const [editRecurringContext, setEditRecurringContext] = useState<RecurringEditContext | null>(null)
   const [editTxLedgerId, setEditTxLedgerId] = useState('')
   const [editTxAccounts, setEditTxAccounts] = useState<WorkspaceAccount[]>([])
   const [editTxCategories, setEditTxCategories] = useState<WorkspaceCategory[]>([])
@@ -335,10 +347,18 @@ export function GlobalEditDialogs() {
   // 监听全局 openEditTx 事件 — 任何页 dispatch 都会被这里接住
   // 先 await fetch refs 再 open dialog,避免下拉空数据闪现
   useEffect(() => {
-    return onOpenEditTx(async (tx) => {
+    return onOpenEditTx(async (tx, options) => {
       const ledgerId =
         tx.ledger_id || writableLedgers[0]?.ledger_id || ''
       setEditTxLedgerId(ledgerId)
+      // Phase 24:只有真的帶了 recurringEditMode 且這筆交易確實掛在某條
+      // 規則下才記錄分流上下文——一般編輯(沒有 options)或防禦性場景
+      // (recurring_rule_id 缺失)都當一般交易處理,走既有 updateTransaction。
+      setEditRecurringContext(
+        options?.recurringEditMode && tx.recurring_rule_id
+          ? { ruleId: tx.recurring_rule_id, mode: options.recurringEditMode }
+          : null,
+      )
       setEditTxForm({
         ...txDefaults(),
         editingId: tx.id,
@@ -410,6 +430,8 @@ export function GlobalEditDialogs() {
   // prefill.ledgerId:CalendarPage 把当前账本带过来;CmdK 不传走 active ledger。
   useEffect(() => {
     return onOpenNewTx(async (prefill) => {
+      // 建新交易(含複製)一律不是週期性差異化編輯上下文。
+      setEditRecurringContext(null)
       const ledgerId =
         prefill?.ledgerId ||
         (activeLedgerId &&
@@ -420,6 +442,7 @@ export function GlobalEditDialogs() {
       setEditTxLedgerId(ledgerId)
       const defaults = txDefaults()
       const refundOf = prefill?.refundOf
+      const duplicateOf = prefill?.duplicateOf
       // §2.6:退款交易的 tx_type 是原交易的反向类型 —— 退一笔支出用收入
       // 冲回来,退一笔收入用支出冲回去。
       const refundVehicleType: 'income' | 'expense' | undefined = refundOf
@@ -440,6 +463,50 @@ export function GlobalEditDialogs() {
               category_name: refundOf.categoryName || '',
               account_name: refundOf.accountName || '',
               refund_of_id: refundOf.id,
+            }
+          : {}),
+        // 複製交易(2026-08 使用者回饋):比照 onOpenEditTx 的欄位映射,但
+        // editingId 維持 null(建立新交易)、happened_at 不覆蓋(維持上面
+        // 已經算好的「現在時間」),故意不帶 refund_of_id/debt_id/
+        // attachments/deferred_posting_at ——複製出來的是全新獨立記錄,不
+        // 該延續原交易綁定的退款/欠款/附件/延後入帳狀態。
+        ...(duplicateOf
+          ? {
+              tx_type: (duplicateOf.tx_type === 'adjustment' ? 'expense' : duplicateOf.tx_type) as TxForm['tx_type'],
+              amount: String(duplicateOf.base_amount ?? duplicateOf.amount),
+              fee_enabled: duplicateOf.fee_amount != null || duplicateOf.discount_amount != null,
+              fee_amount: duplicateOf.fee_amount != null ? String(duplicateOf.fee_amount) : '',
+              fee_label: duplicateOf.fee_label || '',
+              discount_amount: duplicateOf.discount_amount != null ? String(duplicateOf.discount_amount) : '',
+              discount_label: duplicateOf.discount_label || '',
+              currency: (duplicateOf.currency_code || '').toUpperCase(),
+              original_currency: (duplicateOf.currency_code || '').toUpperCase(),
+              note: duplicateOf.note || '',
+              merchant: duplicateOf.merchant || '',
+              category_name: duplicateOf.category_name || '',
+              category_kind: (duplicateOf.category_kind as TxForm['category_kind']) || 'expense',
+              account_name: duplicateOf.account_name || '',
+              from_account_name: duplicateOf.from_account_name || '',
+              to_account_name: duplicateOf.to_account_name || '',
+              tags:
+                duplicateOf.tags_list && duplicateOf.tags_list.length > 0
+                  ? duplicateOf.tags_list
+                  : (duplicateOf.tags || '')
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter((s) => s.length > 0),
+              project_id: duplicateOf.project_id || '',
+              project_name: duplicateOf.project_name || '',
+              reward_rule_ids: duplicateOf.reward_rule_ids || [],
+              split_enabled: Boolean(duplicateOf.has_splits) && (duplicateOf.splits?.length || 0) >= 2,
+              splits: Boolean(duplicateOf.has_splits)
+                ? (duplicateOf.splits || []).map((s) => ({
+                    category_id: s.category_id || '',
+                    category_name: s.category_name || '',
+                    amount: String(s.amount),
+                    note: s.note || '',
+                  }))
+                : [],
             }
           : {}),
       })
@@ -761,6 +828,54 @@ export function GlobalEditDialogs() {
           createInstallmentPlan(token, ledgerId, base, installmentPayload),
         )
         notifySuccess(t('notice.txCreated'))
+      } else if (editTxForm.editingId && editRecurringContext && editRecurringContext.mode === 'single') {
+        // Phase 24「修改此記錄」:呼叫既有的 occurrence PATCH,只送這支端點
+        // 支援的窄欄位子集(見 WriteRecurringOccurrenceUpdateRequest)——表
+        // 單裡其它欄位(回饋項目/標籤/拆帳等)這個端點本來就不接受,不會被
+        // 存到,是既有的已知限制,不在本次擴充範圍。
+        const occurrencePayload: RecurringOccurrenceUpdatePayload = {
+          amount: finalAmountNum,
+          note: payload.note,
+          category_id: resolvedCategoryId || undefined,
+          account_id: resolvedAccountId || undefined,
+          happened_at: payload.happened_at,
+        }
+        await retryOnConflict(ledgerId, (base) =>
+          updateRecurringOccurrence(
+            token, ledgerId, editRecurringContext.ruleId, editTxForm.editingId!, base, occurrencePayload,
+          ),
+        )
+        notifySuccess(t('notice.txUpdated'))
+      } else if (editTxForm.editingId && editRecurringContext && editRecurringContext.mode === 'future') {
+        // Phase 24「修改連同未來週期」:呼叫 update-from,同樣只送這支端點
+        // 支援的欄位子集(見 WriteRecurringUpdateFromRequest)——套用到規則
+        // 本身 + 這期以後所有未 overridden 的已生成交易。
+        const resolvedTagIds = editTxForm.tags
+          .map(
+            (name) =>
+              editTxTags.find(
+                (tag) => (tag.name || '').trim().toLowerCase() === name.trim().toLowerCase(),
+              )?.id,
+          )
+          .filter((id): id is string => Boolean(id))
+        const updateFromPayload: RecurringUpdateFromPayload = {
+          tx_type: editTxForm.tx_type,
+          amount: finalAmountNum,
+          note: payload.note,
+          category_id: editTxForm.tx_type === 'transfer' ? undefined : resolvedCategoryId || undefined,
+          account_id: editTxForm.tx_type === 'transfer' ? undefined : resolvedAccountId || undefined,
+          from_account_id: editTxForm.tx_type === 'transfer' ? resolvedFromAccountId || undefined : undefined,
+          to_account_id: editTxForm.tx_type === 'transfer' ? resolvedToAccountId || undefined : undefined,
+          merchant: payload.merchant,
+          project_id: payload.project_id || undefined,
+          tag_ids: resolvedTagIds,
+        }
+        await retryOnConflict(ledgerId, (base) =>
+          updateRecurringRuleFrom(
+            token, ledgerId, editRecurringContext.ruleId, editTxForm.editingId!, base, updateFromPayload,
+          ),
+        )
+        notifySuccess(t('notice.txUpdated'))
       } else if (editTxForm.editingId) {
         await retryOnConflict(ledgerId, (base) =>
           updateTransaction(token, ledgerId, editTxForm.editingId!, base, payload),
@@ -811,6 +926,8 @@ export function GlobalEditDialogs() {
     editTxLedgerId,
     editTxForm,
     editTxAccounts,
+    editTxTags,
+    editRecurringContext,
     editTxRates,
     token,
     retryOnConflict,
