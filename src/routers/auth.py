@@ -633,10 +633,17 @@ def sso_callback(
         device_model=state_payload.get("device_model"),
         last_ip=request.client.host if request.client else None,
     )
-    token_response_out = _issue_tokens(db, user, device, client_type="web")
+    # mobile=True(手機 app 走 SSO)要發 app 的 scope(app_write),不然
+    # /sync/push 只認 app_write、web 登入拿到的 web_read/web_write/ops_write
+    # 都不含 app_write,推送直接 403 Insufficient scope(拉取因为接受
+    # app_write OR web_read 而不受影响,所以只有「本地新增推不上去,远端改动
+    # 拉得下来」这一种单向症状)。
+    sso_client_type = "app" if state_payload.get("mobile") else "web"
+    token_response_out = _issue_tokens(db, user, device, client_type=sso_client_type)
     db.commit()
     logger.info(
-        "auth.sso.login user=%s device=%s sub=%s", user.id, device.id, sso_subject
+        "auth.sso.login user=%s device=%s sub=%s client_type=%s",
+        user.id, device.id, sso_subject, sso_client_type,
     )
 
     redirect_path = state_payload.get("redirect_path") or "/app/overview"
