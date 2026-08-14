@@ -460,6 +460,7 @@ def _encode_sso_state(
     os_version: str | None,
     device_model: str | None,
     redirect_path: str,
+    mobile: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -472,6 +473,10 @@ def _encode_sso_state(
         "os_version": os_version,
         "device_model": device_model,
         "redirect_path": redirect_path,
+        # True 時 /sso/callback 導回 app 的 beecount://auth-callback deep
+        # link,而不是 web 前端的 /login/sso-complete。目標一律寫死成這個
+        # 常量 scheme,不接受 client 指定實際 URL,避免 open redirect。
+        "mobile": mobile,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=_SSO_STATE_TTL_SECONDS)).timestamp()),
     }
@@ -512,6 +517,7 @@ def sso_login(
     app_version: str | None = None,
     os_version: str | None = None,
     device_model: str | None = None,
+    mobile: bool = False,
 ) -> RedirectResponse:
     if not settings.oidc_configured:
         raise HTTPException(
@@ -526,6 +532,7 @@ def sso_login(
         os_version=os_version,
         device_model=device_model,
         redirect_path=_safe_redirect_path(redirect),
+        mobile=mobile,
     )
     authorize_url = oidc.build_authorize_url(
         state=state, redirect_uri=_default_sso_redirect_uri(request)
@@ -543,8 +550,23 @@ def sso_callback(
 ) -> RedirectResponse:
     frontend_origin = _frontend_origin(request)
 
+    def _is_mobile_flow() -> bool:
+        # 錯誤可能發生在 state 還沒解出來之前(例如 IdP 直接帶 error 回來、
+        # code/state 缺漏),此時無從得知是不是手機端,保守導回 web。state
+        # 存在就嘗試解一次 —— 對已經解過的成功路徑重複解碼也是安全的。
+        if not state:
+            return False
+        try:
+            return bool(_decode_sso_state(state).get("mobile"))
+        except Exception:
+            return False
+
     def _error_redirect(reason: str) -> RedirectResponse:
         query = urlencode({"sso_error": reason})
+        if _is_mobile_flow():
+            return RedirectResponse(
+                f"beecount://auth-callback?{query}", status_code=status.HTTP_302_FOUND
+            )
         return RedirectResponse(
             f"{frontend_origin}/login?{query}", status_code=status.HTTP_302_FOUND
         )
@@ -629,6 +651,11 @@ def sso_callback(
             "redirect": redirect_path,
         }
     )
+    if state_payload.get("mobile"):
+        return RedirectResponse(
+            f"beecount://auth-callback#{fragment}",
+            status_code=status.HTTP_302_FOUND,
+        )
     return RedirectResponse(
         f"{frontend_origin}/login/sso-complete#{fragment}",
         status_code=status.HTTP_302_FOUND,
