@@ -189,6 +189,47 @@ def test_account_group_rollup_uses_manual_override_without_cache(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_account_group_rollup_excludes_child_with_include_in_total_false():
+    """2026-08-14 生產環境回報:子帳戶關掉「納入總餘額」開關後,總資產卡完全
+    沒反應。根因:群組合計不分子帳戶自己的 include_in_total 一律照加,前端
+    只把子帳戶自己那一列從加總剔除(避免跟群組重複計),但群組那一列的
+    balance 早就已經含了這個子帳戶的錢——兩邊互不知道對方的存在,關掉開關
+    變成完全沒作用。這裡驗證:acc-b 關閉 include_in_total 後,群組合計只剩
+    acc-a 的 1000,不再含 acc-b 的 2000;income_total/expense_total(帳戶
+    自身統計顯示用,不是總餘額語意)不受這個開關影響,維持全額回填。"""
+    client, TS = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "fxroll5@t.com")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        hdr_web = {"Authorization": f"Bearer {web_token}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "账本", "currency": "CNY"})
+        _push(client, hdr_app, "lg1", "account", "acc-group",
+              {"syncId": "acc-group", "name": "主帳戶", "type": "account_group",
+               "currency": "CNY", "initialBalance": 0.0})
+        _push(client, hdr_app, "lg1", "account", "acc-a",
+              {"syncId": "acc-a", "name": "卡A", "type": "bank_card",
+               "currency": "CNY", "initialBalance": 1000.0, "parentAccountId": "acc-group"})
+        _push(client, hdr_app, "lg1", "account", "acc-b",
+              {"syncId": "acc-b", "name": "卡B", "type": "bank_card",
+               "currency": "CNY", "initialBalance": 2000.0, "parentAccountId": "acc-group",
+               "includeInTotal": False})
+
+        r = client.get("/api/v1/read/workspace/accounts", headers=hdr_web)
+        assert r.status_code == 200, r.text
+        by_id = {a["id"]: a for a in r.json()}
+        group = by_id["acc-group"]
+        assert group["balance"] == pytest.approx(1000.0), \
+            "關閉 include_in_total 的子帳戶不應計入群組合計"
+        assert group["balance_fx_incomplete"] is False
+        # 子帳戶自己的 balance 顯示不受影響(該開關只影響「加總」語意)。
+        assert by_id["acc-b"]["balance"] == pytest.approx(2000.0)
+        assert by_id["acc-b"]["include_in_total"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_account_group_single_currency_unaffected():
     """群組跟子帳戶幣別完全一致(常見情況)時,rollup 邏輯完全不觸發匯率分支,
     合計維持原本的直接相加(1000+2000=3000),不因這次改動受影響。"""

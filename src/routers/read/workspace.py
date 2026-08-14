@@ -922,7 +922,15 @@ async def list_workspace_accounts(
                     continue
                 income_add += (k.income_total or 0.0) * rate
                 expense_add += (k.expense_total or 0.0) * rate
-                balance_add += (k.balance or 0.0) * rate
+                # 納入總餘額(Phase 18)開關為 False 的子帳戶,不能把 balance 疊加回
+                # 群組身上——前端「資產頁淨資產卡」是靠 include_in_total 過濾
+                # rows 加總,子帳戶本身那一列會被濾掉,但群組列本身通常仍是
+                # include_in_total=True,若這裡照樣把子帳戶餘額灌進群組 balance,
+                # 使用者關掉子帳戶開關會變成完全沒作用(2026-08-14 生產環境回報)。
+                # income_total/expense_total 維持不分 include_in_total 都疊加,
+                # 因為那兩個欄位只是帳戶自身收支統計顯示用,不是總餘額計算。
+                if k.include_in_total is not False:
+                    balance_add += (k.balance or 0.0) * rate
             acc.income_total = (acc.income_total or 0.0) + income_add
             acc.expense_total = (acc.expense_total or 0.0) + expense_add
             acc.balance = (acc.balance or 0.0) + balance_add
