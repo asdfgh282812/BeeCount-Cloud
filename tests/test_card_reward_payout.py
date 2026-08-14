@@ -739,6 +739,108 @@ def test_period_end_cross_card_cap_shared_key_pools_rules():
         app.dependency_overrides.clear()
 
 
+def test_period_end_calendar_month_settles_both_months_when_billing_cycle_spans_two():
+    """Phase 22(2026-08 使用者反饋):`calendar_month` 規則的帳單週期橫跨兩
+    個自然月時(帳單日 11 號,`billing_cycle_containing` 算出 8/12~9/11 這種
+    視窗),`_materialize_period_end` 現在一個 `period_offset` 會對應到這條
+    規則的 1~2 個 period 結果(見 `card_rewards._resolve_periods`),兩個月
+    要各自入帳一次,不能只挑第一個(`next(...)`)漏掉另一個月。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ph22a@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-ph22a", email, billing_day=11, payment_due_day=25)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-ph22a",
+            interval="calendar_month", settlement_type="period_end", reward_account_id="acc-wallet",
+        )
+        _push(client, hdr_app, "lgp-ph22a", "transaction", "tx-aug",
+              {"syncId": "tx-aug", "type": "expense", "amount": 300.0,
+               "happenedAt": "2026-08-20T12:00:00+00:00",
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        _push(client, hdr_app, "lgp-ph22a", "transaction", "tx-sep",
+              {"syncId": "tx-sep", "type": "expense", "amount": 100.0,
+               "happenedAt": "2026-09-02T12:00:00+00:00",
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        # period_offset=-1(相對 10/5)是帳單週期 8/11~9/11,拆成 8 月+9 月
+        # 兩個完整自然月,兩者的入帳日(8/31、9/30)都已經過了。
+        now = datetime(2026, 10, 5, tzinfo=timezone.utc)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result == {"tx_payouts": 0, "period_payouts": 1}
+
+        incomes = _income_tx_to(TS, "acc-wallet")
+        assert sorted(t.amount for t in incomes) == [10.0, 30.0]  # 100*10%、300*10%
+
+        payouts = _payout_rows(TS, email, rule_id)
+        assert sorted(p.dedup_key for p in payouts) == ["2026-08-31", "2026-09-30"]
+
+        # 重跑不重複入帳(兩個月各自都已經記過去重)。
+        with TS() as db:
+            result2 = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result2 == {"tx_payouts": 0, "period_payouts": 0}
+        assert len(_income_tx_to(TS, "acc-wallet")) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_period_end_lookback_does_not_double_pay_month_seen_in_two_overlapping_cycles():
+    """Phase 22 迴歸測試:`calendar_month` 規則 + `settlement_month_offset`
+    造成的多期回看(`lookback > 1`)時,相鄰的帳單週期視窗可能重疊到同一個
+    自然月(例如 offset=-1 對應 9~10 月、offset=-2 對應 8~9 月,9 月同時出現
+    在兩次迭代裡)。修好前:`already_paid` 只在迴圈開始前查一次,同一輪掃描
+    內第二次遇到 9 月會被誤判成「還沒付」而重複入帳;修好後:入帳當下立刻
+    更新記憶體裡的 `already_paid` 集合,第二次遇到同一個月會被正確擋下。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-ph22b@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgp-ph22b", email, billing_day=11, payment_due_day=25)
+        # settlement_month_offset=1(不設 settlement_day_of_month,入帳時機
+        # 仍是「期末當天」,只是把 lookback 拉到 2,讓同一輪掃描會檢查
+        # offset=-1、-2 兩個帳單週期視窗)。
+        rule_id = _create_rule(
+            client, hdr_web, "lgp-ph22b",
+            interval="calendar_month", settlement_type="period_end", reward_account_id="acc-wallet",
+            settlement_month_offset=1,
+        )
+        _push(client, hdr_app, "lgp-ph22b", "transaction", "tx-aug",
+              {"syncId": "tx-aug", "type": "expense", "amount": 100.0,
+               "happenedAt": "2026-08-20T12:00:00+00:00",
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        _push(client, hdr_app, "lgp-ph22b", "transaction", "tx-sep",
+              {"syncId": "tx-sep", "type": "expense", "amount": 100.0,
+               "happenedAt": "2026-09-15T12:00:00+00:00",
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        _push(client, hdr_app, "lgp-ph22b", "transaction", "tx-oct",
+              {"syncId": "tx-oct", "type": "expense", "amount": 100.0,
+               "happenedAt": "2026-10-20T12:00:00+00:00",
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        # now=2026-11-05:offset=-1 是帳單週期 9/11~10/11(拆成 9月+10月),
+        # offset=-2 是 8/11~9/11(拆成 8月+9月)——9 月同時出現在兩次迭代。
+        now = datetime(2026, 11, 5, tzinfo=timezone.utc)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result == {"tx_payouts": 0, "period_payouts": 1}
+
+        incomes = _income_tx_to(TS, "acc-wallet")
+        # 修好前:9 月會被入帳兩次(4 筆,10*2 重複),總額多算 10。
+        assert sorted(t.amount for t in incomes) == [10.0, 10.0, 10.0]
+
+        payouts = _payout_rows(TS, email, rule_id)
+        assert sorted(p.dedup_key for p in payouts) == ["2026-08-31", "2026-09-30", "2026-10-31"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 # --------------------------------------------------------------------------- #
 # manual / enabled / expired 邊界                                            #
 # --------------------------------------------------------------------------- #

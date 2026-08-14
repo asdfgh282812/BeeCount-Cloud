@@ -834,6 +834,8 @@ const en = {
   'cardRewards.detail.uncapped': 'No cap',
   'cardRewards.detail.capReached': 'Cap reached',
   'cardRewards.detail.remainingRoom': '{amount} left before cap',
+  'cardRewards.detail.remainingSpendRoom': '{amount} more spend before cap',
+  'cardRewards.period.label': '{month} ({start} ~ {end})',
   'cardRewards.detail.empty': 'No qualifying transactions this period',
   'cardRewards.detail.untitled': '(no note)',
   'cardRewards.detail.settlesOn': 'Settles on {date}',

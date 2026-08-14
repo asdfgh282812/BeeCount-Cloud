@@ -931,29 +931,46 @@ def get_account_card_rewards(
     )
     card_rewards.apply_caps(results)
 
+    # Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時,
+    # `results` 裡同一條規則可能有 1~2 筆(每個自然月各一筆)——先依 rule_id
+    # 分組,再依原本 `own_rules` 的順序組裝,`periods` 陣列內維持
+    # `compute_account_card_rewards` 回傳的時間升序。
     own_rule_ids = {r.sync_id for r in own_rules}
+    periods_by_rule: dict[str, list] = {}
+    for r in results:
+        if r["rule"].sync_id not in own_rule_ids:
+            continue
+        periods_by_rule.setdefault(r["rule"].sync_id, []).append(r)
+
     items = [
         ReadCardRewardRuleUsageOut(
-            rule_id=r["rule"].sync_id,
-            label=r["rule"].label or "",
-            period_start=_date_to_utc_dt(r["period_start"]),
-            period_end=_date_to_utc_dt(r["period_end"]),
-            qualifying_spend=r["qualifying_spend"],
-            threshold_met=r["threshold_met"],
-            raw_reward=r["raw_reward"],
-            capped_reward=r["capped_reward"],
-            cap_amount=r["rule"].cap_amount,
-            cap_shared_key=r["rule"].cap_shared_key,
-            status=cast("Any", r["status"]),
+            rule_id=rule.sync_id,
+            label=rule.label or "",
+            cap_amount=rule.cap_amount,
+            cap_shared_key=rule.cap_shared_key,
+            periods=[
+                ReadCardRewardPeriodUsageOut(
+                    period_start=_date_to_utc_dt(r["period_start"]),
+                    period_end=_date_to_utc_dt(r["period_end"]),
+                    status=cast("Any", r["status"]),
+                    qualifying_spend=r["qualifying_spend"],
+                    threshold_met=r["threshold_met"],
+                    raw_reward=r["raw_reward"],
+                    capped_reward=r["capped_reward"],
+                    remaining_reward_room=r["remaining_reward_room"],
+                    remaining_spend_room=r["remaining_spend_room"],
+                )
+                for r in entries
+            ],
         )
-        for r in results
-        if r["rule"].sync_id in own_rule_ids
+        for rule in own_rules
+        if (entries := periods_by_rule.get(rule.sync_id))
     ]
     return ReadCardRewardsOut(
         account_id=account.sync_id,
         as_of=now,
         items=items,
-        total_reward=round(sum(i.capped_reward for i in items), 2),
+        total_reward=round(sum(p.capped_reward for i in items for p in i.periods), 2),
     )
 
 
@@ -996,15 +1013,18 @@ def get_card_reward_rule_transactions(
     # dedup_key` 就是來源消費本身的 sync_id,反查得到這筆消費實際結算入帳的
     # 回饋交易 id;再拿這批回饋交易目前的實際金額,取代重新按公式算出來的
     # `reward_amount`——避免使用者編輯過金額後,下次打開明細又被算回原值
-    # (見 ReadCardRewardQualifyingTxOut docstring)。
+    # (見 ReadCardRewardQualifyingTxOut docstring)。Phase 22:一次跨所有
+    # `periods` 收集 dedup_keys 一起查,不用每個期間各自查一次 DB。
+    all_dedup_keys = [
+        item["tx"].sync_id for period in detail["periods"] for item in period["items"]
+    ]
     payout_tx_by_dedup: dict[str, str] = {}
-    if detail["items"]:
-        dedup_keys = [item["tx"].sync_id for item in detail["items"]]
+    if all_dedup_keys:
         payout_rows = db.execute(
             select(CardRewardPayout.dedup_key, CardRewardPayout.payout_tx_sync_id).where(
                 CardRewardPayout.user_id == current_user.id,
                 CardRewardPayout.rule_sync_id == rule.sync_id,
-                CardRewardPayout.dedup_key.in_(dedup_keys),
+                CardRewardPayout.dedup_key.in_(all_dedup_keys),
             )
         ).all()
         payout_tx_by_dedup = {
@@ -1020,41 +1040,50 @@ def get_card_reward_rule_transactions(
         ).all()
         payout_amount_by_tx_id = dict(amount_rows)
 
-    items = []
-    for item in detail["items"]:
-        payout_tx_id = payout_tx_by_dedup.get(item["tx"].sync_id)
-        actual_amount = payout_amount_by_tx_id.get(payout_tx_id) if payout_tx_id else None
-        items.append(
-            ReadCardRewardQualifyingTxOut(
-                tx_id=item["tx"].sync_id,
-                happened_at=item["tx"].happened_at,
-                amount=item["tx"].amount,
-                note=item["tx"].note,
-                category_name=item["tx"].category_name,
-                reward_amount=actual_amount if actual_amount is not None else item["reward_amount"],
-                settlement_date=(
-                    _date_to_utc_dt(settlement_date)
-                    if (settlement_date := card_rewards.compute_settlement_date(
-                        rule, tx_happened_at=item["tx"].happened_at, period_end=detail["period_end"],
-                    )) is not None
-                    else None
-                ),
-                payout_tx_id=payout_tx_id,
+    periods = []
+    for period in detail["periods"]:
+        items = []
+        for item in period["items"]:
+            payout_tx_id = payout_tx_by_dedup.get(item["tx"].sync_id)
+            actual_amount = payout_amount_by_tx_id.get(payout_tx_id) if payout_tx_id else None
+            items.append(
+                ReadCardRewardQualifyingTxOut(
+                    tx_id=item["tx"].sync_id,
+                    happened_at=item["tx"].happened_at,
+                    amount=item["tx"].amount,
+                    note=item["tx"].note,
+                    category_name=item["tx"].category_name,
+                    reward_amount=actual_amount if actual_amount is not None else item["reward_amount"],
+                    settlement_date=(
+                        _date_to_utc_dt(settlement_date)
+                        if (settlement_date := card_rewards.compute_settlement_date(
+                            rule, tx_happened_at=item["tx"].happened_at, period_end=period["period_end"],
+                        )) is not None
+                        else None
+                    ),
+                    payout_tx_id=payout_tx_id,
+                )
+            )
+        periods.append(
+            ReadCardRewardPeriodTransactionsOut(
+                period_start=_date_to_utc_dt(period["period_start"]),
+                period_end=_date_to_utc_dt(period["period_end"]),
+                status=cast("Any", period["status"]),
+                qualifying_spend=period["qualifying_spend"],
+                raw_reward=period["raw_reward"],
+                capped_reward=period["capped_reward"],
+                remaining_reward_room=period["remaining_reward_room"],
+                remaining_spend_room=period["remaining_spend_room"],
+                items=items,
             )
         )
+
     return ReadCardRewardRuleTransactionsOut(
         rule_id=rule.sync_id,
         label=rule.label or "",
-        period_start=_date_to_utc_dt(detail["period_start"]),
-        period_end=_date_to_utc_dt(detail["period_end"]),
-        status=cast("Any", detail["status"]),
-        qualifying_spend=detail["qualifying_spend"],
-        raw_reward=detail["raw_reward"],
-        capped_reward=detail["capped_reward"],
         cap_amount=rule.cap_amount,
         cap_shared_key=rule.cap_shared_key,
-        remaining_reward_room=detail["remaining_reward_room"],
-        items=items,
+        periods=periods,
     )
 
 

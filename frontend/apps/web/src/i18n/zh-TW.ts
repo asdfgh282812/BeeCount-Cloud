@@ -834,6 +834,8 @@ const zhTW = {
   'cardRewards.detail.uncapped': '無上限',
   'cardRewards.detail.capReached': '已達回饋上限',
   'cardRewards.detail.remainingRoom': '還可再賺 {amount}',
+  'cardRewards.detail.remainingSpendRoom': '還可以刷 {amount}',
+  'cardRewards.period.label': '{month} 月（{start} ~ {end}）',
   'cardRewards.detail.empty': '這期還沒有符合條件的交易',
   'cardRewards.detail.untitled': '(無備註)',
   'cardRewards.detail.settlesOn': '將於 {date} 入帳',

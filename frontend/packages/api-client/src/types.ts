@@ -1038,18 +1038,32 @@ export type CardRewardManualPayoutPayload = {
   note?: string | null
 }
 
-export type ReadCardRewardRuleUsage = {
-  rule_id: string
-  label: string
+/** 單一規則在單一計算期間的彙總結果(Phase 22,2026-08 使用者反饋)。
+ *  `remaining_spend_room` 是反推出來的「還可以刷多少消費金額」,只有
+ *  `rate_type === 'percentage'` 的規則才有值,固定金額類規則固定 `null`
+ *  (跟消費金額無關,是筆數概念)。 */
+export type ReadCardRewardPeriodUsage = {
   period_start: string
   period_end: string
+  status: CardRewardRuleStatus
   qualifying_spend: number
   threshold_met: boolean
   raw_reward: number
   capped_reward: number
+  remaining_reward_room?: number | null
+  remaining_spend_room?: number | null
+}
+
+/** 單條規則的計算結果。Phase 22(自然月規則橫跨帳單週期只顯示得到其中一
+ *  個月)之前這裡是單一期間的扁平物件,`calendar_month` 規則橫跨帳單週期
+ *  時一條規則對應到 1~2 個自然月,改成 `periods` 陣列(`billing_cycle`
+ *  規則固定只有 1 筆,前端一致處理,不需要分支)。 */
+export type ReadCardRewardRuleUsage = {
+  rule_id: string
+  label: string
   cap_amount?: number | null
   cap_shared_key?: string | null
-  status: CardRewardRuleStatus
+  periods: ReadCardRewardPeriodUsage[]
 }
 
 export type ReadCardRewards = {
@@ -1074,19 +1088,31 @@ export type ReadCardRewardQualifyingTx = {
   payout_tx_id?: string | null
 }
 
-export type ReadCardRewardRuleTransactions = {
-  rule_id: string
-  label: string
+/** 單一規則在單一計算期間的交易明細(Phase 22)。`remaining_reward_room`/
+ *  `remaining_spend_room` 是這條規則所屬共用上限群組在**這個期間**的剩餘
+ *  額度/剩餘可刷金額,見 `ReadCardRewardPeriodUsage` docstring。 */
+export type ReadCardRewardPeriodTransactions = {
   period_start: string
   period_end: string
   status: CardRewardRuleStatus
   qualifying_spend: number
   raw_reward: number
   capped_reward: number
+  remaining_reward_room?: number | null
+  remaining_spend_room?: number | null
+  items: ReadCardRewardQualifyingTx[]
+}
+
+/** `GET .../card-reward-rules/{rule_id}/transactions` 返回。Phase 22 之前
+ *  是單一期間的扁平物件,`calendar_month` 規則橫跨帳單週期時改成 `periods`
+ *  陣列(`billing_cycle` 規則固定只有 1 筆),見 `ReadCardRewardRuleUsage`
+ *  docstring 同一個 breaking change 原因。 */
+export type ReadCardRewardRuleTransactions = {
+  rule_id: string
+  label: string
   cap_amount?: number | null
   cap_shared_key?: string | null
-  remaining_reward_room?: number | null
-  items: ReadCardRewardQualifyingTx[]
+  periods: ReadCardRewardPeriodTransactions[]
 }
 
 export type CategoryPayload = {

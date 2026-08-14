@@ -29,7 +29,14 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, User
+from src.models import (
+    CardRewardPayout,
+    Ledger,
+    ReadCardRewardRuleProjection,
+    ReadTxProjection,
+    User,
+    UserAccountProjection,
+)
 from src.services import card_reward_payout, card_rewards
 
 
@@ -103,6 +110,23 @@ def _latest_change_id(client, hdr, ledger_id) -> int:
     r = client.get(f"/api/v1/read/ledgers/{ledger_id}", headers=hdr)
     assert r.status_code == 200, r.text
     return int(r.json()["source_change_id"])
+
+
+def _flat_usage(item):
+    """Phase 22(2026-08 使用者反饋):`GET .../card-rewards` 的 `items[i]`
+    不再是扁平的單期間物件,改成 `items[i]["periods"]` 陣列(`calendar_month`
+    規則橫跨帳單週期時會有 1~2 筆)。既有測試大多只關心「單一期間」的既有
+    行為(沒特別構造跨月情境),用這個 helper 把 `periods[0]` 攤平回舊測試
+    慣用的扁平 dict 形狀,沿用既有斷言,不用整批改寫。"""
+    period = item["periods"][0]
+    return {**item, **period}
+
+
+def _flat_detail(data):
+    """`_flat_usage` 的明細彈窗版本,對應 `GET .../card-reward-rules/
+    {rule_id}/transactions` 的 `periods` 陣列。"""
+    period = data["periods"][0]
+    return {**data, **period}
 
 
 def _income_tx_to(TS, account_id):
@@ -334,7 +358,7 @@ def test_card_rewards_manual_tagging_and_threshold_gating():
             "/api/v1/read/ledgers/lgr4/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr1.status_code == 200, rr1.text
-        item1 = rr1.json()["items"][0]
+        item1 = _flat_usage(rr1.json()["items"][0])
         assert item1["qualifying_spend"] == 80.0
         assert item1["threshold_met"] is False
         assert item1["raw_reward"] == 0.0
@@ -349,7 +373,7 @@ def test_card_rewards_manual_tagging_and_threshold_gating():
         rr2 = client.get(
             "/api/v1/read/ledgers/lgr4/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
-        item2 = rr2.json()["items"][0]
+        item2 = _flat_usage(rr2.json()["items"][0])
         assert item2["qualifying_spend"] == 140.0
         assert item2["threshold_met"] is True
         assert item2["raw_reward"] == 2.8  # 80*2% + 60*2% = 1.6 + 1.2
@@ -394,7 +418,7 @@ def test_card_rewards_fixed_amount_rate_type():
             "/api/v1/read/ledgers/lgr5/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         assert item["qualifying_spend"] == 150.0
         assert item["raw_reward"] == 15.0
         assert item["capped_reward"] == 15.0
@@ -431,7 +455,7 @@ def test_card_rewards_cap_amount_truncates_single_rule():
         rr = client.get(
             "/api/v1/read/ledgers/lgr6/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         assert item["raw_reward"] == 100.0
         assert item["capped_reward"] == 5.0
     finally:
@@ -488,7 +512,7 @@ def test_card_rewards_cap_shared_key_pools_multiple_rules():
         )
         assert rr.status_code == 200, rr.text
         data = rr.json()
-        by_label = {i["label"]: i for i in data["items"]}
+        by_label = {i["label"]: _flat_usage(i) for i in data["items"]}
         assert by_label["网购"]["raw_reward"] == 200.0
         assert by_label["一般消費"]["raw_reward"] == 100.0
         # raw 合计 300 > 共享上限 150,按比例分摊:200/300*150=100, 剩余 50。
@@ -523,7 +547,7 @@ def test_card_rewards_no_billing_schedule_status_when_account_unconfigured():
             "/api/v1/read/ledgers/lgr8/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         assert item["status"] == "no_billing_schedule"
         assert item["capped_reward"] == 0.0
     finally:
@@ -569,7 +593,7 @@ def test_card_rewards_billing_cycle_resolves_via_parent_group_schedule():
             "/api/v1/read/ledgers/lgr9/accounts/acc-child9/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         assert item["status"] == "ok"
         assert item["raw_reward"] == 5.0
     finally:
@@ -607,7 +631,7 @@ def test_card_rewards_calendar_month_interval():
             "/api/v1/read/ledgers/lgr10/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         assert item["status"] == "ok"
         assert item["raw_reward"] == 5.0
         period_start = datetime.fromisoformat(item["period_start"])
@@ -615,6 +639,142 @@ def test_card_rewards_calendar_month_interval():
         assert period_start.day == 1
         assert period_start.month == now.month
         assert period_end.month == now.month
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_card_rewards_calendar_month_splits_billing_cycle_into_two_months():
+    """Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時,
+    要能同時看到兩個自然月各自的計算結果,不能只看得到 offset 對應到的
+    那一個月(使用者截圖情境:帳單週期 2026/08/12~2026/09/11,應該同時看到
+    8 月、9 月兩張回饋卡片,金額/上限各自獨立不合併)。
+
+    直接呼叫 service 層函式帶入固定的 `now`,不透過 HTTP 端點(端點內部
+    固定用 `datetime.now()`,測試斷言「哪兩個月」會依賴測試實際執行當下的
+    真實日期,可能剛好落在月底夾斷的邊界情況而不穩定,見
+    `card_rewards._resolve_periods` docstring)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr_ph22a@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr_ph22a@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        # 帳單日 11 號,比照使用者截圖(2026/08/12~2026/09/11)。
+        _seed_ledger_and_card(client, hdr_app, "lgr_ph22a", billing_day=11, payment_due_day=25)
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr_ph22a/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "星展加碼", "rate_type": "percentage",
+                "rate_value": 9.0, "cap_amount": 500.0, "cap_shared_key": "grp",
+                "interval": "calendar_month",
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+
+        # 8 月一筆大額(超過上限,驗證 remaining_reward_room/remaining_spend_room
+        # 歸零)、9 月一筆小額(驗證兩個月各自獨立算,8 月超額不會污染 9 月的
+        # 剩餘額度——即使兩者共用同一個 cap_shared_key)。
+        _push(client, hdr_app, "lgr_ph22a", "transaction", "tx-aug",
+              {"syncId": "tx-aug", "type": "expense", "amount": 10000.0,
+               "happenedAt": "2026-08-20T12:00:00+00:00",
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+        _push(client, hdr_app, "lgr_ph22a", "transaction", "tx-sep",
+              {"syncId": "tx-sep", "type": "expense", "amount": 100.0,
+               "happenedAt": "2026-09-02T12:00:00+00:00",
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+
+        as_of = datetime(2026, 8, 14, 12, tzinfo=timezone.utc)
+        with TS() as db:
+            ledger = db.scalar(select(Ledger).where(Ledger.external_id == "lgr_ph22a"))
+            account = db.scalar(
+                select(UserAccountProjection).where(
+                    UserAccountProjection.user_id == ledger.user_id,
+                    UserAccountProjection.sync_id == "acc-card1",
+                )
+            )
+            rule = db.scalar(
+                select(ReadCardRewardRuleProjection).where(
+                    ReadCardRewardRuleProjection.sync_id == rule_id,
+                )
+            )
+            results = card_rewards.compute_account_card_rewards(
+                db, ledger_id=ledger.id, account=account, rules=[rule], now=as_of, period_offset=0,
+            )
+            card_rewards.apply_caps(results)
+
+        assert len(results) == 2
+        aug, sep = results
+        assert aug["period_start"] == date(2026, 8, 1)
+        assert aug["period_end"] == date(2026, 8, 31)
+        assert sep["period_start"] == date(2026, 9, 1)
+        assert sep["period_end"] == date(2026, 9, 30)
+
+        # 8 月:raw = 10000*9% = 900,超過上限 500 -> capped=500,剩餘額度歸零。
+        assert aug["raw_reward"] == 900.0
+        assert aug["capped_reward"] == 500.0
+        assert aug["remaining_reward_room"] == 0.0
+        assert aug["remaining_spend_room"] == 0.0
+        # 9 月:raw = 100*9% = 9,未超過上限,不受 8 月超額影響
+        # (同一個 cap_shared_key 但不同月份,各自獨立算)。
+        assert sep["raw_reward"] == 9.0
+        assert sep["capped_reward"] == 9.0
+        assert sep["remaining_reward_room"] == 491.0
+        assert sep["remaining_spend_room"] == 5455.56  # 491 / 9%
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_card_rewards_fixed_amount_rate_type_has_no_remaining_spend_room():
+    """需求 #2 後半(2026-08 使用者反饋):「還可以刷多少錢」只對百分比類
+    規則有意義,固定金額類規則(每筆固定拿一筆錢,回饋上限是筆數概念,跟
+    消費金額無關)`remaining_spend_room` 固定 `None`,不硬湊一個誤導數字。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "crr_ph22b@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "crr_ph22b@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() + timedelta(days=5)).day
+        _seed_ledger_and_card(client, hdr_app, "lgr_ph22b", billing_day=billing_day, payment_due_day=10)
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgr_ph22b/accounts/acc-card1/card-reward-rules",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "label": "滿百送15", "rate_type": "fixed_amount",
+                "rate_value": 15.0, "min_tx_amount": 100.0, "cap_amount": 100.0,
+            },
+        )
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["entity_id"]
+        _push(client, hdr_app, "lgr_ph22b", "transaction", "tx-fixed",
+              {"syncId": "tx-fixed", "type": "expense", "amount": 150.0, "happenedAt": _iso(now),
+               "accountId": "acc-card1", "accountName": "信用卡",
+               "rewardRuleIds": [rule_id]}, device_id="d-app")
+
+        rr = client.get(
+            "/api/v1/read/ledgers/lgr_ph22b/accounts/acc-card1/card-rewards", headers=hdr_web,
+        )
+        assert rr.status_code == 200, rr.text
+        item = _flat_usage(rr.json()["items"][0])
+        assert item["raw_reward"] == 15.0
+        assert item["remaining_reward_room"] == 85.0
+        assert item["remaining_spend_room"] is None
+
+        detail = client.get(
+            f"/api/v1/read/ledgers/lgr_ph22b/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
+            headers=hdr_web,
+        )
+        assert detail.status_code == 200, detail.text
+        data = _flat_detail(detail.json())
+        assert data["remaining_reward_room"] == 85.0
+        assert data["remaining_spend_room"] is None
     finally:
         app.dependency_overrides.clear()
 
@@ -658,7 +818,7 @@ def test_card_rewards_excludes_tx_before_rule_starts_at_even_in_same_period():
             "/api/v1/read/ledgers/lgr10b/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         # 修好之前:status == "ok" 且 raw_reward == 13.95(279 * 5%),規則
         # 都還沒生效卻已經算出回饋。
         assert item["raw_reward"] == 0.0
@@ -669,7 +829,7 @@ def test_card_rewards_excludes_tx_before_rule_starts_at_even_in_same_period():
             headers=hdr_web,
         )
         assert detail.status_code == 200, detail.text
-        assert detail.json()["items"] == []
+        assert _flat_detail(detail.json())["items"] == []
     finally:
         app.dependency_overrides.clear()
 
@@ -715,7 +875,7 @@ def test_card_rewards_single_tx_can_tag_multiple_rules():
             "/api/v1/read/ledgers/lgr12/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        by_id = {i["rule_id"]: i for i in rr.json()["items"]}
+        by_id = {i["rule_id"]: _flat_usage(i) for i in rr.json()["items"]}
         assert by_id[rule1_id]["raw_reward"] == 10.0  # 500 * 2%
         assert by_id[rule2_id]["raw_reward"] == 15.0  # 满百固定 15
         assert rr.json()["total_reward"] == 25.0
@@ -1116,7 +1276,7 @@ def test_card_rewards_cross_card_cap_shared_key_pools_rules():
             "/api/v1/read/ledgers/lgr21/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr1.status_code == 200, rr1.text
-        item1 = rr1.json()["items"][0]
+        item1 = _flat_usage(rr1.json()["items"][0])
         assert item1["raw_reward"] == 200.0
         # raw 合计 400 > 共享上限 150,主卡副卡各半 200/400*150=75。
         assert item1["capped_reward"] == 75.0
@@ -1125,7 +1285,7 @@ def test_card_rewards_cross_card_cap_shared_key_pools_rules():
             "/api/v1/read/ledgers/lgr21/accounts/acc-card2/card-rewards", headers=hdr_web,
         )
         assert rr2.status_code == 200, rr2.text
-        item2 = rr2.json()["items"][0]
+        item2 = _flat_usage(rr2.json()["items"][0])
         assert item2["raw_reward"] == 200.0
         assert item2["capped_reward"] == 75.0
         assert rule1_id != rule2_id
@@ -1209,7 +1369,7 @@ def test_get_card_reward_rule_transactions_endpoint():
             headers=hdr_web,
         )
         assert detail.status_code == 200, detail.text
-        data = detail.json()
+        data = _flat_detail(detail.json())
         assert data["rule_id"] == rule_id
         tx_ids = {item["tx_id"] for item in data["items"]}
         assert tx_ids == {"tx-detail1", "tx-detail2"}
@@ -1264,7 +1424,7 @@ def test_get_card_reward_rule_transactions_still_lists_items_when_rule_inactive_
             headers=hdr_web,
         )
         assert detail.status_code == 200, detail.text
-        data = detail.json()
+        data = _flat_detail(detail.json())
         assert data["status"] == "expired"
         # 修好之前:items 一律清空,連查了什麼消費都看不到。
         tx_ids = {item["tx_id"] for item in data["items"]}
@@ -1310,10 +1470,10 @@ def test_card_reward_rule_transactions_payout_tx_id_and_editable_amount():
                "rewardRuleIds": [rule_id]}, device_id="d-app")
 
         # 還沒入帳前,payout_tx_id 固定 None。
-        before = client.get(
+        before = _flat_detail(client.get(
             f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
             headers=hdr_web,
-        ).json()
+        ).json())
         assert before["items"][0]["payout_tx_id"] is None
         assert before["items"][0]["reward_amount"] == 10.0
 
@@ -1322,10 +1482,10 @@ def test_card_reward_rule_transactions_payout_tx_id_and_editable_amount():
             db.commit()
         assert result["tx_payouts"] == 1
 
-        after = client.get(
+        after = _flat_detail(client.get(
             f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
             headers=hdr_web,
-        ).json()
+        ).json())
         item = after["items"][0]
         payout_tx_id = item["payout_tx_id"]
         assert payout_tx_id is not None
@@ -1341,10 +1501,10 @@ def test_card_reward_rule_transactions_payout_tx_id_and_editable_amount():
         )
         assert patch.status_code == 200, patch.text
 
-        edited = client.get(
+        edited = _flat_detail(client.get(
             f"/api/v1/read/ledgers/lgr24/accounts/acc-card1/card-reward-rules/{rule_id}/transactions",
             headers=hdr_web,
-        ).json()
+        ).json())
         # 明細要顯示編輯後的實際金額(12.0),不是重算回去的公式值(10.0)。
         assert edited["items"][0]["reward_amount"] == 12.0
         assert edited["items"][0]["payout_tx_id"] == payout_tx_id
@@ -1569,7 +1729,7 @@ def test_total_rounding_rounds_aggregate_to_integer_independently_per_rule():
             "/api/v1/read/ledgers/lgr27/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        by_rule = {item["rule_id"]: item for item in rr.json()["items"]}
+        by_rule = {item["rule_id"]: _flat_usage(item) for item in rr.json()["items"]}
         assert by_rule[rule_round]["raw_reward"] == 3.0
         assert by_rule[rule_round]["capped_reward"] == 3.0
         assert by_rule[rule_floor]["raw_reward"] == 2.0
@@ -2005,7 +2165,7 @@ def test_card_rewards_excludes_fee_discount_from_qualifying_base():
             "/api/v1/read/ledgers/lgr_fd1/accounts/acc-card1/card-rewards", headers=hdr_web,
         )
         assert rr.status_code == 200, rr.text
-        item = rr.json()["items"][0]
+        item = _flat_usage(rr.json()["items"][0])
         # qualifying_spend/raw_reward 用 base_amount(790)算,不是 amount(690)。
         assert item["qualifying_spend"] == 790.0
         assert item["raw_reward"] == 15.8  # 790 * 2%

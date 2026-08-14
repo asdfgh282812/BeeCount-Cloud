@@ -268,6 +268,14 @@ def _resolve_period(
     now: date,
     period_offset: int,
 ) -> tuple[date, date] | None:
+    """單一期間版本,只給 `card_reward_payout._materialize_per_tx` 的逐筆
+    cap 追蹤用——那裡 `now` 是某筆交易自己的 `happened_at.date()`(單一
+    日期歸屬到哪個月/週期),跟 `_resolve_periods` 的「使用者目前瀏覽的
+    帳單週期視窗」語意不同,不能互相取代。`calendar_month` 分支永遠直接
+    用 `_calendar_month_containing(now)` 算出 `now` 落在的那個自然月,
+    刻意不管 `resolve_billing_schedule`——這個值本來就跟 `_resolve_periods`
+    拆分出來的自然月邊界一致(兩者都是同一個 `_calendar_month_containing`
+    的月份定義),不需要繞經帳單週期才能算對。"""
     if rule.interval == "billing_cycle":
         schedule = resolve_billing_schedule(db, account=account)
         if schedule is None:
@@ -283,6 +291,89 @@ def _resolve_period(
         shifted_start = _shift_calendar_month(month_start, period_offset)
         month_start, month_end = _calendar_month_containing(shifted_start)
     return month_start, month_end
+
+
+def _months_between(effective_start: date, end: date) -> list[tuple[date, date]]:
+    """回傳 `effective_start`(含)到 `end`(含)涵蓋到的每一個**完整**自然月
+    區間,依時間升序排列。用於 Phase 22(2026-08 使用者反饋:`calendar_month`
+    規則橫跨帳單週期時,7/12~8/11 這樣的視窗要拆成 7 月/8 月兩張完整月份的
+    卡片,而不是只取視窗內那幾天)。"""
+    months: list[tuple[date, date]] = []
+    cursor = date(effective_start.year, effective_start.month, 1)
+    end_month_start = date(end.year, end.month, 1)
+    while cursor <= end_month_start:
+        months.append(_calendar_month_containing(cursor))
+        cursor = _shift_calendar_month(cursor, 1)
+    return months
+
+
+def _resolve_periods(
+    db: Session,
+    *,
+    account: UserAccountProjection,
+    rule: ReadCardRewardRuleProjection,
+    now: date,
+    period_offset: int,
+) -> list[tuple[date, date]]:
+    """`_resolve_period` 的複數版本,顯示端(`compute_account_card_rewards`/
+    `list_rule_qualifying_transactions`)改呼叫這個——Phase 22(2026-08
+    使用者反饋:信用卡回饋「自然月」規則橫跨帳單週期時只顯示得到 offset
+    對應到的那一個自然月,另一個自然月完全沒算到)。
+
+    `billing_cycle` 規則行為與 `_resolve_period` 完全相同,只是包一層
+    單元素清單。`calendar_month` 規則:先用跟 `billing_cycle` 相同的
+    邏輯算出「使用者目前瀏覽的帳單週期視窗」(不分規則 interval,這是
+    前端導覽 `period_offset` 唯一的語意來源),再拆成這個視窗涵蓋到的每
+    一個完整自然月(`_months_between`);沒有 `billing_day`/
+    `payment_due_day` 可用時(帳戶沒設定帳單週期,`calendar_month` 規則
+    現況本來就不強制要求),fallback 回 `_resolve_period` 那種「直接用
+    `period_offset` 位移自然月」的既有行為,向下相容既有規則(見
+    `test_card_rewards_calendar_month_interval` 明確驗證這個 fallback)。
+    """
+    schedule = resolve_billing_schedule(db, account=account)
+    if rule.interval == "billing_cycle":
+        if schedule is None:
+            return []
+        billing_day, _payment_due_day = schedule
+        start, end = credit_card.billing_cycle_containing(now, billing_day)
+        if period_offset:
+            start, end = credit_card.shift_cycle(start, end, billing_day, period_offset)
+        return [(start, end)]
+
+    # calendar_month
+    if schedule is not None:
+        billing_day, _payment_due_day = schedule
+        cycle_start, cycle_end = credit_card.billing_cycle_containing(now, billing_day)
+        if period_offset:
+            cycle_start, cycle_end = credit_card.shift_cycle(cycle_start, cycle_end, billing_day, period_offset)
+        # cycle_start 是排除邊界(`_qualifying_transactions` 用
+        # `happened_at > cycle_start`),真正算進這期的第一天是
+        # cycle_start + 1 天,用它來判斷「這個視窗實際觸及哪些自然月」,
+        # 避免 cycle_start 剛好是月底時多算出一個完全沒有任何一天落在
+        # 視窗內的自然月。
+        effective_start = cycle_start + timedelta(days=1)
+        return _months_between(effective_start, cycle_end)
+
+    month_start, month_end = _calendar_month_containing(now)
+    if period_offset:
+        shifted_start = _shift_calendar_month(month_start, period_offset)
+        month_start, month_end = _calendar_month_containing(shifted_start)
+    return [(month_start, month_end)]
+
+
+def _remaining_spend_room(
+    rule: ReadCardRewardRuleProjection, remaining_reward_room: float | None,
+) -> float | None:
+    """「還可以刷多少錢」(2026-08 使用者反饋,需求 #2 後半):反推剩餘回饋
+    額度對應的消費金額。只有 `rate_type == "percentage"` 才有意義——
+    `fixed_amount` 每筆固定拿一筆固定金額,回饋額度上限是「筆數」概念,
+    跟消費金額無關,這裡直接回傳 `None`,前端據此隱藏這行顯示,不硬湊一個
+    誤導數字。"""
+    if remaining_reward_room is None:
+        return None
+    if rule.rate_type != "percentage" or not rule.rate_value:
+        return None
+    return round(remaining_reward_room / (rule.rate_value / 100), 2)
 
 
 def _round_amount(value: float, rounding: str, *, to_integer: bool = False) -> float:
@@ -514,6 +605,8 @@ class RuleRewardResult(TypedDict):
     threshold_met: bool
     raw_reward: float
     capped_reward: float
+    remaining_reward_room: float | None
+    remaining_spend_room: float | None
     status: str  # "ok" | "no_billing_schedule" | "expired"
 
 
@@ -528,13 +621,19 @@ def compute_account_card_rewards(
 ) -> list[RuleRewardResult]:
     """回傳每條規則在（`period_offset` 平移後）當期的計算結果,`capped_reward`
     此時尚未套用 `cap_shared_key` 跨規則共享上限 —— 呼叫端接着調
-    `apply_caps` 就地套用。
+    `apply_caps` 就地套用(同時會就地填入 `remaining_reward_room`/
+    `remaining_spend_room`,呼叫前這兩欄位固定是 `None`)。
 
     `account` 是「主要」帳戶(通常是呼叫端目前檢視的那張卡),但 `rules`
     不保證全部屬於它——§2.9.5.4 跨卡共用上限群組(`fetch_cap_group_rules`)
     會把其它卡的規則也一起丟進來算,那些規則的帳單週期/自然月要用**它們
     自己**的帳戶解析,不能全部套用 `account` 的 `billing_day`,否則跨卡
-    規則的期間會算錯。"""
+    規則的期間會算錯。
+
+    Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時,
+    一條規則可能對應到 1~2 個自然月,每個月各自獨立算一組結果(`_resolve_
+    periods` 回傳的每個期間都會 append 一筆),不再是「一條規則固定一筆
+    結果」——呼叫端 by rule_id 分組時要注意這點。"""
     results: list[RuleRewardResult] = []
     as_of_date = now.date()
 
@@ -561,45 +660,53 @@ def compute_account_card_rewards(
             results.append({
                 "rule": rule, "period_start": as_of_date, "period_end": as_of_date,
                 "qualifying_spend": 0.0, "threshold_met": False,
-                "raw_reward": 0.0, "capped_reward": 0.0, "status": "no_billing_schedule",
+                "raw_reward": 0.0, "capped_reward": 0.0,
+                "remaining_reward_room": None, "remaining_spend_room": None,
+                "status": "no_billing_schedule",
             })
             continue
-        period = _resolve_period(db, account=rule_account, rule=rule, now=as_of_date, period_offset=period_offset)
-        if period is None:
+        periods = _resolve_periods(db, account=rule_account, rule=rule, now=as_of_date, period_offset=period_offset)
+        if not periods:
             results.append({
                 "rule": rule, "period_start": as_of_date, "period_end": as_of_date,
                 "qualifying_spend": 0.0, "threshold_met": False,
-                "raw_reward": 0.0, "capped_reward": 0.0, "status": "no_billing_schedule",
+                "raw_reward": 0.0, "capped_reward": 0.0,
+                "remaining_reward_room": None, "remaining_spend_room": None,
+                "status": "no_billing_schedule",
             })
             continue
-        period_start, period_end = period
-        if not _rule_active_in_period(rule, period_start, period_end):
+
+        for period_start, period_end in periods:
+            if not _rule_active_in_period(rule, period_start, period_end):
+                results.append({
+                    "rule": rule, "period_start": period_start, "period_end": period_end,
+                    "qualifying_spend": 0.0, "threshold_met": False,
+                    "raw_reward": 0.0, "capped_reward": 0.0,
+                    "remaining_reward_room": None, "remaining_spend_room": None,
+                    "status": "expired",
+                })
+                continue
+
+            items = _qualifying_transactions(
+                db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
+            )
+            qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+            threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
+            raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
+            # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
+            # rule.total_rounding 再取整一次(round/floor/ceil 到整數,keep = 維持
+            # 現況二位小數彙總,向下相容既有規則的預設值)。
+            raw_reward = _round_amount(raw_reward, rule.total_rounding, to_integer=True)
+
             results.append({
                 "rule": rule, "period_start": period_start, "period_end": period_end,
-                "qualifying_spend": 0.0, "threshold_met": False,
-                "raw_reward": 0.0, "capped_reward": 0.0, "status": "expired",
+                "qualifying_spend": round(qualifying_spend, 2),
+                "threshold_met": threshold_met,
+                "raw_reward": raw_reward,
+                "capped_reward": raw_reward,
+                "remaining_reward_room": None, "remaining_spend_room": None,
+                "status": "ok",
             })
-            continue
-
-        items = _qualifying_transactions(
-            db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
-        )
-        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
-        threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
-        raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
-        # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
-        # rule.total_rounding 再取整一次(round/floor/ceil 到整數,keep = 維持
-        # 現況二位小數彙總,向下相容既有規則的預設值)。
-        raw_reward = _round_amount(raw_reward, rule.total_rounding, to_integer=True)
-
-        results.append({
-            "rule": rule, "period_start": period_start, "period_end": period_end,
-            "qualifying_spend": round(qualifying_spend, 2),
-            "threshold_met": threshold_met,
-            "raw_reward": raw_reward,
-            "capped_reward": raw_reward,
-            "status": "ok",
-        })
     return results
 
 
@@ -610,22 +717,37 @@ def apply_caps(results: list[RuleRewardResult]) -> None:
     超過上限時,依各規則 `raw_reward` 佔組內總額的比例分攤,最後一條用
     減法拿餘數(對齊 `credit_card_billing.compute_card_payment_allocations`
     同款做法,避免四捨五入加總對不上上限值)。就地修改每個 result 的
-    `capped_reward`,不回傳值。"""
-    groups: dict[str, list[int]] = {}
+    `capped_reward`/`remaining_reward_room`/`remaining_spend_room`,不回傳值。
+
+    Phase 22(2026-08 使用者反饋)分組 key 除了 `cap_shared_key` 還多帶
+    `(period_start, period_end)`——`calendar_month` 規則現在一條規則會產生
+    多個自然月各自的 result,同一個 `cap_shared_key` 群組如果橫跨月份,不能
+    把不同月份的 `raw_reward` 混在一起分攤同一個上限,對齊需求「兩個月要
+    分開算,而非算在一起」。"""
+    groups: dict[tuple[str, date, date], list[int]] = {}
     for idx, r in enumerate(results):
         if r["status"] != "ok":
             continue
         key = r["rule"].cap_shared_key or f"__own_{idx}"
-        groups.setdefault(key, []).append(idx)
+        groups.setdefault((key, r["period_start"], r["period_end"]), []).append(idx)
 
     for idxs in groups.values():
         cap_candidates: list[float] = [
             cap for i in idxs if (cap := results[i]["rule"].cap_amount) is not None
         ]
         if not cap_candidates:
+            for i in idxs:
+                results[i]["remaining_reward_room"] = None
+                results[i]["remaining_spend_room"] = None
             continue
         effective_cap: float = min(cap_candidates)
         total_raw = sum(results[i]["raw_reward"] for i in idxs)
+        remaining_reward_room = max(effective_cap - total_raw, 0.0)
+        for i in idxs:
+            results[i]["remaining_reward_room"] = remaining_reward_room
+            results[i]["remaining_spend_room"] = _remaining_spend_room(
+                results[i]["rule"], remaining_reward_room,
+            )
         if total_raw <= effective_cap:
             continue
         if total_raw <= 0:
@@ -642,8 +764,7 @@ def apply_caps(results: list[RuleRewardResult]) -> None:
             allocated += share
 
 
-class RuleTransactionsDetail(TypedDict):
-    rule: ReadCardRewardRuleProjection
+class RulePeriodDetail(TypedDict):
     period_start: date
     period_end: date
     status: str
@@ -651,7 +772,13 @@ class RuleTransactionsDetail(TypedDict):
     raw_reward: float
     capped_reward: float
     remaining_reward_room: float | None
+    remaining_spend_room: float | None
     items: list[QualifyingTx]
+
+
+class RuleTransactionsDetail(TypedDict):
+    rule: ReadCardRewardRuleProjection
+    periods: list[RulePeriodDetail]
 
 
 def list_rule_qualifying_transactions(
@@ -665,72 +792,93 @@ def list_rule_qualifying_transactions(
 ) -> RuleTransactionsDetail:
     """單一規則在指定期間的明細(§2.9.5.3 交易明細彈窗):符合條件交易
     清單(各自回饋金額)+ 這條規則所屬共用上限群組(跨卡,見
-    `fetch_cap_group_rules`)的剩餘額度。`remaining_reward_room` 為
-    `None` 代表這個群組沒有任何上限。Moze 參考截圖裡「消費列表中間出現
+    `fetch_cap_group_rules`)的剩餘額度/剩餘可刷金額。`remaining_reward_room`
+    為 `None` 代表這個群組沒有任何上限。Moze 參考截圖裡「消費列表中間出現
     已達上限的分界線」這種逐筆命中點,因為 `apply_caps` 是整期比例分攤
     不是先到先得,沒有明確的「這一筆就是壓線的那筆」,所以這裡只回傳
     整組彙總的剩餘額度,不做逐筆分界線標記(呼叫端在清單頂部/底部顯示
-    一行彙總文字即可)。"""
-    as_of_date = now.date()
-    period = _resolve_period(db, account=account, rule=rule, now=as_of_date, period_offset=period_offset)
-    if period is None:
-        return {
-            "rule": rule, "period_start": as_of_date, "period_end": as_of_date,
-            "status": "no_billing_schedule", "qualifying_spend": 0.0,
-            "raw_reward": 0.0, "capped_reward": 0.0,
-            "remaining_reward_room": rule.cap_amount, "items": [],
-        }
-    period_start, period_end = period
-    if not _rule_active_in_period(rule, period_start, period_end):
-        # 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,原本整段
-        # 交易明細都被清空,使用者完全看不到「這期到底有什麼消費」,連
-        # 排查都做不到。改成仍然列出這個週期裡符合分類/金額條件的交易(視覺
-        # 上供對照用),只是 reward_amount 一律歸零——這些消費從未真正賺到
-        # 回饋,`status` 維持 "expired" 讓前端照舊顯示提示文案,只是不再連
-        # 明細一起藏起來。
-        items = [
-            {**item, "reward_amount": 0.0}
-            for item in _qualifying_transactions(
-                db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
-                enforce_active_window=False,
-            )
-        ]
-        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
-        return {
-            "rule": rule, "period_start": period_start, "period_end": period_end,
-            "status": "expired", "qualifying_spend": round(qualifying_spend, 2),
-            "raw_reward": 0.0, "capped_reward": 0.0,
-            "remaining_reward_room": rule.cap_amount, "items": items,
-        }
+    一行彙總文字即可)。
 
-    items = _qualifying_transactions(
-        db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
-    )
-    qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
-    threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
-    raw_reward = round(sum(item["reward_amount"] for item in items), 2) if threshold_met else 0.0
-    if not threshold_met:
-        items = [{**item, "reward_amount": 0.0} for item in items]
+    Phase 22(2026-08 使用者反饋)`calendar_month` 規則橫跨帳單週期時,
+    `periods` 會有 1~2 筆,每個自然月各自獨立的明細(各自的交易清單/回饋
+    金額/剩餘額度,`billing_cycle` 規則行為不變,`periods` 固定只有 1
+    筆)——呼叫端不再假設「一條規則一期」。"""
+    as_of_date = now.date()
+    periods = _resolve_periods(db, account=account, rule=rule, now=as_of_date, period_offset=period_offset)
+    if not periods:
+        return {
+            "rule": rule,
+            "periods": [{
+                "period_start": as_of_date, "period_end": as_of_date,
+                "status": "no_billing_schedule", "qualifying_spend": 0.0,
+                "raw_reward": 0.0, "capped_reward": 0.0,
+                "remaining_reward_room": rule.cap_amount,
+                "remaining_spend_room": _remaining_spend_room(rule, rule.cap_amount),
+                "items": [],
+            }],
+        }
 
     group_rules = fetch_cap_group_rules(db, user_id=rule.user_id, base_rules=[rule])
     group_results = compute_account_card_rewards(
         db, ledger_id=ledger_id, account=account, rules=group_rules, now=now, period_offset=period_offset,
     )
     apply_caps(group_results)
-    this_result = next(r for r in group_results if r["rule"].sync_id == rule.sync_id)
-    capped_reward = this_result["capped_reward"]
 
-    cap_candidates = [r["rule"].cap_amount for r in group_results if r["rule"].cap_amount is not None]
-    if not cap_candidates:
-        remaining_reward_room = None
-    else:
-        effective_cap = min(cap_candidates)
-        group_raw_total = sum(r["raw_reward"] for r in group_results)
-        remaining_reward_room = max(effective_cap - group_raw_total, 0.0)
+    period_details: list[RulePeriodDetail] = []
+    for period_start, period_end in periods:
+        if not _rule_active_in_period(rule, period_start, period_end):
+            # 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,原本
+            # 整段交易明細都被清空,使用者完全看不到「這期到底有什麼消費」,
+            # 連排查都做不到。改成仍然列出這個週期裡符合分類/金額條件的交易
+            # (視覺上供對照用),只是 reward_amount 一律歸零——這些消費從未
+            # 真正賺到回饋,`status` 維持 "expired" 讓前端照舊顯示提示文案,
+            # 只是不再連明細一起藏起來。
+            items = [
+                {**item, "reward_amount": 0.0}
+                for item in _qualifying_transactions(
+                    db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
+                    enforce_active_window=False,
+                )
+            ]
+            qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+            period_details.append({
+                "period_start": period_start, "period_end": period_end,
+                "status": "expired", "qualifying_spend": round(qualifying_spend, 2),
+                "raw_reward": 0.0, "capped_reward": 0.0,
+                "remaining_reward_room": rule.cap_amount,
+                "remaining_spend_room": _remaining_spend_room(rule, rule.cap_amount),
+                "items": items,
+            })
+            continue
 
-    return {
-        "rule": rule, "period_start": period_start, "period_end": period_end,
-        "status": "ok", "qualifying_spend": round(qualifying_spend, 2),
-        "raw_reward": raw_reward, "capped_reward": round(capped_reward, 2),
-        "remaining_reward_room": remaining_reward_room, "items": items,
-    }
+        items = _qualifying_transactions(
+            db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
+        )
+        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+        threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
+        raw_reward = round(sum(item["reward_amount"] for item in items), 2) if threshold_met else 0.0
+        if not threshold_met:
+            items = [{**item, "reward_amount": 0.0} for item in items]
+
+        match = next(
+            (
+                r for r in group_results
+                if r["rule"].sync_id == rule.sync_id
+                and r["period_start"] == period_start and r["period_end"] == period_end
+            ),
+            None,
+        )
+        capped_reward = match["capped_reward"] if match is not None else raw_reward
+        remaining_reward_room = match["remaining_reward_room"] if match is not None else None
+        remaining_spend_room = match["remaining_spend_room"] if match is not None else None
+
+        period_details.append({
+            "period_start": period_start, "period_end": period_end,
+            "status": "ok", "qualifying_spend": round(qualifying_spend, 2),
+            "raw_reward": raw_reward, "capped_reward": round(capped_reward, 2),
+            "remaining_reward_room": remaining_reward_room,
+            "remaining_spend_room": remaining_spend_room,
+            "items": items,
+        })
+
+    return {"rule": rule, "periods": period_details}

@@ -74,6 +74,21 @@ function forceUtcTimestamp(iso: string): number {
   return new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso).getTime()
 }
 
+/** Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時會有
+ *  1~2 個 `periods`,超過 1 筆時每張卡片前面加一個「8 月（8/1~8/31）」這種
+ *  月份標籤,讓使用者分得清楚哪張卡片對應哪個月;只有 1 筆(`billing_cycle`
+ *  規則,或 `calendar_month` 沒橫跨月份)時不需要,呼叫端自行判斷是否要用
+ *  這個函式。 */
+function periodMonthLabel(
+  period: { period_start: string; period_end: string },
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  const start = isoToDateInput(period.period_start)
+  const end = isoToDateInput(period.period_end)
+  const month = Number(start.slice(5, 7))
+  return t('cardRewards.period.label', { month, start, end })
+}
+
 function isExpired(rule: ReadCardRewardRule): boolean {
   if (!rule.ends_at) return false
   return forceUtcTimestamp(rule.ends_at) < Date.now()
@@ -495,34 +510,59 @@ function SingleCardCardRewards({
           </div>
         ) : null}
         {usage ? (
-          usage.status === 'no_billing_schedule' ? (
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              {t('cardRewards.status.noBillingSchedule')}
-            </div>
-          ) : usage.status === 'expired' ? (
-            // 2026-08 使用者反饋:這裡顯示的「規則已停用或不在生效期間」
-            // 講的是「這一期帳單週期」,不是規則現在的整體啟用狀態——沒帶
-            // 週期範圍時,使用者拿它跟上面剛顯示的「活動期間」欄位對照會
-            // 覺得矛盾(規則明明還在活動期間內,為什麼顯示未生效?其實是
-            // 因為這裡預設看的是上一期已結束的帳單,不是「現在」)。補上這
-            // 個週期的起訖日避免誤解。
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              {t('cardRewards.status.expiredForPeriod', {
-                start: isoToDateInput(usage.period_start),
-                end: isoToDateInput(usage.period_end),
-              })}
-            </div>
-          ) : (
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-[11px] text-muted-foreground">
-                {t('cardRewards.qualifyingSpend')}: {fmt(usage.qualifying_spend)}
-                {!usage.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
-              </span>
-              <span className="font-mono font-semibold tabular-nums text-income">
-                {fmt(usage.capped_reward)}
-              </span>
-            </div>
-          )
+          <div className="mt-1 space-y-1.5">
+            {/* Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單
+                週期時 `periods` 會有 2 筆(每個自然月各一張卡片),各自獨立
+                顯示金額/上限,不合併;`billing_cycle` 規則固定只有 1 筆,
+                跟改版前的單一區塊視覺表現一致。 */}
+            {usage.periods.map((period, idx) => (
+              <div
+                key={`${period.period_start}-${period.period_end}`}
+                className={idx > 0 ? 'border-t border-border/40 pt-1.5' : ''}
+              >
+                {usage.periods.length > 1 ? (
+                  <div className="text-[10px] font-medium text-muted-foreground/80">
+                    {periodMonthLabel(period, t)}
+                  </div>
+                ) : null}
+                {period.status === 'no_billing_schedule' ? (
+                  <div className="text-[11px] text-muted-foreground">
+                    {t('cardRewards.status.noBillingSchedule')}
+                  </div>
+                ) : period.status === 'expired' ? (
+                  // 2026-08 使用者反饋:這裡顯示的「規則已停用或不在生效期間」
+                  // 講的是「這一期帳單週期」,不是規則現在的整體啟用狀態——沒帶
+                  // 週期範圍時,使用者拿它跟上面剛顯示的「活動期間」欄位對照會
+                  // 覺得矛盾(規則明明還在活動期間內,為什麼顯示未生效?其實是
+                  // 因為這裡預設看的是上一期已結束的帳單,不是「現在」)。補上這
+                  // 個週期的起訖日避免誤解。
+                  <div className="text-[11px] text-muted-foreground">
+                    {t('cardRewards.status.expiredForPeriod', {
+                      start: isoToDateInput(period.period_start),
+                      end: isoToDateInput(period.period_end),
+                    })}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-muted-foreground">
+                        {t('cardRewards.qualifyingSpend')}: {fmt(period.qualifying_spend)}
+                        {!period.threshold_met ? ` (${t('cardRewards.thresholdNotMet')})` : ''}
+                      </span>
+                      <span className="font-mono font-semibold tabular-nums text-income">
+                        {fmt(period.capped_reward)}
+                      </span>
+                    </div>
+                    {period.remaining_spend_room != null ? (
+                      <div className="text-[10px] text-muted-foreground/80">
+                        {t('cardRewards.detail.remainingSpendRoom', { amount: fmt(period.remaining_spend_room) })}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
         ) : null}
       </div>
     )
@@ -1277,8 +1317,15 @@ function CardRewardRuleTransactionsDialog({
   }, [token, ledgerId, rule.settlement_type])
 
   useEffect(() => {
-    if (detail && detail.status === 'ok' && !payoutAmount) {
-      setPayoutAmount(detail.capped_reward > 0 ? String(detail.capped_reward) : '')
+    // Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時
+    // `periods` 可能有 2 筆——手動入帳是使用者對這條規則的一次性操作,不是
+    // 針對單一自然月,預填金額用所有「ok」期間的 `capped_reward` 加總(對齊
+    // 上方規則清單「本期回饋合計」`total_reward` 同樣跨期間加總的口徑)。
+    if (detail && !payoutAmount) {
+      const total = detail.periods
+        .filter((p) => p.status === 'ok')
+        .reduce((sum, p) => sum + p.capped_reward, 0)
+      if (total > 0) setPayoutAmount(String(total))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail])
@@ -1386,64 +1433,85 @@ function CardRewardRuleTransactionsDialog({
               {t('cardRewards.detail.retry')}
             </button>
           </div>
-        ) : !detail || detail.status === 'no_billing_schedule' ? (
+        ) : !detail || detail.periods.every((p) => p.status === 'no_billing_schedule') ? (
           <div className="text-xs text-muted-foreground">{t('cardRewards.status.noBillingSchedule')}</div>
         ) : (
-          <div className="space-y-3">
-            {detail.status === 'expired' ? (
-              // 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,
-              // 原本整段連交易明細一起被藏起來,使用者連「這期到底有什麼
-              // 消費」都查不到。改成上面照舊顯示提示文案(帶上這個週期的
-              // 起訖日,避免跟規則本身的「活動期間」欄位混淆),下面仍然
-              // 列出這個週期符合條件的消費(回饋金一律 0,因為規則當時未
-              // 生效,純粹給使用者對照用)。
-              <div className="rounded-md border border-dashed border-border p-2 text-xs text-muted-foreground">
-                {t('cardRewards.status.expiredForPeriod', {
-                  start: isoToDateInput(detail.period_start),
-                  end: isoToDateInput(detail.period_end),
-                })}
-              </div>
-            ) : (
-              <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">
-                  {t('cardRewards.detail.capped')}: {fmt(detail.capped_reward)}
-                </span>
-                <span className="font-medium">
-                  {detail.remaining_reward_room == null
-                    ? t('cardRewards.detail.uncapped')
-                    : detail.remaining_reward_room <= 0
-                      ? t('cardRewards.detail.capReached')
-                      : t('cardRewards.detail.remainingRoom', { amount: fmt(detail.remaining_reward_room) })}
-                </span>
-              </div>
-            )}
-            <div className="max-h-[50vh] space-y-2 overflow-y-auto">
-              {detail.items.length === 0 ? (
-                <div className="text-xs text-muted-foreground">{t('cardRewards.detail.empty')}</div>
-              ) : (
-                detail.items.map((item) => (
-                  <div
-                    key={item.tx_id}
-                    className="flex items-center justify-between gap-2 rounded-md border border-border/50 px-3 py-2 text-xs"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">
-                        {item.note || item.category_name || t('cardRewards.detail.untitled')}
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {isoToDateInput(item.happened_at)} · {fmt(item.amount)}
-                        {item.settlement_date
-                          ? ` · ${t('cardRewards.detail.settlesOn', { date: isoToDateInput(item.settlement_date) })}`
-                          : ''}
-                      </div>
-                    </div>
-                    <div className="shrink-0 font-mono font-semibold tabular-nums text-income">
-                      {fmt(item.reward_amount)}
-                    </div>
+          // Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單
+          // 週期時 `periods` 會有 2 筆,每個自然月各自一個區塊(各自的
+          // 消費明細/回饋金/剩餘額度/剩餘可刷金額),不合併;`billing_
+          // cycle` 規則固定只有 1 筆,跟改版前單一區塊視覺表現一致。
+          <div className="space-y-4">
+            {detail.periods.map((period, idx) => (
+              <div
+                key={`${period.period_start}-${period.period_end}`}
+                className={idx > 0 ? 'space-y-3 border-t border-border/60 pt-3' : 'space-y-3'}
+              >
+                {detail.periods.length > 1 ? (
+                  <div className="text-xs font-semibold text-foreground">{periodMonthLabel(period, t)}</div>
+                ) : null}
+                {period.status === 'expired' ? (
+                  // 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,
+                  // 原本整段連交易明細一起被藏起來,使用者連「這期到底有什麼
+                  // 消費」都查不到。改成上面照舊顯示提示文案(帶上這個週期的
+                  // 起訖日,避免跟規則本身的「活動期間」欄位混淆),下面仍然
+                  // 列出這個週期符合條件的消費(回饋金一律 0,因為規則當時未
+                  // 生效,純粹給使用者對照用)。
+                  <div className="rounded-md border border-dashed border-border p-2 text-xs text-muted-foreground">
+                    {t('cardRewards.status.expiredForPeriod', {
+                      start: isoToDateInput(period.period_start),
+                      end: isoToDateInput(period.period_end),
+                    })}
                   </div>
-                ))
-              )}
-            </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-xs">
+                      <span className="text-muted-foreground">
+                        {t('cardRewards.detail.capped')}: {fmt(period.capped_reward)}
+                      </span>
+                      <span className="font-medium">
+                        {period.remaining_reward_room == null
+                          ? t('cardRewards.detail.uncapped')
+                          : period.remaining_reward_room <= 0
+                            ? t('cardRewards.detail.capReached')
+                            : t('cardRewards.detail.remainingRoom', { amount: fmt(period.remaining_reward_room) })}
+                      </span>
+                    </div>
+                    {period.remaining_spend_room != null ? (
+                      <div className="px-1 text-[11px] text-muted-foreground">
+                        {t('cardRewards.detail.remainingSpendRoom', { amount: fmt(period.remaining_spend_room) })}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+                <div className="max-h-[50vh] space-y-2 overflow-y-auto">
+                  {period.items.length === 0 ? (
+                    <div className="text-xs text-muted-foreground">{t('cardRewards.detail.empty')}</div>
+                  ) : (
+                    period.items.map((item) => (
+                      <div
+                        key={item.tx_id}
+                        className="flex items-center justify-between gap-2 rounded-md border border-border/50 px-3 py-2 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">
+                            {item.note || item.category_name || t('cardRewards.detail.untitled')}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            {isoToDateInput(item.happened_at)} · {fmt(item.amount)}
+                            {item.settlement_date
+                              ? ` · ${t('cardRewards.detail.settlesOn', { date: isoToDateInput(item.settlement_date) })}`
+                              : ''}
+                          </div>
+                        </div>
+                        <div className="shrink-0 font-mono font-semibold tabular-nums text-income">
+                          {fmt(item.reward_amount)}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         )}
         <div className="mt-4 flex justify-end">

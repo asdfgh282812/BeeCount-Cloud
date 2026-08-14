@@ -988,13 +988,16 @@ function RewardGroupDetailDialog({
             <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div>
           ) : fetchError || !detail ? (
             <div className="text-xs text-muted-foreground">{t('statement.error')}</div>
-          ) : detail.items.length === 0 ? (
+          ) : detail.periods.every((p) => p.items.length === 0) ? (
             <div className="rounded-lg border border-dashed border-border/60 py-4 text-center text-xs text-muted-foreground">
               {t('statement.empty')}
             </div>
           ) : (
+            // Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單
+            // 週期時 `periods` 會有 2 筆——對帳明細關心的是「這期帳單」整
+            // 體的消費清單,不特別依自然月拆卡片,攤平成單一清單即可。
             <div className="space-y-1.5">
-              {detail.items.map((item) => (
+              {detail.periods.flatMap((p) => p.items).map((item) => (
                 <div
                   key={item.tx_id}
                   className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-3 py-2 text-xs"

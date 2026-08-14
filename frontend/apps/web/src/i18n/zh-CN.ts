@@ -323,6 +323,8 @@ const zhCN = {
   'cardRewards.detail.uncapped': '无上限',
   'cardRewards.detail.capReached': '已达回馈上限',
   'cardRewards.detail.remainingRoom': '还可再赚 {amount}',
+  'cardRewards.detail.remainingSpendRoom': '还可以刷 {amount}',
+  'cardRewards.period.label': '{month} 月（{start} ~ {end}）',
   'cardRewards.detail.empty': '这期还没有符合条件的交易',
   'cardRewards.detail.untitled': '(无备注)',
   'cardRewards.detail.settlesOn': '将于 {date} 入账',

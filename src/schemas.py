@@ -850,40 +850,64 @@ class ReadCardRewardQualifyingTxOut(BaseModel):
     payout_tx_id: str | None = None
 
 
-class ReadCardRewardRuleTransactionsOut(BaseModel):
-    """`GET .../card-reward-rules/{rule_id}/transactions` 返回(§2.9.5.3)。
+class ReadCardRewardPeriodTransactionsOut(BaseModel):
+    """單一規則在單一計算期間的交易明細(§Phase22,2026-08 使用者反饋)。
     `remaining_reward_room` 是這條規則所屬共用上限群組(跨卡,見
-    `services.card_rewards.fetch_cap_group_rules`)的剩餘額度,`None` =
-    無上限。"""
-    rule_id: str
-    label: str
+    `services.card_rewards.fetch_cap_group_rules`)在**這個期間**的剩餘
+    額度,`None` = 無上限。`remaining_spend_room` 是反推出來的「還可以刷
+    多少消費金額」,只有 `rate_type == "percentage"` 才有值,固定金額類
+    規則固定 `None`(見 `services.card_rewards._remaining_spend_room`
+    docstring)。"""
     period_start: datetime
     period_end: datetime
     status: CardRewardRuleStatus = "ok"
     qualifying_spend: float
     raw_reward: float
     capped_reward: float
-    cap_amount: float | None = None
-    cap_shared_key: str | None = None
     remaining_reward_room: float | None = None
+    remaining_spend_room: float | None = None
     items: list[ReadCardRewardQualifyingTxOut] = Field(default_factory=list)
 
 
-class ReadCardRewardRuleUsageOut(BaseModel):
-    """單條規則在指定期間的計算結果(§2.9.5)。回饋金額不落庫,每次讀取
-    即時從交易加總算出,見 `services.card_rewards` docstring。`status` !=
-    "ok" 时 qualifying_spend/raw_reward/capped_reward 固定为 0。"""
+class ReadCardRewardRuleTransactionsOut(BaseModel):
+    """`GET .../card-reward-rules/{rule_id}/transactions` 返回(§2.9.5.3)。
+
+    Phase 22(2026-08 使用者反饋:自然月規則跨帳單週期只顯示得到其中一個
+    月)之前這裡是單一期間的扁平物件;`calendar_month` 規則橫跨帳單週期
+    時一條規則對應到 1~2 個自然月,改成統一回傳 `periods` 陣列(`billing_
+    cycle` 規則固定只有 1 筆,前端一致處理,不需要分支)。"""
     rule_id: str
     label: str
+    cap_amount: float | None = None
+    cap_shared_key: str | None = None
+    periods: list[ReadCardRewardPeriodTransactionsOut] = Field(default_factory=list)
+
+
+class ReadCardRewardPeriodUsageOut(BaseModel):
+    """單一規則在單一計算期間的彙總結果(§Phase22)。回饋金額不落庫,每次
+    讀取即時從交易加總算出,見 `services.card_rewards` docstring。`status`
+    != "ok" 时 qualifying_spend/raw_reward/capped_reward 固定为 0。"""
     period_start: datetime
     period_end: datetime
+    status: CardRewardRuleStatus = "ok"
     qualifying_spend: float
     threshold_met: bool
     raw_reward: float
     capped_reward: float
+    remaining_reward_room: float | None = None
+    remaining_spend_room: float | None = None
+
+
+class ReadCardRewardRuleUsageOut(BaseModel):
+    """單條規則的計算結果(§2.9.5)。Phase 22 之前是單一期間的扁平物件,
+    `calendar_month` 規則橫跨帳單週期時改成 `periods` 陣列(`billing_cycle`
+    規則固定只有 1 筆),見 `ReadCardRewardRuleTransactionsOut` docstring
+    同一個 breaking change 原因。"""
+    rule_id: str
+    label: str
     cap_amount: float | None = None
     cap_shared_key: str | None = None
-    status: CardRewardRuleStatus = "ok"
+    periods: list[ReadCardRewardPeriodUsageOut] = Field(default_factory=list)
 
 
 class ReadCardRewardsOut(BaseModel):
