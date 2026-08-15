@@ -73,6 +73,21 @@ interface SyncSocketContextValue {
 
 const SyncSocketContext = createContext<SyncSocketContextValue | null>(null)
 
+/**
+ * `sync_change` / `sync_change_batch` 合并窗口(ms)—— 避免离线补推、批量
+ * 导入等场景短时间内连续打进来的多条 change 通知,让全部 ~14 个订阅方
+ * (AppShell + 各 Page 的 useSyncRefresh)各自立刻发一整波
+ * `limit=500` 全量刷新 API,压垮后端 / 卡死浏览器主执行绪。窗口内到来的
+ * 事件只在静默期结束后合并成一次 emit;`sync_change_batch` 的 `changes`
+ * 数组会合并保留(供未来可能按 entity_type 精细过滤的订阅方使用),
+ * `sync_change` 只需保留最后一条,因为其 `serverCursor` 单调递增。
+ *
+ * 其它事件类型(profile_change / backup_progress / member_change /
+ * shared_resource_change 等)语义上依赖每一条独立 payload(进度条数值、
+ * 被改动的具体 ledgerId),不能合并丢弃,原样立即 emit。
+ */
+const SYNC_CHANGE_DEBOUNCE_MS = 400
+
 function wsUrl(token: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const host = window.location.port === '5173' ? `${window.location.hostname}:8080` : window.location.host
@@ -127,6 +142,56 @@ export function SyncSocketProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // sync_change / sync_change_batch 合并缓冲区。同一个 timer 覆盖两种类型,
+  // 任何一种到来都重置静默期计时,窗口结束时两种各自(若有)合并 emit 一次。
+  const coalesceRef = useRef<{
+    timer: ReturnType<typeof setTimeout> | null
+    syncChange: SyncEventPayload | null
+    batchChanges: SyncChangeEnvelope[] | null
+  }>({ timer: null, syncChange: null, batchChanges: null })
+
+  const flushCoalesced = useCallback(() => {
+    const state = coalesceRef.current
+    state.timer = null
+    const syncChange = state.syncChange
+    const batchChanges = state.batchChanges
+    state.syncChange = null
+    state.batchChanges = null
+    if (syncChange) emit(syncChange)
+    if (batchChanges && batchChanges.length > 0) {
+      emit({ type: 'sync_change_batch', changes: batchChanges })
+    }
+  }, [emit])
+
+  const dispatch = useCallback(
+    (payload: SyncEventPayload) => {
+      const type = (payload as SyncEventBase).type
+      if (type === 'sync_change') {
+        coalesceRef.current.syncChange = payload
+      } else if (type === 'sync_change_batch') {
+        const changes = (payload as SyncChangeBatchPayload).changes || []
+        coalesceRef.current.batchChanges = [
+          ...(coalesceRef.current.batchChanges || []),
+          ...changes,
+        ]
+      } else {
+        // 非合并类型(profile_change / backup_progress / member_change / …)
+        // 原样立即广播,不进入 debounce 窗口。
+        emit(payload)
+        return
+      }
+      if (coalesceRef.current.timer) clearTimeout(coalesceRef.current.timer)
+      coalesceRef.current.timer = setTimeout(flushCoalesced, SYNC_CHANGE_DEBOUNCE_MS)
+    },
+    [emit, flushCoalesced]
+  )
+
+  useEffect(() => {
+    return () => {
+      if (coalesceRef.current.timer) clearTimeout(coalesceRef.current.timer)
+    }
+  }, [])
+
   const wsBuildUrl = useCallback((tok: string) => wsUrl(tok), [])
 
   useSyncSocket({
@@ -135,7 +200,7 @@ export function SyncSocketProvider({ children }: { children: ReactNode }) {
     ensureFreshToken,
     onEvent: (payload: unknown) => {
       if (!payload || typeof payload !== 'object') return
-      emit(payload as SyncEventPayload)
+      dispatch(payload as SyncEventPayload)
     },
     onOpen: () => {
       // 重连补拉:拉 since cursor 以来的所有 change,合并成一条 batch 广播。
@@ -143,7 +208,7 @@ export function SyncSocketProvider({ children }: { children: ReactNode }) {
       if (!token || !userId) return
       void drainPull(token, userId, syncDeviceId).then((res) => {
         if (res.changes.length > 0) {
-          emit({ type: 'sync_change_batch', changes: res.changes })
+          dispatch({ type: 'sync_change_batch', changes: res.changes })
         }
       })
     },
@@ -161,14 +226,14 @@ export function SyncSocketProvider({ children }: { children: ReactNode }) {
       deviceId: syncDeviceId,
       onChanges: (changes) => {
         if (changes.length > 0) {
-          emit({ type: 'sync_change_batch', changes })
+          dispatch({ type: 'sync_change_batch', changes })
         }
       },
     })
     return () => {
       poller.stop()
     }
-  }, [token, syncDeviceId, emit])
+  }, [token, syncDeviceId, dispatch])
 
   const value = useMemo<SyncSocketContextValue>(
     () => ({ _emit: emit, _subscribe: subscribe }),

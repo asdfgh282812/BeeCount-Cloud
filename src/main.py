@@ -368,6 +368,28 @@ async def _stop_scheduled_jobs_loop() -> None:  # noqa: B008
 
 
 # ============================================================================
+# WebSocket 闲置连线回收(2026-08-15)—— 见 websocket_manager.py 顶部注释:
+# 后端只在 receive_text() 抛异常时才会发现断线,代理/NAT/睡眠唤醒造成的
+# 半开连线永远不会抛异常,会永久堆积在连线池里(生产曾观测到单用户 256
+# 条)。这个背景迴圈定期清掉超过 IDLE_TIMEOUT_SECONDS 没有任何帧的连线。
+# ============================================================================
+
+
+@app.on_event("startup")
+async def _start_ws_sweeper() -> None:  # noqa: B008
+    import asyncio
+
+    app.state.ws_sweeper_task = asyncio.create_task(app.state.ws_manager.run_sweeper())
+
+
+@app.on_event("shutdown")
+async def _stop_ws_sweeper() -> None:  # noqa: B008
+    task = getattr(app.state, "ws_sweeper_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# ============================================================================
 # sync_changes 表规模观测 —— 启动时打印行数 + payload 总字节,运维肉眼
 # 跟踪增长趋势。sync_changes 是 append-only log(append 不 compact),长期
 # 会膨胀;详见 .docs/dashboard-anomaly-budget/plan.md 关于 compaction 的讨论。

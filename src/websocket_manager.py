@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 
@@ -11,41 +13,138 @@ logger = logging.getLogger(__name__)
 
 
 class WSConnectionManager:
+    """User → WebSocket 连接池,带上限保护 + 闲置回收 + 非阻塞广播。
+
+    2026-08-15 修复「惊群」事故(单用户堆积 256 条连线,广播导致写入
+    API 回應飆到 3~4 秒):
+      1. ``MAX_CONNECTIONS_PER_USER``:超过上限时踢掉最旧的一条(FIFO),
+         不是拒绝新连线 —— 新连线通常是使用者当下真正在用的分頁。
+      2. 闲置回收(``sweep_stale`` + ``run_sweeper``):后端只在
+         ``receive_text()`` 抛异常时才会发现断线,但代理/NAT/睡眠唤醒
+         可能让 TCP 半开(client 端已经死了,server 端 `await` 永远收不到
+         异常),连线会永久卡在 `_connections` 里。改成记录每条连线的
+         `last_seen`(每次收到任何帧,含 client 的心跳 ping 都算),背景
+         迴圈每 ``SWEEP_INTERVAL_SECONDS`` 巡一次,超过
+         ``IDLE_TIMEOUT_SECONDS`` 没有任何帧的连线视为殭屍,主动关闭并
+         从池子移除。閾值大于前端 45s 的心跳超时重连窗口,避免正常但
+         暂时卡顿的连线被误杀。
+      3. ``broadcast_to_user`` 不再『同步』把 ``send_text`` 一个个 await
+         完才返回 —— 原本这个 await 链是内嵌在写入 endpoint 的 request
+         handler 里(``push.py`` 等 `await broadcast_to_ledger(...)` 后才
+         回 HTTP response),殭屍连线的 send 会在 TCP 层挂起,直接拖慢
+         使用者自己那次写入请求的回應时间。现在 fan-out 送到
+         ``asyncio.create_task`` 背景执行、每条 send 各自套
+         ``SEND_TIMEOUT_SECONDS`` 超时,调用方(写入 endpoint)几乎立即
+         拿回控制权,不再被卡死连线拖慢。
+    """
+
+    MAX_CONNECTIONS_PER_USER = 5
+    IDLE_TIMEOUT_SECONDS = 70.0
+    SWEEP_INTERVAL_SECONDS = 20.0
+    SEND_TIMEOUT_SECONDS = 5.0
+
     def __init__(self) -> None:
-        self._connections: dict[str, set[WebSocket]] = defaultdict(set)
+        # dict 保留插入顺序 → 最旧的一条永远是 next(iter(conns))。
+        # value = 该连线最近一次收到任何帧的 time.monotonic() 时间戳。
+        self._connections: dict[str, dict[WebSocket, float]] = defaultdict(dict)
 
     async def connect(self, user_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
-        self._connections[user_id].add(websocket)
+        conns = self._connections[user_id]
+        while len(conns) >= self.MAX_CONNECTIONS_PER_USER:
+            oldest_ws = next(iter(conns))
+            conns.pop(oldest_ws, None)
+            logger.warning(
+                "ws.evict user=%s reason=max_connections_exceeded limit=%d",
+                user_id,
+                self.MAX_CONNECTIONS_PER_USER,
+            )
+            metrics.inc("beecount_ws_evicted_total")
+            try:
+                await oldest_ws.close(code=4001, reason="too many connections")
+            except Exception:
+                pass
+        conns[websocket] = time.monotonic()
         metrics.set_gauge("beecount_online_ws_users", float(len(self._connections)))
 
     def disconnect(self, user_id: str, websocket: WebSocket) -> None:
-        if user_id in self._connections:
-            self._connections[user_id].discard(websocket)
-            if not self._connections[user_id]:
+        conns = self._connections.get(user_id)
+        if conns is not None:
+            conns.pop(websocket, None)
+            if not conns:
                 del self._connections[user_id]
         metrics.set_gauge("beecount_online_ws_users", float(len(self._connections)))
 
-    async def broadcast_to_user(self, user_id: str, payload: dict) -> None:
-        stale: list[WebSocket] = []
-        conns = self._connections.get(user_id, set())
-        for ws in conns:
-            try:
-                await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
-            except Exception:
-                stale.append(ws)
+    def touch(self, user_id: str, websocket: WebSocket) -> None:
+        """收到任何帧(含心跳 ping)时刷新 last_seen,供闲置回收判活。"""
+        conns = self._connections.get(user_id)
+        if conns is not None and websocket in conns:
+            conns[websocket] = time.monotonic()
 
-        if conns:
-            logger.info(
-                "ws.broadcast user=%s type=%s sockets=%d stale=%d",
-                user_id,
-                payload.get("type"),
-                len(conns),
-                len(stale),
-            )
+    async def broadcast_to_user(self, user_id: str, payload: dict) -> None:
+        conns = self._connections.get(user_id)
+        if not conns:
+            return
+        sockets = list(conns.keys())
+        # fire-and-forget:真正的 send 在背景 task 里跑,不阻塞调用方(通常
+        # 是某个写入 endpoint 的 request handler,不该被 fan-out 拖慢)。
+        asyncio.create_task(self._fanout(user_id, sockets, payload))
+
+    async def _fanout(self, user_id: str, sockets: list[WebSocket], payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False, default=str)
+
+        async def send_one(ws: WebSocket) -> WebSocket | None:
+            try:
+                await asyncio.wait_for(ws.send_text(data), timeout=self.SEND_TIMEOUT_SECONDS)
+                return None
+            except Exception:
+                return ws
+
+        results = await asyncio.gather(*(send_one(ws) for ws in sockets))
+        stale = [ws for ws in results if ws is not None]
+
+        logger.info(
+            "ws.broadcast user=%s type=%s sockets=%d stale=%d",
+            user_id,
+            payload.get("type"),
+            len(sockets),
+            len(stale),
+        )
 
         for ws in stale:
+            try:
+                await ws.close(code=1011)
+            except Exception:
+                pass
             self.disconnect(user_id, ws)
+
+    async def sweep_stale(self) -> int:
+        """关闭所有超过 IDLE_TIMEOUT_SECONDS 没有任何帧的连线,回传清掉的数量。"""
+        now = time.monotonic()
+        evicted = 0
+        for user_id, conns in list(self._connections.items()):
+            stale = [ws for ws, last_seen in list(conns.items()) if now - last_seen > self.IDLE_TIMEOUT_SECONDS]
+            for ws in stale:
+                logger.warning("ws.sweep.stale user=%s", user_id)
+                metrics.inc("beecount_ws_stale_swept_total")
+                try:
+                    await ws.close(code=1001)
+                except Exception:
+                    pass
+                self.disconnect(user_id, ws)
+                evicted += 1
+        return evicted
+
+    async def run_sweeper(self) -> None:
+        """背景常駐迴圈,定期清掉殭屍连线。由 app startup 挂成 task。"""
+        while True:
+            await asyncio.sleep(self.SWEEP_INTERVAL_SECONDS)
+            try:
+                evicted = await self.sweep_stale()
+                if evicted:
+                    logger.info("ws.sweep.done evicted=%d", evicted)
+            except Exception:
+                logger.exception("ws.sweep.failed")
 
     def online_user_ids(self) -> Iterable[str]:
         return self._connections.keys()

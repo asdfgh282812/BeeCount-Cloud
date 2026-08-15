@@ -61,6 +61,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
     try:
         while True:
             msg = await websocket.receive_text()
+            # 任何帧(含下面的 ping)都刷新 last_seen,供 WSConnectionManager
+            # 的闲置回收(sweep_stale)判断这条连线还活着 —— 避免代理/NAT/
+            # 睡眠唤醒造成的半开连线永久卡在连线池里堆积成殭屍。
+            manager.touch(user_id, websocket)
             # Support client-initiated heartbeat: the client sends {"type":"ping"}
             # every ~25s and waits for a pong. If the socket is silently broken,
             # the pong won't arrive and the client's no-frames timer forces a

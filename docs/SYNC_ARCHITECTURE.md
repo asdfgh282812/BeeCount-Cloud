@@ -195,7 +195,10 @@ Web Page mount / useSyncRefresh 触发
 ### 4.1 user-global 实体 vs ledger-scoped 实体
 
 **Mobile 端** `local_changes.ledger_id` 的含义有两种(具体见 mobile 仓
-`CLAUDE.md`):
+`CLAUDE.md`,以及更详细的跨 repo 契约地图
+`../BeeCount-main/BeeCount-main/docs/CLOUD_SYNC_INTEGRATION.md`——里面盘点了
+mobile 目前只支持 cloud 14 种 entity_type 里的 8 种,新增/修改字段两边各自要
+改哪些文件都列成表了):
 
 | Entity | Scope | `local_changes.ledger_id` | Server `sync_changes.ledger_id` |
 |---|---|---|---|
