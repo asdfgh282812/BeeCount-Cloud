@@ -267,6 +267,14 @@ export type RecurringRuleForm = {
   advanced_mode: 'none' | 'weekly_days' | 'monthly_day'
   weekly_days: number[]
   monthly_day: string
+  /** 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,同 TxForm
+   *  同名欄位語意,每一期自動產生的 occurrence 都會繼承這裡設定的值。 */
+  reward_rule_ids: string[]
+  fee_enabled: boolean
+  fee_amount: string
+  fee_label: string
+  discount_amount: string
+  discount_label: string
 }
 
 export type InstallmentPlanForm = {
@@ -481,6 +489,12 @@ export const recurringRuleDefaults = (): RecurringRuleForm => ({
   advanced_mode: 'none',
   weekly_days: [],
   monthly_day: '1',
+  reward_rule_ids: [],
+  fee_enabled: false,
+  fee_amount: '',
+  fee_label: '',
+  discount_amount: '',
+  discount_label: '',
 })
 
 export const installmentPlanDefaults = (): InstallmentPlanForm => ({

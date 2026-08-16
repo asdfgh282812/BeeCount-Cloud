@@ -702,6 +702,17 @@ def upsert_recurring_rule(
             if isinstance(payload.get("advancedRuleJson"), (dict, list))
             else _as_str(payload.get("advancedRuleJson"))
         ),
+        # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 upsert_tx 同名欄位
+        # 寫法,base_amount 缺失落 NULL(= 從未使用過這個功能)。
+        "base_amount": _as_float_or_none(payload.get("baseAmount")),
+        "fee_amount": _as_float_or_none(payload.get("feeAmount")),
+        "fee_label": _as_str(payload.get("feeLabel")),
+        "discount_amount": _as_float_or_none(payload.get("discountAmount")),
+        "discount_label": _as_str(payload.get("discountLabel")),
+        "reward_rule_sync_ids_json": (
+            json.dumps(payload.get("rewardRuleIds"))
+            if isinstance(payload.get("rewardRuleIds"), list) else None
+        ),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadRecurringRuleProjection, ("ledger_id", "sync_id"), values)

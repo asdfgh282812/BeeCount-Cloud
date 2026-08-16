@@ -251,6 +251,15 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 时用 _json_loads_safe 转回 dict,跟 tagIds/attachments 同一套惯例。
         ("generatedUntilAt", "generated_until_at", _isoformat_or_none),
         ("advancedRuleJson", "advanced_rule_json", _json_loads_safe),
+        # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,搭配
+        # 「連同未來週期」批次更新一起轉發,同 transaction merge spec 同名
+        # 欄位寫法。
+        ("baseAmount", "base_amount"),
+        ("feeAmount", "fee_amount"),
+        ("feeLabel", "fee_label"),
+        ("discountAmount", "discount_amount"),
+        ("discountLabel", "discount_label"),
+        ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
     ]),
     "installment_plan": _MergeSpec(ReadInstallmentPlanProjection, [
         ("syncId", "sync_id"),

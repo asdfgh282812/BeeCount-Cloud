@@ -1343,6 +1343,27 @@ def create_recurring_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
         rule["advancedRuleJson"] = payload.get("advanced_rule_json")
     if payload.get("generated_until_at") is not None:
         rule["generatedUntilAt"] = _to_iso8601(payload.get("generated_until_at"))
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 create_transaction 同名
+    # 欄位寫法,規則固定屬性,每一期自動產生的 occurrence 都要繼承。
+    if payload.get("base_amount") is not None:
+        rule["baseAmount"] = _to_float(payload.get("base_amount"))
+    if payload.get("fee_amount") is not None:
+        rule["feeAmount"] = _to_float(payload.get("fee_amount"))
+    if payload.get("fee_label") is not None:
+        rule["feeLabel"] = str(payload.get("fee_label"))
+    if payload.get("discount_amount") is not None:
+        rule["discountAmount"] = _to_float(payload.get("discount_amount"))
+    if payload.get("discount_label") is not None:
+        rule["discountLabel"] = str(payload.get("discount_label"))
+    reward_rule_ids_raw = payload.get("reward_rule_ids")
+    if isinstance(reward_rule_ids_raw, list):
+        reward_rule_ids: list[str] = []
+        for raw in reward_rule_ids_raw:
+            value = str(raw).strip()
+            if value and value not in reward_rule_ids:
+                reward_rule_ids.append(value)
+        if reward_rule_ids:
+            rule["rewardRuleIds"] = reward_rule_ids
     _mark_entity_actor(rule, payload, create=True)
     rules.append(rule)
     return target, sync_id
@@ -1389,6 +1410,8 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
         ("to_account_id", "toAccountId"),
         ("merchant", "merchant"),
         ("project_id", "projectId"),
+        ("fee_label", "feeLabel"),
+        ("discount_label", "discountLabel"),
     ):
         if req_key in payload:
             value = payload.get(req_key)
@@ -1396,6 +1419,38 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
                 rule.pop(snapshot_key, None)
             else:
                 rule[snapshot_key] = str(value)
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 update_transaction 同名
+    # 欄位寫法,"key" in payload 才動作(PATCH 缺鍵保留既有值),顯式傳 None =
+    # 清掉該分量。
+    if "base_amount" in payload:
+        if payload.get("base_amount") is None:
+            rule.pop("baseAmount", None)
+        else:
+            rule["baseAmount"] = _to_float(payload.get("base_amount"))
+    if "fee_amount" in payload:
+        if payload.get("fee_amount") is None:
+            rule.pop("feeAmount", None)
+        else:
+            rule["feeAmount"] = _to_float(payload.get("fee_amount"))
+    if "discount_amount" in payload:
+        if payload.get("discount_amount") is None:
+            rule.pop("discountAmount", None)
+        else:
+            rule["discountAmount"] = _to_float(payload.get("discount_amount"))
+    if "reward_rule_ids" in payload:
+        raw = payload.get("reward_rule_ids")
+        if isinstance(raw, list):
+            reward_rule_ids: list[str] = []
+            for value in raw:
+                text = str(value).strip()
+                if text and text not in reward_rule_ids:
+                    reward_rule_ids.append(text)
+            if reward_rule_ids:
+                rule["rewardRuleIds"] = reward_rule_ids
+            else:
+                rule.pop("rewardRuleIds", None)
+        elif raw is None:
+            rule.pop("rewardRuleIds", None)
     if "tag_ids" in payload:
         raw = payload.get("tag_ids")
         if isinstance(raw, list):

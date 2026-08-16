@@ -1545,6 +1545,7 @@ const en = {
   'transactions.field.rewardRules': 'Reward rules',
   'transactions.badge.refund': 'Refund',
   'transactions.badge.refund.jumpHint': 'Click to view the original transaction',
+  'transactions.badge.recurring': 'Recurring',
   'transactions.button.refund': 'Refund',
   'transactions.button.duplicate': 'Duplicate',
   'transactions.button.refund.alreadyRefunded': 'This transaction has already been refunded',

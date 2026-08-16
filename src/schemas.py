@@ -1009,6 +1009,14 @@ class ReadRecurringRuleOut(BaseModel):
     # frequency+interval。
     generated_until_at: datetime | None = None
     advanced_rule_json: dict[str, Any] | None = None
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,同
+    # WriteRecurringRuleCreateRequest 同名欄位語意。
+    base_amount: float | None = None
+    fee_amount: float | None = None
+    fee_label: str | None = None
+    discount_amount: float | None = None
+    discount_label: str | None = None
+    reward_rule_ids: list[str] = Field(default_factory=list)
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -1688,6 +1696,18 @@ class WriteRecurringRuleCreateRequest(WriteBaseRequest):
     # 六日/每月 N 号),None = 用 frequency+interval。见
     # services.recurring_schedule 的两种 type。
     advanced_rule_json: dict[str, Any] | None = None
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 WriteTransactionCreateRequest
+    # 同名欄位語意,server 端會依 tx_type 用這三者重新算出權威的 amount(見
+    # write/_shared.py::_normalize_recurring_rule_fee_discount)。不傳任一個 →
+    # 維持現行單一 amount 行為。
+    base_amount: float | None = Field(default=None, ge=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
+    # 信用卡紅利回饋(2026-08 使用者回饋):每個 id 必須指向 account_id 這張
+    # 信用卡自己名下的規則(write/_shared.py::_assert_reward_rules_valid)。
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
@@ -1707,6 +1727,14 @@ class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
     end_at: datetime | None = None
     enabled: bool | None = None
     advanced_rule_json: dict[str, Any] | None = None
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):key 不出現 = 不變;傳 null
+    # = 清除該分量;傳值 = 更新。同 WriteTransactionUpdateRequest 語意。
+    base_amount: float | None = Field(default=None, ge=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteRecurringOccurrenceUpdateRequest(WriteBaseRequest):
@@ -1741,6 +1769,14 @@ class WriteRecurringUpdateFromRequest(WriteBaseRequest):
     frequency: RecurringFrequency | None = None
     interval: int | None = Field(default=None, ge=1, le=365)
     advanced_rule_json: dict[str, Any] | None = None
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 update 端點語意,批次
+    # 套用到規則本身 + 該期以後所有未 overridden 的已生成交易。
+    base_amount: float | None = Field(default=None, ge=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteInstallmentPlanCreateRequest(WriteBaseRequest):

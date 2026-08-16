@@ -883,12 +883,27 @@ class ReadRecurringRuleProjection(Base):
     from_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Phase 24(§問題 B 第二層):「連同未來週期」批次更新希望也能涵蓋的
-    # 「重複性交易固定屬性」——跟 note/category/account 同一批轉發字段,
-    # 不像 currency/手續費折扣/拆帳/欠款/回饋規則那樣是「每一筆交易當下的
-    # 獨立決定」,故不新增後者那幾個欄位。
+    # 「重複性交易固定屬性」——跟 note/category/account 同一批轉發字段。
     merchant: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):原本認為這幾個是「每一筆
+    # 交易當下的獨立決定」,故意不加在規則上——結果每期自動產生的 occurrence
+    # 都沒有東西可以繼承,只有「建交易當下順便設週期」那個特例因為整包複製
+    # 原始請求才剛好保留。改成跟 merchant/project/tags 同一類「規則固定
+    # 屬性」,一併儲存並在每次生成 occurrence 時轉發。語意跟
+    # ReadTxProjection 同名欄位一致:base_amount=使用者輸入的原始金額
+    # (信用卡回饋計算的權威基準);fee_amount/discount_amount=額外調整
+    # 金額;fee_label/discount_label=自訂名稱(NULL=用預設「手續費」「折扣」
+    # 顯示);reward_rule_sync_ids_json=使用者勾選的信用卡回饋規則 id 列表。
+    # tx_type=="transfer" 的規則不支援這幾個欄位(見
+    # write/_shared.py::_normalize_recurring_rule_fee_discount)。
+    base_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    discount_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reward_rule_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 'daily' / 'weekly' / 'monthly' / 'yearly'
     frequency: Mapped[str] = mapped_column(String(16), default="monthly")
     # 每隔几个 frequency 单位触发一次(1 = 每次都触发)

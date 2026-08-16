@@ -123,7 +123,29 @@ def _emit_recurring_rule_update(
 ) -> None:
     """把 rule 当前(已推进 generated_until_at / enabled)状态写一条
     SyncChange,保证 mobile/web pull 能看到规则被系统更新过(不然本地缓存的
-    generated_until_at 永远停在旧值)。"""
+    generated_until_at 永远停在旧值)。
+
+    **必须涵蓋 `ReadRecurringRuleProjection` 目前全部欄位**(2026-08 使用者
+    回饋踩到的教訓):`projection.upsert_recurring_rule` 走 `_upsert` 是
+    「conflict 就整列覆蓋」語意,不是 partial merge——這個 payload 漏掉的
+    任何欄位都會被這次 upsert 靜默沖成 NULL(曾經漏了 merchant/projectId/
+    tagIds,導致每次視窗續產生後這三個欄位就被清空)。"""
+    reward_rule_ids: list[Any] | None = None
+    if rule.reward_rule_sync_ids_json:
+        try:
+            parsed = json.loads(rule.reward_rule_sync_ids_json)
+            if isinstance(parsed, list):
+                reward_rule_ids = parsed
+        except json.JSONDecodeError:
+            reward_rule_ids = None
+    tag_ids: list[Any] | None = None
+    if rule.tag_sync_ids_json:
+        try:
+            parsed_tags = json.loads(rule.tag_sync_ids_json)
+            if isinstance(parsed_tags, list):
+                tag_ids = parsed_tags
+        except json.JSONDecodeError:
+            tag_ids = None
     payload = {
         "syncId": rule.sync_id,
         "txType": rule.tx_type,
@@ -133,6 +155,9 @@ def _emit_recurring_rule_update(
         "accountId": rule.account_sync_id,
         "fromAccountId": rule.from_account_sync_id,
         "toAccountId": rule.to_account_sync_id,
+        "merchant": rule.merchant,
+        "projectId": rule.project_sync_id,
+        "tagIds": tag_ids,
         "frequency": rule.frequency,
         "interval": rule.interval,
         "nextRunAt": rule.next_run_at.isoformat(),
@@ -140,6 +165,12 @@ def _emit_recurring_rule_update(
         "enabled": rule.enabled,
         "generatedUntilAt": rule.generated_until_at.isoformat() if rule.generated_until_at else None,
         "advancedRuleJson": rule.advanced_rule_json,
+        "baseAmount": rule.base_amount,
+        "feeAmount": rule.fee_amount,
+        "feeLabel": rule.fee_label,
+        "discountAmount": rule.discount_amount,
+        "discountLabel": rule.discount_label,
+        "rewardRuleIds": reward_rule_ids,
     }
     change_row = SyncChange(
         user_id=rule.user_id,
@@ -251,6 +282,40 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
                 item["fromAccountId"] = rule.from_account_sync_id
             if rule.to_account_sync_id:
                 item["toAccountId"] = rule.to_account_sync_id
+            # 商家/專案/標籤(Phase 24)——原本只在 transactions.py/
+            # recurring_rules.py 的「建立當下」occurrence 迴圈有轉發,這個
+            # 「視窗續產生」路徑一直漏掉,導致沒有 end_at 的長期規則往後每一
+            # 期都不帶商家/專案/標籤(2026-08 使用者回饋 fix by-product)。
+            if rule.merchant:
+                item["merchant"] = rule.merchant
+            if rule.project_sync_id:
+                item["projectId"] = rule.project_sync_id
+            if rule.tag_sync_ids_json:
+                try:
+                    parsed_tags = json.loads(rule.tag_sync_ids_json)
+                    if isinstance(parsed_tags, list):
+                        item["tagIds"] = parsed_tags
+                except json.JSONDecodeError:
+                    pass
+            # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,每一
+            # 期自動產生的 occurrence 都要繼承。
+            if rule.base_amount is not None:
+                item["baseAmount"] = rule.base_amount
+            if rule.fee_amount is not None:
+                item["feeAmount"] = rule.fee_amount
+            if rule.fee_label:
+                item["feeLabel"] = rule.fee_label
+            if rule.discount_amount is not None:
+                item["discountAmount"] = rule.discount_amount
+            if rule.discount_label:
+                item["discountLabel"] = rule.discount_label
+            if rule.reward_rule_sync_ids_json:
+                try:
+                    parsed_rewards = json.loads(rule.reward_rule_sync_ids_json)
+                    if isinstance(parsed_rewards, list):
+                        item["rewardRuleIds"] = parsed_rewards
+                except json.JSONDecodeError:
+                    pass
             emit_tx(db, ledger_id=rule.ledger_id, user_id=rule.user_id, now=now, item=item)
             generated += 1
 

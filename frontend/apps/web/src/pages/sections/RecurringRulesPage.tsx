@@ -5,6 +5,7 @@ import {
   createRecurringRule,
   deleteRecurringOccurrence,
   deleteRecurringRule,
+  fetchCardRewardRules,
   fetchReadRecurringRules,
   fetchReadTransactions,
   fetchWorkspaceAccounts,
@@ -14,6 +15,7 @@ import {
   updateRecurringRule,
   updateRecurringRuleFrom,
   type ReadAccount,
+  type ReadCardRewardRule,
   type ReadRecurringRule,
   type ReadTransaction,
   type RecurringAdvancedRule,
@@ -60,6 +62,9 @@ export function RecurringRulesPage() {
   const [form, setForm] = useState<RecurringRuleForm>(recurringRuleDefaults())
   // §2.12.2:每个规则已生成的 occurrence 列表,懒加载(展开卡片才 fetch)。
   const [occurrencesByRuleId, setOccurrencesByRuleId] = useState<Record<string, ReadTransaction[]>>({})
+  // 信用卡紅利回饋(2026-08 使用者回饋):同 TransactionsPage.tsx 既有模式,
+  // 只有 expense + 選中帳戶是 credit_card 时才需要拉规则列表。
+  const [ruleFormRewardRules, setRuleFormRewardRules] = useState<ReadCardRewardRule[]>([])
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -135,6 +140,32 @@ export function RecurringRulesPage() {
     })
   }, [searchParams, accounts])
 
+  // 信用卡紅利回饋(2026-08 使用者回饋):只有 expense + 選中帳戶是
+  // credit_card 时才需要拉规则列表——不 filter enabled,已停用的规则如果
+  // 曾被这条规则勾选过,仍要能在列表里显示(打勾状态 + 停用徽章)。
+  useEffect(() => {
+    if (form.tx_type !== 'expense' || !form.account_id || !activeLedgerId) {
+      setRuleFormRewardRules([])
+      return
+    }
+    const account = accounts.find((row) => row.id === form.account_id)
+    if (!account || account.account_type !== 'credit_card') {
+      setRuleFormRewardRules([])
+      return
+    }
+    let cancelled = false
+    fetchCardRewardRules(token, activeLedgerId, account.id)
+      .then((rows) => {
+        if (!cancelled) setRuleFormRewardRules(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setRuleFormRewardRules([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [form.tx_type, form.account_id, activeLedgerId, accounts, token])
+
   const canManage = Boolean(activeLedgerId) && currentLedger?.role === 'owner'
 
   const onSubmit = async (): Promise<boolean> => {
@@ -168,6 +199,21 @@ export function RecurringRulesPage() {
     }
     const nextRunAtIso = new Date(form.next_run_at).toISOString()
     const endAtIso = form.end_at.trim() ? new Date(form.end_at).toISOString() : null
+    // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 TransactionsPage.tsx
+    // 既有邏輯,只在開啟開關時才送這幾個欄位;amount 送使用者輸入的原始
+    // 金額(=base_amount),server 端 _normalize_recurring_rule_fee_discount
+    // 會依這三者重新算出權威總額覆蓋掉。
+    const feeEnabled = form.tx_type !== 'transfer' && form.fee_enabled
+    const feeDiscountFields = feeEnabled
+      ? {
+          base_amount: amount,
+          fee_amount: Number(form.fee_amount) || 0,
+          fee_label: form.fee_label.trim() || null,
+          discount_amount: Number(form.discount_amount) || 0,
+          discount_label: form.discount_label.trim() || null,
+        }
+      : {}
+    const rewardRuleIds = form.tx_type === 'expense' ? form.reward_rule_ids : []
     try {
       if (form.editingId) {
         await retryOnConflict(activeLedgerId, (base) =>
@@ -184,6 +230,8 @@ export function RecurringRulesPage() {
             next_run_at: nextRunAtIso,
             end_at: endAtIso,
             enabled: form.enabled,
+            ...feeDiscountFields,
+            reward_rule_ids: rewardRuleIds,
           }),
         )
         notifySuccess(t('recurringRules.notice.updated'))
@@ -213,6 +261,8 @@ export function RecurringRulesPage() {
             end_at: endAtIso,
             enabled: form.enabled,
             advanced_rule_json: advancedRuleJson,
+            ...feeDiscountFields,
+            reward_rule_ids: rewardRuleIds,
           }),
         )
         notifySuccess(t('recurringRules.notice.created'))
@@ -354,6 +404,7 @@ export function RecurringRulesPage() {
             currency={currency}
             form={form}
             onFormChange={setForm}
+            rewardRules={ruleFormRewardRules}
             onSubmit={onSubmit}
             onDelete={onDelete}
             onToggleEnabled={onToggleEnabled}

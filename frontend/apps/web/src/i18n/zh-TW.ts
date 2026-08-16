@@ -1544,6 +1544,7 @@ const zhTW = {
   'transactions.field.rewardRules': '紅利回饋規則',
   'transactions.badge.refund': '退款',
   'transactions.badge.refund.jumpHint': '點擊查看原交易',
+  'transactions.badge.recurring': '週期性交易',
   'transactions.button.refund': '退款',
   'transactions.button.duplicate': '複製',
   'transactions.button.refund.alreadyRefunded': '這筆交易已經退過款，不能重複退款',

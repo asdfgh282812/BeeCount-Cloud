@@ -1488,6 +1488,14 @@ def list_recurring_rules(
                     tag_ids = [str(v) for v in parsed]
             except json.JSONDecodeError:
                 pass
+        reward_rule_ids: list[str] = []
+        if row.reward_rule_sync_ids_json:
+            try:
+                parsed_rewards = json.loads(row.reward_rule_sync_ids_json)
+                if isinstance(parsed_rewards, list):
+                    reward_rule_ids = [str(v) for v in parsed_rewards]
+            except json.JSONDecodeError:
+                pass
         out.append(
             ReadRecurringRuleOut(
                 id=row.sync_id,
@@ -1510,6 +1518,12 @@ def list_recurring_rules(
                 enabled=bool(row.enabled),
                 generated_until_at=row.generated_until_at,
                 advanced_rule_json=_parse_advanced_rule_json(row.advanced_rule_json),
+                base_amount=row.base_amount,
+                fee_amount=row.fee_amount,
+                fee_label=row.fee_label,
+                discount_amount=row.discount_amount,
+                discount_label=row.discount_label,
+                reward_rule_ids=reward_rule_ids,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

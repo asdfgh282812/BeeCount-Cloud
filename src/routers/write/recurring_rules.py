@@ -74,6 +74,13 @@ async def create_recurring_rule_ep(
         _assert_account_not_group(db, user_id=current_user.id, account_id=getattr(req, field, None), field_name=field)
     # 需求 #14(Phase 12):非轉帳規則必須帶分類,避免生成的每期交易漏分類。
     _assert_category_required(req.tx_type, req.category_id)
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):跟 write/transactions.py
+    # 同一套校驗 + 重算 amount,transfer 帶了任一新欄位直接 400。
+    _normalize_recurring_rule_fee_discount(db=db, ledger_id=ledger.id, rule_id=None, payload=payload)
+    _assert_reward_rules_valid(
+        db, user_id=current_user.id, account_id=req.account_id,
+        reward_rule_ids=req.reward_rule_ids or [],
+    )
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:
@@ -121,7 +128,10 @@ async def create_recurring_rule_ep(
         for occ in occurrences:
             tx_payload = {
                 "tx_type": req.tx_type,
-                "amount": req.amount,
+                # 手續費/折扣(2026-08 使用者回饋):用 mutate_payload 裡經過
+                # _normalize_recurring_rule_fee_discount 重算後的權威 amount,
+                # 不能用 req.amount(前端送來的原始值,沒扣手續費/折扣)。
+                "amount": mutate_payload.get("amount"),
                 "happened_at": occ,
                 "note": req.note,
                 "merchant": req.merchant,
@@ -138,6 +148,15 @@ async def create_recurring_rule_ep(
                 "tag_ids": req.tag_ids,
                 "tags": tag_names,
                 "recurring_rule_id": rule_id,
+                # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,
+                # 每一期(含第一期)都要繼承,不只有「建交易當下順便設週期」
+                # 那個特例才有。
+                "base_amount": mutate_payload.get("base_amount"),
+                "fee_amount": mutate_payload.get("fee_amount"),
+                "fee_label": mutate_payload.get("fee_label"),
+                "discount_amount": mutate_payload.get("discount_amount"),
+                "discount_label": mutate_payload.get("discount_label"),
+                "reward_rule_ids": mutate_payload.get("reward_rule_ids"),
                 **actor_fields,
             }
             next_snapshot, _tx_id = _mutate_create_tx(next_snapshot, tx_payload)
@@ -203,6 +222,20 @@ async def update_recurring_rule_ep(
                 )
             )
         _assert_category_required(effective_tx_type, payload.get("category_id"))
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 create 端點,partial
+    # update 慣例(key 不出現才 no-op,顯式傳 null 才清空)。
+    _normalize_recurring_rule_fee_discount(db=db, ledger_id=ledger.id, rule_id=rule_id, payload=payload)
+    if "reward_rule_ids" in payload:
+        effective_account_id = payload.get("account_id") if "account_id" in payload else db.scalar(
+            select(ReadRecurringRuleProjection.account_sync_id).where(
+                ReadRecurringRuleProjection.ledger_id == ledger.id,
+                ReadRecurringRuleProjection.sync_id == rule_id,
+            )
+        )
+        _assert_reward_rules_valid(
+            db, user_id=current_user.id, account_id=effective_account_id,
+            reward_rule_ids=payload.get("reward_rule_ids") or [],
+        )
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
@@ -362,6 +395,20 @@ async def update_recurring_rule_from_ep(
                 )
             )
         _assert_category_required(effective_tx_type, payload.get("category_id"))
+    # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 update 端點語意,批次
+    # 套用到規則本身 + 該期以後所有未 overridden 的已生成交易。
+    _normalize_recurring_rule_fee_discount(db=db, ledger_id=ledger.id, rule_id=rule_id, payload=payload)
+    if "reward_rule_ids" in payload:
+        effective_account_id = payload.get("account_id") if "account_id" in payload else db.scalar(
+            select(ReadRecurringRuleProjection.account_sync_id).where(
+                ReadRecurringRuleProjection.ledger_id == ledger.id,
+                ReadRecurringRuleProjection.sync_id == rule_id,
+            )
+        )
+        _assert_reward_rules_valid(
+            db, user_id=current_user.id, account_id=effective_account_id,
+            reward_rule_ids=payload.get("reward_rule_ids") or [],
+        )
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
 
     def _mutate(snapshot: dict) -> tuple[dict, str]:
@@ -384,6 +431,8 @@ async def update_recurring_rule_from_ep(
             "tx_type", "amount", "note", "category_id", "account_id",
             "from_account_id", "to_account_id", "merchant", "project_id",
             "tag_ids", "frequency", "interval", "advanced_rule_json",
+            "base_amount", "fee_amount", "fee_label", "discount_amount",
+            "discount_label", "reward_rule_ids",
         ):
             if key in payload:
                 rule_payload[key] = payload[key]
@@ -394,7 +443,8 @@ async def update_recurring_rule_from_ep(
         for key in (
             "tx_type", "amount", "note", "category_id", "account_id",
             "from_account_id", "to_account_id", "merchant", "project_id",
-            "tag_ids",
+            "tag_ids", "base_amount", "fee_amount", "fee_label",
+            "discount_amount", "discount_label", "reward_rule_ids",
         ):
             if key in payload:
                 tx_payload[key] = payload[key]

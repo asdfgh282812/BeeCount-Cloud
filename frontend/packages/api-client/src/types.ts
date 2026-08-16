@@ -1316,6 +1316,14 @@ export type ReadRecurringRule = {
   /** 视窗续产生进度(Phase 1.5)。 */
   generated_until_at?: string | null
   advanced_rule_json?: RecurringAdvancedRule | null
+  /** 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,每一期
+   *  自動產生的 occurrence 都會繼承,同 ReadTransaction 同名欄位語意。 */
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  reward_rule_ids?: string[]
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -1335,6 +1343,12 @@ export type RecurringRuleCreatePayload = {
   end_at?: string | null
   enabled?: boolean
   advanced_rule_json?: RecurringAdvancedRule | null
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  reward_rule_ids?: string[] | null
 }
 
 export type RecurringRuleUpdatePayload = {
@@ -1351,6 +1365,12 @@ export type RecurringRuleUpdatePayload = {
   end_at?: string | null
   enabled?: boolean
   advanced_rule_json?: RecurringAdvancedRule | null
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  reward_rule_ids?: string[] | null
 }
 
 /** §2.12.2:挂在 `TxPayload.recurring` 上,建交易当下顺便设週期起点。 */
@@ -1389,6 +1409,12 @@ export type RecurringUpdateFromPayload = {
   frequency?: RecurringFrequency
   interval?: number
   advanced_rule_json?: RecurringAdvancedRule | null
+  base_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  reward_rule_ids?: string[] | null
 }
 
 // ────────── 分期付款 (Installment Plans，MOZE_FEATURE_GAP_SD.md §2.3 /

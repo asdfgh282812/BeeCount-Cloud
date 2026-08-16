@@ -97,7 +97,11 @@ async def create_tx(
         rule_payload = dict(mutate_payload)
         rule_payload.update({
             "tx_type": req.tx_type,
-            "amount": req.amount,
+            # 手續費/折扣(2026-08 使用者回饋):用 mutate_payload 裡經過
+            # _normalize_fee_discount_amount(56 行)重算後的權威 amount,不能
+            # 用 req.amount(前端送來的原始值,沒扣手續費/折扣)——否則規則本身
+            # 跟往後所有 occurrence 的金額都會是錯的。
+            "amount": mutate_payload.get("amount"),
             "note": req.note,
             "category_id": req.category_id,
             "account_id": req.account_id,
@@ -149,7 +153,9 @@ async def create_tx(
         for occ in occurrences[1:]:
             tx_payload = {
                 "tx_type": req.tx_type,
-                "amount": req.amount,
+                # 手續費/折扣(2026-08 使用者回饋):同上,用 mutate_payload
+                # 重算後的權威 amount,不能用 req.amount。
+                "amount": mutate_payload.get("amount"),
                 "happened_at": occ,
                 "note": req.note,
                 "merchant": req.merchant,
@@ -163,6 +169,15 @@ async def create_tx(
                 "to_account_id": req.to_account_id,
                 "to_account_name": req.to_account_name,
                 "recurring_rule_id": rule_id,
+                # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):規則固定屬性,
+                # 每一期(含第一期)都要繼承 —— 第一筆走 first_tx_payload =
+                # dict(mutate_payload) 已經天然帶有,這裡補上第二筆起。
+                "base_amount": mutate_payload.get("base_amount"),
+                "fee_amount": mutate_payload.get("fee_amount"),
+                "fee_label": mutate_payload.get("fee_label"),
+                "discount_amount": mutate_payload.get("discount_amount"),
+                "discount_label": mutate_payload.get("discount_label"),
+                "reward_rule_ids": mutate_payload.get("reward_rule_ids"),
                 **actor_fields,
             }
             next_snapshot, _tx_id = _mutate_create_tx(next_snapshot, tx_payload)

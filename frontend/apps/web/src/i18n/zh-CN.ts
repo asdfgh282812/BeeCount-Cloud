@@ -1584,6 +1584,7 @@ const zhCN = {
   'transactions.field.rewardRules': '红利回馈规则',
   'transactions.badge.refund': '退款',
   'transactions.badge.refund.jumpHint': '点击查看原交易',
+  'transactions.badge.recurring': '周期性交易',
   'transactions.button.refund': '退款',
   'transactions.button.duplicate': '复制',
   'transactions.button.refund.alreadyRefunded': '这笔交易已经退过款，不能重复退款',

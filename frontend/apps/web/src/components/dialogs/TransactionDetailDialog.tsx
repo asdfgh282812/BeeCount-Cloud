@@ -154,6 +154,14 @@ export function TransactionDetailDialog({
                     {t('transactions.split.badge')}
                   </span>
                 ) : null}
+                {/* 週期性交易(2026-08 使用者回饋):標示這筆是某條週期性收支
+                    規則產生的 occurrence,呼應「使用回饋」/「手續費折扣」
+                    這兩塊資訊其實是規則固定屬性、每一期都該有。 */}
+                {tx.recurring_rule_id ? (
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground">
+                    {t('transactions.badge.recurring')}
+                  </span>
+                ) : null}
               </span>
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
                 {sign}

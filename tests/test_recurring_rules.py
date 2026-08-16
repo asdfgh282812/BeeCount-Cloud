@@ -1350,3 +1350,414 @@ def test_mobile_push_recurring_rule_merchant_project_tags_partial_update_keeps_e
             assert _json.loads(row.tag_sync_ids_json) == ["tag-x", "tag-y"]
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 手續費/折扣/信用卡回饋(2026-08 使用者回饋:自動產生的第 2 期起遺失
+# 「使用回饋」與「手續費/折扣明細」)
+# ---------------------------------------------------------------------------
+
+
+def _seed_reward_account(client, hdr_app, ledger_id, account_id="acc-card", rule_id="crr-1"):
+    """信用卡帳戶 + 一條掛在它名下的回饋規則,供 reward_rule_ids 測試共用。"""
+    _push(client, hdr_app, ledger_id, "account", account_id,
+          {"syncId": account_id, "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+    _push(client, hdr_app, ledger_id, "card_reward_rule", rule_id,
+          {"syncId": rule_id, "accountId": account_id, "label": "網購回饋",
+           "rateType": "percentage", "rateValue": 2.0, "rounding": "round",
+           "calcBasis": "transaction_date", "interval": "billing_cycle"})
+    return account_id, rule_id
+
+
+def test_create_recurring_rule_forwards_fee_discount_reward_to_all_occurrences():
+    """獨立「週期性收支」建立端點:手續費/折扣/回饋規則要當成規則固定屬性,
+    連第一期在內的每一期 occurrence 都要正確帶到,且 amount 要是伺服器依
+    base/fee/discount 重算後的權威值,不是前端送來的原始 amount(這裡故意送
+    一個算不對的原始 amount 驗證)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recfee1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECFEE1"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        account_id, reward_id = _seed_reward_account(client, hdr_app, ledger_id)
+
+        web = _login_web(client, "recfee1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = next_run + timedelta(days=61)  # next_run/+1mo/+2mo 三次
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 999.0,  # 故意送错,验证 server 端会用 base+fee-discount 重算覆盖
+                "category_id": "cat-1",
+                "account_id": account_id,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+                "base_amount": 100.0,
+                "fee_amount": 20.0,
+                "fee_label": "手續費",
+                "discount_amount": 5.0,
+                "discount_label": "折扣",
+                "reward_rule_ids": [reward_id],
+            },
+        )
+        assert res.status_code == 200, res.text
+        expected_amount = 100.0 + 20.0 - 5.0
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["amount"] == expected_amount
+        assert rules[0]["base_amount"] == 100.0
+        assert rules[0]["fee_amount"] == 20.0
+        assert rules[0]["fee_label"] == "手續費"
+        assert rules[0]["discount_amount"] == 5.0
+        assert rules[0]["discount_label"] == "折扣"
+        assert rules[0]["reward_rule_ids"] == [reward_id]
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 3, "next_run/+1mo/+2mo 三次落在 end_at 之前"
+        for t in txs:
+            assert t["amount"] == expected_amount
+            assert t["base_amount"] == 100.0
+            assert t["fee_amount"] == 20.0
+            assert t["fee_label"] == "手續費"
+            assert t["discount_amount"] == 5.0
+            assert t["discount_label"] == "折扣"
+            assert t["reward_rule_ids"] == [reward_id]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_tx_with_recurring_inline_forwards_fee_discount_reward_to_all_occurrences():
+    """`transactions.py` 建交易當下順便設為週期性收支起點:第一筆(使用者
+    當下的真實操作)跟之後批次生成的每一期都要一致帶有手續費/折扣/回饋規則
+    —— 這是使用者回報的原始 bug 場景:第一筆對、第二筆起遺失。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recfee2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECFEE2"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        account_id, reward_id = _seed_reward_account(client, hdr_app, ledger_id)
+
+        web = _login_web(client, "recfee2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        happened_at = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = happened_at + timedelta(days=61)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 999.0,
+                "happened_at": happened_at.isoformat(),
+                "category_id": "cat-1",
+                "account_id": account_id,
+                "base_amount": 200.0,
+                "fee_amount": 10.0,
+                "fee_label": "手續費",
+                "discount_amount": 30.0,
+                "discount_label": "折扣",
+                "reward_rule_ids": [reward_id],
+                "recurring": {
+                    "frequency": "monthly",
+                    "interval": 1,
+                    "end_at": end_at.isoformat(),
+                },
+            },
+        )
+        assert res.status_code == 200, res.text
+        expected_amount = 200.0 + 10.0 - 30.0
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["amount"] == expected_amount
+        assert rules[0]["base_amount"] == 200.0
+        assert rules[0]["reward_rule_ids"] == [reward_id]
+
+        txs = _transactions(client, hdr, ledger_id)
+        assert len(txs) == 3, "next_run/+1mo/+2mo 三次落在 end_at 之前"
+        for t in txs:
+            assert t["amount"] == expected_amount
+            assert t["base_amount"] == 200.0
+            assert t["fee_amount"] == 10.0
+            assert t["discount_amount"] == 30.0
+            assert t["reward_rule_ids"] == [reward_id]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refill_recurring_windows_forwards_fee_discount_reward_and_merchant_project_tags():
+    """沒有 end_at 的長期規則,靠 `refill_recurring_windows` 續產生下一段
+    視窗——這條路徑原本完全沒轉發 merchant/project/tags(既有 bug),手續費/
+    折扣/回饋規則自然也是新加的。這裡驗證續產生的新交易兩類欄位都帶到。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "recfee3@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECFEE3"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        account_id, reward_id = _seed_reward_account(client, hdr_app, ledger_id)
+        _push(client, hdr_app, ledger_id, "project", "proj-fee", {"syncId": "proj-fee", "name": "專案"})
+        _push(client, hdr_app, ledger_id, "tag", "tag-fee", {"syncId": "tag-fee", "name": "標籤"})
+
+        web = _login_web(client, "recfee3@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 100.0,
+                "category_id": "cat-1",
+                "account_id": account_id,
+                "merchant": "全聯",
+                "project_id": "proj-fee",
+                "tag_ids": ["tag-fee"],
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "base_amount": 80.0,
+                "fee_amount": 20.0,
+                "reward_rule_ids": [reward_id],
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            rule_row = db.scalar(
+                select(ReadRecurringRuleProjection).where(
+                    ReadRecurringRuleProjection.sync_id == rule_id,
+                )
+            )
+            ledger_internal_id = rule_row.ledger_id
+            tx_count_before = len(
+                db.scalars(
+                    select(ReadTxProjection).where(ReadTxProjection.ledger_id == ledger_internal_id)
+                ).all()
+            )
+            # 模拟视窗快用完,逼一次续产生。
+            rule_row.generated_until_at = datetime.now(timezone.utc) + timedelta(days=10)
+            db.commit()
+
+            generated = refill_recurring_windows(db)
+            db.commit()
+            assert generated > 0
+
+        txs = sorted(_transactions(client, hdr, ledger_id), key=lambda t: t["happened_at"])
+        assert len(txs) > tx_count_before
+        new_tx = txs[-1]
+        assert new_tx["merchant"] == "全聯"
+        assert new_tx["project_id"] == "proj-fee"
+        assert new_tx["tag_ids"] == ["tag-fee"]
+        assert new_tx["base_amount"] == 80.0
+        assert new_tx["fee_amount"] == 20.0
+        assert new_tx["reward_rule_ids"] == [reward_id]
+        assert new_tx["amount"] == 100.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_rule_partial_update_keeps_fee_discount_reward_fields():
+    """SOP 要求的 merge 契約測試:mobile push partial update 只帶不相關欄位
+    時,手續費/折扣/回饋規則不能被冲掉;呼叫 `refill_recurring_windows` 前後
+    也要保持不變(涵蓋 `_emit_recurring_rule_update` payload 曾經漏欄位、
+    靠 `_upsert` 整列覆蓋語意把 merchant/project/tags 静默清空同一類 bug)。"""
+    client, TS = _make_client()
+    try:
+        tok = _register(client, "recfee4@example.com")["access_token"]
+        hdr = {"Authorization": f"Bearer {tok}"}
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)
+
+        _push(client, hdr, "lg1", "recurring_rule", "rec-fee", {
+            "syncId": "rec-fee",
+            "txType": "expense",
+            "amount": 115.0,
+            "nextRunAt": next_run.isoformat(),
+            "baseAmount": 100.0,
+            "feeAmount": 20.0,
+            "feeLabel": "手續費",
+            "discountAmount": 5.0,
+            "discountLabel": "折扣",
+            "rewardRuleIds": ["crr-1"],
+            "merchant": "星巴克",
+        })
+        # partial update:只改 note,手續費/折扣/回饋/merchant 都不该被冲掉。
+        _push(client, hdr, "lg1", "recurring_rule", "rec-fee", {
+            "syncId": "rec-fee",
+            "note": "更新備註",
+        })
+
+        with TS() as db:
+            row = db.scalar(
+                select(ReadRecurringRuleProjection).where(
+                    ReadRecurringRuleProjection.sync_id == "rec-fee",
+                )
+            )
+            assert row.note == "更新備註"
+            assert row.base_amount == 100.0, "partial update 不该冲掉 base_amount"
+            assert row.fee_amount == 20.0
+            assert row.fee_label == "手續費"
+            assert row.discount_amount == 5.0
+            assert row.discount_label == "折扣"
+            assert row.merchant == "星巴克", "partial update 不该冲掉 merchant"
+            import json as _json
+            assert _json.loads(row.reward_rule_sync_ids_json) == ["crr-1"]
+
+            # 逼一次 refill(規則已經到期且沒有 end_at),驗證
+            # _emit_recurring_rule_update 的欄位補齊沒有反過來把資料冲空。
+            refill_recurring_windows(db)
+            db.commit()
+
+            refreshed = db.scalar(
+                select(ReadRecurringRuleProjection).where(
+                    ReadRecurringRuleProjection.sync_id == "rec-fee",
+                )
+            )
+            assert refreshed.base_amount == 100.0, "refill 之後手續費/折扣不该被冲掉"
+            assert refreshed.merchant == "星巴克", "refill 之後 merchant 不该被冲掉"
+            assert _json.loads(refreshed.reward_rule_sync_ids_json) == ["crr-1"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_update_from_forwards_fee_discount_reward():
+    """`update-from` 端點(連同未來週期):手續費/折扣/回饋規則要能批次套用
+    到規則本身 + 該期以後所有未 overridden 的已生成交易,overridden 的期数
+    要跳过。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recfee5@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECFEE5"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        account_id, reward_id = _seed_reward_account(client, hdr_app, ledger_id)
+
+        web = _login_web(client, "recfee5@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = next_run + timedelta(days=32)  # next_run/+1mo 两次
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 100.0,
+                "category_id": "cat-1",
+                "account_id": account_id,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        txs = sorted(_transactions(client, hdr, ledger_id), key=lambda t: t["happened_at"])
+        assert len(txs) == 2
+        occ0, occ1 = [t["id"] for t in txs]
+
+        # 单独覆盖 occ1,之后不该被 update-from 动到。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/occurrences/{occ1}",
+            headers=hdr,
+            json={"base_change_id": base, "amount": 999.0},
+        )
+        assert res.status_code == 200, res.text
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/update-from/{occ0}",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "base_amount": 90.0,
+                "fee_amount": 15.0,
+                "fee_label": "手續費",
+                "reward_rule_ids": [reward_id],
+            },
+        )
+        assert res.status_code == 200, res.text
+        expected_amount = 90.0 + 15.0
+
+        rules = _rules(client, hdr, ledger_id)
+        assert rules[0]["amount"] == expected_amount
+        assert rules[0]["base_amount"] == 90.0
+        assert rules[0]["reward_rule_ids"] == [reward_id]
+
+        txs = {t["id"]: t for t in _transactions(client, hdr, ledger_id)}
+        assert txs[occ0]["amount"] == expected_amount
+        assert txs[occ0]["base_amount"] == 90.0
+        assert txs[occ0]["fee_amount"] == 15.0
+        assert txs[occ0]["reward_rule_ids"] == [reward_id]
+
+        assert txs[occ1]["amount"] == 999.0, "overridden 的期数不该被 update-from 覆盖"
+        assert txs[occ1]["base_amount"] is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_rule_transfer_rejects_fee_discount_fields():
+    """transfer 沒有明確的收支方向語意,跟交易端一致,帶了手續費/折扣欄位
+    直接 400。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recfee6@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECFEE6"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-a",
+              {"syncId": "acc-a", "name": "帳戶A", "type": "cash", "currency": "CNY"})
+        _push(client, hdr_app, ledger_id, "account", "acc-b",
+              {"syncId": "acc-b", "name": "帳戶B", "type": "cash", "currency": "CNY"})
+
+        web = _login_web(client, "recfee6@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 100.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-a",
+                "to_account_id": "acc-b",
+                "fee_amount": 5.0,
+            },
+        )
+        assert res.status_code == 400, res.text
+    finally:
+        app.dependency_overrides.clear()

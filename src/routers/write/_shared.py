@@ -48,6 +48,7 @@ from ...models import (
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
     ReadProjectProjection,
+    ReadRecurringRuleProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
     SyncChange,
@@ -823,6 +824,23 @@ _SPLIT_MIN_COUNT = 2
 _SPLIT_AMOUNT_EPSILON = 0.01
 
 
+def _compute_fee_discount_amount(
+    tx_type: str, base_amount: float, fee_amount: float, discount_amount: float,
+) -> float:
+    """手續費/折扣的核心公式,`_normalize_fee_discount_amount`(交易)跟
+    `_normalize_recurring_rule_fee_discount`(週期性收支規則)共用同一份,
+    避免兩處各自維護一份容易改一邊漏一邊。
+
+    公式(expense/income 方向不同,跟餘額增減直覺一致):
+      expense: amount = base_amount + fee_amount − discount_amount
+      income:  amount = base_amount − fee_amount + discount_amount
+    呼叫端要先擋掉 transfer/adjustment(沒有明確的方向語意)。
+    """
+    if tx_type == "expense":
+        return base_amount + fee_amount - discount_amount
+    return base_amount - fee_amount + discount_amount
+
+
 def _normalize_fee_discount_amount(
     *, db: Session, ledger_id: str, tx_id: str | None, payload: dict,
 ) -> None:
@@ -906,15 +924,87 @@ def _normalize_fee_discount_amount(
             detail="fee/discount/base amount must not be negative",
         )
 
-    if tx_type == "expense":
-        amount = base_amount + fee_amount - discount_amount
-    else:
-        amount = base_amount - fee_amount + discount_amount
+    amount = _compute_fee_discount_amount(tx_type, base_amount, fee_amount, discount_amount)
 
     payload["amount"] = round(amount, 2)
     # 顯式傳 null(使用者主動清掉該分量)要保留 None,讓下游
     # snapshot_mutator.update_transaction 的清空邏輯生效,不能被這裡「重新
     # 計算」的動作覆蓋回數值,否則 PATCH {"discount_amount": null} 清不掉。
+    if not ("base_amount" in payload and payload["base_amount"] is None):
+        payload["base_amount"] = base_amount
+    if not ("fee_amount" in payload and payload["fee_amount"] is None):
+        payload["fee_amount"] = fee_amount
+    if not ("discount_amount" in payload and payload["discount_amount"] is None):
+        payload["discount_amount"] = discount_amount
+
+
+def _normalize_recurring_rule_fee_discount(
+    *, db: Session, ledger_id: str, rule_id: str | None, payload: dict,
+) -> None:
+    """`_normalize_fee_discount_amount` 的週期性收支規則版本(2026-08 使用者
+    回饋:規則本身現在也儲存 base_amount/fee_amount/discount_amount,讓每一
+    期自動產生的 occurrence 都能繼承,見 services/recurring_materializer.py)。
+
+    結構跟交易版本完全一致,只是查 `ReadRecurringRuleProjection` 而不是
+    `ReadTxProjection`;`rule_id=None` 代表建立(create),否則是更新
+    (update / update-from)。"""
+    _fd_keys = ("base_amount", "fee_amount", "discount_amount")
+    if rule_id is None:
+        if not any(payload.get(k) is not None for k in _fd_keys):
+            return
+    else:
+        if not any(k in payload for k in _fd_keys):
+            return
+
+    existing = None
+    if rule_id is not None:
+        existing = db.execute(
+            select(
+                ReadRecurringRuleProjection.tx_type,
+                ReadRecurringRuleProjection.amount,
+                ReadRecurringRuleProjection.base_amount,
+                ReadRecurringRuleProjection.fee_amount,
+                ReadRecurringRuleProjection.discount_amount,
+            ).where(
+                ReadRecurringRuleProjection.ledger_id == ledger_id,
+                ReadRecurringRuleProjection.sync_id == rule_id,
+            )
+        ).first()
+
+    tx_type = payload.get("tx_type") if "tx_type" in payload else (existing.tx_type if existing else None)
+    tx_type = tx_type or "expense"
+    if tx_type not in {"expense", "income"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="fee/discount amounts are only supported for expense/income recurring rules",
+        )
+
+    base_amount = payload.get("base_amount") if "base_amount" in payload else (
+        existing.base_amount if existing else None
+    )
+    if base_amount is None:
+        base_amount = payload.get("amount") if "amount" in payload else (
+            existing.amount if existing else None
+        )
+    fee_amount = payload.get("fee_amount") if "fee_amount" in payload else (
+        existing.fee_amount if existing else None
+    )
+    discount_amount = payload.get("discount_amount") if "discount_amount" in payload else (
+        existing.discount_amount if existing else None
+    )
+    base_amount = float(base_amount or 0)
+    fee_amount = float(fee_amount or 0)
+    discount_amount = float(discount_amount or 0)
+
+    if base_amount < 0 or fee_amount < 0 or discount_amount < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="fee/discount/base amount must not be negative",
+        )
+
+    amount = _compute_fee_discount_amount(tx_type, base_amount, fee_amount, discount_amount)
+
+    payload["amount"] = round(amount, 2)
     if not ("base_amount" in payload and payload["base_amount"] is None):
         payload["base_amount"] = base_amount
     if not ("fee_amount" in payload and payload["fee_amount"] is None):
@@ -2300,6 +2390,7 @@ __all__ = [
     '_assert_transfer_to_amount_valid',
     '_assert_valid_adjustment_tx',
     '_normalize_fee_discount_amount',
+    '_normalize_recurring_rule_fee_discount',
     '_USER_PROJECTION_UPSERTERS',
     '_USER_PROJECTION_DELETERS',
     '_LEDGER_PROJECTION_UPSERTERS',

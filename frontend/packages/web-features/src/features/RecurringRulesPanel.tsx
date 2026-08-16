@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import {
+  AmountInput,
   Button,
   Dialog,
   DialogContent,
@@ -20,6 +21,7 @@ import {
 
 import type {
   ReadAccount,
+  ReadCardRewardRule,
   ReadRecurringRule,
   ReadTransaction,
   RecurringOccurrenceUpdatePayload,
@@ -34,7 +36,7 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DateTimePicker } from '../components/DateTimePicker'
 import type { RecurringRuleForm } from '../forms'
-import { recurringRuleDefaults } from '../forms'
+import { computeTxTotalAmount, recurringRuleDefaults } from '../forms'
 import { formatAmountTrimmed } from '../format'
 
 type RecurringRulesPanelProps = {
@@ -45,6 +47,9 @@ type RecurringRulesPanelProps = {
   currency: string
   form: RecurringRuleForm
   onFormChange: (next: RecurringRuleForm) => void
+  /** 信用卡紅利回饋(2026-08 使用者回饋):目前選中帳戶名下、可勾選套用到
+   *  這條規則的回饋規則清單(呼叫方依 form.account_id 抓取)。 */
+  rewardRules?: readonly ReadCardRewardRule[]
   onSubmit: () => Promise<boolean> | boolean
   onDelete: (rule: ReadRecurringRule) => Promise<void> | void
   onToggleEnabled: (rule: ReadRecurringRule, enabled: boolean) => Promise<void> | void
@@ -86,6 +91,7 @@ export function RecurringRulesPanel({
   currency,
   form,
   onFormChange,
+  rewardRules = [],
   onSubmit,
   onDelete,
   onToggleEnabled,
@@ -130,7 +136,9 @@ export function RecurringRulesPanel({
     onFormChange({
       editingId: rule.id,
       tx_type: (rule.tx_type as RecurringRuleForm['tx_type']) || 'expense',
-      amount: String(rule.amount),
+      // 手續費/折扣(2026-08 使用者回饋):金額欄位回填 base_amount(原始
+      // 金額),沒用過這個功能時 fallback 回 amount。
+      amount: String(rule.base_amount ?? rule.amount),
       note: rule.note || '',
       category_id: rule.category_id || '',
       category_name: rule.category_name || '',
@@ -148,6 +156,15 @@ export function RecurringRulesPanel({
       advanced_mode: 'none',
       weekly_days: [],
       monthly_day: '1',
+      // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):金額欄位回填
+      // base_amount(原始金額),沒用過這個功能時 fallback 回 amount,
+      // 對既有規則的顯示完全沒有影響(同 TransactionsPage.tsx 既有慣例)。
+      reward_rule_ids: rule.reward_rule_ids || [],
+      fee_enabled: rule.fee_amount != null || rule.discount_amount != null,
+      fee_amount: rule.fee_amount != null ? String(rule.fee_amount) : '',
+      fee_label: rule.fee_label || '',
+      discount_amount: rule.discount_amount != null ? String(rule.discount_amount) : '',
+      discount_label: rule.discount_label || '',
     })
     setDialogOpen(true)
   }
@@ -270,6 +287,14 @@ export function RecurringRulesPanel({
                     tx_type: value as RecurringRuleForm['tx_type'],
                     category_id: '',
                     category_name: '',
+                    // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):transfer
+                    // 沒有明確方向語意,不支援這兩個功能(server 端也會拒絕)。
+                    fee_enabled: value === 'transfer' ? false : form.fee_enabled,
+                    fee_amount: value === 'transfer' ? '' : form.fee_amount,
+                    fee_label: value === 'transfer' ? '' : form.fee_label,
+                    discount_amount: value === 'transfer' ? '' : form.discount_amount,
+                    discount_label: value === 'transfer' ? '' : form.discount_label,
+                    reward_rule_ids: value === 'expense' ? form.reward_rule_ids : [],
                   })
                 }
               >
@@ -285,16 +310,88 @@ export function RecurringRulesPanel({
             </div>
 
             <div className="space-y-1">
-              <Label>{t('budgets.field.amount')}</Label>
-              <Input
-                type="number"
-                inputMode="decimal"
-                step="0.01"
-                min="0"
-                placeholder="0"
+              <div className="flex items-center justify-between">
+                <Label>{t('budgets.field.amount')}</Label>
+                {/* 手續費/折扣(2026-08 使用者回饋,同交易表單金額旁的
+                    「+」):只在 expense/income 顯示,轉帳沒有明確方向語意
+                    (server 端也會拒絕)。 */}
+                {!isTransfer && !form.fee_enabled ? (
+                  <button
+                    type="button"
+                    onClick={() => onFormChange({ ...form, fee_enabled: true })}
+                    className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                    title={t('transactions.field.feeDiscountToggle')}
+                  >
+                    +
+                  </button>
+                ) : null}
+              </div>
+              <AmountInput
+                placeholder={t('transactions.placeholder.amount')}
                 value={form.amount}
-                onChange={(e) => onFormChange({ ...form, amount: e.target.value })}
+                onChange={(value) => onFormChange({ ...form, amount: value })}
               />
+              {!isTransfer && form.fee_enabled ? (
+                <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.fee')}
+                      value={form.fee_label}
+                      onChange={(e) => onFormChange({ ...form, fee_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.fee_amount}
+                      onChange={(value) => onFormChange({ ...form, fee_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      placeholder={t('transactions.field.discount')}
+                      value={form.discount_label}
+                      onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
+                    />
+                    <AmountInput
+                      className="h-8"
+                      placeholder="0"
+                      value={form.discount_amount}
+                      onChange={(value) => onFormChange({ ...form, discount_amount: value })}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span>{t('transactions.field.total')}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            fee_enabled: false,
+                            fee_amount: '',
+                            fee_label: '',
+                            discount_amount: '',
+                            discount_label: '',
+                          })
+                        }
+                        className="text-muted-foreground/70 hover:text-foreground"
+                      >
+                        {t('transactions.field.feeDiscountRemove')}
+                      </button>
+                    </div>
+                    <span className="font-medium text-foreground">
+                      {computeTxTotalAmount(
+                        form.tx_type,
+                        Number(form.amount) || 0,
+                        Number(form.fee_amount) || 0,
+                        Number(form.discount_amount) || 0,
+                      )}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {isTransfer ? (
@@ -356,6 +453,46 @@ export function RecurringRulesPanel({
                 </div>
               </>
             )}
+
+            {/* 信用卡紅利回饋(2026-08 使用者回饋):同交易表單語意,只在
+                expense + 選中帳戶名下有回饋規則時顯示,呼叫方已依
+                form.account_id 篩過清單。 */}
+            {!isTransfer && form.tx_type === 'expense' && rewardRules.length > 0 ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.field.rewardRules')}</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {rewardRules.map((rule) => {
+                    const checked = form.reward_rule_ids.includes(rule.id)
+                    return (
+                      <button
+                        key={rule.id}
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            reward_rule_ids: checked
+                              ? form.reward_rule_ids.filter((id) => id !== rule.id)
+                              : [...form.reward_rule_ids, rule.id],
+                          })
+                        }
+                        className={`rounded-full border px-2.5 py-1 text-xs ${
+                          checked
+                            ? 'border-primary bg-primary/15 text-primary'
+                            : 'border-input text-muted-foreground hover:bg-accent/40'
+                        }`}
+                      >
+                        {rule.label}
+                        {!rule.enabled ? (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            {t('cardRewards.disabled')}
+                          </span>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">

@@ -444,11 +444,19 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadRecurringRuleProjection.enabled,
         ReadRecurringRuleProjection.generated_until_at,
         ReadRecurringRuleProjection.advanced_rule_json,
+        ReadRecurringRuleProjection.base_amount,
+        ReadRecurringRuleProjection.fee_amount,
+        ReadRecurringRuleProjection.fee_label,
+        ReadRecurringRuleProjection.discount_amount,
+        ReadRecurringRuleProjection.discount_label,
+        ReadRecurringRuleProjection.reward_rule_sync_ids_json,
     ).where(ReadRecurringRuleProjection.ledger_id == ledger_id)
     for (sid, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
          merchant, project_sid, tag_ids_json,
          frequency, interval, next_run_at, end_at, enabled,
-         generated_until_at, advanced_rule_json) in db.execute(rec_stmt).all():
+         generated_until_at, advanced_rule_json,
+         base_amount, fee_amount, fee_label, discount_amount, discount_label,
+         reward_rule_ids_json) in db.execute(rec_stmt).all():
         r: dict[str, Any] = {
             "syncId": sid,
             "txType": tx_type,
@@ -488,6 +496,24 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 parsed_rule = json.loads(advanced_rule_json)
                 if isinstance(parsed_rule, dict):
                     r["advancedRuleJson"] = parsed_rule
+            except json.JSONDecodeError:
+                pass
+        # 手續費/折扣/信用卡回饋(2026-08 使用者回饋)。
+        if base_amount is not None:
+            r["baseAmount"] = base_amount
+        if fee_amount is not None:
+            r["feeAmount"] = fee_amount
+        if fee_label is not None:
+            r["feeLabel"] = fee_label
+        if discount_amount is not None:
+            r["discountAmount"] = discount_amount
+        if discount_label is not None:
+            r["discountLabel"] = discount_label
+        if reward_rule_ids_json:
+            try:
+                parsed_reward_ids = json.loads(reward_rule_ids_json)
+                if isinstance(parsed_reward_ids, list):
+                    r["rewardRuleIds"] = [str(v) for v in parsed_reward_ids]
             except json.JSONDecodeError:
                 pass
         recurring_rules.append(r)
