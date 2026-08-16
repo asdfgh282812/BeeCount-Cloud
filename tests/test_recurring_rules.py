@@ -571,6 +571,107 @@ def test_recurring_terminate_future_deletes_unhappened_keeps_past():
         app.dependency_overrides.clear()
 
 
+def test_delete_recurring_rule_keeps_all_occurrences_by_default():
+    """2026-08-16 補:預設(delete_future_occurrences 不帶或 False)只刪規則
+    本身,已產生的交易(含過去、未來)一律保留——維持刪規則端點原本的行為,
+    不因為新增這個旗標而改變既有語意。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recdel1@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECDEL1"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "recdel1@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
+        start = datetime.now(timezone.utc) - timedelta(days=3)
+        end_at = datetime.now(timezone.utc) + timedelta(days=3)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 5.0,
+                "category_id": "cat-1",
+                "frequency": "daily",
+                "next_run_at": start.isoformat(),
+                "end_at": end_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+        assert len(_transactions(client, hdr, ledger_id)) == 7
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert res.status_code == 200, res.text
+
+        assert len(_transactions(client, hdr, ledger_id)) == 7, "未帶旗標 = 一律保留既有行為"
+        assert _rules(client, hdr, ledger_id) == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_recurring_rule_with_delete_future_occurrences_removes_unhappened_keeps_past():
+    """`delete_future_occurrences=True` 時,連同刪除尚未發生的已生成交易
+    (跟 terminate-future 同一套篩選條件),已發生的交易保留,規則本身也真的
+    從清單移除(跟只停用不刪除的 terminate-future 不同)。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recdel2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECDEL2"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "recdel2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _seed_category(client, {"Authorization": f"Bearer {app_token}"}, ledger_id)
+        start = datetime.now(timezone.utc) - timedelta(days=3)
+        end_at = datetime.now(timezone.utc) + timedelta(days=3)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "amount": 5.0,
+                "category_id": "cat-1",
+                "frequency": "daily",
+                "next_run_at": start.isoformat(),
+                "end_at": end_at.isoformat(),
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+        assert len(_transactions(client, hdr, ledger_id)) == 7
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}",
+            headers=hdr,
+            json={"base_change_id": base, "delete_future_occurrences": True},
+        )
+        assert res.status_code == 200, res.text
+
+        txs_after = _transactions(client, hdr, ledger_id)
+        assert len(txs_after) == 4, "day -3..0 四笔已发生,保留;+1..+3 三笔未发生,删除"
+        assert _rules(client, hdr, ledger_id) == [], "規則本身要被刪除,不是只停用"
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # 視窗續產生(services.recurring_materializer.refill_recurring_windows)
 # ---------------------------------------------------------------------------
@@ -1433,6 +1534,68 @@ def test_create_recurring_rule_forwards_fee_discount_reward_to_all_occurrences()
             assert t["discount_amount"] == 5.0
             assert t["discount_label"] == "折扣"
             assert t["reward_rule_ids"] == [reward_id]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recurring_occurrence_single_edit_account_change_drops_orphaned_reward_rules():
+    """2026-08-16 bug 修正:「修改此記錄」(PATCH .../occurrences/{tx_id})
+    的 schema 沒有 reward_rule_ids 欄位,單筆換帳戶時舊帳戶勾選的回饋規則
+    會原封不動留在 merge 後的最終狀態、但已經對不上新帳戶,過去會被
+    `_assert_reward_rules_valid` 硬擋成 400(使用者看到的「操作失敗，請稍後
+    重試」)。現在應該靜默過濾掉,操作成功,且顯示名稱一併同步更新。"""
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "recocc2@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECOCC2"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _seed_category(client, hdr_app, ledger_id)
+        card_id, reward_id = _seed_reward_account(client, hdr_app, ledger_id)
+        _push(client, hdr_app, ledger_id, "account", "acc-cash",
+              {"syncId": "acc-cash", "name": "現金", "type": "cash", "currency": "CNY"})
+
+        web = _login_web(client, "recocc2@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) + timedelta(days=1)
+        end_at = next_run + timedelta(days=1)
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "expense",
+                "amount": 50.0,
+                "category_id": "cat-1",
+                "account_id": card_id,
+                "next_run_at": next_run.isoformat(),
+                "end_at": end_at.isoformat(),
+                "reward_rule_ids": [reward_id],
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+        occ = _transactions(client, hdr, ledger_id)[0]
+        assert occ["reward_rule_ids"] == [reward_id]
+
+        # 前端「修改此記錄」的實際 payload:只送 account_id,不會也不能送
+        # reward_rule_ids(WriteRecurringOccurrenceUpdateRequest 沒這個欄位)。
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules/{rule_id}/occurrences/{occ['id']}",
+            headers=hdr,
+            json={"base_change_id": base, "account_id": "acc-cash"},
+        )
+        assert res.status_code == 200, res.text
+
+        updated = _transactions(client, hdr, ledger_id)[0]
+        assert updated["account_id"] == "acc-cash"
+        assert updated["account_name"] == "現金", "帳戶顯示名稱要跟著新 account_id 同步,不能停在舊值"
+        assert not updated.get("reward_rule_ids"), "舊帳戶的回饋規則歸屬對不上新帳戶,要被靜默過濾掉"
     finally:
         app.dependency_overrides.clear()
 

@@ -399,11 +399,12 @@ export async function deleteRecurringRule(
   ledgerId: string,
   ruleId: string,
   baseChangeId: number,
+  deleteFutureOccurrences = false,
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/recurring-rules/${encodeURIComponent(ruleId)}`,
     token,
-    { base_change_id: baseChangeId },
+    { base_change_id: baseChangeId, delete_future_occurrences: deleteFutureOccurrences },
   )
 }
 

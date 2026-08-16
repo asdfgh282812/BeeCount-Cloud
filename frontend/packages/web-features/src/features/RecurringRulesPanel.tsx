@@ -35,6 +35,7 @@ import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DateTimePicker } from '../components/DateTimePicker'
+import { RecurringDeleteChoiceDialog } from '../components/RecurringDeleteChoiceDialog'
 import type { RecurringRuleForm } from '../forms'
 import { computeTxTotalAmount, recurringRuleDefaults } from '../forms'
 import { formatAmountTrimmed } from '../format'
@@ -51,7 +52,8 @@ type RecurringRulesPanelProps = {
    *  這條規則的回饋規則清單(呼叫方依 form.account_id 抓取)。 */
   rewardRules?: readonly ReadCardRewardRule[]
   onSubmit: () => Promise<boolean> | boolean
-  onDelete: (rule: ReadRecurringRule) => Promise<void> | void
+  /** 2026-08-16 補:第二參數 = 是否連同刪除未來已產生（尚未發生）的交易。 */
+  onDelete: (rule: ReadRecurringRule, deleteFutureOccurrences: boolean) => Promise<void> | void
   onToggleEnabled: (rule: ReadRecurringRule, enabled: boolean) => Promise<void> | void
   /** §2.12.2:该规则已生成的 occurrence 列表,懒加载(展开才 fetch),
    *  key=rule.id。只看当前已加载交易范围,受限于 fetchReadTransactions 的
@@ -179,11 +181,11 @@ export function RecurringRulesPanel({
     }
   }
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = async (deleteFutureOccurrences: boolean) => {
     if (!pendingDelete) return
     setDeleting(true)
     try {
-      await onDelete(pendingDelete)
+      await onDelete(pendingDelete, deleteFutureOccurrences)
       setPendingDelete(null)
     } finally {
       setDeleting(false)
@@ -696,17 +698,14 @@ export function RecurringRulesPanel({
         }
       />
 
-      <ConfirmDialog
+      <RecurringDeleteChoiceDialog
         open={pendingDelete !== null}
+        loading={deleting}
         onCancel={() => {
           if (!deleting) setPendingDelete(null)
         }}
-        onConfirm={() => void handleConfirmDelete()}
-        loading={deleting}
-        title={t('recurringRules.delete.title')}
-        description={t('recurringRules.delete.confirm')}
-        confirmText={t('common.delete')}
-        confirmVariant="destructive"
+        onChooseKeepFuture={() => void handleConfirmDelete(false)}
+        onChooseDeleteFuture={() => void handleConfirmDelete(true)}
       />
     </div>
   )

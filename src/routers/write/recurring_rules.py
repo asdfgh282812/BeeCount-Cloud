@@ -282,7 +282,25 @@ async def update_recurring_occurrence_ep(
     )
     if replay:
         return replay
+    # 主帳戶(§2.9 Phase 4):跟 create/update_recurring_rule_ep 一致,不能把
+    # account_group 容器掛到單筆 occurrence 上——這支端點原本漏了這個檢查。
+    _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get("account_id"), field_name="account_id")
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    # 帳戶/分類顯示名稱(2026-08-16 補):這支端點的窄欄位 schema 只有
+    # account_id/category_id、沒有對應的 _name 欄位(前端也只送 id),不補上
+    # 的話,單筆改帳戶/分類後 read_tx_projection 的顯示名稱欄位會停在舊值、
+    # 跟新的 id 脫鉤(同 create_recurring_rule_ep 用 _resolve_account_display/
+    # _resolve_category_display 補 denormalize 欄位的理由)。
+    if "account_id" in payload:
+        mutate_payload["account_name"] = _resolve_account_display(
+            db, user_id=current_user.id, account_id=payload.get("account_id"),
+        )
+    if "category_id" in payload:
+        category_name, category_kind = _resolve_category_display(
+            db, user_id=current_user.id, category_id=payload.get("category_id"),
+        )
+        mutate_payload["category_name"] = category_name
+        mutate_payload["category_kind"] = category_kind
     # 呼叫这个端点本身就意味着"这期要跟规则批次更新脱钩",强制标记,不暴露
     # 成可选请求字段。
     mutate_payload["recurring_occurrence_overridden"] = True
@@ -543,7 +561,7 @@ async def terminate_recurring_rule_future_ep(
 async def delete_recurring_rule_ep(
     ledger_id: str,
     rule_id: str,
-    req: WriteEntityDeleteRequest,
+    req: WriteRecurringRuleDeleteRequest,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     device_id: str = Header(default="web-console", alias="X-Device-ID"),
@@ -566,6 +584,24 @@ async def delete_recurring_rule_ep(
     if replay:
         return replay
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    now = _utcnow()
+
+    def _mutate(snapshot: dict) -> tuple[dict, str]:
+        next_snapshot = snapshot
+        if req.delete_future_occurrences:
+            # 同 terminate_recurring_rule_future_ep 的篩選條件:只刪「尚未
+            # 發生」的那些,已發生的交易(含使用者已手動 overridden 過的)
+            # 不受影響。
+            items = next_snapshot.get("items") or []
+            future_tx = [
+                it for it in items
+                if it.get("recurringRuleId") == rule_id and _parse_iso(it.get("happenedAt")) > now
+            ]
+            for it in future_tx:
+                next_snapshot = delete_transaction(next_snapshot, it["syncId"])
+        next_snapshot = delete_recurring_rule(next_snapshot, rule_id, mutate_payload)
+        return next_snapshot, rule_id
+
     return await _commit_write(
         request=request,
         db=db,
@@ -576,5 +612,5 @@ async def delete_recurring_rule_ep(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_recurring_rule_delete",
-        mutate=lambda snapshot: (delete_recurring_rule(snapshot, rule_id, mutate_payload), rule_id),
+        mutate=_mutate,
     )

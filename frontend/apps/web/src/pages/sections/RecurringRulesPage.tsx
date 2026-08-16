@@ -277,11 +277,11 @@ export function RecurringRulesPage() {
     }
   }
 
-  const onDelete = async (rule: ReadRecurringRule): Promise<void> => {
+  const onDelete = async (rule: ReadRecurringRule, deleteFutureOccurrences: boolean): Promise<void> => {
     if (!activeLedgerId) return
     try {
       await retryOnConflict(activeLedgerId, (base) =>
-        deleteRecurringRule(token, activeLedgerId, rule.id, base),
+        deleteRecurringRule(token, activeLedgerId, rule.id, base, deleteFutureOccurrences),
       )
       notifySuccess(t('recurringRules.notice.deleted'))
       await refresh()

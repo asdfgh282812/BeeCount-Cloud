@@ -1599,6 +1599,14 @@ class WriteAccountDeleteRequest(WriteEntityDeleteRequest):
     cascade: bool = False
 
 
+class WriteRecurringRuleDeleteRequest(WriteEntityDeleteRequest):
+    # 2026-08-16 補:刪除規則時是否連同刪除「尚未發生」的已生成交易——
+    # False(預設,同舊行為)只刪規則本身,已產生的交易(含未來)維持孤兒
+    # 保留;True 時額外刪掉 happened_at > now 的那些(同
+    # terminate_recurring_rule_future_ep 的篩選條件),已發生的交易不受影響。
+    delete_future_occurrences: bool = False
+
+
 class WriteAccountCreateRequest(WriteBaseRequest):
     name: str = Field(min_length=1, max_length=255)
     account_type: str | None = None

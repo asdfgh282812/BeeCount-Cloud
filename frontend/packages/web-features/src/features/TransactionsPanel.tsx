@@ -1834,14 +1834,21 @@ export function TransactionsPanel({
         accounts={pickerAccountRows}
         value={form.account_name}
         allowNone
-        onSelect={(row) =>
+        onSelect={(row) => {
+          const nextAccountName = row.id ? row.name.trim() : ''
+          const accountChanged = nextAccountName !== form.account_name
           onFormChange({
             ...form,
-            account_name: row.id ? row.name.trim() : '',
+            account_name: nextAccountName,
             fx_rate_override: '',
-            fx_amount_override: ''
+            fx_amount_override: '',
+            // 信用卡紅利回饋(2026-08-16 補):換帳戶後,舊帳戶勾選的回饋規則
+            // 歸屬對不上新帳戶——後端會靜默過濾掉無效組合,但前端狀態也該
+            // 同步清空,避免存檔 payload 帶著使用者實際上已經看不到勾選狀態
+            // 的殘留 id。
+            reward_rule_ids: accountChanged ? [] : form.reward_rule_ids
           })
-        }
+        }}
       />
       <AccountPickerDialog
         open={fromAccountPickerOpen}

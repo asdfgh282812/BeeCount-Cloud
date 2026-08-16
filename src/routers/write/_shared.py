@@ -88,6 +88,7 @@ from ...schemas import (
     WriteProjectUpdateRequest,
     WriteRecurringOccurrenceUpdateRequest,
     WriteRecurringRuleCreateRequest,
+    WriteRecurringRuleDeleteRequest,
     WriteRecurringRuleUpdateRequest,
     WriteRecurringUpdateFromRequest,
     WriteStatementClearConfirmationsRequest,
@@ -752,6 +753,37 @@ def _assert_reward_rules_valid(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"card reward rule does not belong to this account: {rule_id}",
             )
+
+
+def _drop_reward_rules_orphaned_by_account_change(
+    db: Session, *, user_id: str, account_id: str | None, reward_rule_ids: list[str],
+) -> list[str]:
+    """信用卡紅利回饋(2026-08-16 補,週期性收支單筆編輯帳戶更換 400 的根因
+    修正):帳戶被換掉、但這次請求沒機會重新勾選回饋規則時(例如
+    `WriteRecurringOccurrenceUpdateRequest` 這個窄欄位 schema 本來就沒有
+    `reward_rule_ids` 欄位;一般交易編輯表單換帳戶時前端目前也不會連動清空
+    已勾選項),舊帳戶底下的規則歸屬對不上新帳戶——這不是使用者故意要送
+    無效組合,是換帳戶這個動作本身讓舊選擇失去意義,靜默過濾掉即可,不必
+    整個操作 400 擋下。只丟「查得到但屬於別的帳戶」這種,規則 id 本身不存在
+    (打錯字/已被刪除)的維持原樣讓呼叫方後續的 `_assert_reward_rules_valid`
+    照樣硬擋,不吞掉真的資料錯誤。
+    """
+    if not reward_rule_ids or not account_id:
+        return reward_rule_ids
+    rows = db.execute(
+        select(
+            ReadCardRewardRuleProjection.sync_id,
+            ReadCardRewardRuleProjection.account_sync_id,
+        ).where(
+            ReadCardRewardRuleProjection.user_id == user_id,
+            ReadCardRewardRuleProjection.sync_id.in_(reward_rule_ids),
+        )
+    ).all()
+    owner_by_id = {row.sync_id: row.account_sync_id for row in rows}
+    return [
+        rid for rid in reward_rule_ids
+        if rid not in owner_by_id or owner_by_id[rid] == account_id
+    ]
 
 
 def _assert_valid_adjustment_tx(
@@ -1475,10 +1507,22 @@ async def _commit_write_fast_tx(
             # 校验(同拆帳同一理由)—— 单独改 account_id 不改 rewardRuleIds
             # 时,也要保证既有勾选的规则仍然归属新的 account_id。
             if new_item.get("rewardRuleIds"):
-                _assert_reward_rules_valid(
-                    db, user_id=ledger.user_id, account_id=new_item.get("accountId"),
-                    reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
-                )
+                if new_item.get("accountId") != prev_item.get("accountId"):
+                    # 2026-08-16 補:帳戶真的變了才需要过滤 —— 没变的话舊
+                    # rewardRuleIds 本来就还归属同一个 account_id,不用查一次。
+                    filtered_ids = _drop_reward_rules_orphaned_by_account_change(
+                        db, user_id=ledger.user_id, account_id=new_item.get("accountId"),
+                        reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
+                    )
+                    if filtered_ids:
+                        new_item["rewardRuleIds"] = filtered_ids
+                    else:
+                        new_item.pop("rewardRuleIds", None)
+                if new_item.get("rewardRuleIds"):
+                    _assert_reward_rules_valid(
+                        db, user_id=ledger.user_id, account_id=new_item.get("accountId"),
+                        reward_rule_ids=[str(v) for v in new_item["rewardRuleIds"]],
+                    )
 
             # 信用卡紅利回饋事後修改重算(§2.9.5.4 補強,Phase 8 #5,2026-08
             # 使用者反饋):happened_at/amount/category_id/account_id 這四個
@@ -2324,6 +2368,7 @@ __all__ = [
     'WriteStatementClearConfirmationsRequest',
     'WriteRecurringOccurrenceUpdateRequest',
     'WriteRecurringRuleCreateRequest',
+    'WriteRecurringRuleDeleteRequest',
     'WriteRecurringRuleUpdateRequest',
     'WriteRecurringUpdateFromRequest',
     'WriteTagCreateRequest',
