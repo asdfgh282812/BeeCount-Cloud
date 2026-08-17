@@ -573,3 +573,91 @@ def test_mobile_push_mixed_entities_in_one_batch():
                 ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# 對帳模式:mobile push 显式清空 nullable 欄位                                 #
+# --------------------------------------------------------------------------- #
+# 2026-08-18 踩过坑:_merge_from_spec 曾经用 `v is not None` 过滤 payload 再
+# 叠加到 existing 行的旧值上,没法区分「payload 没带这个 key」跟「payload
+# 带了这个 key 但值是显式 None」——mobile 端清空 reconciledAt/deferredPostingAt
+# (取消對帳確認/取消延後入帳)这类操作在这条路径上会被静默吞掉:merge 出来
+# 的仍是 existing 行的旧值,projection 永远清不掉,web 端读 read_tx_projection
+# 就一直看到"已确认"。下面两个 test 分别覆盖 reconciledAt / deferredPostingAt
+# 的显式清空,防止这条 merge 路径回归。
+
+
+def test_mobile_push_clears_reconciled_at_to_null():
+    """先 push 一笔带 reconciledAt 的交易,再 push 一次 payload 里
+    `reconciledAt: null`(显式清空,不是省略这个键)——projection 里
+    reconciled_at 必须真的变成 NULL,不能被旧值原样穿透回写。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "recon1@t.com", device_id="recon1", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        confirmed_at = _iso()
+        _push(client, hdr, "recon1", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t1", "type": "expense", "amount": 100,
+                         "happenedAt": _iso(), "accountId": "a1", "accountName": "Card",
+                         "reconciledAt": confirmed_at}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            row = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
+            assert row.reconciled_at is not None, "第一次 push 应该先写入确认时间"
+
+        # 取消對帳確認:payload 带 reconciledAt 键,值是显式 None。
+        _push(client, hdr, "recon1", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t1", "reconciledAt": None}},
+        ])
+        with sf() as db:
+            row = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
+            assert row.reconciled_at is None, (
+                "显式清空 reconciledAt 后 projection 必须变成 NULL —— "
+                "如果这里还有旧值,说明 _merge_from_spec 又把显式 None 当成缺键处理了")
+            # 其它没在这次 payload 里出现的欄位(缺键)必须维持旧值,不能被这次
+            # 清空动作波及——同一条 merge 路径,顺便验证「缺键保留」没被破坏。
+            assert row.amount == 100
+            assert row.tx_type == "expense"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_clears_deferred_posting_at_to_null():
+    """跟上面同款,换成 deferredPostingAt(取消延後入帳)。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "recon2@t.com", device_id="recon2", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        deferred_at = _iso(datetime.now(timezone.utc) + timedelta(days=20))
+        _push(client, hdr, "recon2", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t2",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t2", "type": "expense", "amount": 50,
+                         "happenedAt": _iso(), "accountId": "a1", "accountName": "Card",
+                         "deferredPostingAt": deferred_at}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            row = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t2"))
+            assert row.deferred_posting_at is not None
+
+        _push(client, hdr, "recon2", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t2",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t2", "deferredPostingAt": None}},
+        ])
+        with sf() as db:
+            row = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t2"))
+            assert row.deferred_posting_at is None, (
+                "显式清空 deferredPostingAt 后 projection 必须变成 NULL")
+    finally:
+        app.dependency_overrides.clear()

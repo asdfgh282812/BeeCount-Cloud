@@ -671,20 +671,35 @@ def _detect_and_run_rename_cascade_user(
 
 
 def _merge_from_spec(spec: _MergeSpec, existing, payload: dict) -> dict:
-    """从 existing row + spec.fields 构造 base dict,再把 payload 里非 None 的
-    字段叠加上来。两条 merge 路径(ledger / user)共用这段。"""
-    base: dict = {}
+    """从 existing row + spec.fields 构造 base dict,再把 payload 里「有出現的
+    key」叠加上来。两条 merge 路径(ledger / user)共用这段。
+
+    2026-08-18 修正:叠加条件曾经是 `v is not None`,没法区分「payload 没带
+    这个 key(缺键,维持旧值)」跟「payload 带了这个 key 但值是显式
+    None(使用者主动清空这个欄位)」——两种情况的 value 在 dict 里都读不到
+    非-None 值,旧写法会把显式清空也当成缺键处理,导致 base(existing row 的
+    旧值)一路原样穿透回写,清空动作在这条 merge 路径上被静默吞掉。对齐
+    `snapshot_mutator.py::update_transaction` 已经在用的 `"key" in payload`
+    写法——只按 key 是否出现决定要不要覆盖,不看值是不是 None。这条路径是
+    `/sync/push`(mobile)的 projection apply 共用的,受影响的不只是
+    reconciledAt/deferredPostingAt,凡是 `_LEDGER_MERGE_SPECS`/
+    `_USER_MERGE_SPECS` 里登记的欄位,只要能被使用者显式清空,mobile 端清空
+    都会撞到同一个 bug。"""
+    merged: dict = {}
     for spec_tuple in spec.fields:
         if len(spec_tuple) == 3:
             payload_key, db_attr, transform = spec_tuple
         else:
             payload_key, db_attr = spec_tuple
             transform = None
-        value = getattr(existing, db_attr)
-        if transform is not None:
-            value = transform(value)
-        base[payload_key] = value
-    return {**base, **{k: v for k, v in payload.items() if v is not None}}
+        if payload_key in payload:
+            merged[payload_key] = payload[payload_key]
+        else:
+            value = getattr(existing, db_attr)
+            if transform is not None:
+                value = transform(value)
+            merged[payload_key] = value
+    return merged
 
 
 def _sync_native_amount_after_merge(existing, payload: dict, merged: dict) -> dict:
@@ -751,9 +766,10 @@ def merge_with_existing(
     sync_id: str,
     payload: dict,
 ) -> dict:
-    """**ledger-scope** merge:查 projection 已有行,把 payload 里缺的 / None 的
-    字段用旧值补齐。entity_type 未登记在 _LEDGER_MERGE_SPECS 时(比如 'ledger'
-    自己),直接返回 payload 不做处理。"""
+    """**ledger-scope** merge:查 projection 已有行,payload 缺键的字段用旧值
+    补齐;payload 带键的字段(含显式 None,代表使用者主动清空)照写。
+    entity_type 未登记在 _LEDGER_MERGE_SPECS 时(比如 'ledger' 自己),直接
+    返回 payload 不做处理。"""
     spec = _LEDGER_MERGE_SPECS.get(entity_type)
     if spec is None:
         return payload
@@ -779,7 +795,8 @@ def merge_with_existing_user(
     sync_id: str,
     payload: dict,
 ) -> dict:
-    """**user-scope** merge:查 user_*_projection 已有行,补齐缺失字段。"""
+    """**user-scope** merge:查 user_*_projection 已有行,payload 缺键的字段
+    补齐,带键的字段(含显式 None)照写——语意同 [merge_with_existing]。"""
     spec = _USER_MERGE_SPECS.get(entity_type)
     if spec is None:
         return payload
