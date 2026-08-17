@@ -25,6 +25,7 @@ recurring_rule entity 契约:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -870,6 +871,69 @@ def test_transfer_recurring_rule_materializes_when_due_and_balance_sufficient():
             assert txs[0].amount == 200.0
             assert txs[0].from_account_sync_id == "acc-bank"
             assert txs[0].to_account_sync_id == "acc-card"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_transfer_recurring_rule_materializes_with_merchant_and_tags():
+    """2026-08-17 使用者回饋:`materialize_due_transfer_rules`(自動扣繳,到期
+    才逐筆生成的路徑)原本沒有轉發 merchant/tag_ids/reward_rule_ids 等欄位,
+    導致每期自動生成的交易這些欄位都是空的——跟 `refill_recurring_windows`
+    (一般收支的批次續窗路徑,同檔案)已經有的欄位補齊行為不一致。這裡驗證
+    transfer 規則到期生成時 merchant/tag_ids 也會正確帶到交易上(project_id
+    不能測:`_assert_project_exists` 拒絕 transfer 規則帶這個欄位;
+    reward_rule_ids 也不能測:`_assert_reward_rules_valid` 要求
+    `account_id`,transfer 規則只有 from/to account,建立當下就會被擋)。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "rectr2b@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_RECTR2B"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, ledger_id, "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "銀行", "type": "cash", "currency": "CNY",
+               "initialBalance": 1000.0})
+        _push(client, hdr_app, ledger_id, "account", "acc-card",
+              {"syncId": "acc-card", "name": "信用卡", "type": "credit_card", "currency": "CNY"})
+        _push(client, hdr_app, ledger_id, "tag", "tag-1", {"syncId": "tag-1", "name": "固定支出"})
+
+        web = _login_web(client, "rectr2b@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        next_run = datetime.now(timezone.utc) - timedelta(days=1)  # 已到期
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/recurring-rules",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 200.0,
+                "frequency": "monthly",
+                "next_run_at": next_run.isoformat(),
+                "from_account_id": "acc-bank",
+                "to_account_id": "acc-card",
+                "merchant": "信用卡自動扣繳",
+                "tag_ids": ["tag-1"],
+            },
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            from src.services.recurring_materializer import materialize_due_transfer_rules
+            result = materialize_due_transfer_rules(db)
+            db.commit()
+            assert result["materialized"] == 1
+
+            txs = db.scalars(
+                select(ReadTxProjection).where(ReadTxProjection.recurring_rule_sync_id == rule_id)
+            ).all()
+            assert len(txs) == 1
+            assert txs[0].merchant == "信用卡自動扣繳"
+            assert json.loads(txs[0].tag_sync_ids_json) == ["tag-1"]
     finally:
         app.dependency_overrides.clear()
 

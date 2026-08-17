@@ -516,6 +516,39 @@ def materialize_due_transfer_rules(db: Session, *, now: datetime | None = None) 
                 item["note"] = rule.note
             if rule.to_account_sync_id:
                 item["toAccountId"] = rule.to_account_sync_id
+            # 商家/專案/標籤/手續費/折扣/信用卡回饋(2026-08-17 使用者回饋):
+            # 這條「到期才逐筆生成」的自動扣繳路徑一直漏轉發這些欄位,導致
+            # transfer 規則生成的每一期交易在畫面上顯示為 `--`/空白——跟
+            # `refill_recurring_windows`(288-318 行)那段同款欄位補齊,這裡
+            # 補上同一組(categoryId 不適用,transfer 規則本來就沒有分類)。
+            if rule.merchant:
+                item["merchant"] = rule.merchant
+            if rule.project_sync_id:
+                item["projectId"] = rule.project_sync_id
+            if rule.tag_sync_ids_json:
+                try:
+                    parsed_tags = json.loads(rule.tag_sync_ids_json)
+                    if isinstance(parsed_tags, list):
+                        item["tagIds"] = parsed_tags
+                except json.JSONDecodeError:
+                    pass
+            if rule.base_amount is not None:
+                item["baseAmount"] = rule.base_amount
+            if rule.fee_amount is not None:
+                item["feeAmount"] = rule.fee_amount
+            if rule.fee_label:
+                item["feeLabel"] = rule.fee_label
+            if rule.discount_amount is not None:
+                item["discountAmount"] = rule.discount_amount
+            if rule.discount_label:
+                item["discountLabel"] = rule.discount_label
+            if rule.reward_rule_sync_ids_json:
+                try:
+                    parsed_rewards = json.loads(rule.reward_rule_sync_ids_json)
+                    if isinstance(parsed_rewards, list):
+                        item["rewardRuleIds"] = parsed_rewards
+                except json.JSONDecodeError:
+                    pass
             emit_tx(db, ledger_id=rule.ledger_id, user_id=rule.user_id, now=now, item=item)
             materialized += 1
             rule.generated_until_at = next_occurrence
