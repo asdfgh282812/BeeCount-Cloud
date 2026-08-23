@@ -1092,6 +1092,10 @@ class ReadDebtOut(BaseModel):
     repayments: list["ReadDebtRepaymentOut"] = Field(default_factory=list)
     # 結案(體驗補強):非空 = 已手動標記結束。
     closed_at: datetime | None = None
+    category_id: str | None = None
+    # 起點交易反查:mobile 建立欠款時同時寫入的起點交易 sync_id,web 建立
+    # 的欠款沒有這個概念,維持 None。
+    origin_tx_id: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -1888,17 +1892,24 @@ class WriteDebtCreateRequest(WriteBaseRequest):
     principal_amount: float = Field(gt=0)
     due_at: datetime | None = None
     note: str | None = None
+    category_id: str | None = None
+    # 只給 mobile「建立欠款連帶起點交易」流程用;web 建立不帶這欄。建立後
+    # 不可改(不出現在 WriteDebtUpdateRequest)。
+    origin_tx_id: str | None = None
 
 
 class WriteDebtUpdateRequest(WriteBaseRequest):
     """`principal_amount`/`direction` 建立后不可改(语义混乱,等同删了重建,
-    跟 installment_plan 的 total_amount 同一取舍)。"""
+    跟 installment_plan 的 total_amount 同一取舍)。`origin_tx_id` 同理不可改,
+    不暴露在這裡。"""
     counterparty_name: str | None = Field(default=None, min_length=1, max_length=255)
     due_at: datetime | None = None
     note: str | None = None
     # 結案(體驗補強):key 不出現 = 不變;傳 ISO 時間 = 結案;傳 null = 重新
     # 開啟。跟 due_at/refund_of_id 同款「以 key 是否出現判斷是否要改」語意。
     closed_at: datetime | None = None
+    # key 不出現 = 不變;傳 null = 清空;傳字串 = 設定。
+    category_id: str | None = None
 
 
 class WriteProjectCreateRequest(WriteBaseRequest):

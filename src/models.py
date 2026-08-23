@@ -487,6 +487,12 @@ class Notification(Base):
     payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # 使用者反饋:欠款到期提醒會被新通知洗到看不到——釘選後排在最上面,
+    # 不隨新通知被擠走。目前只有 debt_reminders 會建立時傳 True,其餘
+    # 'reminder' 來源(installment_plans/recurring_materializer)維持預設值。
+    pinned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
 
 Index(
@@ -1094,6 +1100,13 @@ class ReadDebtProjection(Base):
     # 代表已還清全額(可能少還一點就結案)。读路径(list_debts)优先用它
     # 决定 status,盖过 remaining_amount 算出来的 open/partial/settled。
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 分類(App 端要求補上,原始設計刻意留空這點已不再準確):跟其他實體一樣
+    # 存 sync_id,不做存在性驗證。
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 起點交易反查(建立時寫入,之後不變):App 建立欠款時會同時寫一筆帳戶
+    # 餘額起點交易,但那筆交易刻意不帶 debt_sync_id(見上方 docstring,避免
+    # 被還款彙總誤計入),所以需要這個欄位才能反查回那筆交易。
+    origin_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

@@ -1721,6 +1721,12 @@ def create_debt(snapshot: dict, payload: dict) -> tuple[dict, str]:
         debt["dueAt"] = _date_only_iso8601(payload.get("due_at"))
     if payload.get("note") is not None:
         debt["note"] = str(payload.get("note"))
+    if payload.get("category_id") is not None:
+        debt["categoryId"] = str(payload.get("category_id"))
+    # originTxId 只在 mobile 建立欠款連帶起點交易時帶入,web 建立不帶這欄
+    # (web 沒有「起點交易」這個概念)——建立後不可改,見 update_debt。
+    if payload.get("origin_tx_id") is not None:
+        debt["originTxId"] = str(payload.get("origin_tx_id"))
     _mark_entity_actor(debt, payload, create=True)
     debts.append(debt)
     return target, sync_id
@@ -1751,6 +1757,12 @@ def update_debt(snapshot: dict, debt_id: str, payload: dict) -> dict:
             debt.pop("closedAt", None)
         else:
             debt["closedAt"] = _to_iso8601(value)
+    if "category_id" in payload:
+        value = payload.get("category_id")
+        if value is None:
+            debt.pop("categoryId", None)
+        else:
+            debt["categoryId"] = str(value)
     _mark_entity_actor(debt, payload, create=False)
     return target
 

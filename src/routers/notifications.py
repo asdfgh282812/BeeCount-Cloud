@@ -41,6 +41,7 @@ class NotificationItem(BaseModel):
     title: str
     body: str | None
     payload: dict | None
+    pinned: bool
     read_at: datetime | None
     created_at: datetime
 
@@ -62,6 +63,7 @@ def _to_item(row: Notification) -> NotificationItem:
         title=row.title,
         body=row.body,
         payload=row.payload_json,
+        pinned=row.pinned,
         read_at=row.read_at,
         created_at=row.created_at,
     )
@@ -104,7 +106,11 @@ def list_notifications(
     )
 
     rows = db.scalars(
-        base.order_by(Notification.created_at.desc(), Notification.id.desc())
+        base.order_by(
+            Notification.pinned.desc(),
+            Notification.created_at.desc(),
+            Notification.id.desc(),
+        )
         .limit(limit)
         .offset(offset)
     ).all()

@@ -36,14 +36,19 @@ def create_notification(
     title: str,
     body: str | None = None,
     payload: dict | None = None,
+    pinned: bool = False,
 ) -> Notification:
-    """插入一条通知记录。不 commit —— 调用方通常在自己的事务里跟业务写入一起提交。"""
+    """插入一条通知记录。不 commit —— 调用方通常在自己的事务里跟业务写入一起提交。
+
+    `pinned=True` 的通知在列表里排在最上面,不受之后新建立的通知擠動——
+    目前只有 `debt_reminders` 会传 True(见该模块调用点)。"""
     notification = Notification(
         user_id=user_id,
         category=category,
         title=title,
         body=body,
         payload_json=payload,
+        pinned=pinned,
     )
     db.add(notification)
     return notification

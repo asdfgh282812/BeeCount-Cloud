@@ -633,8 +633,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadDebtProjection.due_at,
         ReadDebtProjection.note,
         ReadDebtProjection.closed_at,
+        ReadDebtProjection.category_sync_id,
+        ReadDebtProjection.origin_tx_sync_id,
     ).where(ReadDebtProjection.ledger_id == ledger_id)
-    for (sid, direction, counterparty_name, principal_amount, due_at, note, closed_at) in db.execute(debt_stmt).all():
+    for (
+        sid, direction, counterparty_name, principal_amount, due_at, note,
+        closed_at, cat_sid, origin_tx_sid,
+    ) in db.execute(debt_stmt).all():
         d: dict[str, Any] = {
             "syncId": sid,
             "direction": direction,
@@ -647,6 +652,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             d["note"] = note
         if closed_at is not None:
             d["closedAt"] = _to_iso_utc(closed_at)
+        if cat_sid:
+            d["categoryId"] = cat_sid
+        if origin_tx_sid:
+            d["originTxId"] = origin_tx_sid
         debts.append(d)
 
     # 專案(Phase 13,docs/PH13_PROJECT_SD.md)

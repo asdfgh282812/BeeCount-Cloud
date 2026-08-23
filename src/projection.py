@@ -788,6 +788,8 @@ def upsert_debt(
         "due_at": _parse_happened_at(payload.get("dueAt")) if payload.get("dueAt") else None,
         "note": _as_str(payload.get("note")),
         "closed_at": _parse_happened_at(payload.get("closedAt")) if payload.get("closedAt") else None,
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "origin_tx_sync_id": _as_str(payload.get("originTxId")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadDebtProjection, ("ledger_id", "sync_id"), values)

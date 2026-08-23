@@ -301,6 +301,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("dueAt", "due_at", _isoformat_or_none),
         ("note", "note"),
         ("closedAt", "closed_at", _isoformat_or_none),
+        ("categoryId", "category_sync_id"),
+        ("originTxId", "origin_tx_sync_id"),
     ]),
     "project": _MergeSpec(ReadProjectProjection, [
         ("syncId", "sync_id"),

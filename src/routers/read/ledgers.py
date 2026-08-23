@@ -1761,6 +1761,8 @@ def list_debts(
                 note=row.note,
                 repayments=repayments_by_debt.get(row.sync_id, []),
                 closed_at=row.closed_at,
+                category_id=row.category_sync_id,
+                origin_tx_id=row.origin_tx_sync_id,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
