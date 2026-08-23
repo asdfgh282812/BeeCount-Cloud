@@ -1107,6 +1107,12 @@ class ReadDebtProjection(Base):
     # 餘額起點交易,但那筆交易刻意不帶 debt_sync_id(見上方 docstring,避免
     # 被還款彙總誤計入),所以需要這個欄位才能反查回那筆交易。
     origin_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 排除計入總額(對齐 Moze「排除在帳戶總覽計算」),只影響淨資產/總額統計,
+    # 不影響清單或通知——跟 UserAccountProjection.include_in_total 同款
+    # 概念,但預設值相反(這裡預設 False = 預設計入)。
+    excluded_from_total: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

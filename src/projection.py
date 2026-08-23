@@ -790,6 +790,7 @@ def upsert_debt(
         "closed_at": _parse_happened_at(payload.get("closedAt")) if payload.get("closedAt") else None,
         "category_sync_id": _as_str(payload.get("categoryId")),
         "origin_tx_sync_id": _as_str(payload.get("originTxId")),
+        "excluded_from_total": _as_bool(payload.get("excludedFromTotal"), default=False),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadDebtProjection, ("ledger_id", "sync_id"), values)

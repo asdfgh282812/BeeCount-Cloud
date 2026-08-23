@@ -635,16 +635,18 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadDebtProjection.closed_at,
         ReadDebtProjection.category_sync_id,
         ReadDebtProjection.origin_tx_sync_id,
+        ReadDebtProjection.excluded_from_total,
     ).where(ReadDebtProjection.ledger_id == ledger_id)
     for (
         sid, direction, counterparty_name, principal_amount, due_at, note,
-        closed_at, cat_sid, origin_tx_sid,
+        closed_at, cat_sid, origin_tx_sid, excluded_from_total,
     ) in db.execute(debt_stmt).all():
         d: dict[str, Any] = {
             "syncId": sid,
             "direction": direction,
             "counterpartyName": counterparty_name,
             "principalAmount": principal_amount,
+            "excludedFromTotal": bool(excluded_from_total),
         }
         if due_at is not None:
             d["dueAt"] = _to_iso_utc(due_at)

@@ -1555,6 +1555,13 @@ export type ReadDebt = {
   repayments: ReadDebtRepayment[]
   /** 結案(體驗補強):非空 = 已手動標記結束。 */
   closed_at?: string | null
+  category_id?: string | null
+  /** 起點交易反查:mobile 建立欠款時同時寫入的起點交易 sync_id,web 建立
+   *  的欠款沒有這個概念,維持 null。 */
+  origin_tx_id?: string | null
+  /** 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
+   *  本身或通知的可見性。 */
+  excluded_from_total: boolean
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -1566,16 +1573,36 @@ export type DebtCreatePayload = {
   principal_amount: number
   due_at?: string | null
   note?: string | null
+  category_id?: string | null
+  excluded_from_total?: boolean
 }
 
 /** `principal_amount`/`direction` 建立后不可改,只暴露
- *  counterparty_name/due_at/note/closed_at。closed_at 傳 ISO 時間 = 結案,
- *  傳 `null` = 重新開啟,不傳這個 key = 不變。 */
+ *  counterparty_name/due_at/note/closed_at/category_id/excluded_from_total。
+ *  closed_at 傳 ISO 時間 = 結案,傳 `null` = 重新開啟,不傳這個 key = 不變。
+ *  `counterparty_name` 改名只影響這一筆——要連動同名的其他記錄,改呼叫
+ *  `renameDebtCounterparty`,不要指望這個欄位會 cascade。 */
 export type DebtUpdatePayload = {
   counterparty_name?: string
   due_at?: string | null
   note?: string | null
   closed_at?: string | null
+  category_id?: string | null
+  excluded_from_total?: boolean
+}
+
+export type DebtRenameCounterpartyPayload = {
+  old_counterparty_name: string
+  new_counterparty_name: string
+  base_change_id: number
+}
+
+export type DebtRenameCounterpartyResponse = {
+  ledger_id: string
+  base_change_id: number
+  new_change_id: number
+  server_timestamp: string
+  renamed_debt_ids: string[]
 }
 
 // ────────── 專案 (Projects，docs/PH13_PROJECT_SD.md Phase 13）──────────

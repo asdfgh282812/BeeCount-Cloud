@@ -309,6 +309,8 @@ export type DebtForm = {
   /** datetime-local 输入用的本地时间字符串,空字符串 = 不设到期日。 */
   due_at: string
   note: string
+  /** 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計。 */
+  excluded_from_total: boolean
 }
 
 export type ProjectPeriodType = 'fixed' | 'monthly' | 'yearly'
@@ -527,6 +529,7 @@ export const debtDefaults = (): DebtForm => ({
   principal_amount: '',
   due_at: '',
   note: '',
+  excluded_from_total: false,
 })
 
 export const projectDefaults = (): ProjectForm => ({

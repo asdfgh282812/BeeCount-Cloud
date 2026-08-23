@@ -102,7 +102,7 @@ export function NotificationBell() {
     if (!payload) return false
     return Boolean(
       payload.debtId || payload.txId || payload.installmentPlanId ||
-        payload.recurringRuleId || payload.accountId,
+        payload.recurringRuleId || payload.accountId || payload.counterpartyName,
     )
   }
 
@@ -111,7 +111,9 @@ export function NotificationBell() {
   // 交易的详情弹窗,跟 DebtsPanel 还款记录跳转、退款双向勾稽同一招
   // (`dispatchOpenDetailTx`);信用卡帐单到期/逾期/自动扣缴(§2.9 card_due)
   // 带 accountId → 开该帐户的详情弹窗(合併帳單卡片就在里面);週期性收支
-  // 续期通知没有单一交易可指,退回对应列表页。找不到目标时静默不跳转。
+  // 续期通知没有单一交易可指,退回对应列表页。§5.5 未結清對象清單
+  // (category="debt_unsettled")只带 counterpartyName(對象分組摘要,沒有
+  // 單一 debtId)→ 退回欠款頁,不帶 highlight。找不到目标时静默不跳转。
   const handleJumpToDetail = async (item: NotificationItem) => {
     const payload = item.payload
     if (!payload) return
@@ -121,6 +123,7 @@ export function NotificationBell() {
       typeof payload.installmentPlanId === 'string' ? payload.installmentPlanId : null
     const recurringRuleId = typeof payload.recurringRuleId === 'string' ? payload.recurringRuleId : null
     const accountId = typeof payload.accountId === 'string' ? payload.accountId : null
+    const counterpartyName = typeof payload.counterpartyName === 'string' ? payload.counterpartyName : null
 
     if (debtId) {
       navigate(`/app/debts?highlight=${encodeURIComponent(debtId)}`)
@@ -167,6 +170,11 @@ export function NotificationBell() {
     }
     if (recurringRuleId) {
       navigate('/app/recurring-rules')
+      setDetailItem(null)
+      return
+    }
+    if (counterpartyName) {
+      navigate('/app/debts')
       setDetailItem(null)
     }
   }

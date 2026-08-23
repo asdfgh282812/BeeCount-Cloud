@@ -1716,6 +1716,7 @@ def create_debt(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "direction": direction,
         "counterpartyName": counterparty_name,
         "principalAmount": principal_amount,
+        "excludedFromTotal": bool(payload.get("excluded_from_total", False)),
     }
     if payload.get("due_at") is not None:
         debt["dueAt"] = _date_only_iso8601(payload.get("due_at"))
@@ -1763,8 +1764,35 @@ def update_debt(snapshot: dict, debt_id: str, payload: dict) -> dict:
             debt.pop("categoryId", None)
         else:
             debt["categoryId"] = str(value)
+    if "excluded_from_total" in payload:
+        debt["excludedFromTotal"] = bool(payload.get("excluded_from_total"))
     _mark_entity_actor(debt, payload, create=False)
     return target
+
+
+def rename_debt_counterparty(snapshot: dict, payload: dict) -> tuple[dict, list[str]]:
+    """對象改名(§5.4 對象管理,對齐 Moze「改名連動該對象所有記錄」)——跟
+    [update_debt] 不同,這裡一次改同一帳本下所有 counterpartyName ==
+    old_counterparty_name 的欠款,不是只改一筆。回傳(snapshot,受影響的
+    debt syncId 列表)——找不到任何符合的記錄時回傳空列表,由呼叫端
+    (router)決定要不要當成 400。"""
+    target = ensure_snapshot_v2(snapshot)
+    debts = _ensure_list(target, "debts")
+    old_name = str(payload.get("old_counterparty_name") or "").strip()
+    if not old_name:
+        raise ValueError("write validation failed: old_counterparty_name is required")
+    new_name = _normalize_name(payload.get("new_counterparty_name"))
+    renamed_ids: list[str] = []
+    for debt in debts:
+        if not isinstance(debt, dict) or debt.get("counterpartyName") != old_name:
+            continue
+        _assert_actor_can_modify(debt, payload)
+        debt["counterpartyName"] = new_name
+        _mark_entity_actor(debt, payload, create=False)
+        sync_id = debt.get("syncId")
+        if isinstance(sync_id, str):
+            renamed_ids.append(sync_id)
+    return target, renamed_ids
 
 
 def delete_debt(snapshot: dict, debt_id: str, payload: dict | None = None) -> dict:

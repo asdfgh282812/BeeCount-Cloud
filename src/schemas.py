@@ -1096,6 +1096,9 @@ class ReadDebtOut(BaseModel):
     # 起點交易反查:mobile 建立欠款時同時寫入的起點交易 sync_id,web 建立
     # 的欠款沒有這個概念,維持 None。
     origin_tx_id: str | None = None
+    # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
+    # 本身或通知的可見性。
+    excluded_from_total: bool = False
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -1896,12 +1899,17 @@ class WriteDebtCreateRequest(WriteBaseRequest):
     # 只給 mobile「建立欠款連帶起點交易」流程用;web 建立不帶這欄。建立後
     # 不可改(不出現在 WriteDebtUpdateRequest)。
     origin_tx_id: str | None = None
+    # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計。
+    excluded_from_total: bool = False
 
 
 class WriteDebtUpdateRequest(WriteBaseRequest):
     """`principal_amount`/`direction` 建立后不可改(语义混乱,等同删了重建,
     跟 installment_plan 的 total_amount 同一取舍)。`origin_tx_id` 同理不可改,
-    不暴露在這裡。"""
+    不暴露在這裡。`counterparty_name` 改名是全域批次操作(見
+    `POST .../debts/rename-counterparty`),這裡刻意只改這一筆——呼叫端
+    (App/Web)在偵測到名稱變化時應改呼叫批次改名端點,不要指望這個欄位會
+    連動同名的其他記錄。"""
     counterparty_name: str | None = Field(default=None, min_length=1, max_length=255)
     due_at: datetime | None = None
     note: str | None = None
@@ -1910,6 +1918,9 @@ class WriteDebtUpdateRequest(WriteBaseRequest):
     closed_at: datetime | None = None
     # key 不出現 = 不變;傳 null = 清空;傳字串 = 設定。
     category_id: str | None = None
+    # 排除計入總額:key 不出現 = 不變,布林值只有 true/false 兩種有效值,
+    # 不需要額外的 clear 語意。
+    excluded_from_total: bool | None = None
 
 
 class WriteProjectCreateRequest(WriteBaseRequest):

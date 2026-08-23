@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 8
+            assert len(rows) == 9
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 8
+            assert len(rows2) == 9
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 8
+        assert len(rows) == 9
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -331,6 +331,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "mcp_log_retention",
             "recurring_materializer",
             "debt_reminders",
+            "debt_unsettled_counterparties",
             "card_due_reminders",
             "transfer_rule_materialization",
             "card_autopay",
@@ -354,6 +355,10 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.debt_reminders.send_due_debt_reminders", return_value=0,
                 ) as mock_debt,
                 patch(
+                    "src.services.debt_unsettled_notifications.sync_unsettled_counterparty_notifications",
+                    return_value=0,
+                ) as mock_debt_unsettled,
+                patch(
                     "src.services.credit_card_reminders.send_due_card_reminders", return_value=0,
                 ) as mock_card,
                 patch(
@@ -372,6 +377,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
                 scheduled_jobs.run_job(db, "debt_reminders")
+                scheduled_jobs.run_job(db, "debt_unsettled_counterparties")
                 scheduled_jobs.run_job(db, "card_due_reminders")
                 scheduled_jobs.run_job(db, "card_autopay")
                 scheduled_jobs.run_job(db, "card_reward_payout")
@@ -380,6 +386,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
             mock_debt.assert_called_once()
+            mock_debt_unsettled.assert_called_once()
             mock_card.assert_called_once()
             mock_autopay.assert_called_once()
             mock_reward.assert_called_once()

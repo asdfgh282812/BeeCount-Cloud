@@ -37,6 +37,7 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "mcp_log_retention": (24 * 3600, True),
     "recurring_materializer": (24 * 3600, True),
     "debt_reminders": (15 * 60, False),
+    "debt_unsettled_counterparties": (15 * 60, False),
     "card_due_reminders": (15 * 60, False),
     "transfer_rule_materialization": (15 * 60, False),
     "card_autopay": (15 * 60, False),
@@ -107,6 +108,13 @@ def _run_debt_reminders(db: Session) -> dict:
     return {"sent": count}
 
 
+def _run_debt_unsettled_counterparties(db: Session) -> dict:
+    from . import debt_unsettled_notifications
+
+    count = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+    return {"touched": count}
+
+
 def _run_card_due_reminders(db: Session) -> dict:
     from . import credit_card_reminders
 
@@ -144,6 +152,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "mcp_log_retention": _run_mcp_log_retention,
     "recurring_materializer": _run_recurring_materializer,
     "debt_reminders": _run_debt_reminders,
+    "debt_unsettled_counterparties": _run_debt_unsettled_counterparties,
     "card_due_reminders": _run_card_due_reminders,
     "transfer_rule_materialization": _run_transfer_rule_materialization,
     "card_autopay": _run_card_autopay,

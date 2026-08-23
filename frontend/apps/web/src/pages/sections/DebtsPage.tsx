@@ -8,6 +8,7 @@ import {
   fetchReadDebts,
   fetchWorkspaceAccounts,
   fetchWorkspaceTransactions,
+  renameDebtCounterparty,
   updateDebt,
   type ReadAccount,
   type ReadDebt,
@@ -110,11 +111,25 @@ export function DebtsPage() {
     const dueAtIso = form.due_at.trim() ? new Date(form.due_at).toISOString() : null
     try {
       if (form.editingId) {
+        const editingName = form.counterparty_name.trim()
+        const original = debts.find((d) => d.id === form.editingId)
+        // 對象改名是全域批次操作(對齐 Moze「改名連動該對象所有記錄」),不是
+        // 這一筆單獨的欄位更新——名稱變了先呼叫 renameDebtCounterparty,
+        // updateDebt 不再帶 counterparty_name。
+        if (original && original.counterparty_name !== editingName) {
+          await retryOnConflict(activeLedgerId, (base) =>
+            renameDebtCounterparty(token, activeLedgerId, {
+              old_counterparty_name: original.counterparty_name,
+              new_counterparty_name: editingName,
+              base_change_id: base,
+            }),
+          )
+        }
         await retryOnConflict(activeLedgerId, (base) =>
           updateDebt(token, activeLedgerId, form.editingId!, base, {
-            counterparty_name: form.counterparty_name.trim(),
             due_at: dueAtIso,
             note: form.note || null,
+            excluded_from_total: form.excluded_from_total,
           }),
         )
         notifySuccess(t('debts.notice.updated'))
@@ -126,6 +141,7 @@ export function DebtsPage() {
             principal_amount: principalAmount,
             due_at: dueAtIso,
             note: form.note || null,
+            excluded_from_total: form.excluded_from_total,
           }),
         )
         notifySuccess(t('debts.notice.created'))

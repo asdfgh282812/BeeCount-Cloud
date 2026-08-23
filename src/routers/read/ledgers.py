@@ -1763,6 +1763,7 @@ def list_debts(
                 closed_at=row.closed_at,
                 category_id=row.category_sync_id,
                 origin_tx_id=row.origin_tx_sync_id,
+                excluded_from_total=bool(row.excluded_from_total),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

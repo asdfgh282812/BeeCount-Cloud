@@ -10,6 +10,8 @@ import type {
   CardRewardRuleUpdatePayload,
   CategoryPayload,
   DebtCreatePayload,
+  DebtRenameCounterpartyPayload,
+  DebtRenameCounterpartyResponse,
   DebtUpdatePayload,
   InstallmentEarlyRepayPayload,
   InstallmentPayoffPayload,
@@ -649,6 +651,21 @@ export async function deleteDebt(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
     token,
     { base_change_id: baseChangeId },
+  )
+}
+
+/** §5.4 對象管理:同一帳本下所有 counterparty_name == old 的欠款一次改名
+ * (對齐 Moze「改名連動該對象所有記錄」)。跟 `updateDebt` 不同,那個只改
+ * 單筆——偵測到使用者改了對象名稱時應該呼叫這個,不是 `updateDebt`。 */
+export async function renameDebtCounterparty(
+  token: string,
+  ledgerId: string,
+  payload: DebtRenameCounterpartyPayload,
+): Promise<DebtRenameCounterpartyResponse> {
+  return authedPost<DebtRenameCounterpartyResponse>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/rename-counterparty`,
+    token,
+    payload,
   )
 }
 

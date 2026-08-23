@@ -30,8 +30,8 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import ReadDebtProjection, ReadTxProjection
-from src.services import debt_reminders
+from src.models import Notification, ReadDebtProjection, ReadTxProjection
+from src.services import debt_reminders, debt_unsettled_notifications
 
 
 def _make_client():
@@ -737,5 +737,307 @@ def test_debt_tx_without_debt_id_unaffected():
         row = {row["id"]: row for row in r.json()}[tx_id]
         assert row["category_name"] is None
         assert row["note"] is None
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# §5.4 對象管理:excluded_from_total + 批次改名
+# ---------------------------------------------------------------------------
+
+
+def test_excluded_from_total_defaults_false_and_roundtrips():
+    client, _TS, token, hdr, ledger_id = _setup("debt21@example.com")
+    try:
+        res = _create_debt(client, hdr, ledger_id, token)
+        assert res.status_code == 200, res.text
+        debt_id = res.json()["entity_id"]
+
+        d = _debts(client, hdr, ledger_id)[0]
+        assert d["excluded_from_total"] is False
+
+        base = _latest_change_id(client, token, ledger_id)
+        upd = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/debts/{debt_id}",
+            headers=hdr,
+            json={"base_change_id": base, "excluded_from_total": True},
+        )
+        assert upd.status_code == 200, upd.text
+
+        d = _debts(client, hdr, ledger_id)[0]
+        assert d["excluded_from_total"] is True
+    finally:
+        client.close()
+
+
+def test_excluded_from_total_can_be_set_at_create():
+    client, _TS, token, hdr, ledger_id = _setup("debt22@example.com")
+    try:
+        res = _create_debt(client, hdr, ledger_id, token, excluded_from_total=True)
+        assert res.status_code == 200, res.text
+
+        d = _debts(client, hdr, ledger_id)[0]
+        assert d["excluded_from_total"] is True
+    finally:
+        client.close()
+
+
+def test_mobile_push_debt_excluded_from_total_roundtrip():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt23@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT23"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr = {"Authorization": f"Bearer {app_token}"}
+
+        sync_id = "debt_excl1"
+        _push(client, hdr, ledger_id, "debt", sync_id, {
+            "syncId": sync_id,
+            "direction": "payable",
+            "counterpartyName": "小美",
+            "principalAmount": 100.0,
+            "excludedFromTotal": True,
+        }, device_id=device)
+
+        db = TS()
+        try:
+            row = db.scalar(
+                select(ReadDebtProjection).where(ReadDebtProjection.sync_id == sync_id)
+            )
+            assert row is not None
+            assert row.excluded_from_total is True
+        finally:
+            db.close()
+    finally:
+        client.close()
+
+
+def _rename_counterparty(client, hdr, ledger_id, token, old_name, new_name):
+    base = _latest_change_id(client, token, ledger_id)
+    return client.post(
+        f"/api/v1/write/ledgers/{ledger_id}/debts/rename-counterparty",
+        headers=hdr,
+        json={
+            "base_change_id": base,
+            "old_counterparty_name": old_name,
+            "new_counterparty_name": new_name,
+        },
+    )
+
+
+def test_rename_counterparty_renames_all_matching_debts_in_ledger():
+    client, _TS, token, hdr, ledger_id = _setup("debt24@example.com")
+    try:
+        r1 = _create_debt(client, hdr, ledger_id, token, counterparty_name="小明", principal_amount=100.0)
+        r2 = _create_debt(
+            client, hdr, ledger_id, token,
+            direction="receivable", counterparty_name="小明", principal_amount=200.0,
+        )
+        r3 = _create_debt(client, hdr, ledger_id, token, counterparty_name="小華", principal_amount=300.0)
+        assert r1.status_code == 200 and r2.status_code == 200 and r3.status_code == 200
+
+        res = _rename_counterparty(client, hdr, ledger_id, token, "小明", "小明(已改名)")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert set(body["renamed_debt_ids"]) == {r1.json()["entity_id"], r2.json()["entity_id"]}
+
+        debts = {d["id"]: d for d in _debts(client, hdr, ledger_id)}
+        assert debts[r1.json()["entity_id"]]["counterparty_name"] == "小明(已改名)"
+        assert debts[r2.json()["entity_id"]]["counterparty_name"] == "小明(已改名)"
+        assert debts[r3.json()["entity_id"]]["counterparty_name"] == "小華"
+    finally:
+        client.close()
+
+
+def test_rename_counterparty_scoped_to_ledger_only():
+    client, _TS = _make_client()
+    try:
+        owner = _register(client, "debt25@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, app_token, device, "L_RENAME_A")
+        _seed_ledger(client, app_token, device, "L_RENAME_B")
+        web = _login_web(client, "debt25@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _create_debt(client, hdr, "L_RENAME_A", token, counterparty_name="小明")
+        other = _create_debt(client, hdr, "L_RENAME_B", token, counterparty_name="小明")
+        assert other.status_code == 200, other.text
+
+        res = _rename_counterparty(client, hdr, "L_RENAME_A", token, "小明", "小明2")
+        assert res.status_code == 200, res.text
+
+        debts_b = _debts(client, hdr, "L_RENAME_B")
+        assert debts_b[0]["counterparty_name"] == "小明", "別的帳本裡同名的記錄不該被動到"
+    finally:
+        client.close()
+
+
+def test_rename_counterparty_not_found_returns_400():
+    client, _TS, token, hdr, ledger_id = _setup("debt26@example.com")
+    try:
+        res = _rename_counterparty(client, hdr, ledger_id, token, "不存在的對象", "新名字")
+        assert res.status_code == 400, res.text
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# §5.5 通知中心:未結清對象清單(不看到期日,跟 debt_reminders 是不同機制)
+# ---------------------------------------------------------------------------
+
+
+def test_unsettled_counterparty_notification_ignores_due_date():
+    """跟到期提醒不同,未結清對象清單不管有沒有設定到期日都要出現。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt27@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT27"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt27@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        # 沒有設定到期日。
+        res = _create_debt(client, hdr, ledger_id, token, counterparty_name="小明", principal_amount=1000.0)
+        assert res.status_code == 200, res.text
+
+        db = TS()
+        try:
+            touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            assert touched == 1
+
+            rows = db.scalars(
+                select(Notification).where(Notification.category == "debt_unsettled")
+            ).all()
+            assert len(rows) == 1
+            assert rows[0].pinned is True
+            assert rows[0].read_at is None
+            assert rows[0].payload_json["counterpartyName"] == "小明"
+        finally:
+            db.close()
+    finally:
+        client.close()
+
+
+def test_unsettled_counterparty_notification_groups_multiple_debts():
+    """同一對象底下多筆未結清欠款彙總成一條通知,不是一筆一條。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt28@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT28"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt28@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _create_debt(client, hdr, ledger_id, token, counterparty_name="小明", principal_amount=100.0)
+        _create_debt(
+            client, hdr, ledger_id, token,
+            direction="receivable", counterparty_name="小明", principal_amount=200.0,
+        )
+
+        db = TS()
+        try:
+            touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            assert touched == 1
+
+            rows = db.scalars(
+                select(Notification).where(Notification.category == "debt_unsettled")
+            ).all()
+            assert len(rows) == 1
+            assert "2" in rows[0].body  # 共 2 筆未結清
+            assert "300" in rows[0].body  # 100 + 200 尚餘
+        finally:
+            db.close()
+    finally:
+        client.close()
+
+
+def test_unsettled_counterparty_notification_auto_resolves_when_settled():
+    """對象底下所有欠款都結清/結案後,既有的未讀通知要自動標記已讀。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt29@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT29"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt29@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        res = _create_debt(client, hdr, ledger_id, token, counterparty_name="小明", principal_amount=100.0)
+        debt_id = res.json()["entity_id"]
+
+        db = TS()
+        try:
+            debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            unread_before = db.scalars(
+                select(Notification).where(
+                    Notification.category == "debt_unsettled",
+                    Notification.read_at.is_(None),
+                )
+            ).all()
+            assert len(unread_before) == 1
+        finally:
+            db.close()
+
+        # 全額還清。
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=100.0, debt_id=debt_id)
+        assert tx_res.status_code == 200, tx_res.text
+
+        db = TS()
+        try:
+            touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            assert touched == 0
+
+            unread_after = db.scalars(
+                select(Notification).where(
+                    Notification.category == "debt_unsettled",
+                    Notification.read_at.is_(None),
+                )
+            ).all()
+            assert len(unread_after) == 0, "已結清後,舊的未讀通知應該被自動標記已讀"
+        finally:
+            db.close()
+    finally:
+        client.close()
+
+
+def test_unsettled_counterparty_notification_skips_manually_closed_debt():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt30@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT30"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt30@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        res = _create_debt(client, hdr, ledger_id, token, counterparty_name="呆帳對象", principal_amount=500.0)
+        debt_id = res.json()["entity_id"]
+        base = _latest_change_id(client, token, ledger_id)
+        close = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/debts/{debt_id}",
+            headers=hdr,
+            json={"base_change_id": base, "closed_at": _iso()},
+        )
+        assert close.status_code == 200, close.text
+
+        db = TS()
+        try:
+            touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            assert touched == 0
+        finally:
+            db.close()
     finally:
         client.close()

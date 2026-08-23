@@ -105,6 +105,7 @@ export function DebtsPanel({
       principal_amount: String(debt.principal_amount),
       due_at: debt.due_at ? isoToDateInput(debt.due_at) : '',
       note: debt.note || '',
+      excluded_from_total: debt.excluded_from_total,
     })
     setDialogOpen(true)
   }
@@ -278,6 +279,11 @@ export function DebtsPanel({
                 onChange={(e) => onFormChange({ ...form, counterparty_name: e.target.value })}
                 placeholder={t('debts.placeholder.counterparty')}
               />
+              {form.editingId ? (
+                <p className="text-xs text-muted-foreground">
+                  {t('debts.field.counterpartyRenameHint')}
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1">
@@ -309,6 +315,36 @@ export function DebtsPanel({
                 value={form.note}
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
+            </div>
+
+            {/* 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響
+                這個清單本身或通知的可見性——跟 AccountsPanel 的
+                include_in_total 開關同款外觀。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <div className="min-w-0 pr-3">
+                <p className="text-sm font-medium">{t('debts.excludedFromTotal.toggleLabel')}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t('debts.excludedFromTotal.toggleHint')}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.excluded_from_total}
+                aria-label={t('debts.excludedFromTotal.toggleLabel') as string}
+                onClick={() =>
+                  onFormChange({ ...form, excluded_from_total: !form.excluded_from_total })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  form.excluded_from_total ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    form.excluded_from_total ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
             </div>
           </div>
           <DialogFooter>
