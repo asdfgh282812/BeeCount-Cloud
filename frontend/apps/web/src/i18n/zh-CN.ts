@@ -736,6 +736,7 @@ const zhCN = {
   'debts.label.dueAt': '到期:',
   'debts.label.principal': '本金',
   'debts.label.repayments': '还款记录',
+  'debts.label.originTransaction': '欠款记录',
   'debts.status.open': '未还',
   'debts.status.partial': '部分已还',
   'debts.status.settled': '已结清',

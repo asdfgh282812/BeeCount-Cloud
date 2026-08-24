@@ -1096,6 +1096,10 @@ class ReadDebtOut(BaseModel):
     # 起點交易反查:mobile 建立欠款時同時寫入的起點交易 sync_id,web 建立
     # 的欠款沒有這個概念,維持 None。
     origin_tx_id: str | None = None
+    # 起點交易摘要(欠款紀錄本身,跟 `repayments` 平行,给「欠款管理」頁面
+    # 同時展示「還款紀錄」跟「欠款紀錄」用):`origin_tx_id` 指向的交易若還
+    # 找得到(未被刪除),就带上金额/日期,None = 沒有起點交易或已被刪除。
+    origin_transaction: ReadDebtRepaymentOut | None = None
     # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
     # 本身或通知的可見性。
     excluded_from_total: bool = False

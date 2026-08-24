@@ -1222,6 +1222,7 @@ const en = {
   'debts.label.dueAt': 'Due',
   'debts.label.principal': 'Principal',
   'debts.label.repayments': 'Repayments',
+  'debts.label.originTransaction': 'Origin record',
   'debts.status.open': 'Open',
   'debts.status.partial': 'Partial',
   'debts.status.settled': 'Settled',

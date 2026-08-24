@@ -565,6 +565,23 @@ function DebtCard({
         <div className={`h-full transition-all ${barColor}`} style={{ width: `${ratio * 100}%` }} />
       </div>
 
+      {debt.origin_transaction ? (
+        <div className="mt-2 space-y-1">
+          <div className="text-[11px] font-medium text-muted-foreground">
+            {t('debts.label.originTransaction')}
+          </div>
+          <button
+            type="button"
+            onClick={() => onJumpToTx(debt.origin_transaction!.id)}
+            title={t('debts.label.linkedTx.jumpHint')}
+            className="flex w-full items-center justify-between rounded px-1 py-0.5 text-[11px] text-muted-foreground transition hover:bg-accent/40 hover:text-primary"
+          >
+            <span>{new Date(debt.origin_transaction.happened_at).toLocaleDateString()}</span>
+            <Amount value={debt.origin_transaction.amount} currency={currency} size="xs" tone="muted" />
+          </button>
+        </div>
+      ) : null}
+
       {hasRepayments ? (
         <div className="mt-2 space-y-1">
           <div className="text-[11px] font-medium text-muted-foreground">

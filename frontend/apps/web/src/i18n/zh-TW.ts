@@ -1223,6 +1223,7 @@ const zhTW = {
   'debts.label.dueAt': '到期：',
   'debts.label.principal': '本金',
   'debts.label.repayments': '還款記錄',
+  'debts.label.originTransaction': '欠款紀錄',
   'debts.status.open': '未還',
   'debts.status.partial': '部分已還',
   'debts.status.settled': '已結清',

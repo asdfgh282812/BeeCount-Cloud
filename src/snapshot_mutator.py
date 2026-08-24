@@ -724,6 +724,26 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
     # projection 读路径走 SQL ORDER BY,顺序由 index 保证。
     target["count"] = len(items)
+
+    # 借還款追蹤:被刪的若是某筆欠款的起點交易(originTxId),且該欠款還沒
+    # 有任何還款交易(items 裡沒有任何 debtId 命中它),這筆欠款已經沒有
+    # 任何交易佐證,一併從 debts 移除——跟 _shared.py::
+    # _cascade_delete_orphaned_origin_debt(单笔 DELETE fast path 用的同款
+    # 邏輯)保持一致,這裡是批量刪除(transactions_batch_delete.py)這條路
+    # 徑用的 mutator 版本。
+    debts = _ensure_list(target, "debts")
+    for d_idx, debt in enumerate(debts):
+        if not isinstance(debt, dict) or debt.get("originTxId") != tx_id:
+            continue
+        debt_sync_id = debt.get("syncId")
+        has_repayment = any(
+            isinstance(other, dict) and other.get("debtId") == debt_sync_id
+            for other in items
+        )
+        if not has_repayment:
+            debts.pop(d_idx)
+        break
+
     return target
 
 

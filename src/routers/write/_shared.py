@@ -688,6 +688,54 @@ def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> ReadDeb
     return debt
 
 
+def _cascade_delete_orphaned_origin_debt(
+    db: Session,
+    *,
+    ledger: Ledger,
+    tx_id: str,
+    now: datetime,
+    device_id: str,
+    current_user: User,
+) -> None:
+    """借還款追蹤:刪除一筆交易時,若它是某筆欠款的起點交易
+    (`origin_tx_sync_id`)且該欠款還沒有任何還款交易,這筆欠款已經沒有任何
+    交易佐證(起點沒了、也沒還款),欠款管理頁面留著只會是找不到起點的空殼
+    記錄,一併刪除。跟 debts.py::_assert_debt_has_no_repayments(使用者主動
+    刪欠款的守衛)是同一條判斷邏輯,這裡只是反過來在刪交易時自動觸發。
+    App 端對應改動見 LocalRepository.deleteTransaction。"""
+    debt = db.scalar(
+        select(ReadDebtProjection).where(
+            ReadDebtProjection.ledger_id == ledger.id,
+            ReadDebtProjection.origin_tx_sync_id == tx_id,
+        )
+    )
+    if debt is None:
+        return
+    has_repayment = db.scalar(
+        select(ReadTxProjection.sync_id).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.debt_sync_id == debt.sync_id,
+        ).limit(1)
+    )
+    if has_repayment is not None:
+        return
+    db.add(
+        SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            entity_type="debt",
+            entity_sync_id=debt.sync_id,
+            action="delete",
+            payload_json={},
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
+    )
+    db.flush()
+    projection.delete_debt(db, ledger_id=ledger.id, sync_id=debt.sync_id)
+
+
 def _assert_project_exists(
     db: Session, *, ledger_id: str, project_id: str, tx_type: str | None,
 ) -> ReadProjectProjection:
@@ -1414,6 +1462,10 @@ async def _commit_write_fast_tx(
             projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
             projection.gc_orphan_attachments(
                 db, user_id=ledger.user_id, file_ids=tx_file_ids,
+            )
+            _cascade_delete_orphaned_origin_debt(
+                db, ledger=ledger, tx_id=tx_id, now=now,
+                device_id=device_id, current_user=current_user,
             )
         else:
             # 退款(§2.6):显式改 refund_of_id(非空)时才查重 —— 没传该 key

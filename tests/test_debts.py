@@ -1041,3 +1041,134 @@ def test_unsettled_counterparty_notification_skips_manually_closed_debt():
             db.close()
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# 起點交易(欠款紀錄)可見性 + 刪起點交易的級聯刪除
+#
+# `origin_tx_id` 只有 mobile「建立欠款連帶起點交易」流程會帶,但 REST create
+# 也接受這個欄位(schema 不分呼叫端),這裡直接用它模擬 mobile 場景,不用
+# 額外走 /sync/push。
+# ---------------------------------------------------------------------------
+
+
+def test_origin_transaction_included_in_debt_list():
+    client, _TS, token, hdr, ledger_id = _setup("debt_origin1@example.com")
+    try:
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=500.0)
+        assert tx_res.status_code == 200, tx_res.text
+        origin_tx_id = tx_res.json()["entity_id"]
+
+        debt_res = _create_debt(
+            client, hdr, ledger_id, token,
+            principal_amount=500.0, origin_tx_id=origin_tx_id,
+        )
+        assert debt_res.status_code == 200, debt_res.text
+
+        debts = _debts(client, hdr, ledger_id)
+        d = debts[0]
+        assert d["origin_tx_id"] == origin_tx_id
+        assert d["origin_transaction"] is not None
+        assert d["origin_transaction"]["id"] == origin_tx_id
+        assert d["origin_transaction"]["amount"] == 500.0
+    finally:
+        client.close()
+
+
+def test_debt_without_origin_transaction_has_null_origin_field():
+    client, _TS, token, hdr, ledger_id = _setup("debt_origin2@example.com")
+    try:
+        res = _create_debt(client, hdr, ledger_id, token)
+        assert res.status_code == 200, res.text
+
+        debts = _debts(client, hdr, ledger_id)
+        assert debts[0]["origin_tx_id"] is None
+        assert debts[0]["origin_transaction"] is None
+    finally:
+        client.close()
+
+
+def test_delete_origin_transaction_cascades_debt_delete_when_no_repayments():
+    client, _TS, token, hdr, ledger_id = _setup("debt_origin3@example.com")
+    try:
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=500.0)
+        origin_tx_id = tx_res.json()["entity_id"]
+        debt_res = _create_debt(
+            client, hdr, ledger_id, token,
+            principal_amount=500.0, origin_tx_id=origin_tx_id,
+        )
+        assert debt_res.status_code == 200, debt_res.text
+        assert len(_debts(client, hdr, ledger_id)) == 1
+
+        base = _latest_change_id(client, token, ledger_id)
+        del_res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{origin_tx_id}",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert del_res.status_code == 200, del_res.text
+
+        assert _debts(client, hdr, ledger_id) == [], (
+            "起點交易刪了又沒有還款記錄,這筆欠款已經沒有任何交易佐證,"
+            "應該一併被刪除"
+        )
+    finally:
+        client.close()
+
+
+def test_delete_origin_transaction_keeps_debt_when_has_repayments():
+    client, _TS, token, hdr, ledger_id = _setup("debt_origin4@example.com")
+    try:
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=500.0)
+        origin_tx_id = tx_res.json()["entity_id"]
+        debt_res = _create_debt(
+            client, hdr, ledger_id, token,
+            principal_amount=500.0, origin_tx_id=origin_tx_id,
+        )
+        debt_id = debt_res.json()["entity_id"]
+
+        repay_res = _create_tx(client, hdr, ledger_id, token, amount=200.0, debt_id=debt_id)
+        assert repay_res.status_code == 200, repay_res.text
+
+        base = _latest_change_id(client, token, ledger_id)
+        del_res = client.request(
+            "DELETE",
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/{origin_tx_id}",
+            headers=hdr,
+            json={"base_change_id": base},
+        )
+        assert del_res.status_code == 200, del_res.text
+
+        debts = _debts(client, hdr, ledger_id)
+        assert len(debts) == 1, "已有還款記錄的欠款不該被刪交易連帶誤刪"
+        assert debts[0]["id"] == debt_id
+    finally:
+        client.close()
+
+
+def test_batch_delete_origin_transaction_cascades_debt_delete():
+    client, _TS, token, hdr, ledger_id = _setup("debt_origin5@example.com")
+    try:
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=500.0)
+        origin_tx_id = tx_res.json()["entity_id"]
+        debt_res = _create_debt(
+            client, hdr, ledger_id, token,
+            principal_amount=500.0, origin_tx_id=origin_tx_id,
+        )
+        assert debt_res.status_code == 200, debt_res.text
+
+        base = _latest_change_id(client, token, ledger_id)
+        batch_res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/batch/delete",
+            headers=hdr,
+            json={"tx_ids": [origin_tx_id], "base_change_id": base},
+        )
+        assert batch_res.status_code == 200, batch_res.text
+        assert batch_res.json()["deleted_tx_ids"] == [origin_tx_id]
+
+        assert _debts(client, hdr, ledger_id) == [], (
+            "批量刪除起點交易時也要走同一套級聯刪除邏輯"
+        )
+    finally:
+        client.close()

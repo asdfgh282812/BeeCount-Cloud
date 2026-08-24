@@ -1559,6 +1559,9 @@ export type ReadDebt = {
   /** 起點交易反查:mobile 建立欠款時同時寫入的起點交易 sync_id,web 建立
    *  的欠款沒有這個概念,維持 null。 */
   origin_tx_id?: string | null
+  /** 起點交易摘要(欠款紀錄本身),跟 `repayments` 平行——`origin_tx_id`
+   *  指向的交易若還找得到就帶上金額/日期,null = 沒有起點交易或已被刪除。 */
+  origin_transaction?: ReadDebtRepayment | null
   /** 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
    *  本身或通知的可見性。 */
   excluded_from_total: boolean

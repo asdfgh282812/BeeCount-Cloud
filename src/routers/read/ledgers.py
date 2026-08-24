@@ -1736,6 +1736,36 @@ def list_debts(
         )
         repaid_by_debt[debt_sid] = repaid_by_debt.get(debt_sid, 0.0) + abs(float(amount or 0))
 
+    # 欠款紀錄本身(起點交易摘要),跟上面的還款記錄平行——只有 mobile 建立
+    # 連帶起點交易的欠款才有 origin_tx_sync_id;若該交易已被刪除(或欠款是
+    # web 建的,原本就是 None),這裡就查不到,維持 None。
+    origin_tx_ids = [row.origin_tx_sync_id for row in rows if row.origin_tx_sync_id]
+    origin_tx_by_debt: dict[str, ReadDebtRepaymentOut] = {}
+    if origin_tx_ids:
+        origin_tx_rows = db.execute(
+            select(
+                ReadTxProjection.sync_id,
+                ReadTxProjection.amount,
+                ReadTxProjection.happened_at,
+            ).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.sync_id.in_(origin_tx_ids),
+            )
+        ).all()
+        tx_by_sync_id = {
+            tx_sid: (amount, happened_at) for tx_sid, amount, happened_at in origin_tx_rows
+        }
+        for row in rows:
+            if not row.origin_tx_sync_id:
+                continue
+            found = tx_by_sync_id.get(row.origin_tx_sync_id)
+            if found is None:
+                continue
+            amount, happened_at = found
+            origin_tx_by_debt[row.sync_id] = ReadDebtRepaymentOut(
+                id=row.origin_tx_sync_id, amount=float(amount or 0), happened_at=happened_at,
+            )
+
     out: list[ReadDebtOut] = []
     for row in rows:
         principal = float(row.principal_amount or 0)
@@ -1763,6 +1793,7 @@ def list_debts(
                 closed_at=row.closed_at,
                 category_id=row.category_sync_id,
                 origin_tx_id=row.origin_tx_sync_id,
+                origin_transaction=origin_tx_by_debt.get(row.sync_id),
                 excluded_from_total=bool(row.excluded_from_total),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
