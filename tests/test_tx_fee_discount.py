@@ -7,7 +7,9 @@
   `amount`(expense: base+fee-discount;income: base-fee+discount)。
 - PATCH 不带这些字段时保留既有值(partial update,同 merchant/note 既有
   惯例);显式传 null 清空该分量。
-- transfer 类型带任一新欄位直接 400。
+- transfer 类型(2026-08-29 起)也能带 fee_amount/discount_amount(疊加在
+  餘額計算上的獨立 delta),但**不**重算 amount,base_amount 對 transfer
+  不使用、一律落 None;負數金額仍直接 400。
 - mobile `/sync/push` 的 `transaction` merge 契约:partial update 缺键保留
   既有值。
 """
@@ -241,7 +243,11 @@ def test_web_create_income_with_fee_discount_computes_amount() -> None:
 # Test 3: transfer 带手續費/折扣直接 400                                       #
 # --------------------------------------------------------------------------- #
 
-def test_web_create_transfer_with_fee_discount_rejected() -> None:
+def test_web_create_transfer_with_fee_discount_allowed_amount_unchanged() -> None:
+    """2026-08-29 轉帳手續費/折損:transfer 型別不再被硬擋 400——
+    fee_amount/discount_amount 疊加在餘額計算上的獨立 delta,`amount`維持
+    客戶端算好的值(不像 expense/income 那樣被 server 重算),`base_amount`
+    對 transfer 不使用,一律落 None(即使 payload 帶了值)。"""
     client, TS = _make_client()
     try:
         owner = _register(client, "feediscount_c3@example.com")
@@ -261,10 +267,62 @@ def test_web_create_transfer_with_fee_discount_rejected() -> None:
                 "amount": 100.0,
                 "base_amount": 100.0,
                 "fee_amount": 5.0,
+                "fee_label": "跨行手續費",
+                "discount_amount": 2.0,
                 "happened_at": _iso(),
             },
         )
-        assert create_res.status_code == 400, create_res.text
+        assert create_res.status_code == 200, create_res.text
+        tx_id = create_res.json()["entity_id"]
+
+        lid = _ledger_internal_id(TS, "FD_C3")
+        with TS() as db:
+            row = db.scalar(
+                select(ReadTxProjection).where(
+                    ReadTxProjection.ledger_id == lid,
+                    ReadTxProjection.sync_id == tx_id,
+                )
+            )
+            assert row is not None
+            # amount 沒有被重算(不是 100 + 5 - 2 = 103)。
+            assert row.amount == 100.0
+            assert row.fee_amount == 5.0
+            assert row.fee_label == "跨行手續費"
+            assert row.discount_amount == 2.0
+            # base_amount 對 transfer 不使用,即使 payload 帶了值也落 None。
+            assert row.base_amount is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_create_transfer_with_negative_fee_amount_rejected() -> None:
+    """負數 fee_amount 已經在 Pydantic request schema 層被 `ge=0` 擋下
+    (422),不會走到 `_normalize_fee_discount_amount` 裡 transfer 分支那段
+    負數檢查——那段檢查本身跟既有 expense/income 分支的負數檢查一樣,是
+    schema 層之外的第二層防禦(參照既有慣例保留,不是本次新增的必要
+    路徑),這裡驗證 web 端至少有一層擋得住。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "feediscount_c3n@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, token, device, "FD_C3N")
+
+        web_token = _login_web(client, "feediscount_c3n@example.com")["access_token"]
+        web_hdr = {"Authorization": f"Bearer {web_token}", "X-Device-ID": "pytest-web"}
+        base = _base_change_id(client, web_token, "FD_C3N")
+
+        create_res = client.post(
+            "/api/v1/write/ledgers/FD_C3N/transactions",
+            headers=web_hdr,
+            json={
+                "base_change_id": base,
+                "tx_type": "transfer",
+                "amount": 100.0,
+                "fee_amount": -5.0,
+                "happened_at": _iso(),
+            },
+        )
+        assert create_res.status_code == 422, create_res.text
     finally:
         app.dependency_overrides.clear()
 

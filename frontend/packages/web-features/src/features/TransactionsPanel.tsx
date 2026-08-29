@@ -148,7 +148,14 @@ type TransactionsPanelProps = {
   total: number
   page: number
   pageSize: number
-  accounts: ReadAccount[]
+  /** 轉帳「代入餘額」(2026-08-29):加寬成含 `balance`(選填),讓帳戶選擇
+   *  按鈕的 onClick 能讀到目前餘額——呼叫端傳的實際上通常是
+   *  `fetchWorkspaceAccounts` 回的 `WorkspaceAccount[]`(本來就有這個欄位,
+   *  只是先前收窄成 `ReadAccount[]` 沒暴露),共享帳本場景傳的
+   *  `ReadAccount[]`(沒有餘額)也照樣相容,此時「代入餘額」按鈕不顯示
+   *  (見下方 balance == null 判斷)。比照 `AccountListRow.tsx` 的
+   *  `AccountStats` 同款寫法。 */
+  accounts: (ReadAccount & { balance?: number | null })[]
   categories: ReadCategory[]
   tags: ReadTag[]
   /** 借還款追蹤(§2.5 體驗補強):主表單掛欠款用,只需要未結案的欠款
@@ -668,14 +675,19 @@ export function TransactionsPanel({
         // 切到 transfer 时关掉 + 清空明细。
         split_enabled: false,
         splits: [],
-        // 手續費/折扣(2026-08 使用者需求)同样只对 expense/income 有意义
-        // (转帐没有明确方向语意,server 端也会拒绝),切到 transfer 时关掉
-        // + 清空明细,避免残留脏值。
+        // 手續費/折扣(2026-08-29 修正):transfer 現在也合法使用
+        // fee_amount/discount_amount(疊加在餘額計算上的獨立 delta,不再被
+        // server 拒絕),但語意跟 expense/income 的 base±fee∓discount 完全
+        // 不同——這裡清空純粹是「避免 expense/income 填過的舊值誤帶進
+        // transfer 的手續費/折損面板」,不是因為 transfer 不能用這些欄位。
+        // fee_enabled 控制轉出側面板,discount_enabled(2026-08-29 新增)
+        // 控制轉入側面板,兩個面板預設收起。
         fee_enabled: false,
         fee_amount: '',
         fee_label: '',
         discount_amount: '',
-        discount_label: ''
+        discount_label: '',
+        discount_enabled: false
       })
       return
     }
@@ -683,6 +695,11 @@ export function TransactionsPanel({
     // 分类分 expense/income 两棵树,切类型时旧的 splits 分类都不再有效,
     // 跟单一 category 字段(keepCategory)同样清掉重选。
     const keepSplits = form.category_kind === nextType ? form.splits : []
+    // 手續費/折扣(2026-08-29 補充):跟上面 transfer 分支相反方向的同一個
+    // 問題——從 transfer 切回 expense/income 時,轉帳專用的 fee/discount
+    // 值(轉出側手續費/轉入側折損)一樣不能沿用,一併清空。expense↔income
+    // 之間切換維持既有行為(共用同一個手續費/折扣面板,不清空)。
+    const cameFromTransfer = form.tx_type === 'transfer'
     onFormChange({
       ...form,
       tx_type: nextType,
@@ -695,7 +712,17 @@ export function TransactionsPanel({
       fx_amount_override: '',
       // 不计入预算仅 expense 显示;切到 income 时清掉
       exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false,
-      installment_enabled: nextType === 'expense' ? form.installment_enabled : false
+      installment_enabled: nextType === 'expense' ? form.installment_enabled : false,
+      ...(cameFromTransfer
+        ? {
+            fee_enabled: false,
+            fee_amount: '',
+            fee_label: '',
+            discount_amount: '',
+            discount_label: '',
+            discount_enabled: false
+          }
+        : {})
     })
   }
 
@@ -938,9 +965,10 @@ export function TransactionsPanel({
               <div className="flex items-center justify-between">
                 <Label>{t('transactions.table.amount')}</Label>
                 {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction
-                    金額旁邊的「+」):只在 expense/income 顯示,轉帳沒有明確
-                    方向語意(server 端也會拒絕)。 */}
-                {form.tx_type !== 'transfer' && !form.fee_enabled ? (
+                    金額旁邊的「+」):expense/income 展開手續費+折扣共用面板;
+                    transfer(2026-08-29)展開的是轉出側手續費面板(獨立於
+                    折損,見下方轉入金額列旁的 discount_enabled 面板)。 */}
+                {!form.fee_enabled ? (
                   <button
                     type="button"
                     onClick={() => onFormChange({ ...form, fee_enabled: true })}
@@ -995,7 +1023,7 @@ export function TransactionsPanel({
                   missingLabel={t('transactions.fx.rateMissing')}
                 />
               ) : null}
-              {form.tx_type !== 'transfer' && form.fee_enabled ? (
+              {form.fee_enabled ? (
                 <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
                   <div className="flex items-center gap-2">
                     <Input
@@ -1011,20 +1039,25 @@ export function TransactionsPanel({
                       onChange={(value) => onFormChange({ ...form, fee_amount: value })}
                     />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      className="h-8 w-24 text-xs"
-                      placeholder={t('transactions.field.discount')}
-                      value={form.discount_label}
-                      onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
-                    />
-                    <AmountInput
-                      className="h-8"
-                      placeholder="0"
-                      value={form.discount_amount}
-                      onChange={(value) => onFormChange({ ...form, discount_amount: value })}
-                    />
-                  </div>
+                  {/* 折扣輸入列:expense/income 共用同一個面板(既有行為);
+                      transfer(2026-08-29)的折損是轉入側獨立面板,見下方
+                      轉入金額列旁的 discount_enabled 區塊,這裡不重複顯示。 */}
+                  {form.tx_type !== 'transfer' ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        className="h-8 w-24 text-xs"
+                        placeholder={t('transactions.field.discount')}
+                        value={form.discount_label}
+                        onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
+                      />
+                      <AmountInput
+                        className="h-8"
+                        placeholder="0"
+                        value={form.discount_amount}
+                        onChange={(value) => onFormChange({ ...form, discount_amount: value })}
+                      />
+                    </div>
+                  ) : null}
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
                     <div className="flex items-center gap-2">
                       <span>{t('transactions.field.total')}</span>
@@ -1036,8 +1069,12 @@ export function TransactionsPanel({
                             fee_enabled: false,
                             fee_amount: '',
                             fee_label: '',
-                            discount_amount: '',
-                            discount_label: ''
+                            // transfer 的折損是獨立面板/開關,這個「移除」
+                            // 只收起手續費面板,不動 discount_enabled/
+                            // discount_amount/discount_label。
+                            ...(form.tx_type !== 'transfer'
+                              ? { discount_amount: '', discount_label: '' }
+                              : {})
                           })
                         }
                         className="text-muted-foreground/70 hover:text-foreground"
@@ -1045,14 +1082,16 @@ export function TransactionsPanel({
                         {t('transactions.field.feeDiscountRemove')}
                       </button>
                     </div>
-                    <span className="font-medium text-foreground">
-                      {computeTxTotalAmount(
-                        form.tx_type,
-                        Number(form.amount) || 0,
-                        Number(form.fee_amount) || 0,
-                        Number(form.discount_amount) || 0
-                      )}
-                    </span>
+                    {form.tx_type !== 'transfer' ? (
+                      <span className="font-medium text-foreground">
+                        {computeTxTotalAmount(
+                          form.tx_type,
+                          Number(form.amount) || 0,
+                          Number(form.fee_amount) || 0,
+                          Number(form.discount_amount) || 0
+                        )}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -1060,7 +1099,24 @@ export function TransactionsPanel({
             {isTransfer ? (
               <>
                 <div className="space-y-1">
-                  <Label>{t('transactions.placeholder.fromAccountName')}</Label>
+                  <div className="flex items-center justify-between">
+                    <Label>{t('transactions.placeholder.fromAccountName')}</Label>
+                    {/* 代入餘額(2026-08-29):把轉出帳戶目前餘額填進轉出金額
+                        欄位(form.amount)。沒有餘額資訊(共享帳本場景的
+                        ReadAccount[] 沒有這個欄位)或餘額為 0 時不顯示。 */}
+                    {fromAccountRow?.balance != null && fromAccountRow.balance !== 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onFormChange({ ...form, amount: String(Math.abs(fromAccountRow?.balance || 0)) })
+                        }
+                        className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent/40"
+                        title={t('transactions.field.fillBalance')}
+                      >
+                        ↓
+                      </button>
+                    ) : null}
+                  </div>
                   <button
                     type="button"
                     disabled={dictionariesLoading}
@@ -1074,7 +1130,29 @@ export function TransactionsPanel({
                   </button>
                 </div>
                 <div className="space-y-1">
-                  <Label>{t('transactions.placeholder.toAccountName')}</Label>
+                  <div className="flex items-center justify-between">
+                    <Label>{t('transactions.placeholder.toAccountName')}</Label>
+                    {/* 代入餘額(2026-08-29):轉入側只在跨幣別換算列
+                        (showTransferFx)顯示時才有「換算後金額」這個可編輯
+                        欄位可以填——同幣別轉帳沒有獨立的轉入金額輸入,見
+                        下方 discount_enabled 區塊的唯讀預覽。 */}
+                    {showTransferFx && toAccountRow?.balance != null && toAccountRow.balance !== 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onFormChange({
+                            ...form,
+                            fx_amount_override: String(Math.abs(toAccountRow?.balance || 0)),
+                            fx_rate_override: ''
+                          })
+                        }
+                        className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent/40"
+                        title={t('transactions.field.fillBalance')}
+                      >
+                        ↓
+                      </button>
+                    ) : null}
+                  </div>
                   <button
                     type="button"
                     disabled={dictionariesLoading}
@@ -1107,6 +1185,68 @@ export function TransactionsPanel({
                     />
                   </div>
                 ) : null}
+                {/* 轉帳手續費/折損(2026-08-29):轉入側折損,獨立於上面轉出側
+                    的手續費面板。同幣別轉帳原本沒有「轉入金額」這個概念
+                    (轉入=轉出),這裡開啟折損後才需要展示「轉出金額-折損」
+                    的唯讀結果;跨幣別轉帳已經有 FxRateRow 顯示換算後金額,
+                    折損只疊加在上面顯示,不重複一個換算列。 */}
+                <div className="md:col-span-2 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label>{t('transactions.field.toAmount')}</Label>
+                    {!form.discount_enabled ? (
+                      <button
+                        type="button"
+                        onClick={() => onFormChange({ ...form, discount_enabled: true })}
+                        className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                        title={t('transactions.field.feeDiscountToggle')}
+                      >
+                        +
+                      </button>
+                    ) : null}
+                  </div>
+                  {!showTransferFx && form.discount_enabled ? (
+                    <div className="rounded-md border border-input/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                      {(
+                        (Number(form.amount) || 0) - (Number(form.discount_amount) || 0)
+                      ).toFixed(2)}{' '}
+                      {fromCurrency}
+                    </div>
+                  ) : null}
+                  {form.discount_enabled ? (
+                    <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          className="h-8 w-24 text-xs"
+                          placeholder={t('transactions.field.discount')}
+                          value={form.discount_label}
+                          onChange={(e) => onFormChange({ ...form, discount_label: e.target.value })}
+                        />
+                        <AmountInput
+                          className="h-8"
+                          placeholder="0"
+                          value={form.discount_amount}
+                          onChange={(value) => onFormChange({ ...form, discount_amount: value })}
+                        />
+                      </div>
+                      <div className="flex items-center justify-end text-xs text-muted-foreground">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onFormChange({
+                              ...form,
+                              discount_enabled: false,
+                              discount_amount: '',
+                              discount_label: ''
+                            })
+                          }
+                          className="text-muted-foreground/70 hover:text-foreground"
+                        >
+                          {t('transactions.field.feeDiscountRemove')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </>
             ) : (
               <div className="space-y-1">

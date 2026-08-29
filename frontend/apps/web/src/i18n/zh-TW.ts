@@ -1531,6 +1531,8 @@ const zhTW = {
   'transactions.field.total': '總額',
   'transactions.field.feeDiscountToggle': '新增手續費/折扣',
   'transactions.field.feeDiscountRemove': '移除',
+  'transactions.field.toAmount': '轉入金額',
+  'transactions.field.fillBalance': '代入目前餘額',
   'transactions.placeholder.categoryName': '分類名稱',
   'transactions.placeholder.accountName': '帳戶名稱',
   'transactions.placeholder.noAccount': '不選擇帳戶',

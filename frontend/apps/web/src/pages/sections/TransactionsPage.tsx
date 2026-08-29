@@ -468,7 +468,11 @@ export function TransactionsPage() {
   // 成「沒對照到」而降級 —— `txDictionaryLoading` 初始值是 false,不足以區分
   // 「還沒開始拉」跟「已經拉完」,所以另外開一个標記。
   const [txDictionariesLoadedOnce, setTxDictionariesLoadedOnce] = useState(false)
-  const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
+  // 轉帳「代入餘額」(2026-08-29):寬成 WorkspaceAccount[] 才能暴露
+  // `balance`/`balance_fx_incomplete`——`fetchWorkspaceAccounts` 本來就回傳
+  // WorkspaceAccount[],之前這裡收窄成 ReadAccount[] 只是沒用到 balance,
+  // 見 AccountListRow.tsx 的 AccountStats 同款寫法。
+  const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<WorkspaceAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
   // 借還款追蹤(§2.5 體驗補強):跟 account/category/tag 不同,debt 是
@@ -1931,9 +1935,20 @@ export function TransactionsPage() {
     // 手續費/折扣(2026-08 使用者需求):前端先算好即時預覽/離線送出用的
     // 總額,server 端仍會依 base_amount/fee_amount/discount_amount 重新算
     // 一次當最終權威(見 write/_shared.py::_normalize_fee_discount_amount)。
+    // 轉帳手續費/折損(2026-08-29):discount_amount 對 transfer 是獨立的
+    // `discount_enabled` 開關(轉入側折損),跟 expense/income 共用
+    // `fee_enabled` 同時控制手續費+折扣兩個輸入的既有行為不同。
+    const isTransferForFeeDiscount = txForm.tx_type === 'transfer'
     const feeNum = txForm.fee_enabled ? Number(txForm.fee_amount) || 0 : 0
-    const discountNum = txForm.fee_enabled ? Number(txForm.discount_amount) || 0 : 0
-    const totalAmountNum = computeTxTotalAmount(txForm.tx_type, amountNum, feeNum, discountNum)
+    const discountNum = isTransferForFeeDiscount
+      ? (txForm.discount_enabled ? Number(txForm.discount_amount) || 0 : 0)
+      : (txForm.fee_enabled ? Number(txForm.discount_amount) || 0 : 0)
+    // transfer 不套用 base±fee∓discount 公式(amount 維持使用者輸入的原始
+    // 轉出金額),這裡只給 expense/income 算「總額」用,transfer 場景下面
+    // 组装 finalAmountNum 时不會用到 totalAmountNum。
+    const totalAmountNum = isTransferForFeeDiscount
+      ? amountNum
+      : computeTxTotalAmount(txForm.tx_type, amountNum, feeNum, discountNum)
     // 非转账交易必须选分类(transfer 自动归虚拟"转账"分类,server 处理)。
     // mobile 端 transaction_editor_page 也强制必选,跨端一致避免 ungrouped tx
     // 污染分类统计。拆帳(§2.4)时不看单一 category,改看 splits。退款交易
@@ -2143,15 +2158,29 @@ export function TransactionsPage() {
         amount: finalAmountNum,
         // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
         // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
-        ...(txForm.fee_enabled
+        // 轉帳手續費/折損(2026-08-29):transfer 的 fee_enabled/
+        // discount_enabled 各自獨立控制轉出/轉入兩側,不像 expense/income
+        // 那樣綁在一起送;base_amount 對 transfer 不使用,一律不送(留給
+        // server 端固定為 null,見 write/_shared.py::
+        // _normalize_fee_discount_amount 的 transfer 分支)。
+        ...(isTransferForFeeDiscount
           ? {
-              base_amount: finalBaseAmountNum,
-              fee_amount: finalFeeNum,
-              fee_label: txForm.fee_label.trim() || null,
-              discount_amount: finalDiscountNum,
-              discount_label: txForm.discount_label.trim() || null,
+              ...(txForm.fee_enabled
+                ? { fee_amount: finalFeeNum, fee_label: txForm.fee_label.trim() || null }
+                : {}),
+              ...(txForm.discount_enabled
+                ? { discount_amount: finalDiscountNum, discount_label: txForm.discount_label.trim() || null }
+                : {}),
             }
-          : {}),
+          : txForm.fee_enabled
+            ? {
+                base_amount: finalBaseAmountNum,
+                fee_amount: finalFeeNum,
+                fee_label: txForm.fee_label.trim() || null,
+                discount_amount: finalDiscountNum,
+                discount_label: txForm.discount_label.trim() || null,
+              }
+            : {}),
         happened_at: txForm.happened_at || new Date().toISOString(),
         // 延後入帳(§2.10 Phase 5):進階/選填欄位,''=未設定 → 顯式傳 null
         // (create 場景等同不傳;update 場景顯式清空既有值,對齊 debt_id/
@@ -2345,13 +2374,21 @@ export function TransactionsPage() {
       tx_type: (tx.tx_type === 'adjustment' ? 'expense' : tx.tx_type) as TxForm['tx_type'],
       // 手續費/折扣(2026-08 使用者需求):金額欄位回填
       // base_amount(原始金額),沒用過這個功能時 fallback 回
-      // amount,對既有交易的顯示完全沒有影響。
+      // amount,對既有交易的顯示完全沒有影響。transfer 的 base_amount
+      // 一律是 null,這裡自然 fallback 回 amount,行為正確不需要特判。
       amount: String(tx.base_amount ?? tx.amount),
-      fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
+      // 轉帳手續費/折損(2026-08-29):transfer 用兩個獨立開關(轉出側
+      // fee_enabled、轉入側 discount_enabled);expense/income 維持既有的
+      // 「兩個分量共用 fee_enabled 一個開關」行為。
+      fee_enabled:
+        tx.tx_type === 'transfer'
+          ? tx.fee_amount != null
+          : tx.fee_amount != null || tx.discount_amount != null,
       fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
       fee_label: tx.fee_label || '',
       discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
       discount_label: tx.discount_label || '',
+      discount_enabled: tx.tx_type === 'transfer' ? tx.discount_amount != null : false,
       happened_at: tx.happened_at,
       deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
       note: tx.note || '',

@@ -115,16 +115,28 @@ export type TxForm = {
    *  顯示。存 `read_card_reward_rule_projection.sync_id` 列表。 */
   reward_rule_ids: string[]
   /** 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
-   *  `amount` 欄位在這個功能開啟時代表使用者輸入的原始金額(base_amount,
-   *  信用卡回饋計算的權威基準),`fee_enabled` 控制「+」展開的手續費/折扣
-   *  兩列 UI 是否顯示。fee_label/discount_label 空字串 = 用預設「手續費」
-   *  「折扣」顯示,不送給 server(留給 server 端預設)。只支援
-   *  expense/income,切到 transfer 時要重置 fee_enabled=false。 */
+   *  expense/income 用一個共用面板——`amount` 欄位在這個功能開啟時代表
+   *  使用者輸入的原始金額(base_amount,信用卡回饋計算的權威基準),
+   *  `fee_enabled` 控制「+」展開的手續費/折扣兩列 UI 是否顯示。
+   *  fee_label/discount_label 空字串 = 用預設「手續費」「折扣」顯示,不送
+   *  給 server(留給 server 端預設)。
+   *
+   *  transfer(2026-08-29 轉帳手續費/折損)用獨立的兩個面板:`fee_enabled`
+   *  控制轉出側手續費面板,`discount_enabled`(見下方)控制轉入側折損
+   *  面板,兩者互不影響——跟 expense/income「`fee_enabled` 同時控制手續費
+   *  +折扣兩個輸入」的既有行為不同,不要混用同一顆開關。切到 transfer 時
+   *  `amount`/`fee_amount`/`discount_amount` 不重算(維持客戶端算好的值,
+   *  跟 base_amount 無關,見 applyTxType()/TransactionsPage.tsx payload
+   *  組裝邏輯的說明)。 */
   fee_enabled: boolean
   fee_amount: string
   fee_label: string
   discount_amount: string
   discount_label: string
+  /** 轉帳手續費/折損(2026-08-29):只給 tx_type='transfer' 用,獨立控制
+   *  轉入側折損面板的顯示/隱藏,不影響 expense/income 既有的 fee_enabled
+   *  行為。 */
+  discount_enabled: boolean
 }
 
 /** 手續費/折扣(2026-08 使用者需求)換算總額的公式,跟後端
@@ -405,6 +417,7 @@ export const txDefaults = (): TxForm => ({
   fee_label: '',
   discount_amount: '',
   discount_label: '',
+  discount_enabled: false,
 })
 
 export const accountDefaults = (): AccountForm => ({

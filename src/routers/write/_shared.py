@@ -939,7 +939,17 @@ def _normalize_fee_discount_amount(
     公式(expense/income 方向不同,跟餘額增減直覺一致):
       expense: amount = base_amount + fee_amount − discount_amount
       income:  amount = base_amount − fee_amount + discount_amount
-    transfer/adjustment 没有明確的方向語意,不支援,帶了任一新欄位直接 400。
+    adjustment 没有明確的方向語意,不支援,帶了任一新欄位直接 400。
+
+    transfer(2026-08-29 轉帳手續費/折損,design doc
+    docs/superpowers/specs/2026-08-29-transfer-fee-discount-design.md):
+    只驗證 fee_amount/discount_amount(若有帶)皆為 ≥0 的數字,**不**重算
+    `amount`——transfer 的 `amount`/`to_amount` 維持客戶端算好的「本體」
+    語意,fee_amount/discount_amount 只是疊加在餘額計算上的獨立 delta(見
+    App 端 `LocalAccountRepository._transferOutEffect`/
+    `_transferInEffect`,兩邊必須用同一套公式,不要各自發明)。
+    `base_amount` 對 transfer 不使用,一律留 None(那是 expense/income 專用
+    的重算基準)。
     """
     _fd_keys = ("base_amount", "fee_amount", "discount_amount")
     if tx_id is None:
@@ -975,11 +985,32 @@ def _normalize_fee_discount_amount(
 
     tx_type = payload.get("tx_type") if "tx_type" in payload else (existing.tx_type if existing else None)
     tx_type = tx_type or "expense"
-    if tx_type not in {"expense", "income"}:
+    if tx_type not in {"expense", "income", "transfer"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="fee/discount amounts are only supported for expense/income transactions",
+            detail="fee/discount amounts are only supported for expense/income/transfer transactions",
         )
+
+    if tx_type == "transfer":
+        fee_amount = payload.get("fee_amount") if "fee_amount" in payload else (
+            existing.fee_amount if existing else None
+        )
+        discount_amount = payload.get("discount_amount") if "discount_amount" in payload else (
+            existing.discount_amount if existing else None
+        )
+        if (fee_amount is not None and float(fee_amount) < 0) or (
+            discount_amount is not None and float(discount_amount) < 0
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fee/discount amount must not be negative",
+            )
+        # base_amount 對 transfer 不使用;理論上前端不該帶,這裡防禦性地
+        # 丟掉而不是報錯,避免跟 expense/income 共用同一個 payload 組裝路径
+        # 时误挡合法请求。不重算 amount——維持客戶端算好的值。
+        if "base_amount" in payload and payload["base_amount"] is not None:
+            payload["base_amount"] = None
+        return
 
     base_amount = payload.get("base_amount") if "base_amount" in payload else (
         existing.base_amount if existing else None

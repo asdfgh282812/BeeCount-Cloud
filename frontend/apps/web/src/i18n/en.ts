@@ -1529,6 +1529,8 @@ const en = {
   'transactions.field.total': 'Total',
   'transactions.field.feeDiscountToggle': 'Add fee/discount',
   'transactions.field.feeDiscountRemove': 'Remove',
+  'transactions.field.toAmount': 'Received amount',
+  'transactions.field.fillBalance': 'Use current balance',
   'transactions.placeholder.categoryName': 'category_name',
   'transactions.placeholder.accountName': 'account_name',
   'transactions.placeholder.noAccount': 'No account',

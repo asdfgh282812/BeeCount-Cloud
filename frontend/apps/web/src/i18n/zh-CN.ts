@@ -1571,6 +1571,8 @@ const zhCN = {
   'transactions.field.total': '总额',
   'transactions.field.feeDiscountToggle': '新增手续费/折扣',
   'transactions.field.feeDiscountRemove': '移除',
+  'transactions.field.toAmount': '转入金额',
+  'transactions.field.fillBalance': '代入当前余额',
   'transactions.placeholder.categoryName': '分类名称',
   'transactions.placeholder.accountName': '账户名称',
   'transactions.placeholder.noAccount': '不选择账户',

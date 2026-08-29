@@ -716,7 +716,16 @@ async def list_workspace_accounts(
         select(
             ReadTxProjection.from_account_sync_id,
             func.count().label("cnt"),
-            func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
+            # 轉帳手續費/折損(2026-08-29):轉出腳疊加轉出側手續費,沒有手續費
+            # 的舊資料 fee_amount 為 NULL,COALESCE 退回 amount,行為不變。跟
+            # App 端 LocalAccountRepository._transferOutEffect 是同一套公式。
+            func.coalesce(
+                func.sum(
+                    ReadTxProjection.amount
+                    + func.coalesce(ReadTxProjection.fee_amount, 0.0)
+                ),
+                0.0,
+            ).label("amt"),
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
@@ -730,9 +739,15 @@ async def list_workspace_accounts(
             func.count().label("cnt"),
             # 跨幣別轉帳(2026-08):轉入端要用轉入帳戶自身幣別的金額,不是
             # 轉出端的 amount——同幣種轉帳 to_amount 是 NULL,COALESCE 退回
-            # amount,行為不變。
+            # amount,行為不變。轉帳手續費/折損(2026-08-29):再疊加轉入側
+            # 折損,沒有折損的舊資料 discount_amount 為 NULL,COALESCE 退回
+            # 0,行為不變。跟 App 端 _transferInEffect 是同一套公式。
             func.coalesce(
-                func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+                func.sum(
+                    func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)
+                    - func.coalesce(ReadTxProjection.discount_amount, 0.0)
+                ),
+                0.0,
             ).label("amt"),
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
@@ -1875,6 +1890,11 @@ def workspace_net_worth_history(
             # 轉出端的 amount——同幣種轉帳 to_amount 是 NULL,下面 _apply
             # COALESCE 回 amount,行為不變。
             ReadTxProjection.to_amount,
+            # 轉帳手續費/折損(2026-08-29):疊加在餘額計算上的獨立 delta,
+            # 沒有手續費/折損的舊資料皆為 NULL,下面 _apply COALESCE 回 0,
+            # 行為不變。
+            ReadTxProjection.fee_amount,
+            ReadTxProjection.discount_amount,
             ReadTxProjection.happened_at,
             ReadTxProjection.account_sync_id,
             ReadTxProjection.from_account_sync_id,
@@ -1886,7 +1906,7 @@ def workspace_net_worth_history(
 
     bal = dict(init_by_acc)
 
-    def _apply(tx_type, amt, to_amt, acc, from_acc, to_acc):
+    def _apply(tx_type, amt, to_amt, fee_amt, discount_amt, acc, from_acc, to_acc):
         if tx_type == "income" and acc in bal:
             bal[acc] += amt
         elif tx_type == "expense" and acc in bal:
@@ -1896,9 +1916,9 @@ def workspace_net_worth_history(
         elif tx_type == "transfer":
             fa, ta = from_acc or acc, to_acc
             if fa in bal:
-                bal[fa] -= amt
+                bal[fa] -= amt + fee_amt
             if ta in bal:
-                bal[ta] += to_amt
+                bal[ta] += to_amt - discount_amt
 
     def _net():
         # 折算到主币种:各账户余额 × 该币种汇率;缺汇率(或无 base)的账户整条剔除,
@@ -1931,6 +1951,8 @@ def workspace_net_worth_history(
         _apply(
             tx.tx_type, float(tx.amount or 0.0),
             float(tx.to_amount) if tx.to_amount is not None else float(tx.amount or 0.0),
+            float(tx.fee_amount or 0.0),
+            float(tx.discount_amount or 0.0),
             tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id,
         )
         last_bucket = bucket

@@ -373,11 +373,19 @@ export function GlobalEditDialogs() {
         // 金額),沒用過這個功能(base_amount 為 null)時 fallback 回 amount,
         // 對既有交易的顯示完全沒有影響。
         amount: String(tx.base_amount ?? tx.amount),
-        fee_enabled: tx.fee_amount != null || tx.discount_amount != null,
+        // 轉帳手續費/折損(2026-08-29):transfer 用兩個獨立開關(轉出側
+        // fee_enabled、轉入側 discount_enabled);expense/income 維持既有的
+        // 「兩個分量共用 fee_enabled 一個開關」行為。同 TransactionsPage.tsx
+        // openTxEditForm 的同款寫法。
+        fee_enabled:
+          tx.tx_type === 'transfer'
+            ? tx.fee_amount != null
+            : tx.fee_amount != null || tx.discount_amount != null,
         fee_amount: tx.fee_amount != null ? String(tx.fee_amount) : '',
         fee_label: tx.fee_label || '',
         discount_amount: tx.discount_amount != null ? String(tx.discount_amount) : '',
         discount_label: tx.discount_label || '',
+        discount_enabled: tx.tx_type === 'transfer' ? tx.discount_amount != null : false,
         happened_at: tx.happened_at,
         deferred_posting_at: tx.deferred_posting_at ? isoToDateInputUtc(tx.deferred_posting_at) : '',
         // v30 多币种:回显该笔币种 + 原币种(提交时币种未变不发字段,金额
@@ -474,11 +482,17 @@ export function GlobalEditDialogs() {
           ? {
               tx_type: (duplicateOf.tx_type === 'adjustment' ? 'expense' : duplicateOf.tx_type) as TxForm['tx_type'],
               amount: String(duplicateOf.base_amount ?? duplicateOf.amount),
-              fee_enabled: duplicateOf.fee_amount != null || duplicateOf.discount_amount != null,
+              // 轉帳手續費/折損(2026-08-29):同 onOpenEditTx 的同款分流。
+              fee_enabled:
+                duplicateOf.tx_type === 'transfer'
+                  ? duplicateOf.fee_amount != null
+                  : duplicateOf.fee_amount != null || duplicateOf.discount_amount != null,
               fee_amount: duplicateOf.fee_amount != null ? String(duplicateOf.fee_amount) : '',
               fee_label: duplicateOf.fee_label || '',
               discount_amount: duplicateOf.discount_amount != null ? String(duplicateOf.discount_amount) : '',
               discount_label: duplicateOf.discount_label || '',
+              discount_enabled:
+                duplicateOf.tx_type === 'transfer' ? duplicateOf.discount_amount != null : false,
               currency: (duplicateOf.currency_code || '').toUpperCase(),
               original_currency: (duplicateOf.currency_code || '').toUpperCase(),
               note: duplicateOf.note || '',
@@ -538,9 +552,17 @@ export function GlobalEditDialogs() {
     // 手續費/折扣(2026-08 使用者需求):前端先算好即時預覽/離線送出用的
     // 總額,server 端仍會依 base_amount/fee_amount/discount_amount 重新算
     // 一次當最終權威(見 write/_shared.py::_normalize_fee_discount_amount)。
+    // 轉帳手續費/折損(2026-08-29):同 TransactionsPage.tsx 的同款分流——
+    // discount_amount 對 transfer 是獨立的 discount_enabled 開關,amount
+    // 不套用 base±fee∓discount 公式。
+    const isTransferForFeeDiscount = editTxForm.tx_type === 'transfer'
     const feeNum = editTxForm.fee_enabled ? Number(editTxForm.fee_amount) || 0 : 0
-    const discountNum = editTxForm.fee_enabled ? Number(editTxForm.discount_amount) || 0 : 0
-    const totalAmountNum = computeTxTotalAmount(editTxForm.tx_type, amountNum, feeNum, discountNum)
+    const discountNum = isTransferForFeeDiscount
+      ? (editTxForm.discount_enabled ? Number(editTxForm.discount_amount) || 0 : 0)
+      : (editTxForm.fee_enabled ? Number(editTxForm.discount_amount) || 0 : 0)
+    const totalAmountNum = isTransferForFeeDiscount
+      ? amountNum
+      : computeTxTotalAmount(editTxForm.tx_type, amountNum, feeNum, discountNum)
     // 退款交易(refund_of_id 非空)留空分类时 server 会自动归到自建的「退款」
     // 分类(`ensure_refund_category`),跟主表单(TransactionsPage.tsx)同款
     // 放宽,不强制用户手动选。
@@ -752,15 +774,25 @@ export function GlobalEditDialogs() {
       amount: finalAmountNum,
       // 手續費/折扣(2026-08 使用者需求):只在使用者有開啟這個功能時才送,
       // 沒開啟(一般交易)完全不影響 payload,server 端維持既有行為。
-      ...(editTxForm.fee_enabled
+      // 轉帳手續費/折損(2026-08-29):同 TransactionsPage.tsx 的同款分流。
+      ...(isTransferForFeeDiscount
         ? {
-            base_amount: finalBaseAmountNum,
-            fee_amount: finalFeeNum,
-            fee_label: editTxForm.fee_label.trim() || null,
-            discount_amount: finalDiscountNum,
-            discount_label: editTxForm.discount_label.trim() || null,
+            ...(editTxForm.fee_enabled
+              ? { fee_amount: finalFeeNum, fee_label: editTxForm.fee_label.trim() || null }
+              : {}),
+            ...(editTxForm.discount_enabled
+              ? { discount_amount: finalDiscountNum, discount_label: editTxForm.discount_label.trim() || null }
+              : {}),
           }
-        : {}),
+        : editTxForm.fee_enabled
+          ? {
+              base_amount: finalBaseAmountNum,
+              fee_amount: finalFeeNum,
+              fee_label: editTxForm.fee_label.trim() || null,
+              discount_amount: finalDiscountNum,
+              discount_label: editTxForm.discount_label.trim() || null,
+            }
+          : {}),
       happened_at: editTxForm.happened_at,
       // 延後入帳(§2.10 Phase 5):同 TransactionsPage.onSaveTransaction。
       deferred_posting_at: editTxForm.deferred_posting_at
