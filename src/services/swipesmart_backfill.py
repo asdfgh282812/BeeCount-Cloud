@@ -1,19 +1,25 @@
-"""SwipeSmart 使用額度回填(Phase 14,§3.3.4)。
+"""SwipeSmart 使用額度回填(Phase 14 §3.3.4;Phase 16 改版)。
 
-已對照 `swipesmart_card_id` 的信用卡帳戶,把「這一期截至目前為止的完整消費
-明細(金額+商家)」回填給 SwipeSmart,由 SwipeSmart 自己的規則庫換算成
-`usedCapAmount`(整批覆蓋,見 `POST /api/user/usages/recompute` 的幂等設
-計,`services/swipesmart_client.py::recompute_usage`)。
+已對照 `swipesmart_card_id` 的信用卡帳戶,直接把 BeeCount 自己算好的「這期
+各上限群組已經用了多少回饋金額」推給 SwipeSmart(`POST /api/user/usages/
+direct`,見 `services/swipesmart_client.py::set_usages_direct`)——不再像
+Phase 14 那樣把整批消費明細(金額+商家)丟給 SwipeSmart,靠它自己用商家
+名稱字串去猜類別。
+
+刻意偏離的原因(2026-08-30 使用者反饋踩到的真實 bug):BeeCount 的交易商家
+欄位大多是空的,SwipeSmart 只要那張卡沒有 `General`/`GENERAL` 這條 catch-all
+規則接住,商家比對就完全落空,回填永遠停在 0——而 BeeCount 自己
+(`services/card_rewards.py`)本來就用使用者自己指定的分類/規則正確算出
+「這期用了多少」,沒有理由讓 SwipeSmart 再用一次準確度更低的方式重新猜一遍。
 
 跟 `card_reward_payout.materialize_due_card_reward_payouts` 同一個「不
 commit,呼叫方決定事務邊界」的既有慣例 —— 這裡完全是唯讀查詢 + 對外部服務
 的呼叫,本來就不需要寫 DB,不commit 也成立。
 
 刻意偏離(見 docs/PH14 plan):`UserAccountProjection` 是 user-global,但
-交易是 ledger-scoped,`credit_card_billing` 的週期計算又要吃 `ledger_id`。
-這裡把範圍收斂到使用者**自己擁有**的帳本(`Ledger.user_id == user.id`),
-不含分享/協作的帳本 —— 合理的 v1 邊界(「自己的信用卡」通常只會在自己的
-帳本記帳)。
+交易是 ledger-scoped。這裡把範圍收斂到使用者**自己擁有**的帳本
+(`Ledger.user_id == user.id`),不含分享/協作的帳本 —— 合理的 v1 邊界
+(「自己的信用卡」通常只會在自己的帳本記帳)。
 """
 from __future__ import annotations
 
@@ -24,30 +30,104 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Ledger, ReadTxProjection, User, UserAccountProjection, UserProfile
-from . import card_rewards, credit_card, credit_card_billing, secret_crypto, swipesmart_client
-from .deferred_posting import attribution_date_expr
+from ..models import (
+    Ledger,
+    ReadCardRewardRuleProjection,
+    ReadTxProjection,
+    User,
+    UserAccountProjection,
+    UserProfile,
+)
+from . import card_rewards, secret_crypto, swipesmart_client
 
 logger = logging.getLogger(__name__)
 
 
-def _collect_cycle_transactions(
-    db: Session, *, user_id: str, account_sync_id: str, ledger_ids: list[str],
-    cycle_start_dt: datetime, cycle_end_dt: datetime,
-) -> list[dict]:
-    if not ledger_ids:
-        return []
-    rows = db.execute(
-        select(ReadTxProjection.amount, ReadTxProjection.merchant).where(
+def _format_cap_amount_key(cap_amount: float) -> str:
+    """比照 SwipeSmart `RewardRule.CapGroupId` 的
+    `CapAmount.Value.ToString("0.####", CultureInfo.InvariantCulture)` 格式
+    ——四捨五入到 4 位小數後去掉多餘的尾端 0。兩邊格式不一致會導致組出來的
+    `CapGroupId` 對不上,SwipeSmart 永遠找不到這條使用量歸屬哪條規則。"""
+    text = f"{round(cap_amount, 4):.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _resolve_ledger_id_for_account(
+    db: Session, *, user_id: str, account_sync_id: str, owned_ledger_ids: list[str],
+) -> str | None:
+    """卡片規則不掛 ledger_id(user-global 實體),用它名下任一筆交易反查落在
+    哪本帳(比照 `services/card_reward_payout.py::_resolve_ledger_id` 同款
+    既有做法,這裡另外限制在使用者自己擁有的帳本範圍內)。完全沒有交易的卡
+    沒有可掃描的範圍,回傳 None。"""
+    if not owned_ledger_ids:
+        return None
+    return db.scalar(
+        select(ReadTxProjection.ledger_id).where(
             ReadTxProjection.user_id == user_id,
-            ReadTxProjection.ledger_id.in_(ledger_ids),
+            ReadTxProjection.ledger_id.in_(owned_ledger_ids),
             ReadTxProjection.account_sync_id == account_sync_id,
-            ReadTxProjection.tx_type == "expense",
-            attribution_date_expr() > cycle_start_dt,
-            attribution_date_expr() <= cycle_end_dt,
+        ).limit(1)
+    )
+
+
+def _collect_cap_group_usages(
+    db: Session, *, user_id: str, ledger_id: str, account: UserAccountProjection, now: datetime,
+) -> dict[str, float]:
+    """算出這個帳戶目前生效的信用卡回饋規則,依 SwipeSmart 的 CapGroupId
+    (`CardId|CapAmount`)分組後,各組本期已使用的回饋金額——直接複用
+    `services.card_rewards`(跟「紅利回饋」頁面同一套計算,數字保證跟使用者
+    在 UI 上看到的一致)。
+
+    先照 BeeCount 自己的 `cap_shared_key` 分組(等同 `apply_caps` 內部分組)
+    算出每組已用多少,再依 `cap_amount` 二次合併——SwipeSmart 的 CapGroupId
+    只認 CapAmount,不認 `cap_shared_key`。如果同一張卡有兩個不共用
+    `cap_shared_key`、但剛好上限金額相同的群組,物理上就是只能送到同一個
+    `CapGroupId`,這裡會強制合併並記一筆 warning(可能代表這兩組其實該共用
+    同一個真實上限,或只是剛好撞到同一個上限金額,值得回頭確認,而不是預期
+    它們會各自準確累加)。"""
+    own_rules = db.scalars(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == user_id,
+            ReadCardRewardRuleProjection.account_sync_id == account.sync_id,
         )
     ).all()
-    return [{"amount": float(amount or 0.0), "merchantName": merchant or ""} for amount, merchant in rows]
+    if not own_rules:
+        return {}
+
+    all_rules = card_rewards.fetch_cap_group_rules(db, user_id=user_id, base_rules=own_rules)
+    results = card_rewards.compute_account_card_rewards(
+        db, ledger_id=ledger_id, account=account, rules=all_rules, now=now, period_offset=0,
+    )
+    card_rewards.apply_caps(results)
+
+    own_rule_ids = {r.sync_id for r in own_rules}
+    bee_group_totals: dict[str, float] = {}
+    bee_group_cap: dict[str, float] = {}
+    for r in results:
+        rule = r["rule"]
+        if rule.sync_id not in own_rule_ids or r["status"] != "ok" or rule.cap_amount is None:
+            continue
+        key = rule.cap_shared_key or f"__own_{rule.sync_id}"
+        bee_group_totals[key] = bee_group_totals.get(key, 0.0) + r["capped_reward"]
+        bee_group_cap[key] = rule.cap_amount
+
+    by_cap_amount: dict[float, float] = {}
+    contributing_keys: dict[float, list[str]] = {}
+    for key, total in bee_group_totals.items():
+        cap_amount = bee_group_cap[key]
+        by_cap_amount[cap_amount] = by_cap_amount.get(cap_amount, 0.0) + total
+        contributing_keys.setdefault(cap_amount, []).append(key)
+
+    for cap_amount, keys in contributing_keys.items():
+        if len(keys) > 1:
+            logger.warning(
+                "swipesmart_backfill: account=%s cap_amount=%s 由 %d 個不共用 cap_shared_key "
+                "的規則群組合併推送(%s)——SwipeSmart 的 CapGroupId 只認 CapAmount,無法分開送,"
+                "請確認這些是不是該共用同一個真實上限。",
+                account.sync_id, cap_amount, len(keys), keys,
+            )
+
+    return {_format_cap_amount_key(cap): amount for cap, amount in by_cap_amount.items()}
 
 
 async def _backfill_one_user(db: Session, *, user: User, now: datetime) -> tuple[int, int]:
@@ -83,22 +163,17 @@ async def _backfill_one_user(db: Session, *, user: User, now: datetime) -> tuple
         card_id = account.swipesmart_card_id
         if not card_id:
             continue
-        schedule = card_rewards.resolve_billing_schedule(db, account=account)
-        if schedule is None:
-            continue
-        billing_day, _payment_due_day = schedule
-        cycle_start, cycle_end = credit_card.billing_cycle_containing(now.date(), billing_day)
-        cycle_start_dt = credit_card_billing.date_to_utc_dt(cycle_start, end_of_day=True)
-        cycle_end_dt = credit_card_billing.date_to_utc_dt(cycle_end, end_of_day=True)
 
-        transactions = _collect_cycle_transactions(
-            db, user_id=user.id, account_sync_id=account.sync_id, ledger_ids=owned_ledger_ids,
-            cycle_start_dt=cycle_start_dt, cycle_end_dt=cycle_end_dt,
+        ledger_id = _resolve_ledger_id_for_account(
+            db, user_id=user.id, account_sync_id=account.sync_id, owned_ledger_ids=owned_ledger_ids,
         )
+        usages = (
+            _collect_cap_group_usages(db, user_id=user.id, ledger_id=ledger_id, account=account, now=now)
+            if ledger_id is not None else {}
+        )
+
         attempted += 1
-        ok = await swipesmart_client.recompute_usage(
-            api_key, card_id=card_id, transactions=transactions,
-        )
+        ok = await swipesmart_client.set_usages_direct(api_key, card_id=card_id, usages=usages)
         if ok:
             succeeded += 1
     return attempted, succeeded
@@ -111,8 +186,7 @@ def run_swipesmart_usage_backfill(db: Session, *, now: datetime | None = None) -
     `asyncio.to_thread` 跑同步的 `run_job`),不會有巢狀 loop 衝突。
 
     不 commit(純唯讀查詢 + 外部呼叫,無需寫 DB)。回傳
-    `{"users": N, "accounts_attempted": M, "accounts_succeeded": K}`。
-    """
+    `{"users": N, "accounts_attempted": M, "accounts_succeeded": K}`。"""
     now = now or datetime.now(timezone.utc)
 
     users = db.scalars(

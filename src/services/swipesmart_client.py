@@ -117,30 +117,28 @@ async def recommend(
         return None
 
 
-async def recompute_usage(api_key: str, *, card_id: str, transactions: list[dict]) -> bool:
-    """POST /api/user/usages/recompute —— 整批覆蓋(不是累加)這張卡當期的
-    usedCapAmount(見 EXTERNAL_INTEGRATION_SPEC.md §4.4)。呼叫方(usage
-    backfill job)只在乎成功與否,失敗一律記錄後略過、不重試阻塞。
-
-    注意:截至本次實作,這支端點在 SwipeSmart2 本地 git checkout 裡尚不存在
-    (docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md context 已記錄這個落差)——
-    404 會被下面的 raise_for_status 當一般失敗吞掉,行為上等同「這次回填
-    先跳過」,不會拋出例外影響呼叫方。
-    """
+async def set_usages_direct(api_key: str, *, card_id: str, usages: dict[str, float]) -> bool:
+    """POST /api/user/usages/direct —— 整批覆蓋(不是累加)這張卡當期各上限
+    群組的 usedCapAmount。`usages` 的 key 是 CapAmount(格式比照 SwipeSmart
+    `RewardRule.CapGroupId` 的 `"0.####"` invariant-culture 字串化規則,見
+    `services/swipesmart_backfill.py::_format_cap_amount_key`),value 是
+    BeeCount 自己算好(`services.card_rewards`)的已用回饋金額——跳過
+    SwipeSmart 端用商家名稱猜類別那一段,呼叫方(usage backfill job)只在乎
+    成功與否,失敗一律記錄後略過、不重試阻塞。"""
     base = _base_url()
     if not base:
         return False
-    body = {"cardId": card_id, "transactions": transactions}
+    body = {"cardId": card_id, "usages": usages}
     try:
         async with httpx.AsyncClient(timeout=_timeout()) as client:
             resp = await client.post(
-                f"{base}/api/user/usages/recompute", headers=_headers(api_key), json=body
+                f"{base}/api/user/usages/direct", headers=_headers(api_key), json=body
             )
             resp.raise_for_status()
             return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "swipesmart: POST /api/user/usages/recompute failed card_id=%s err=%s",
+            "swipesmart: POST /api/user/usages/direct failed card_id=%s err=%s",
             card_id, exc,
         )
         return False
