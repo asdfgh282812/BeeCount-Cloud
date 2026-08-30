@@ -378,3 +378,63 @@ def test_backfill_still_attempts_account_when_billing_cycle_rule_unresolvable():
         assert kwargs["usages"] == {}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_backfill_only_counts_current_period_when_calendar_month_rule_spans_two_months():
+    """2026-08-30 使用者反饋:星展卡帳單日 11 號、帳單週期 8/12~9/11,
+    `calendar_month` 規則橫跨這個週期時 `compute_account_card_rewards` 會拆成
+    8 月、9 月兩筆各自獨立的 result(見 `test_card_rewards.py::
+    test_card_rewards_calendar_month_splits_billing_cycle_into_two_months`)。
+    回填只應該推送「本期」(`now` 當下落在的那個自然月,這裡是 8 月)的用量,
+    不能像改版前那樣把兩個月的 `capped_reward` 加在一起送給 SwipeSmart——
+    否則等於沒有照使用者設定的計算週期(自然月/帳單週期)切開。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "bf8@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "bf8@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lg1", "account", "acc1",
+              {"syncId": "acc1", "name": "星展信用卡", "type": "credit_card", "currency": "CNY",
+               "swipesmartCardId": "DBS_CARD", "billingDay": 11, "paymentDueDay": 25},
+              device_id="d-app")
+        _push_rule(client, hdr_app, "lg1", "rule-a", account_id="acc1",
+                   cap_amount=500.0, rate_value=9.0, label="星展加碼")
+
+        # 8 月一筆(本期,應該計入)、9 月一筆(下期,不應該計入本次回填)——
+        # 兩筆都落在同一個帳單週期視窗(8/12~9/11)內,`_resolve_periods` 會把
+        # 這條 calendar_month 規則拆成 8 月、9 月兩個各自獨立的自然月。
+        _push(client, hdr_app, "lg1", "transaction", "tx-aug",
+              {"syncId": "tx-aug", "type": "expense", "amount": 1000.0,
+               "happenedAt": "2026-08-20T12:00:00+00:00",
+               "accountId": "acc1", "accountName": "星展信用卡",
+               "rewardRuleIds": ["rule-a"]}, device_id="d-app")
+        _push(client, hdr_app, "lg1", "transaction", "tx-sep",
+              {"syncId": "tx-sep", "type": "expense", "amount": 500.0,
+               "happenedAt": "2026-09-02T12:00:00+00:00",
+               "accountId": "acc1", "accountName": "星展信用卡",
+               "rewardRuleIds": ["rule-a"]}, device_id="d-app")
+
+        client.post(
+            "/api/v1/profile/swipesmart", headers=hdr_web,
+            json={"api_key": "ssm_test_key_1234567890"},
+        )
+
+        as_of = datetime(2026, 8, 30, 12, tzinfo=timezone.utc)
+        with TS() as db:
+            with patch(
+                "src.services.swipesmart_client.set_usages_direct",
+                new=AsyncMock(return_value=True),
+            ) as mock_set:
+                result = swipesmart_backfill.run_swipesmart_usage_backfill(db, now=as_of)
+
+        assert result == {"users": 1, "accounts_attempted": 1, "accounts_succeeded": 1}
+        _, kwargs = mock_set.call_args
+        # 只算 8 月:1000*9% = 90。若沒有依週期切開,會誤把 9 月的
+        # 500*9%=45 也加進來變成 135。
+        assert kwargs["usages"] == {"500": 90.0}
+    finally:
+        app.dependency_overrides.clear()

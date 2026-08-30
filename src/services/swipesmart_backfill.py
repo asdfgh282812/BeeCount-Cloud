@@ -84,7 +84,16 @@ def _collect_cap_group_usages(
     `cap_shared_key`、但剛好上限金額相同的群組,物理上就是只能送到同一個
     `CapGroupId`,這裡會強制合併並記一筆 warning(可能代表這兩組其實該共用
     同一個真實上限,或只是剛好撞到同一個上限金額,值得回頭確認,而不是預期
-    它們會各自準確累加)。"""
+    它們會各自準確累加)。
+
+    `card_rewards.compute_account_card_rewards`(Phase 22)對橫跨帳單週期的
+    `calendar_month` 規則會回傳它涵蓋到的**每一個**自然月各自一筆 result
+    (例如帳單週期 8/12~9/11,會拆成 8 月、9 月兩筆)——這裡只要「本期」
+    (`now` 當下落在的那一個週期,不論規則是 `自然月` 還是 `帳單週期`,
+    `_resolve_periods` 已經各自算好正確邊界),不能像 SwipeSmart 那樣把
+    多個週期的 `capped_reward` 加在一起送出去,否則等於沒有照使用者設定的
+    計算週期切開(2026-08-30 使用者反饋踩到的 bug:星展卡帳單週期橫跨
+    8/9 月,回填把兩個月的用量加總送出)。"""
     own_rules = db.scalars(
         select(ReadCardRewardRuleProjection).where(
             ReadCardRewardRuleProjection.user_id == user_id,
@@ -100,12 +109,15 @@ def _collect_cap_group_usages(
     )
     card_rewards.apply_caps(results)
 
+    as_of_date = now.date()
     own_rule_ids = {r.sync_id for r in own_rules}
     bee_group_totals: dict[str, float] = {}
     bee_group_cap: dict[str, float] = {}
     for r in results:
         rule = r["rule"]
         if rule.sync_id not in own_rule_ids or r["status"] != "ok" or rule.cap_amount is None:
+            continue
+        if not (r["period_start"] <= as_of_date <= r["period_end"]):
             continue
         key = rule.cap_shared_key or f"__own_{rule.sync_id}"
         bee_group_totals[key] = bee_group_totals.get(key, 0.0) + r["capped_reward"]
