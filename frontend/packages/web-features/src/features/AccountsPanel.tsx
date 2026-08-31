@@ -28,7 +28,7 @@ import {
   TYPE_COLORS,
   TypeIcon
 } from '../components/AccountListRow'
-import { AvatarCropDialog } from '../components/AvatarCropDialog'
+import { AvatarCropDialog, type AvatarCropSource } from '../components/AvatarCropDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
@@ -810,7 +810,7 @@ export function AccountsPanel({
   const [open, setOpen] = useState(false)
   // 帳戶頭像裁剪(2026-09-01 補強):選檔後不直接上傳,先跳裁剪彈窗,確認後才
   // 呼叫 onUploadAvatar,固定 4:3 對齊現有卡片預覽形狀。
-  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null)
+  const [avatarCropSource, setAvatarCropSource] = useState<AvatarCropSource | null>(null)
   const prevOpenSignalRef = useRef(openSignal)
   useEffect(() => {
     if (openSignal !== undefined && openSignal !== prevOpenSignalRef.current) {
@@ -1221,11 +1221,20 @@ export function AccountsPanel({
                 <Label>{t('accounts.field.avatar')}</Label>
                 <div className="flex items-center gap-3">
                   {form.avatar_cloud_file_id && avatarPreviewUrlByFileId?.[form.avatar_cloud_file_id] ? (
-                    <img
-                      alt=""
-                      src={avatarPreviewUrlByFileId[form.avatar_cloud_file_id]}
-                      className="h-12 w-16 shrink-0 rounded-md object-cover ring-1 ring-border"
-                    />
+                    <button
+                      type="button"
+                      title={t('avatarCrop.editHint') as string}
+                      onClick={() =>
+                        setAvatarCropSource({ url: avatarPreviewUrlByFileId[form.avatar_cloud_file_id] })
+                      }
+                      className="shrink-0 rounded-md ring-1 ring-border transition hover:opacity-80"
+                    >
+                      <img
+                        alt=""
+                        src={avatarPreviewUrlByFileId[form.avatar_cloud_file_id]}
+                        className="h-12 w-16 rounded-md object-cover"
+                      />
+                    </button>
                   ) : null}
                   <input
                     type="file"
@@ -1235,7 +1244,7 @@ export function AccountsPanel({
                       const file = e.target.files?.[0]
                       e.currentTarget.value = ''
                       if (!file) return
-                      setAvatarCropFile(file)
+                      setAvatarCropSource(file)
                     }}
                   />
                   {form.avatar_cloud_file_id ? (
@@ -1349,13 +1358,13 @@ export function AccountsPanel({
       </Dialog>
       {onUploadAvatar ? (
         <AvatarCropDialog
-          file={avatarCropFile}
+          source={avatarCropSource}
           aspect={4 / 3}
           cropShape="rect"
-          onCancel={() => setAvatarCropFile(null)}
+          onCancel={() => setAvatarCropSource(null)}
           onConfirm={async (croppedFile) => {
             const res = await onUploadAvatar(croppedFile)
-            setAvatarCropFile(null)
+            setAvatarCropSource(null)
             if (res) {
               onFormChange({
                 ...form,

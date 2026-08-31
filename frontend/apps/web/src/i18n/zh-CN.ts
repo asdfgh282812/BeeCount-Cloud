@@ -1736,6 +1736,7 @@ const zhCN = {
 
   'avatarCrop.title': '调整图片',
   'avatarCrop.zoom': '缩放',
+  'avatarCrop.editHint': '点击可重新裁剪',
   'accounts.field.bankNameHint': '如:招商银行',
   'accounts.field.cardLastFour': '卡号后四位',
   'accounts.field.note': '备注',

@@ -670,6 +670,9 @@ export function AccountsPage() {
         onUploadAvatar={async (file) => {
           try {
             const out = await uploadAccountAvatar(token, { file })
+            // 新上传的 fileId 还不在 rows 里,不能等那个 effect 去拉预览 —— 这里
+            // 立即触发一次,避免裁剪确认后头像缩略图暂时不显示。
+            ensureLoadedMany([out.file_id])
             return { fileId: out.file_id, sha256: out.sha256 }
           } catch (err) {
             notifyError(err)

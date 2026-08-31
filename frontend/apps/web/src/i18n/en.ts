@@ -1697,6 +1697,7 @@ const en = {
 
   'avatarCrop.title': 'Adjust photo',
   'avatarCrop.zoom': 'Zoom',
+  'avatarCrop.editHint': 'Click to re-crop',
   'accounts.field.bankNameHint': 'e.g. Bank of America',
   'accounts.field.cardLastFour': 'Card Last 4',
   'accounts.field.note': 'Note',

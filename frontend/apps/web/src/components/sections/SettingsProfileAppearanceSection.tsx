@@ -297,7 +297,7 @@ export function SettingsProfileAppearanceSection() {
                 onChange={handleAvatarSelected}
               />
               <AvatarCropDialog
-                file={avatarCropFile}
+                source={avatarCropFile}
                 aspect={1}
                 cropShape="round"
                 onCancel={() => setAvatarCropFile(null)}

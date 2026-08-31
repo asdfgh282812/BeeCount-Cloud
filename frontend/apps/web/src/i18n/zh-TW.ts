@@ -1697,6 +1697,7 @@ const zhTW = {
 
   'avatarCrop.title': '調整圖片',
   'avatarCrop.zoom': '縮放',
+  'avatarCrop.editHint': '點擊可重新裁剪',
   'accounts.field.bankNameHint': '如:招商銀行',
   'accounts.field.cardLastFour': '卡號後四位',
   'accounts.field.note': '備註',
