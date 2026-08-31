@@ -28,6 +28,7 @@ import {
   TYPE_COLORS,
   TypeIcon
 } from '../components/AccountListRow'
+import { AvatarCropDialog } from '../components/AvatarCropDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
@@ -807,6 +808,9 @@ export function AccountsPanel({
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  // 帳戶頭像裁剪(2026-09-01 補強):選檔後不直接上傳,先跳裁剪彈窗,確認後才
+  // 呼叫 onUploadAvatar,固定 4:3 對齊現有卡片預覽形狀。
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null)
   const prevOpenSignalRef = useRef(openSignal)
   useEffect(() => {
     if (openSignal !== undefined && openSignal !== prevOpenSignalRef.current) {
@@ -1227,18 +1231,11 @@ export function AccountsPanel({
                     type="file"
                     accept="image/*"
                     className="text-sm"
-                    onChange={async (e) => {
+                    onChange={(e) => {
                       const file = e.target.files?.[0]
                       e.currentTarget.value = ''
                       if (!file) return
-                      const res = await onUploadAvatar(file)
-                      if (res) {
-                        onFormChange({
-                          ...form,
-                          avatar_cloud_file_id: res.fileId,
-                          avatar_cloud_sha256: res.sha256
-                        })
-                      }
+                      setAvatarCropFile(file)
                     }}
                   />
                   {form.avatar_cloud_file_id ? (
@@ -1350,6 +1347,25 @@ export function AccountsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {onUploadAvatar ? (
+        <AvatarCropDialog
+          file={avatarCropFile}
+          aspect={4 / 3}
+          cropShape="rect"
+          onCancel={() => setAvatarCropFile(null)}
+          onConfirm={async (croppedFile) => {
+            const res = await onUploadAvatar(croppedFile)
+            setAvatarCropFile(null)
+            if (res) {
+              onFormChange({
+                ...form,
+                avatar_cloud_file_id: res.fileId,
+                avatar_cloud_sha256: res.sha256
+              })
+            }
+          }}
+        />
+      ) : null}
     </>
   )
 }

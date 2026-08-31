@@ -1694,6 +1694,9 @@ const en = {
   'accounts.field.parentAccountHint': 'When linked, this card\'s spending is merged into the parent account\'s billing summary.',
   'accounts.field.bankName': 'Bank Name',
   'accounts.field.avatar': 'Account Photo',
+
+  'avatarCrop.title': 'Adjust photo',
+  'avatarCrop.zoom': 'Zoom',
   'accounts.field.bankNameHint': 'e.g. Bank of America',
   'accounts.field.cardLastFour': 'Card Last 4',
   'accounts.field.note': 'Note',

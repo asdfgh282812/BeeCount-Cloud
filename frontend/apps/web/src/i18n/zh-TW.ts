@@ -1694,6 +1694,9 @@ const zhTW = {
   'accounts.field.parentAccountHint': '掛靠後,這張卡的消費會合併算進主帳戶的帳單摘要。',
   'accounts.field.bankName': '開戶行',
   'accounts.field.avatar': '帳戶頭像',
+
+  'avatarCrop.title': '調整圖片',
+  'avatarCrop.zoom': '縮放',
   'accounts.field.bankNameHint': '如:招商銀行',
   'accounts.field.cardLastFour': '卡號後四位',
   'accounts.field.note': '備註',

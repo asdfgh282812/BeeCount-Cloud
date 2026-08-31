@@ -38,6 +38,7 @@ import {
 } from '@beecount/ui'
 
 import { patchProfileMe, uploadProfileAvatar } from '@beecount/api-client'
+import { AvatarCropDialog } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
@@ -85,6 +86,7 @@ export function SettingsProfileAppearanceSection() {
   const { color: primaryColor } = usePrimaryColor()
   const [themeOpen, setThemeOpen] = useState(false)
   const [avatarUploading, setAvatarUploading] = useState(false)
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null)
   const [incomeColorSaving, setIncomeColorSaving] = useState(false)
   const [nameEditing, setNameEditing] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
@@ -115,7 +117,7 @@ export function SettingsProfileAppearanceSection() {
     fileInputRef.current?.click()
   }
 
-  const handleAvatarSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     // 选完后清掉 input,允许同名文件再次触发 onChange
     event.target.value = ''
@@ -128,9 +130,13 @@ export function SettingsProfileAppearanceSection() {
       toast.error(t('profile.avatar.upload.tooLarge'))
       return
     }
+    setAvatarCropFile(file)
+  }
+
+  const handleAvatarCropConfirm = async (croppedFile: File) => {
     setAvatarUploading(true)
     try {
-      await uploadProfileAvatar(token, file)
+      await uploadProfileAvatar(token, croppedFile)
       // server 已广播 profile_change,WS 监听会触发 refreshProfile;这里也立即拉一次
       // 兜底,避免 WS 偶尔丢包或本地连接刚断开。
       await refreshProfile()
@@ -139,6 +145,7 @@ export function SettingsProfileAppearanceSection() {
       toast.error(localizeError(err, t))
     } finally {
       setAvatarUploading(false)
+      setAvatarCropFile(null)
     }
   }
 
@@ -288,6 +295,13 @@ export function SettingsProfileAppearanceSection() {
                 accept="image/*"
                 className="hidden"
                 onChange={handleAvatarSelected}
+              />
+              <AvatarCropDialog
+                file={avatarCropFile}
+                aspect={1}
+                cropShape="round"
+                onCancel={() => setAvatarCropFile(null)}
+                onConfirm={handleAvatarCropConfirm}
               />
               <div className="min-w-0 flex-1">
                 {/* 欢迎语图标 + 文案 + display name 同一行 —— icon 按时段切

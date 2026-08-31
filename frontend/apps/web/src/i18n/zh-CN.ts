@@ -1733,6 +1733,9 @@ const zhCN = {
   'accounts.field.parentAccountHint': '挂靠后,这张卡的消费会合并算进主账户的账单摘要。',
   'accounts.field.bankName': '开户行',
   'accounts.field.avatar': '账户头像',
+
+  'avatarCrop.title': '调整图片',
+  'avatarCrop.zoom': '缩放',
   'accounts.field.bankNameHint': '如:招商银行',
   'accounts.field.cardLastFour': '卡号后四位',
   'accounts.field.note': '备注',
