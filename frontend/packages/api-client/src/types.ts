@@ -1256,6 +1256,16 @@ export type NetWorthHistory = {
   multi_currency: boolean
 }
 
+/** 淨資產卡片用:跨帳本按幣種彙總未結清、未排除的欠款/應收(見
+ *  `src/routers/read/workspace.py` `_workspace_debt_currency_totals`
+ *  docstring)。receivable(對方欠我)算資產、payable(我欠對方)算負債,
+ *  跟 accounts 的 include_in_total 語意對齐。 */
+export type WorkspaceDebtCurrencyTotal = {
+  currency: string
+  receivable_total: number
+  payable_total: number
+}
+
 // ────────── 通知中心(MOZE_FEATURE_GAP_SD.md §2.1，Phase 0）──────────
 // user-global，非 sync 实体，走普通 REST（GET /notifications 等），跟其余
 // ledger-scoped read/write 契约不是一回事。

@@ -992,6 +992,96 @@ async def list_workspace_accounts(
     return all_accounts[offset : offset + limit]
 
 
+def _workspace_debt_currency_totals(
+    db: Session, *, ledgers: list[Ledger],
+) -> dict[str, dict[str, float]]:
+    """跨帳本彙總未結清、未排除的欠款/應收,按帳本幣種分桶(debt 沒有自己的
+    幣種欄位,沿用所屬帳本幣種,跟 accounts 一致)。供 `/workspace/debts` 卡片
+    端點跟 `/workspace/net-worth-history` 趨勢端點共用同一份口徑,避免兩邊
+    各自實作走岔。回傳 `{currency: {"receivable_total": x, "payable_total": y}}`,
+    remaining_amount 口徑同 `/ledgers/{id}/debts`(principal - repaid,非負,
+    已結清 <=0.01 的不計入),excluded_from_total=True 的不計入。"""
+    if not ledgers:
+        return {}
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_currency = {l.id: (l.currency or "CNY").upper() for l in ledgers}
+
+    rows = db.execute(
+        select(
+            ReadDebtProjection.sync_id,
+            ReadDebtProjection.ledger_id,
+            ReadDebtProjection.direction,
+            ReadDebtProjection.principal_amount,
+            ReadDebtProjection.excluded_from_total,
+        ).where(
+            ReadDebtProjection.ledger_id.in_(ledger_internal_ids),
+            ReadDebtProjection.closed_at.is_(None),
+        )
+    ).all()
+    # 排除 excluded_from_total(跟 accounts.include_in_total 一樣用 Python 端
+    # 判 `is not True`,兼容遷移前遺留的 NULL,不用 SQL == False)。
+    rows = [r for r in rows if r.excluded_from_total is not True]
+    if not rows:
+        return {}
+
+    debt_ids = [row.sync_id for row in rows]
+    repaid_rows = db.execute(
+        select(
+            ReadTxProjection.debt_sync_id,
+            func.coalesce(func.sum(func.abs(ReadTxProjection.amount)), 0.0),
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.debt_sync_id.in_(debt_ids),
+        ).group_by(ReadTxProjection.debt_sync_id)
+    ).all()
+    repaid_by_debt = {debt_sid: float(amt or 0.0) for debt_sid, amt in repaid_rows}
+
+    # remaining_amount 口徑同 /ledgers/{id}/debts:principal - repaid,已結清
+    # (<=0.01)的不計入,避免已還清部分重複算進總額。
+    totals: dict[str, dict[str, float]] = {}
+    for row in rows:
+        remaining = max(
+            float(row.principal_amount or 0.0) - repaid_by_debt.get(row.sync_id, 0.0), 0.0
+        )
+        if remaining <= 0.01:
+            continue
+        currency = ledger_currency.get(row.ledger_id, "CNY")
+        bucket = totals.setdefault(currency, {"receivable_total": 0.0, "payable_total": 0.0})
+        if row.direction == "receivable":
+            bucket["receivable_total"] += remaining
+        else:
+            bucket["payable_total"] += remaining
+    return totals
+
+
+@router.get("/workspace/debts", response_model=list[WorkspaceDebtCurrencyTotalOut])
+async def list_workspace_debt_totals(
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[WorkspaceDebtCurrencyTotalOut]:
+    """淨資產卡片用:跨帳本彙總未結清、未排除的欠款/應收,按帳本幣種分桶,
+    讓前端能跟 /workspace/accounts 一樣折算進「資產/負債」總額(§淨資產卡
+    此前完全沒查過 debts 表,导致 app 端把應收算進資產、這裡沒算,兩邊對不上
+    帳——見 mobile LocalRepository.getNetWorthBreakdown 對應口徑)。"""
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
+    totals = _workspace_debt_currency_totals(db, ledgers=ledgers)
+    return [
+        WorkspaceDebtCurrencyTotalOut(
+            currency=currency,
+            receivable_total=vals["receivable_total"],
+            payable_total=vals["payable_total"],
+        )
+        for currency, vals in totals.items()
+    ]
+
+
 @router.get("/workspace/categories", response_model=list[WorkspaceCategoryOut])
 def list_workspace_categories(
     ledger_id: str | None = Query(default=None),
@@ -1814,6 +1904,14 @@ def workspace_net_worth_history(
     if not ledger_internal_ids:
         return NetWorthHistoryOut(series=[], multi_currency=False)
 
+    # 欠款/應收(§淨資產卡同一份口徑,見 `_workspace_debt_currency_totals`
+    # docstring):目前沒有逐月的欠款餘額歷史(debt 不像 account 有完整交易流水
+    # 可以逐月 replay),這裡簡化成「目前未結清餘額」當常數疊加到每個月分桶
+    # (見下方 `_net()`),而不是真正的歷史欠款餘額——跟純用 accounts 算出來的
+    # 趨勢線相比,早期月份的資產/負債會偏移,但至少「最新一個月」會跟淨資產卡
+    # 對上帳,好過完全不算。
+    debt_totals = _workspace_debt_currency_totals(db, ledgers=ledgers)
+
     accts = db.execute(
         select(
             UserAccountProjection.sync_id,
@@ -1830,6 +1928,7 @@ def workspace_net_worth_history(
     is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
     acc_currency = {a.sync_id: (a.currency or "CNY").upper() for a in accts}
     currencies = {(a.currency or "CNY").upper() for a in accts if a.sync_id in init_by_acc}
+    currencies |= set(debt_totals.keys())
     multi_currency = len(currencies) > 1
 
     # 主币种(base):用户设的 primary_currency;没设则单币种用唯一币种、多币种留空
@@ -1881,6 +1980,18 @@ def workspace_net_worth_history(
                 continue
             if r > 0:
                 rates_to_base[ov.quote_currency.upper()] = r
+
+    # 欠款/應收折到 base 後的常數增量(見上方 debt_totals 註解):缺匯率的幣種
+    # 整條剔除,絕不按 1.0 裸加,跟 accounts 同口徑。payable(我欠對方)算負債,
+    # 用負數疊加,對齐 credit_card/loan 帳戶餘額本身就是負數的慣例。
+    debt_assets_delta = 0.0
+    debt_liab_delta = 0.0
+    for cur, vals in debt_totals.items():
+        rate = rates_to_base.get(cur)
+        if rate is None:
+            continue
+        debt_assets_delta += vals["receivable_total"] * rate
+        debt_liab_delta -= vals["payable_total"] * rate
 
     txs = db.execute(
         select(
@@ -1934,6 +2045,9 @@ def workspace_net_worth_history(
                 liab += vb
             else:
                 assets += vb
+        # 欠款/應收(目前未結清餘額,非逐月歷史回放,見上方 debt_totals 註解)。
+        assets += debt_assets_delta
+        liab += debt_liab_delta
         return assets, liab
 
     series: list[NetWorthHistorySeriesItemOut] = []
@@ -1961,7 +2075,7 @@ def workspace_net_worth_history(
         series.append(NetWorthHistorySeriesItemOut(
             bucket=last_bucket, net_worth=a + l, assets=a, liabilities=l,
         ))
-    if not series and init_by_acc:
+    if not series and (init_by_acc or debt_totals):
         a, l = _net()
         series.append(NetWorthHistorySeriesItemOut(
             bucket=datetime.now(timezone.utc).strftime("%Y-%m"),

@@ -204,6 +204,79 @@ def test_net_worth_history_converts_to_base():
         app.dependency_overrides.clear()
 
 
+def test_net_worth_history_includes_unsettled_receivable_debt():
+    """欠款/應收(§淨資產卡同口徑,見 `_workspace_debt_currency_totals`):對方
+    欠我 2920、未排除、未結清 → 併入淨值(跟 app 端 LocalRepository.
+    getNetWorthBreakdown 把 debt 併進 accounts 淨資產的口徑對齊,此前 web
+    端完全沒查過 debts 表,導致這裡少算 2920)。"""
+    client, _ = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "nwh5@t.com")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        hdr_web = {"Authorization": f"Bearer {web_token}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "个人账本", "currency": "TWD"})
+        _push(client, hdr_app, "lg1", "account", "acc-cash",
+              {"syncId": "acc-cash", "name": "现金", "type": "cash",
+               "initialBalance": 1000.0, "currency": "TWD"})
+        _push(client, hdr_app, "lg1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "income", "amount": 0,
+               "accountId": "acc-cash",
+               "happenedAt": "2026-01-15T00:00:00+00:00"})
+        _push(client, hdr_app, "lg1", "debt", "debt-1",
+              {"syncId": "debt-1", "direction": "receivable",
+               "counterpartyName": "易游网", "principalAmount": 2920.0})
+
+        r = client.get(
+            "/api/v1/read/workspace/net-worth-history",
+            headers=hdr_web,
+            params={"scope": "all"},
+        )
+        assert r.status_code == 200, r.text
+        series = {s["bucket"]: s for s in r.json()["series"]}
+        # 1000(现金) + 2920(应收) = 3920
+        assert series["2026-01"]["net_worth"] == 3920.0
+        assert series["2026-01"]["assets"] == 3920.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_net_worth_history_excludes_debt_flagged_excluded_from_total():
+    """`排除計入總額` 開啟的欠款不該併入淨值,跟帳戶的 include_in_total 語意
+    對稱(欠款是正極性 excluded_from_total,帳戶是正極性 include_in_total)。"""
+    client, _ = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "nwh6@t.com")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        hdr_web = {"Authorization": f"Bearer {web_token}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "个人账本", "currency": "TWD"})
+        _push(client, hdr_app, "lg1", "account", "acc-cash",
+              {"syncId": "acc-cash", "name": "现金", "type": "cash",
+               "initialBalance": 1000.0, "currency": "TWD"})
+        _push(client, hdr_app, "lg1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "income", "amount": 0,
+               "accountId": "acc-cash",
+               "happenedAt": "2026-01-15T00:00:00+00:00"})
+        _push(client, hdr_app, "lg1", "debt", "debt-1",
+              {"syncId": "debt-1", "direction": "receivable",
+               "counterpartyName": "易游网", "principalAmount": 2920.0,
+               "excludedFromTotal": True})
+
+        r = client.get(
+            "/api/v1/read/workspace/net-worth-history",
+            headers=hdr_web,
+            params={"scope": "all"},
+        )
+        assert r.status_code == 200, r.text
+        series = {s["bucket"]: s for s in r.json()["series"]}
+        assert series["2026-01"]["net_worth"] == 1000.0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_net_worth_history_excludes_include_in_total_false():
     """納入總餘額(Phase 18)關閉的帳戶——初始餘額跟後續交易增減都不進淨值序列,
     跟資產頁淨資產卡(computeCurrencySummary)同口徑。"""

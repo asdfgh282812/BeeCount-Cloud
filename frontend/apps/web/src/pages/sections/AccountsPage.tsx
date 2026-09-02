@@ -8,6 +8,7 @@ import {
   fetchExchangeRates,
   fetchNetWorthHistory,
   fetchWorkspaceAccounts,
+  fetchWorkspaceDebtTotals,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   updateAccount,
@@ -17,6 +18,7 @@ import {
   type NetWorthHistory,
   type ReadAccount,
   type WorkspaceAccount,
+  type WorkspaceDebtCurrencyTotal,
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
@@ -97,6 +99,13 @@ export function AccountsPage() {
   // 看 tx_count 决定是否提示用户(对齐 mobile account_edit_page._delete)。
   const [rows, setRows] = usePageCache<WorkspaceAccount[]>('accounts:rows', [])
   const [tags, setTags] = usePageCache<WorkspaceTag[]>('accounts:tags', [])
+  // 欠款/應收(§淨資產卡同口徑,見 WorkspaceDebtCurrencyTotal 註解):跟
+  // netWorthHistory 一样是全局资产(debt 为 ledger-scoped 但净资产卡不按
+  // 当前账本过滤),缓存键不带 activeLedgerId。任一失败置 []，不阻塞账户列表。
+  const [debtTotals, setDebtTotals] = usePageCache<WorkspaceDebtCurrencyTotal[]>(
+    'accounts:debtTotals',
+    [],
+  )
   const [form, setForm] = useState<AccountForm>(accountDefaults())
   // 删除前的待确认账户。null = 无 pending。WorkspaceAccount 带 tx_count 字段,
   // confirm dialog 直接读它,不再发额外请求。
@@ -158,22 +167,32 @@ export function AccountsPage() {
   const refresh = useCallback(async () => {
     try {
       const tzOffsetMinutes = -new Date().getTimezoneOffset()
-      const [accountRows, tagRows, history] = await Promise.all([
+      const [accountRows, tagRows, history, debtRows] = await Promise.all([
         fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { limit: 500 }),
         // 净值趋势是全局资产(账户为 user-global、跨所有账本),绝不按当前账本过滤 ——
         // 否则切到无交易的账本时趋势会空,而净资产卡(全局账户余额)仍有数据,口径不一致。
         fetchNetWorthHistory(token, { tzOffsetMinutes }).catch(() => null),
+        // 欠款/應收同样跨所有账本(不按 activeLedgerId 过滤),失败置 [] 不阻塞。
+        fetchWorkspaceDebtTotals(token).catch(() => [] as WorkspaceDebtCurrencyTotal[]),
       ])
       setRows(accountRows)
       setTags(tagRows)
       setNetWorthHistory(history)
+      setDebtTotals(debtRows)
 
-      // 只有"主币种存在 + 账户涉及 ≥2 种币种"才需要折算卡。其余情况清空缓存,
-      // 让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
+      // 只有"主币种存在 + 账户/欠款涉及 ≥2 种币种"才需要折算卡。其余情况清空
+      // 缓存,让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
+      // 欠款币种也要算进 distinct——否则「只有一笔外币欠款、没有对应币种账户」
+      // 时不会去拉汇率,债务折算永远因缺汇率被剔除(见上方 converted 里的
+      // debtTotals 折算段落)。
       const distinct = new Set<string>()
       for (const a of accountRows) {
         const cur = (a.currency || '').toUpperCase()
+        if (cur) distinct.add(cur)
+      }
+      for (const d of debtRows) {
+        const cur = (d.currency || '').toUpperCase()
         if (cur) distinct.add(cur)
       }
       if (base && distinct.size >= 2) {
@@ -455,12 +474,17 @@ export function AccountsPage() {
 
   const converted = useMemo(() => {
     const byCur = splitByCurrency(totalIncludedRows)
-    if (byCur.size === 0) return null
+    // 欠款/應收(§淨資產卡同口徑,見 WorkspaceDebtCurrencyTotal 註解):跟
+    // accounts 一样参与「有几种币种」的判断——只有欠款没有账户时也该出卡,
+    // 单币种(账户 0 种 + 欠款 1 种,或两边同一种)也不该误判成多币种。
+    const debtCurrencies = new Set(debtTotals.map((d) => d.currency.toUpperCase()))
+    if (byCur.size === 0 && debtCurrencies.size === 0) return null
+    const allCurrencies = new Set<string>([...byCur.keys(), ...debtCurrencies])
     // 主币种未设时:单币种回退到该唯一币种(折算率 1,零误差);多币种则无从折算。
-    const effectiveBase = base || (byCur.size === 1 ? [...byCur.keys()][0] : '')
+    const effectiveBase = base || (allCurrencies.size === 1 ? [...allCurrencies][0] : '')
     if (!effectiveBase) return { needsBase: true } as const
     // 单币种(effectiveBase 即本币 且 仅 1 种)不显汇率脚注 / ≈ 前缀。
-    const singleCurrency = byCur.size === 1
+    const singleCurrency = allCurrencies.size === 1
 
     const buckets: CurrencyBucket[] = []
     let netWorth = 0
@@ -480,7 +504,28 @@ export function AccountsPage() {
       assetTotal += summary.assetTotal * eff.rate
       liabilityTotal += summary.liabilityTotal * eff.rate
     }
-    // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除。
+    // 欠款/應收:receivable(對方欠我)算資產、payable(我欠對方)算負債,跟
+    // accounts 同口径缺汇率整币种剔除、绝不按 1 折入。此前這張卡完全沒查過
+    // debts 表,导致「應收」沒被算進資產,跟 app 端(LocalRepository.
+    // getNetWorthBreakdown 把 debt 併進 accounts 淨資產)對不上帳。
+    // 已知取舍:不併入 buckets/mergedGroups——跟 app 端「資產構成」donut 一样
+    // 本就不含欠款分類,只影响這裡的頭部三個數字,詳情 dialog 分幣種卡片
+    // 暫不reflect 欠款(留待有需要時再擴充 CurrencyAssetCard)。
+    for (const debt of debtTotals) {
+      const cur = debt.currency.toUpperCase()
+      const eff = effectiveRateToBase(cur, effectiveBase, rates, rateOverrides)
+      if (!eff) {
+        missing.add(cur)
+        continue
+      }
+      const receivableBase = debt.receivable_total * eff.rate
+      const payableBase = debt.payable_total * eff.rate
+      netWorth += receivableBase - payableBase
+      assetTotal += receivableBase
+      liabilityTotal -= payableBase
+    }
+    // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除
+    // (欠款不进 donut,见上方註解)。
     const mergedGroups = mergeGroupsToBase(buckets, effectiveBase, rates, rateOverrides)
     return {
       needsBase: false as const,
@@ -500,7 +545,7 @@ export function AccountsPage() {
       missing: [...missing].sort(),
       rateDate: singleCurrency ? undefined : rates?.rate_date,
     }
-  }, [base, totalIncludedRows, rates, rateOverrides, t])
+  }, [base, totalIncludedRows, debtTotals, rates, rateOverrides, t])
 
   return (
     <>

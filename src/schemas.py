@@ -1301,6 +1301,20 @@ class WorkspaceAccountOut(ReadAccountOut):
     balance_fx_incomplete: bool = False
 
 
+class WorkspaceDebtCurrencyTotalOut(BaseModel):
+    """净资产卡片用:跨账本汇总未结清、未排除的欠款/应收,按所属账本币种分桶
+    (debt 沒有自己的币种字段,沿用所属账本币种——跟账户一样,一本账本内的欠款
+    都算这个币种)。remaining_amount 口径同 ReadDebtOut/`list_debts`(principal
+    - repaid,非负,已结清 <=0.01 的不计入),excluded_from_total=True 的欠款
+    不计入,跟 UserAccountProjection.include_in_total 对 accounts 的语意对齐。
+    receivable(對方欠我)算资产、payable(我欠對方)算负债 —— 对齐 mobile
+    LocalRepository.getNetWorthBreakdown 把两者跟 accounts 汇总合并的口径,
+    此前 web 端净资产卡完全没查过 debts 表,导致资产总额跟 app 端对不上账。"""
+    currency: str
+    receivable_total: float
+    payable_total: float
+
+
 class WorkspaceCategoryOut(ReadCategoryOut):
     # 跨账本按该分类聚合的笔数。Web 列表展示用,跟 tags 的 tx_count 对齐。
     # 不带 expense/income total — 分类本身已经按 kind 区分(支出/收入),

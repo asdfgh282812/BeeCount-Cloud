@@ -30,6 +30,7 @@ import type {
   WorkspaceAccount,
   WorkspaceAnalytics,
   WorkspaceCategory,
+  WorkspaceDebtCurrencyTotal,
   WorkspaceLedgerCounts,
   WorkspaceTag,
   WorkspaceTransaction,
@@ -426,6 +427,19 @@ export async function fetchWorkspaceAccounts(
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAccount[]>(`/read/workspace/accounts${suffix}`, token)
+}
+
+/** 淨資產卡片用:跨帳本按幣種彙總未結清、未排除的欠款/應收(見
+ *  `WorkspaceDebtCurrencyTotal` 註解)。 */
+export async function fetchWorkspaceDebtTotals(
+  token: string,
+  options?: { ledgerId?: string; userId?: string }
+): Promise<WorkspaceDebtCurrencyTotal[]> {
+  const query = new URLSearchParams()
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.userId) query.set('user_id', options.userId)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<WorkspaceDebtCurrencyTotal[]>(`/read/workspace/debts${suffix}`, token)
 }
 
 export async function fetchWorkspaceCategories(
