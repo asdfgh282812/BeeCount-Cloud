@@ -1,7 +1,8 @@
 """单次备份运行的编排。流程:
 
 1. 在 BackupRun 表里新建 run row(status='running')
-2. VACUUM INTO → staging/<run_id>/db.sqlite3
+2. DB 快照 → staging/<run_id>/db.sqlite3(SQLite,VACUUM INTO)或
+   staging/<run_id>/db.sql(PostgreSQL,pg_dump --format=plain)
 3. hardlink attachments → staging/<run_id>/attachments
 4. cp .jwt_secret(可选)
 5. 写 meta.json
@@ -40,7 +41,7 @@ from ...models import (
     BackupScheduleRemote,
 )
 from ...version import __version__ as APP_VERSION
-from .db_snapshot import vacuum_into
+from .db_snapshot import snapshot_database
 from .rclone_config import (
     RcloneConfigManager,
     get_age_passphrase,
@@ -258,16 +259,17 @@ def _run_with_remotes(
     encrypted_zips_to_cleanup: list[Path] = []
 
     try:
-        # ---- 1. SQLite VACUUM INTO ----
+        # ---- 1. DB 快照(SQLite: VACUUM INTO / PostgreSQL: pg_dump) ----
         _push({"type": "backup_progress", "phase": "snapshot_db"})
-        log_fn("VACUUM INTO ...")
-        # 用现成 db session 跑 VACUUM 会破坏后续提交;另开一个独立 session
-        # 跑这一条命令。
+        log_fn("snapshotting database ...")
+        # 用现成 db session 跑 VACUUM/pg_dump 会破坏后续提交;另开一个独立
+        # session 跑这一步。
         snap_db = SessionLocal()
         try:
-            vacuum_into(snap_db, work_dir / "db.sqlite3")
+            db_snapshot_path, db_engine = snapshot_database(snap_db, work_dir)
         finally:
             snap_db.close()
+        log_fn(f"db snapshot done: {db_snapshot_path.name} (engine={db_engine})")
 
         # ---- 2. attachments(hardlink) ----
         if include_attachments:
@@ -297,13 +299,15 @@ def _run_with_remotes(
 
         # ---- 4. meta.json ----
         meta = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "appVersion": APP_VERSION,
             "createdAt": _now().isoformat(),
             "scheduleId": schedule.id if schedule else None,
             "scheduleName": schedule.name if schedule else None,
             "userId": user_id,
             "includeAttachments": include_attachments,
+            "dbEngine": db_engine,
+            "dbFile": db_snapshot_path.name,
         }
         (work_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

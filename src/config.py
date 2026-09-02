@@ -23,7 +23,16 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="change-me-in-production-at-least-32-bytes")
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+    # Web refresh token 壽命(瀏覽器分頁/裝置,較短——使用者原本就預期網頁
+    # 端偶爾要重新登入,不刻意延長)。
     refresh_token_expire_days: int = 30
+    # App(手機)refresh token 壽命,獨立設定、明顯拉長。手機 app 是長期安裝
+    # 的信任裝置(比照 Gmail/Instagram 等主流 app 的「裝了就一直登入,直到
+    # 使用者手動登出」慣例),不該像網頁分頁一樣 30 天就被迫重新登入。
+    # 因為每次 /auth/refresh 都是 rotate-and-extend(舊 token 撤銷、新 token
+    # 重新給滿額壽命),只要使用者在這個壽命內開過一次 app 就會無限續期,
+    # 效果上等同「保持登入直到主動登出或裝置被撤銷」。
+    refresh_token_expire_days_app: int = Field(default=180, alias="REFRESH_TOKEN_EXPIRE_DAYS_APP")
 
     cors_origins: str = "http://localhost:8080,http://localhost:5173,http://localhost:3000"
     rate_limit_window_seconds: int = 60

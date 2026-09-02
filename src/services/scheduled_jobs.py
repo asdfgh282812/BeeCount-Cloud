@@ -22,11 +22,17 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import MCPCallLog, ScheduledJobConfig
+from ..models import MCPCallLog, RefreshToken, ScheduledJobConfig
 
 logger = logging.getLogger(__name__)
 
 _MCP_LOG_RETENTION_DAYS = 30
+
+# refresh_tokens 每次 /auth/refresh 都會 rotate(舊列標 revoked_at、新增一
+# 列),舊列本身沒有再被讀取的用途,只是審計用的歷史殘骸。留 2 天緩衝
+# (而不是失效當下立刻刪)是為了保留短暫的除錯窗口——例如懷疑某次 refresh
+# 失敗是不是誤判撤銷、需要回頭查最近的 token 記錄時還能查得到。
+_REFRESH_TOKEN_RETENTION_DAYS = 2
 
 # job_key -> (interval_seconds, cold_start_delay)。跟 seed migration
 # (`alembic/versions/0036_scheduled_job_configs.py`)裡的預設值完全對齊——
@@ -35,6 +41,7 @@ _MCP_LOG_RETENTION_DAYS = 30
 # 保持一致。
 _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "mcp_log_retention": (24 * 3600, True),
+    "refresh_token_retention": (24 * 3600, False),
     "recurring_materializer": (24 * 3600, True),
     "debt_reminders": (15 * 60, False),
     "debt_unsettled_counterparties": (15 * 60, False),
@@ -80,6 +87,22 @@ def _run_mcp_log_retention(db: Session) -> dict:
 
     cutoff = _now() - timedelta(days=_MCP_LOG_RETENTION_DAYS)
     result = db.execute(delete(MCPCallLog).where(MCPCallLog.called_at < cutoff))
+    deleted = result.rowcount or 0
+    return {"deleted": deleted}
+
+
+def _run_refresh_token_retention(db: Session) -> dict:
+    from sqlalchemy import delete, or_
+
+    cutoff = _now() - timedelta(days=_REFRESH_TOKEN_RETENTION_DAYS)
+    result = db.execute(
+        delete(RefreshToken).where(
+            or_(
+                RefreshToken.expires_at < cutoff,
+                RefreshToken.revoked_at < cutoff,
+            )
+        )
+    )
     deleted = result.rowcount or 0
     return {"deleted": deleted}
 
@@ -150,6 +173,7 @@ def _run_swipesmart_usage_backfill(db: Session) -> dict:
 # 新增 job 不需要另外寫 migration seed。
 JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "mcp_log_retention": _run_mcp_log_retention,
+    "refresh_token_retention": _run_refresh_token_retention,
     "recurring_materializer": _run_recurring_materializer,
     "debt_reminders": _run_debt_reminders,
     "debt_unsettled_counterparties": _run_debt_unsettled_counterparties,

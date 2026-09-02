@@ -125,8 +125,11 @@ class RefreshToken(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     device_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # expires_at/revoked_at 都有 index —— `refresh_token_retention` 排程 job
+    # (services/scheduled_jobs.py)每天用這兩個欄位掃「失效超過 2 天」的舊列
+    # 來刪,沒有 index 在百萬行規模下會全表掃描。
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -105,7 +105,13 @@ def create_refresh_token(
     scopes: list[str] | None = None,
     client_type: str = "app",
 ) -> tuple[str, datetime]:
-    days = settings.refresh_token_expire_days
+    # app 端用獨立、明顯更長的壽命(見 config.py::refresh_token_expire_days_app
+    # 註解)——手機 app 是長期信任裝置,不該跟網頁分頁一樣頻繁被迫重新登入。
+    days = (
+        settings.refresh_token_expire_days_app
+        if client_type == "app"
+        else settings.refresh_token_expire_days
+    )
     expires_at = datetime.now(timezone.utc) + timedelta(days=days)
     token = _create_token(
         user_id,

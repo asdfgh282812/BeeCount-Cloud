@@ -33,6 +33,14 @@
    - `GET /ready`
    - one read + one write API smoke test.
 
+> Admin UI backup (Backup → run → prepare-restore) produces the same kind of
+> artifact for Postgres deployments: a `db.sql` plain-text `pg_dump` file
+> instead of `scripts/backup_postgres.sh`'s output, but restored the same way
+> (`psql < db.sql`). It's generated with `--clean --if-exists`, so it's safe
+> to pipe into a database that already has the app's schema (container
+> startup already ran Alembic) — no need to drop/recreate the database
+> first.
+
 ## Post-check
 
 - `GET /metrics` is available.

@@ -872,6 +872,8 @@ def _status_to_out(status: dict[str, Any]) -> BackupRestoreOut:
         source_remote_id=status.get("source_remote_id"),
         source_remote_name=status.get("source_remote_name"),
         backup_filename=status.get("backup_filename"),
+        db_engine=status.get("db_engine"),
+        db_file=status.get("db_file"),
     )
 
 

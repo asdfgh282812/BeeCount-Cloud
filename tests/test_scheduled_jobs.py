@@ -2,17 +2,17 @@
 `routers/admin_scheduled_jobs.py` 契約測試。
 
 覆蓋:
-1. `ensure_default_configs` 幂等補齊 8 筆預設列(測試 DB 用
-   `Base.metadata.create_all` 建表,不會跑 migration data seed;第 8 筆
-   `swipesmart_usage_backfill` 是 Phase 14 新增,靠這個函式自我補齊,不需要
-   另外寫 migration seed row)。
-2. `GET /admin/scheduled-jobs` 列出 8 筆 + admin-only 權限。
+1. `ensure_default_configs` 幂等補齊 10 筆預設列(測試 DB 用
+   `Base.metadata.create_all` 建表,不會跑 migration data seed;新增的
+   job_key 靠這個函式自我補齊,不需要另外寫 migration seed row)。
+2. `GET /admin/scheduled-jobs` 列出 10 筆 + admin-only 權限。
 3. `PATCH /admin/scheduled-jobs/{job_key}` 改 interval_seconds/enabled,
    重算 next_run_at。
 4. `POST /admin/scheduled-jobs/{job_key}/run-now` 即時回傳摘要,DB 真的有
-   反映(用 mcp_log_retention 驗證實際刪除了過期行)。
+   反映(用 mcp_log_retention / refresh_token_retention 驗證實際刪除了
+   過期行)。
 5. `run_due_jobs` 到期判斷邏輯(只有到期 + enabled 的才跑)。
-6. 8 個 job_key 都正確對應到既有函式且被實際呼叫(mock/spy)。
+6. 所有 job_key 都正確對應到既有函式且被實際呼叫(mock/spy)。
 7. `/internal/tasks/materialize-recurring` 舊端點行為不受影響。
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import MCPCallLog, ScheduledJobConfig, User
+from src.models import MCPCallLog, RefreshToken, ScheduledJobConfig, User
 from src.services import scheduled_jobs
 
 _TEST_SESSION: sessionmaker | None = None
@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 9
+            assert len(rows) == 10
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 9
+            assert len(rows2) == 10
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 9
+        assert len(rows) == 10
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -267,6 +267,80 @@ def test_run_now_returns_summary_and_reflects_in_db():
         app.dependency_overrides.clear()
 
 
+def test_refresh_token_retention_deletes_only_stale_invalid_tokens():
+    """`refresh_token_retention` 只刪「失效(撤銷或過期)超過 2 天」的舊列,
+    still-valid 的 token 跟「剛失效、還在 2 天緩衝期內」的 token 都不能碰。"""
+    client = _make_client()
+    try:
+        _seed_defaults()
+        token = _bootstrap_admin(client, "admin6@t.com")
+
+        assert _TEST_SESSION is not None
+        db = _TEST_SESSION()
+        try:
+            admin_user = db.query(User).filter(User.email == "admin6@t.com").first()
+            assert admin_user is not None
+            now = datetime.now(timezone.utc)
+
+            stale_expired = RefreshToken(
+                user_id=admin_user.id,
+                device_id=None,
+                token_hash="stale_expired_hash",
+                expires_at=now - timedelta(days=3),
+            )
+            stale_revoked = RefreshToken(
+                user_id=admin_user.id,
+                device_id=None,
+                token_hash="stale_revoked_hash",
+                expires_at=now + timedelta(days=10),
+                revoked_at=now - timedelta(days=3),
+            )
+            fresh_revoked = RefreshToken(
+                user_id=admin_user.id,
+                device_id=None,
+                token_hash="fresh_revoked_hash",
+                expires_at=now + timedelta(days=10),
+                revoked_at=now - timedelta(hours=1),
+            )
+            still_valid = RefreshToken(
+                user_id=admin_user.id,
+                device_id=None,
+                token_hash="still_valid_hash",
+                expires_at=now + timedelta(days=10),
+            )
+            db.add_all([stale_expired, stale_revoked, fresh_revoked, still_valid])
+            db.commit()
+            keep_ids = {fresh_revoked.id, still_valid.id}
+        finally:
+            db.close()
+
+        r = client.post(
+            "/api/v1/admin/scheduled-jobs/refresh_token_retention/run-now",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["job_key"] == "refresh_token_retention"
+        assert body["status"] == "ok"
+        assert body["summary"]["deleted"] == 2
+
+        db = _TEST_SESSION()
+        try:
+            # 只看我們自己塞的 4 個 token_hash,不管 register/login 順帶產生
+            # 的其他有效 refresh token(不該被這個 job 動到,但也不是這個
+            # assertion 要驗證的範圍)。
+            remaining = db.query(RefreshToken).filter(
+                RefreshToken.token_hash.in_(
+                    ["stale_expired_hash", "stale_revoked_hash", "fresh_revoked_hash", "still_valid_hash"]
+                )
+            ).all()
+            assert {row.id for row in remaining} == keep_ids
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_run_now_requires_admin():
     client = _make_client()
     try:
@@ -329,6 +403,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
         _seed_defaults()
         assert set(scheduled_jobs.JOB_REGISTRY.keys()) == {
             "mcp_log_retention",
+            "refresh_token_retention",
             "recurring_materializer",
             "debt_reminders",
             "debt_unsettled_counterparties",

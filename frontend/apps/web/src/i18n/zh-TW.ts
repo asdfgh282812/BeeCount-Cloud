@@ -383,6 +383,7 @@ const zhTW = {
   'admin.scheduledJobs.notice.runSuccess': '執行完成:{message}',
   'admin.scheduledJobs.notice.runFailed': '執行失敗:{message}',
   'admin.scheduledJobs.job.mcp_log_retention': 'MCP 呼叫紀錄清理',
+  'admin.scheduledJobs.job.refresh_token_retention': '登入權杖清理',
   'admin.scheduledJobs.job.recurring_materializer': '週期性收支視窗物化',
   'admin.scheduledJobs.job.debt_reminders': '借還款到期提醒',
   'admin.scheduledJobs.job.card_due_reminders': '信用卡繳款到期提醒',

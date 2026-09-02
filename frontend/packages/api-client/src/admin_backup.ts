@@ -210,6 +210,8 @@ export type BackupRestore = {
   source_remote_id: number | null
   source_remote_name: string | null
   backup_filename: string | null
+  db_engine: string | null
+  db_file: string | null
 }
 
 export function prepareRestore(

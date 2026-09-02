@@ -1271,6 +1271,7 @@ const zhCN = {
   'admin.scheduledJobs.notice.runSuccess': '执行完成:{message}',
   'admin.scheduledJobs.notice.runFailed': '执行失败:{message}',
   'admin.scheduledJobs.job.mcp_log_retention': 'MCP 调用记录清理',
+  'admin.scheduledJobs.job.refresh_token_retention': '登录令牌清理',
   'admin.scheduledJobs.job.recurring_materializer': '周期性收支窗口物化',
   'admin.scheduledJobs.job.debt_reminders': '借还款到期提醒',
   'admin.scheduledJobs.job.card_due_reminders': '信用卡还款到期提醒',

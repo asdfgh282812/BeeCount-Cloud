@@ -31,7 +31,7 @@ SQLite 備份命令：
 > ⚠️ **請勿直接複製 (cp) 原始資料庫檔案：**
 > 伺服器是在 WAL 模式下運行，單純使用 `cp` 指令會遺漏掉仍留在 `beecount.db-wal` 中尚未寫入的資料。請務必使用本腳本（或直接執行 `sqlite3 .backup`）。
 
-若需要完整的資料卷快照（包含資料庫、附件、JWT 金鑰及先前所有的備份），可在停止容器後將 `beecount_data` 資料卷打包為 tar 檔；或是透過應用程式內的備份執行器（管理員 UI → "Backup"）使用 `VACUUM INTO` 功能，該功能已整合 rclone。
+若需要完整的資料卷快照（包含資料庫、附件、JWT 金鑰及先前所有的備份），可在停止容器後將 `beecount_data` 資料卷打包為 tar 檔；或是透過應用程式內的備份執行器（管理員 UI → "Backup"）使用內建的多遠端加密備份，該功能已整合 rclone。這個內建備份器會依實際資料庫種類自動切換快照方式：SQLite 用 `VACUUM INTO`（單一檔案 `db.sqlite3`），PostgreSQL 用 `pg_dump --format=plain --clean --if-exists`（純文字 SQL 檔 `db.sql`，還原時直接 `psql < db.sql` 灌回即可，不管目標庫是空的還是已跑過 migration 都不會報 "already exists"）。
 
 ### 還原 (Restore)
 

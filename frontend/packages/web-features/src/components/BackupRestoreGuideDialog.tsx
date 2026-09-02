@@ -61,15 +61,36 @@ export function BackupRestoreGuideDialog({
   const isFailed = phase === 'failed'
 
   const path = restore?.extracted_path || '/data/restore/<run_id>/extracted'
+  // 老备份(2026-08 之前)没有 db_engine 字段,一律按 SQLite 处理。
+  const isPostgres = restore?.db_engine === 'postgresql'
+  const dbFile = restore?.db_file || (isPostgres ? 'db.sql' : 'db.sqlite3')
 
-  const shellScript = `# 1. 停服(Docker)
+  const shellScript = isPostgres
+    ? `# 1. 停服(Docker)
+docker compose stop beecount-cloud
+
+# 2. 还原 PostgreSQL(dump 自带 --clean --if-exists,直接灌回即可,
+#    不用先清空/删表 —— 备份当下的完整 schema + 数据会整份覆盖现状)
+docker compose exec -T db psql -U beecount -d beecount < ${path}/${dbFile}
+
+# 3. 替换附件 + JWT 密钥
+rsync -a ${path}/attachments/ /path/to/data/attachments/
+[ -f ${path}/.jwt_secret ] && cp ${path}/.jwt_secret /path/to/data/.jwt_secret
+
+# 4. 启动服务
+docker compose start beecount-cloud
+
+# 5. 验证一切正常后清理 restore 目录
+# (或在 Web UI 点「清理」按钮)
+rm -rf ${path}/..`
+    : `# 1. 停服(Docker)
 docker compose stop beecount-cloud
 
 # 2. 备一份当前数据(以防回滚)
 mv /path/to/data/beecount.db /path/to/data/beecount.db.before-restore.bak
 
 # 3. 替换 SQLite + 附件 + JWT 密钥
-cp ${path}/db.sqlite3 /path/to/data/beecount.db
+cp ${path}/${dbFile} /path/to/data/beecount.db
 rsync -a ${path}/attachments/ /path/to/data/attachments/
 [ -f ${path}/.jwt_secret ] && cp ${path}/.jwt_secret /path/to/data/.jwt_secret
 

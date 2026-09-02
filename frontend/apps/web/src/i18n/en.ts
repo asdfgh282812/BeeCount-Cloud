@@ -384,6 +384,7 @@ const en = {
   'admin.scheduledJobs.notice.runSuccess': 'Run finished: {message}',
   'admin.scheduledJobs.notice.runFailed': 'Run failed: {message}',
   'admin.scheduledJobs.job.mcp_log_retention': 'MCP call log retention',
+  'admin.scheduledJobs.job.refresh_token_retention': 'Refresh token cleanup',
   'admin.scheduledJobs.job.recurring_materializer': 'Recurring rule window materializer',
   'admin.scheduledJobs.job.debt_reminders': 'Debt due reminders',
   'admin.scheduledJobs.job.card_due_reminders': 'Credit card due reminders',

@@ -2317,6 +2317,8 @@ class BackupRestoreOut(BaseModel):
     source_remote_id: int | None = None
     source_remote_name: str | None = None
     backup_filename: str | None = None
+    db_engine: str | None = None
+    db_file: str | None = None
 
 
 class BackupRestoreListOut(BaseModel):

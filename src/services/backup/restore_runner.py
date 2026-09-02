@@ -174,6 +174,8 @@ def _run_prepare(
         "source_remote_id": None,
         "source_remote_name": None,
         "backup_filename": None,
+        "db_engine": None,
+        "db_file": None,
     }
 
     try:
@@ -279,6 +281,18 @@ def _run_prepare(
                     tf.extractall(extracted, filter="data")
                 except TypeError:
                     tf.extractall(extracted)
+        # meta.json 里记录了这份备份是哪种 DB engine 产生的(db.sqlite3 /
+        # db.sql)—— 老备份(2026-08 之前,schemaVersion=1)没有这两个字段,
+        # 前端退回默认(SQLite)指引。
+        meta_path = extracted / "meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                status["db_engine"] = meta.get("dbEngine")
+                status["db_file"] = meta.get("dbFile")
+            except (OSError, json.JSONDecodeError):
+                logger.warning("restore: failed to read meta.json at %s", meta_path)
+
         status["extracted_path"] = str(extracted)
         status["phase"] = "done"
         status["finished_at"] = _now().isoformat()
