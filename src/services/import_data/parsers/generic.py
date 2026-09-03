@@ -37,8 +37,8 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
         r"(账户|账号|account|支付方式|付款方式|收[/／]?付款方式|来源|出处)",
         re.I,
     ),
-    "from_account_name": re.compile(r"(转出|from.?account|source.?account|出账)", re.I),
-    "to_account_name": re.compile(r"(转入|to.?account|dest.?account|target.?account|入账)", re.I),
+    "from_account_name": re.compile(r"(转出|轉出|from.?account|source.?account|出账)", re.I),
+    "to_account_name": re.compile(r"(转入|轉入|to.?account|dest.?account|target.?account|入账)", re.I),
     # 备注:含 alipay 的"商品说明" + wechat 的"商品/商家"
     "note": re.compile(
         r"(商品说明|商品|商家|对方|交易对方|备注|note|description|说明|memo)",

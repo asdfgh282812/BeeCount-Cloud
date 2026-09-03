@@ -108,6 +108,25 @@ def test_beecount_parser_sniff_and_mapping():
     assert data.suggested_mapping.amount is not None
 
 
+def test_beecount_parser_recognizes_subcategory_and_currency_headers():
+    """官方繁体范本表头「二級分類」「幣種」应能被 beecount parser 识别并映射
+    (曾经的 bug:别名表只认「子分類」,且完全没有 currency key)。"""
+    csv = (
+        "類型,分類,二級分類,金額,幣種,帳戶,轉出帳戶,轉入帳戶,備註,時間,標籤,附件\n"
+        "支出,餐飲,午餐,35.00,TWD,招行,,,星巴克,2024-05-01 12:30:00,商務,\n"
+    )
+    data = parse_csv_text(raw_text=csv)
+    assert data.source_format == "beecount"
+    mapping = data.suggested_mapping
+    assert mapping.subcategory_name == "二級分類"
+    assert mapping.currency == "幣種"
+    txs, errors, _ = apply_mapping(rows=data.rows, mapping=mapping)
+    assert errors == []
+    assert txs[0].parent_category_name == "餐飲"
+    assert txs[0].category_name == "午餐"
+    assert txs[0].currency_code == "TWD"
+
+
 def test_generic_parser_fuzzy_columns():
     csv = "类型,金额,时间,备注\n支出,35.00,2024-05-01 12:30,星巴克\n"
     data = parse_csv_text(raw_text=csv)
@@ -167,6 +186,26 @@ def test_apply_mapping_happy_path():
     assert txs[0].amount == Decimal("35.00")
     assert txs[0].note == "星巴克"
     assert txs[0].category_name == "餐饮"
+
+
+def test_apply_mapping_traditional_transfer_type():
+    """繁体 BeeCount 匯出範本表頭 + 「轉帳」类型应能正确识别为 transfer。"""
+    csv = (
+        "類型,分類,二級分類,金額,幣種,帳戶,轉出帳戶,轉入帳戶,備註,時間,標籤,附件\n"
+        "轉帳,,,1000,TWD,,台新銀行,星展銀行,,2026-09-03 13:54:35,,\n"
+    )
+    data = parse_csv_text(raw_text=csv)
+    assert data.source_format == "beecount"
+    mapping = data.suggested_mapping
+    assert mapping.tx_type == "類型"
+    assert mapping.from_account_name == "轉出帳戶"
+    assert mapping.to_account_name == "轉入帳戶"
+    txs, errors, _ = apply_mapping(rows=data.rows, mapping=mapping)
+    assert errors == []
+    assert len(txs) == 1
+    assert txs[0].tx_type == "transfer"
+    assert txs[0].from_account_name == "台新銀行"
+    assert txs[0].to_account_name == "星展銀行"
 
 
 def test_apply_mapping_required_field_missing():

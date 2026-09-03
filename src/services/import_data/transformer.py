@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # 收支类型标准化
 _TYPE_EXPENSE = {"expense", "支出", "消费", "出", "-", "支"}
 _TYPE_INCOME = {"income", "收入", "收", "+", "入"}
-_TYPE_TRANSFER = {"transfer", "转账", "转出转入", "转"}
+_TYPE_TRANSFER = {"transfer", "转账", "轉帳", "转出转入", "轉出轉入", "转", "轉"}
 
 # 候选时间格式 —— auto 模式按顺序 try
 _DATETIME_CANDIDATES = (
@@ -216,7 +216,7 @@ def _parse_tx_type(
     for kw in ("收入", "income"):
         if kw in s:
             return "income"
-    for kw in ("转账", "transfer"):
+    for kw in ("转账", "轉帳", "transfer"):
         if kw in s:
             return "transfer"
     return None

@@ -1,8 +1,8 @@
 """BeeCount 自家格式解析 —— 跟 web 导出 / mobile 导出严格对齐。
 
-格式见 .docs/web-csv-export-design.md §3 字段表。11 列本地化表头:
+格式见 .docs/web-csv-export-design.md §3 字段表。12 列本地化表头:
 
-    type,category,subcategory,amount,account,from_account,to_account,note,time,tags,attachments
+    type,category,subcategory,amount,currency,account,from_account,to_account,note,time,tags,attachments
 
 英文 / 中文 / 繁中 表头都识别。Type 列也按语言本地化(收入/支出/转账)。
 """
@@ -17,8 +17,9 @@ from ..schema import ImportFieldMapping
 _HEADER_ALIASES = {
     "tx_type": {"type", "类型", "類型"},
     "category": {"category", "分类", "分類"},
-    "subcategory": {"subcategory", "子分类", "子分類"},
+    "subcategory": {"subcategory", "子分类", "子分類", "二级分类", "二級分類"},
     "amount": {"amount", "金额", "金額"},
+    "currency": {"currency", "币种", "幣種"},
     "account": {"account", "账户", "帳戶"},
     "from_account": {"from_account", "from account", "转出账户", "轉出帳戶"},
     "to_account": {"to_account", "to account", "转入账户", "轉入帳戶"},
@@ -45,7 +46,7 @@ class BeeCountParser:
     name = "beecount"
 
     def sniff(self, sample_lower: str) -> bool:
-        """判断是否为 BeeCount 导出格式 —— 11 列里至少能识别 8 个。
+        """判断是否为 BeeCount 导出格式 —— 12 列里至少能识别 8 个。
         sample_lower 已经 .lower()。"""
         score = 0
         for aliases in _HEADER_ALIASES.values():
@@ -54,7 +55,7 @@ class BeeCountParser:
                     score += 1
                     break
         # 同时要求文件有"beecount-" 文件名暗示(可选)或 score >= 8 — 8 是
-        # 11 列里大多数都能识别,可信度足够
+        # 12 列里大多数都能识别,可信度足够
         return score >= 8
 
     def find_header_row(self, rows: list[list[str]]) -> int:
@@ -78,6 +79,7 @@ class BeeCountParser:
             happened_at=time_col,
             category_name=cat_col,
             subcategory_name=sub_col,
+            currency=_column_for(headers, _HEADER_ALIASES["currency"]),
             account_name=_column_for(headers, _HEADER_ALIASES["account"]),
             from_account_name=_column_for(headers, _HEADER_ALIASES["from_account"]),
             to_account_name=_column_for(headers, _HEADER_ALIASES["to_account"]),
