@@ -778,6 +778,10 @@ class UserAccountProjection(Base):
     include_in_total: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=true(), default=True
     )
+    # 帳戶清單拖曳排序(2026-09-05):跟 UserCategoryProjection.sort_order 同款,
+    # nullable——舊資料/舊版 App 沒有這個值時留 None,read 端排序時 fallback
+    # 到名稱(見 routers/read/ledgers.py)。
+    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class UserExchangeRateProjection(Base):

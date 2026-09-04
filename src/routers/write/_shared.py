@@ -61,6 +61,7 @@ from ...models import (
 from ...schemas import (
     WriteAccountCreateRequest,
     WriteAccountDeleteRequest,
+    WriteAccountReorderRequest,
     WriteAccountUpdateRequest,
     WriteBalanceAdjustmentRequest,
     WriteBudgetCreateRequest,
@@ -2423,6 +2424,7 @@ __all__ = [
     'UserAccountProjection',
     'WriteAccountCreateRequest',
     'WriteAccountDeleteRequest',
+    'WriteAccountReorderRequest',
     'WriteAccountUpdateRequest',
     'WriteBalanceAdjustmentRequest',
     'WriteCardPaymentRequest',

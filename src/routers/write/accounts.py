@@ -107,6 +107,74 @@ async def update_acc(
     )
 
 
+@router.post(
+    "/ledgers/{ledger_id}/accounts/reorder",
+    response_model=WriteCommitMeta,
+    responses=_WRITE_RESPONSES,
+)
+async def reorder_accounts_ep(
+    ledger_id: str,
+    req: WriteAccountReorderRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    device_id: str = Header(default="web-console", alias="X-Device-ID"),
+    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WriteCommitMeta:
+    """帳戶清單拖曳排序(2026-09-05):批次改多個帳戶的 sort_order,只包一次
+    `_commit_write`(單一 base_change_id、單一 snapshot commit)——同款
+    card_payment_ep / clear_statement_confirmations_ep 用的「_mutate 內部
+    迴圈,外面只提交一次」模式,避免逐筆 PATCH 需要處理連環 base_change_id
+    遞增。權限跟 create_acc/update_acc 一樣 owner-only——排序是帳戶設定變更,
+    不是記帳。"""
+    payload = req.model_dump(mode="json")
+    ledger, replay = _prepare_write(
+        db=db,
+        current_user=current_user,
+        ledger_external_id=ledger_id,
+        required_roles=_OWNER_ONLY_ROLES,
+        idempotency_key=idempotency_key,
+        device_id=device_id,
+        method=request.method,
+        path=request.url.path,
+        payload=payload,
+    )
+    if replay:
+        return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    actor_fields = {
+        "__actor_user_id": mutate_payload.get("__actor_user_id"),
+        "__actor_is_admin": mutate_payload.get("__actor_is_admin"),
+        "__actor_in_shared_ledger": mutate_payload.get("__actor_in_shared_ledger"),
+    }
+
+    def _mutate(snapshot: dict) -> tuple[dict, str]:
+        next_snapshot = snapshot
+        last_id = ""
+        for item in req.items:
+            next_snapshot = update_account(
+                next_snapshot,
+                item.account_id,
+                {"sort_order": item.sort_order, **actor_fields},
+            )
+            last_id = item.account_id
+        return next_snapshot, last_id
+
+    return await _commit_write(
+        request=request,
+        db=db,
+        current_user=current_user,
+        ledger=ledger,
+        base_change_id=req.base_change_id,
+        request_payload=payload,
+        idempotency_key=idempotency_key,
+        device_id=device_id,
+        audit_action="web_account_reorder",
+        mutate=_mutate,
+    )
+
+
 @router.delete(
     "/ledgers/{ledger_id}/accounts/{account_id}",
     response_model=WriteCommitMeta,

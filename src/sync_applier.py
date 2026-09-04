@@ -163,6 +163,9 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 納入總餘額(Phase 18):缺鍵時 _merge_from_spec 從 existing 行補齊,
         # 不被 partial-update 沖成 False。
         ("includeInTotal", "include_in_total"),
+        # 帳戶清單拖曳排序(2026-09-05):缺鍵時 _merge_from_spec 從 existing
+        # 行補齊,不被 partial-update 沖成 None。
+        ("sortOrder", "sort_order"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),

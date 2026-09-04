@@ -1667,6 +1667,7 @@ const en = {
   'accounts.placeholder.currency': 'currency',
   'accounts.placeholder.initialBalance': 'initial_balance',
   'accounts.button.create': 'Create Account',
+  'accounts.button.editOrder': 'Edit Order',
   'accounts.button.update': 'Update Account',
   'accounts.button.reset': 'Reset',
   'accounts.error.ledgerRequired': 'Please select a ledger.',

@@ -660,6 +660,9 @@ class ReadAccountOut(BaseModel):
     # 納入總餘額(Phase 18):對齊 Moze,關閉後帳戶餘額不列入淨資產/資產構成
     # 總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響。
     include_in_total: bool = True
+    # 帳戶清單拖曳排序(2026-09-05):None = 舊資料/舊版 App 沒有這個值,read
+    # 端排序時 fallback 到名稱(見 routers/read/ledgers.py)。
+    sort_order: int | None = None
 
 
 class ReadCardRecommendationOut(BaseModel):
@@ -1660,6 +1663,8 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     swipesmart_card_id: str | None = None
     # 納入總餘額(Phase 18):新建預設 True(納入)。
     include_in_total: bool = True
+    # 帳戶清單拖曳排序(2026-09-05):新建一般不设,由後續拖曳排序 PATCH。
+    sort_order: int | None = None
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -1687,6 +1692,21 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     swipesmart_card_id: str | None = None
     # 納入總餘額(Phase 18):None = 不改(PATCH exclude_unset)。
     include_in_total: bool | None = None
+    # 帳戶清單拖曳排序(2026-09-05):None = 不改(PATCH exclude_unset)。單筆
+    # PATCH 一般不用這個欄位改排序,批次拖曳走 WriteAccountReorderRequest。
+    sort_order: int | None = None
+
+
+class WriteAccountReorderRequest(WriteBaseRequest):
+    """帳戶清單拖曳排序(2026-09-05)批次端點請求體。一次可能牽動十幾二十個
+    帳戶,逐筆 PATCH 太慢且要處理連環 base_change_id 遞增,這裡用一個
+    base_change_id 包整批。"""
+
+    class Item(BaseModel):
+        account_id: str
+        sort_order: int
+
+    items: list[Item] = Field(min_length=1)
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

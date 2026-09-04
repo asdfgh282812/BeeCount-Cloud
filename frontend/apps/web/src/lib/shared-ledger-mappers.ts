@@ -56,6 +56,9 @@ export function sharedAccountToReadAccount(a: SharedAccountItem): ReadAccount {
     payment_due_day: a.payment_due_day,
     bank_name: a.bank_name,
     card_last_four: a.card_last_four,
+    // 共享账本资源列表(SharedAccountItem)不带 sort_order——只喂给 picker /
+    // tile 渲染,不经过帳戶清單拖曳排序的分组排序逻辑,占位 null 即可。
+    sort_order: null,
   }
 }
 

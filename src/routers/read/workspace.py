@@ -840,6 +840,7 @@ async def list_workspace_accounts(
                 avatar_cloud_sha256=acct.avatar_cloud_sha256,
                 swipesmart_card_id=acct.swipesmart_card_id,
                 include_in_total=acct.include_in_total,
+                sort_order=acct.sort_order,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,
@@ -987,8 +988,14 @@ async def list_workspace_accounts(
             acc.billing_due_date = datetime(due.year, due.month, due.day, tzinfo=timezone.utc)
             acc.billing_remaining_due = round(billing["remaining_due"], 2)
 
-    # Sort by name, then paginate
-    all_accounts.sort(key=lambda a: (a.name or "").lower())
+    # 帳戶清單拖曳排序(2026-09-05):按 sort_order 排,None(舊資料/舊版 App)
+    # fallback 排到最後,同 sort_order/都缺值時用名稱當 tiebreaker,再 paginate。
+    all_accounts.sort(
+        key=lambda a: (
+            a.sort_order if a.sort_order is not None else 10**9,
+            (a.name or "").lower(),
+        )
+    )
     return all_accounts[offset : offset + limit]
 
 

@@ -529,6 +529,8 @@ def upsert_account(
         # includeInTotal 從舊行補齊,這裡直接取 merged payload 的值;全新
         # insert 首次缺失時給 True(預設納入)。
         "include_in_total": _as_bool(payload.get("includeInTotal"), default=True),
+        # 帳戶清單拖曳排序(2026-09-05)。
+        "sort_order": _opt_int(payload.get("sortOrder")),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)

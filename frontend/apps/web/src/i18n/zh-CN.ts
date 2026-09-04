@@ -1706,6 +1706,7 @@ const zhCN = {
   'accounts.placeholder.currency': '币种',
   'accounts.placeholder.initialBalance': '初始余额',
   'accounts.button.create': '新建账户',
+  'accounts.button.editOrder': '编辑排序',
   'accounts.button.update': '更新账户',
   'accounts.button.reset': '重置',
   'accounts.error.ledgerRequired': '请先选择账本。',

@@ -464,7 +464,14 @@ def list_accounts(
             .order_by(UserAccountProjection.sync_id.asc())
         ).all()
     )
-    rows.sort(key=lambda r: (r.name or "").lower())
+    # 帳戶清單拖曳排序(2026-09-05):按 sort_order 排,None(舊資料/舊版 App)
+    # fallback 排到最後,同 sort_order/都缺值時用名稱當 tiebreaker。
+    rows.sort(
+        key=lambda r: (
+            r.sort_order if r.sort_order is not None else 10**9,
+            (r.name or "").lower(),
+        )
+    )
     return [
         ReadAccountOut(
             id=row.sync_id,
@@ -491,6 +498,7 @@ def list_accounts(
             avatar_cloud_sha256=row.avatar_cloud_sha256,
             swipesmart_card_id=row.swipesmart_card_id,
             include_in_total=row.include_in_total,
+            sort_order=row.sort_order,
         )
         for row in rows
     ]

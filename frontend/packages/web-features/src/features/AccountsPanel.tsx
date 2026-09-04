@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from '@dnd-kit/core'
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { GripVertical } from 'lucide-react'
+
+import {
   Button,
   Dialog,
   DialogContent,
@@ -78,6 +90,17 @@ type MobileStyleAssetsProps = {
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  /** 帳戶清單拖曳排序(2026-09-05):true 時每個分組改用可拖曳的清單渲染,
+   *  取代原本的靜態 AccountListRow(編輯/刪除/展開等互動暫時停用)。 */
+  editingOrder?: boolean
+  /** 「編輯排序」/「完成」切換按鈕回調,渲染在「新建帳戶」按鈕左側。不傳
+   *  則不渲染切換按鈕(調用方尚未接線時零影響)。 */
+  onToggleEditingOrder?: () => void
+  /** 外層拖曳:重排某個分類裡「頂層帳戶」(獨立帳戶 + 合併帳單主帳戶)彼此
+   *  的順序,`orderedRows` 是拖曳完成後的新順序。 */
+  onReorderBlocks?: (type: string, orderedRows: ReadAccount[]) => void
+  /** 內層拖曳:重排某個合併帳單主帳戶底下子帳戶彼此的順序。 */
+  onReorderChildren?: (parentId: string, orderedRows: ReadAccount[]) => void
 }
 
 /**
@@ -100,7 +123,11 @@ function MobileStyleAssets({
   avatarPreviewUrlByFileId,
   baseCurrency,
   fxRates,
-  fxOverrides
+  fxOverrides,
+  editingOrder = false,
+  onToggleEditingOrder,
+  onReorderBlocks,
+  onReorderChildren
 }: MobileStyleAssetsProps) {
   const t = useT()
   // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
@@ -149,7 +176,17 @@ function MobileStyleAssets({
       ) : null}
 
       {onCreate ? (
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-end gap-2">
+          {onToggleEditingOrder ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canManage}
+              onClick={onToggleEditingOrder}
+            >
+              {editingOrder ? t('common.done') : t('accounts.button.editOrder')}
+            </Button>
+          ) : null}
           <Button size="sm" disabled={!canManage} onClick={onCreate}>
             {t('accounts.button.create')}
           </Button>
@@ -240,28 +277,38 @@ function MobileStyleAssets({
                 </div>
               </button>
               {!isCollapsed ? (
-                <div className="divide-y divide-border/40 border-t border-border/40">
-                  {group.rows
-                    .filter((row) => !childIds.has(row.id))
-                    .map((row) => (
-                      <AccountListRow
-                        key={row.id}
-                        row={row}
-                        color={group.color}
-                        isLiability={group.isLiability}
-                        canManage={canManage}
-                        onEdit={onEdit}
-                        onDelete={onDelete}
-                        onClick={onClickAccount}
-                        avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
-                        childRows={childrenByParent.get(row.id)}
-                        baseCurrency={baseCurrency}
-                        fxRates={fxRates}
-                        fxOverrides={fxOverrides}
-                        amountSize="lg"
-                      />
-                    ))}
-                </div>
+                editingOrder ? (
+                  <ReorderableGroupRows
+                    group={group}
+                    childrenByParent={childrenByParent}
+                    childIds={childIds}
+                    onReorderBlocks={onReorderBlocks}
+                    onReorderChildren={onReorderChildren}
+                  />
+                ) : (
+                  <div className="divide-y divide-border/40 border-t border-border/40">
+                    {group.rows
+                      .filter((row) => !childIds.has(row.id))
+                      .map((row) => (
+                        <AccountListRow
+                          key={row.id}
+                          row={row}
+                          color={group.color}
+                          isLiability={group.isLiability}
+                          canManage={canManage}
+                          onEdit={onEdit}
+                          onDelete={onDelete}
+                          onClick={onClickAccount}
+                          avatarPreviewUrlByFileId={avatarPreviewUrlByFileId}
+                          childRows={childrenByParent.get(row.id)}
+                          baseCurrency={baseCurrency}
+                          fxRates={fxRates}
+                          fxOverrides={fxOverrides}
+                          amountSize="lg"
+                        />
+                      ))}
+                  </div>
+                )
               ) : null}
             </div>
           )
@@ -278,6 +325,150 @@ function MobileStyleAssets({
         onClickAccount={onClickAccount}
       />
     </div>
+  )
+}
+
+/**
+ * 帳戶清單拖曳排序(2026-09-05)單一列的外觀:名稱 + 圖示 + 子帳戶數量徽章,
+ * 右側拖曳手把(`GripVertical`)——只有從手把才能拖動,列本身不可點擊/編輯/
+ * 刪除,避免跟其它手勢衝突,對齊 App 端 `_ReorderableAccountRow` 的設計。
+ */
+function ReorderableRow({
+  row,
+  color,
+  depth = 0,
+  childCount
+}: {
+  row: ReadAccount
+  color: string
+  depth?: number
+  childCount?: number
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: row.id
+  })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ ...style, paddingLeft: `${14 + depth * 22}px` }}
+      className="flex items-center justify-between gap-3 border-b border-border/30 bg-card py-2.5 pr-3 last:border-b-0"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <div
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+          style={{ background: `${color}18`, border: `1px solid ${color}40` }}
+        >
+          <TypeIcon type={row.account_type || 'other'} size={18} />
+        </div>
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{row.name}</span>
+          {childCount ? (
+            <span className="shrink-0 rounded-full bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {childCount}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        className="shrink-0 cursor-grab touch-none p-1 text-muted-foreground active:cursor-grabbing"
+      >
+        <GripVertical size={16} />
+      </button>
+    </div>
+  )
+}
+
+/**
+ * 帳戶清單拖曳排序(2026-09-05)一個分組的可拖曳清單:外層 `SortableContext`
+ * 拖曳「頂層帳戶」(獨立帳戶 + 合併帳單主帳戶)彼此順序,有子帳戶的區塊在
+ * 下方再包一層 `SortableContext`,只重排該區塊自己的子帳戶——跟 App 端
+ * `_buildReorderableBlocks` 的兩層設計對齊。單一 `DndContext` 同時包住兩層,
+ * `handleDragEnd` 自己判斷 active/over 落在哪一層清單裡再分派對應 callback,
+ * 而不是靠巢狀 `SortableContext` 自動處理跨層拖曳(dnd-kit 本身不支援)。
+ */
+function ReorderableGroupRows({
+  group,
+  childrenByParent,
+  childIds,
+  onReorderBlocks,
+  onReorderChildren
+}: {
+  group: AssetGroup
+  childrenByParent: Map<string, ReadAccount[]>
+  childIds: Set<string>
+  onReorderBlocks?: (type: string, orderedRows: ReadAccount[]) => void
+  onReorderChildren?: (parentId: string, orderedRows: ReadAccount[]) => void
+}) {
+  const topLevelRows = useMemo(
+    () => group.rows.filter((row) => !childIds.has(row.id)),
+    [group.rows, childIds]
+  )
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const activeId = String(active.id)
+    const overId = String(over.id)
+
+    const topIds = topLevelRows.map((r) => r.id)
+    if (topIds.includes(activeId) && topIds.includes(overId)) {
+      const oldIndex = topIds.indexOf(activeId)
+      const newIndex = topIds.indexOf(overId)
+      onReorderBlocks?.(group.type, arrayMove(topLevelRows, oldIndex, newIndex))
+      return
+    }
+    for (const [parentId, children] of childrenByParent.entries()) {
+      const ids = children.map((c) => c.id)
+      if (ids.includes(activeId) && ids.includes(overId)) {
+        const oldIndex = ids.indexOf(activeId)
+        const newIndex = ids.indexOf(overId)
+        onReorderChildren?.(parentId, arrayMove(children, oldIndex, newIndex))
+        return
+      }
+    }
+  }
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={topLevelRows.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+        <div className="divide-y divide-border/40 border-t border-border/40">
+          {topLevelRows.map((row) => {
+            const children = childrenByParent.get(row.id)
+            return (
+              <div key={row.id}>
+                <ReorderableRow row={row} color={group.color} childCount={children?.length} />
+                {children && children.length > 0 ? (
+                  <SortableContext
+                    items={children.map((c) => c.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div>
+                      {children.map((child) => (
+                        <ReorderableRow
+                          key={child.id}
+                          row={child}
+                          color={TYPE_COLORS[child.account_type || 'other'] || group.color}
+                          depth={1}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      </SortableContext>
+    </DndContext>
   )
 }
 
@@ -658,7 +849,17 @@ export function computeTypeGroups(rows: readonly ReadAccount[], t: (k: string) =
     buckets[key].push(row)
   }
   return ACCOUNT_ORDER.filter((type) => (buckets[type] || []).length > 0).map((type) => {
-    const groupRows = (buckets[type] || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+    // 帳戶清單拖曳排序(2026-09-05):照 sort_order 排,null(舊資料/舊版
+    // App)排到最後,同 sort_order/都缺值時用名稱當 tiebreaker——跟後端
+    // read/ledgers.py 的排序規則對齊,確保 App/Web 看到同一個順序。
+    const groupRows = (buckets[type] || [])
+      .slice()
+      .sort((a, b) => {
+        const orderA = a.sort_order ?? Number.MAX_SAFE_INTEGER
+        const orderB = b.sort_order ?? Number.MAX_SAFE_INTEGER
+        if (orderA !== orderB) return orderA - orderB
+        return a.name.localeCompare(b.name)
+      })
     const isLiability = LIABILITY_TYPES.has(type)
     // 小计带符号累加(与 computeCurrencySummary 同口径)——溢缴的卡会抵销欠款。
     // 展示"共欠"时由渲染处对组合计取 abs,绝不逐账户 abs(否则 +10w 卡 + −20w 贷
@@ -784,6 +985,11 @@ type AccountsPanelProps = {
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  /** 外層拖曳:重排某個分類裡「頂層帳戶」彼此的順序。不傳則不渲染「編輯
+   *  排序」切換按鈕(調用方尚未接線時零影響)。 */
+  onReorderBlocks?: (type: string, orderedRows: ReadAccount[]) => void
+  /** 內層拖曳:重排某個合併帳單主帳戶底下子帳戶彼此的順序。 */
+  onReorderChildren?: (parentId: string, orderedRows: ReadAccount[]) => void
 }
 
 export function AccountsPanel({
@@ -804,10 +1010,15 @@ export function AccountsPanel({
   onUploadAvatar,
   baseCurrency,
   fxRates,
-  fxOverrides
+  fxOverrides,
+  onReorderBlocks,
+  onReorderChildren
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  // 帳戶清單拖曳排序(2026-09-05):切換模式的 state 放在這裡(跟 open 同層
+  // 級)——只是個 UI 開關,不需要提升到 AccountsPage。
+  const [editingOrder, setEditingOrder] = useState(false)
   // 帳戶頭像裁剪(2026-09-01 補強):選檔後不直接上傳,先跳裁剪彈窗,確認後才
   // 呼叫 onUploadAvatar,固定 4:3 對齊現有卡片預覽形狀。
   const [avatarCropSource, setAvatarCropSource] = useState<AvatarCropSource | null>(null)
@@ -907,6 +1118,12 @@ export function AccountsPanel({
           baseCurrency={baseCurrency}
           fxRates={fxRates}
           fxOverrides={fxOverrides}
+          editingOrder={editingOrder}
+          onToggleEditingOrder={
+            onReorderBlocks ? () => setEditingOrder((prev) => !prev) : undefined
+          }
+          onReorderBlocks={onReorderBlocks}
+          onReorderChildren={onReorderChildren}
         />
       )}
 

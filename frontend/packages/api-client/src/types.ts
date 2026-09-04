@@ -334,6 +334,9 @@ export type ReadAccount = {
    *  總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響(跟 hidden
    *  是兩個獨立維度)。缺省 true(旧接口未提供该字段时视为納入)。 */
   include_in_total?: boolean
+  /** 帳戶清單拖曳排序(2026-09-05):null = 舊資料/舊版 App 沒有這個值,
+   *  清單顯示時排到最後。 */
+  sort_order: number | null
 }
 
 export type ReadCategory = {
@@ -805,6 +808,9 @@ export type AccountPayload = {
   swipesmart_card_id?: string | null
   /** 納入總餘額(Phase 18):create 缺省 true;update 不传 = 不改。 */
   include_in_total?: boolean | null
+  /** 帳戶清單拖曳排序(2026-09-05):不传 = 不改。批次拖曳排序走
+   *  `reorderAccounts`,單筆 create/update 一般不用這個欄位。 */
+  sort_order?: number | null
 }
 
 export type AccountBillingMember = {

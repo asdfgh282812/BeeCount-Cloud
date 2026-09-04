@@ -1667,6 +1667,7 @@ const zhTW = {
   'accounts.placeholder.currency': '幣別',
   'accounts.placeholder.initialBalance': '初始餘額',
   'accounts.button.create': '建立帳戶',
+  'accounts.button.editOrder': '編輯排序',
   'accounts.button.update': '更新帳戶',
   'accounts.button.reset': '重設',
   'accounts.error.ledgerRequired': '請先選擇帳本。',

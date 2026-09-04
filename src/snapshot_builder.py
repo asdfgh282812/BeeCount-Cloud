@@ -270,6 +270,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.avatar_cloud_sha256,
         UserAccountProjection.swipesmart_card_id,
         UserAccountProjection.include_in_total,
+        UserAccountProjection.sort_order,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -291,6 +292,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         avatar_cloud_sha256,
         swipesmart_card_id,
         include_in_total,
+        sort_order,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -337,6 +339,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 納入總餘額(Phase 18):NOT NULL 布尔列,同 hidden/autoPayEnabled 无
         # 条件输出,避免这个 SELECT 漏选导致 diff-emit 重建基线时静默清空。
         acc["includeInTotal"] = bool(include_in_total)
+        # 帳戶清單拖曳排序(2026-09-05):nullable,同 creditLimit/billingDay
+        # 「有值才带 key」的写法——同上面 includeInTotal 注释描述的坑,這個
+        # SELECT 漏選会导致 web 写路径 diff-emit 重建 prev 基线时这个 key
+        # 整个缺失,被 upsert_account 当成"没传"写成 null,静默清空排序。
+        if sort_order is not None:
+            acc["sortOrder"] = sort_order
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。

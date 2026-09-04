@@ -253,7 +253,10 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
                 "billing_day": r.billing_day,
                 "payment_due_day": r.payment_due_day,
             }
-            for r in sorted(seen.values(), key=lambda r: (r.name or "").lower())
+            for r in sorted(
+                seen.values(),
+                key=lambda r: (r.sort_order or 0, (r.name or "").lower()),
+            )
         ]
 
 

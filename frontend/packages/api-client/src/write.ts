@@ -199,6 +199,27 @@ export async function deleteAccount(
   )
 }
 
+/**
+ * 帳戶清單拖曳排序(2026-09-05):一次批次改多個帳戶的 sort_order,只包一次
+ * base_change_id / 一次 commit——拖曳一次可能牽動十幾二十個帳戶,逐筆 PATCH
+ * 太慢且要處理連環 base_change_id 遞增。
+ */
+export async function reorderAccounts(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  items: { account_id: string; sort_order: number }[]
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/reorder`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      items
+    }
+  )
+}
+
 /** §2.9 Phase 4:信用卡繳款,语意化端点,建立一笔 transfer 交易。 */
 export async function cardPayment(
   token: string,

@@ -11,6 +11,7 @@ import {
   fetchWorkspaceDebtTotals,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
+  reorderAccounts,
   updateAccount,
   uploadAccountAvatar,
   type ExchangeRateOverride,
@@ -410,6 +411,28 @@ export function AccountsPage() {
     }
   }
 
+  // 帳戶清單拖曳排序(2026-09-05):外層(頂層帳戶區塊)跟內層(子帳戶)拖曳
+  // 完的持久化邏輯完全一樣,只是傳進來的 orderedRows 集合不同——單一
+  // sort_order 整數軸,頂層/子帳戶各自是獨立的相對順序空間,互不干擾(見
+  // reorderAccounts 註解)。樂觀更新先把本地 rows 灌成新順序,畫面立刻反映
+  // 拖曳結果,不等 API 回來。
+  const persistAccountReorder = async (orderedRows: ReadAccount[]) => {
+    if (!activeLedgerId) return
+    const items = orderedRows.map((row, index) => ({ account_id: row.id, sort_order: index }))
+    const nextSortOrder = new Map(items.map((i) => [i.account_id, i.sort_order]))
+    setRows((prev) =>
+      prev.map((r) => (nextSortOrder.has(r.id) ? { ...r, sort_order: nextSortOrder.get(r.id)! } : r))
+    )
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        reorderAccounts(token, activeLedgerId, base, items)
+      )
+    } catch (err) {
+      await refresh()
+      notifyError(err)
+    }
+  }
+
   // 删除流程(2026-08 改版为级联删除):点删除按钮 → tx_count === 0 时跟原本
   // 一样单步确认;tx_count > 0 时两段式确认 —— 第一段只是把 cascadeConfirming
   // 翻真、不发请求,第二段才真正带 cascade:true 调用 deleteAccount。结构性
@@ -738,6 +761,8 @@ export function AccountsPage() {
           setCascadeConfirming(false)
           setPendingDelete(ws)
         }}
+        onReorderBlocks={(_type, orderedRows) => void persistAccountReorder(orderedRows)}
+        onReorderChildren={(_parentId, orderedRows) => void persistAccountReorder(orderedRows)}
       />
       {/* AccountDetailDialog 已迁到 GlobalEntityDialogs */}
       {/* 删除确认(2026-08 改版为级联删除):

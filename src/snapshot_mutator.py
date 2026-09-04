@@ -127,6 +127,8 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     # 納入總餘額(Phase 18):Web create/update 请求体带 include_in_total(bool)
     # 时才写;不带 key → 保留原值(不冲掉已有设置,契约对齐 hidden 的既有语义)。
     ("include_in_total", "includeInTotal", "bool"),
+    # 帳戶清單拖曳排序(2026-09-05):跟 mobile Accounts.sortOrder 對齊。
+    ("sort_order", "sortOrder", "int"),
 )
 
 
