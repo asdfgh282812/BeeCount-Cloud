@@ -107,7 +107,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
   }
 
   return (
-    <div className="sticky top-0 z-50 px-2 pb-2 pt-3 md:px-6 md:pt-4">
+    <div className="sticky top-0 z-50 px-2 pb-2 pt-[calc(0.75rem_+_env(safe-area-inset-top))] md:px-6 md:pt-[calc(1rem_+_env(safe-area-inset-top))]">
       <header className="card px-2 md:px-5">
         <div className="flex h-14 items-center justify-between gap-2 md:gap-3">
           <div className="flex min-w-0 items-center gap-1.5 md:gap-2.5">
