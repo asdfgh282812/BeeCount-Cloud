@@ -41,7 +41,7 @@ class NotificationItem(BaseModel):
     title: str
     body: str | None
     payload: dict | None
-    pinned: bool
+    priority: int
     read_at: datetime | None
     created_at: datetime
 
@@ -63,7 +63,7 @@ def _to_item(row: Notification) -> NotificationItem:
         title=row.title,
         body=row.body,
         payload=row.payload_json,
-        pinned=row.pinned,
+        priority=row.priority,
         read_at=row.read_at,
         created_at=row.created_at,
     )
@@ -79,9 +79,9 @@ def list_notifications(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> NotificationListResponse:
-    """分页列出当前用户的通知(按 created_at 倒序)。unread_count 不受
-    limit/offset/category/unread_only 影响,始终是该用户全部未读数,方便前端
-    渲染角标。"""
+    """分页列出当前用户的通知(先按 priority 倒序分优先度,同优先度内再按
+    created_at 倒序)。unread_count 不受 limit/offset/category/unread_only
+    影响,始终是该用户全部未读数,方便前端渲染角标。"""
     base = select(Notification).where(Notification.user_id == current_user.id)
     if category:
         base = base.where(Notification.category == category)
@@ -107,7 +107,7 @@ def list_notifications(
 
     rows = db.scalars(
         base.order_by(
-            Notification.pinned.desc(),
+            Notification.priority.desc(),
             Notification.created_at.desc(),
             Notification.id.desc(),
         )

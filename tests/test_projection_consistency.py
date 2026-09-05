@@ -21,6 +21,7 @@ from src.models import (
     ReadBudgetProjection,
     ReadTxProjection,
     SyncChange,
+    User,
     UserAccountProjection,
     UserCategoryProjection,
     UserTagProjection,
@@ -217,6 +218,36 @@ def test_mobile_category_rename_cascades_tx_projection():
             tx = db.scalar(select(ReadTxProjection).where(
                 ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
             assert tx.category_name == "吃饭", f"cascade failed, got {tx.category_name}"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_category_partial_update_keeps_existing_fields():
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "m4b@t.com", device_id="m1", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        _push(client, hdr, "m1", "lg4b", [
+            {"ledger_id": "lg4b", "entity_type": "category", "entity_sync_id": "c1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "c1", "name": "餐饮", "kind": "expense",
+                         "icon": "food", "color": "#FF9800"}},
+        ])
+        later = datetime.now(timezone.utc) + timedelta(seconds=2)
+        # partial update:只改 name,不带 color/icon
+        _push(client, hdr, "m1", "lg4b", [
+            {"ledger_id": "lg4b", "entity_type": "category", "entity_sync_id": "c1",
+             "action": "upsert", "updated_at": _iso(later),
+             "payload": {"syncId": "c1", "name": "吃饭"}},
+        ])
+        with sf() as db:
+            uid = db.scalar(select(User.id).where(User.email == "m4b@t.com"))
+            cat = db.scalar(select(UserCategoryProjection).where(
+                UserCategoryProjection.user_id == uid, UserCategoryProjection.sync_id == "c1"))
+            assert cat is not None
+            assert cat.name == "吃饭"
+            assert cat.color == "#FF9800", "partial update 不该冲掉 color"
+            assert cat.icon == "food", "partial update 不该冲掉 icon"
     finally:
         app.dependency_overrides.clear()
 

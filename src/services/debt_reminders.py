@@ -112,9 +112,9 @@ def send_due_debt_reminders(db: Session, *, now: datetime | None = None) -> int:
                 "ledgerId": notification_service.resolve_ledger_external_id(db, debt.ledger_id),
                 "debtId": debt.sync_id,
             },
-            # 使用者反饋:這類提醒會被之後新建立的其他通知洗到看不到,釘選
-            # 讓它排在最上面。
-            pinned=True,
+            # 使用者反饋:欠款通知優先度最高,固定排在最上面(第二高是信用卡
+            # 帳單,見 credit_card_reminders.py 的 priority=1)。
+            priority=2,
         )
         already.add(debt.sync_id)
         sent += 1

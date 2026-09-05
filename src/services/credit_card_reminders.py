@@ -156,6 +156,9 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
                 "kind": kind,
                 "ledgerId": ledger_external_id,
             },
+            # 使用者反饋:信用卡帳單優先度僅次於欠款(見 debt_reminders.py 的
+            # priority=2),排在其餘一般通知之前。
+            priority=1,
         )
         sent += 1
 

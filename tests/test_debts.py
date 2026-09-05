@@ -914,7 +914,7 @@ def test_unsettled_counterparty_notification_ignores_due_date():
                 select(Notification).where(Notification.category == "debt_unsettled")
             ).all()
             assert len(rows) == 1
-            assert rows[0].pinned is True
+            assert rows[0].priority == 2
             assert rows[0].read_at is None
             assert rows[0].payload_json["counterpartyName"] == "小明"
         finally:
@@ -1037,6 +1037,61 @@ def test_unsettled_counterparty_notification_skips_manually_closed_debt():
             touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
             db.commit()
             assert touched == 0
+        finally:
+            db.close()
+    finally:
+        client.close()
+
+
+def test_unsettled_counterparty_notification_stays_single_after_marked_read():
+    """使用者把未結清通知標記已讀後(例如點「全部已讀」),分組仍未結清時
+    再次掃描不該重複新建一條——回歸測試 2026-09-05 踩到的重複通知 bug。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt31@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT31"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt31@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        _create_debt(client, hdr, ledger_id, token, counterparty_name="易遊網", principal_amount=2920.0)
+
+        db = TS()
+        try:
+            touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+            assert touched == 1
+            rows = db.scalars(
+                select(Notification).where(Notification.category == "debt_unsettled")
+            ).all()
+            assert len(rows) == 1
+            # 模擬使用者點開/點「全部已讀」。
+            rows[0].read_at = datetime.now(timezone.utc)
+            db.add(rows[0])
+            db.commit()
+        finally:
+            db.close()
+
+        # 分組仍未結清,之後每 15 分鐘的排程再跑一次。
+        for _ in range(3):
+            db = TS()
+            try:
+                touched = debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+                db.commit()
+                assert touched == 1
+            finally:
+                db.close()
+
+        db = TS()
+        try:
+            rows = db.scalars(
+                select(Notification).where(Notification.category == "debt_unsettled")
+            ).all()
+            assert len(rows) == 1, "已讀後分組仍未結清,不該重複新建通知"
+            assert rows[0].read_at is None, "只要還沒結清就該一直維持未讀"
+            assert rows[0].priority == 2
         finally:
             db.close()
     finally:

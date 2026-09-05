@@ -933,6 +933,7 @@ class ReadCategoryOut(BaseModel):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None
+    color: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -2116,6 +2117,7 @@ class WriteCategoryCreateRequest(WriteBaseRequest):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None = None
+    color: str | None = None
 
 
 class WriteCategoryUpdateRequest(WriteBaseRequest):
@@ -2129,6 +2131,7 @@ class WriteCategoryUpdateRequest(WriteBaseRequest):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None = None
+    color: str | None = None
 
 
 class WriteTagCreateRequest(WriteBaseRequest):

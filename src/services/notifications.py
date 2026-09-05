@@ -38,19 +38,20 @@ def create_notification(
     title: str,
     body: str | None = None,
     payload: dict | None = None,
-    pinned: bool = False,
+    priority: int = 0,
 ) -> Notification:
     """插入一条通知记录。不 commit —— 调用方通常在自己的事务里跟业务写入一起提交。
 
-    `pinned=True` 的通知在列表里排在最上面,不受之后新建立的通知擠動——
-    目前只有 `debt_reminders` 会传 True(见该模块调用点)。"""
+    `priority` 越大排序越靠前(在列表里排在最上面,不受之后新建立的通知擠動)。
+    目前约定:2=欠款(debt_reminders/debt_unsettled_notifications)、
+    1=信用卡帐单(credit_card_reminders)、0=其余(预设值)。"""
     notification = Notification(
         user_id=user_id,
         category=category,
         title=title,
         body=body,
         payload_json=payload,
-        pinned=pinned,
+        priority=priority,
     )
     db.add(notification)
     return notification

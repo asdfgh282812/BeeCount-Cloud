@@ -982,6 +982,7 @@ def create_category(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "iconCloudFileId": payload.get("icon_cloud_file_id"),
         "iconCloudSha256": payload.get("icon_cloud_sha256"),
         "parentName": payload.get("parent_name"),
+        "color": payload.get("color"),
     }
     _mark_entity_actor(category, payload, create=True)
     categories.append(category)
@@ -1012,6 +1013,7 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         ("icon_cloud_file_id", "iconCloudFileId"),
         ("icon_cloud_sha256", "iconCloudSha256"),
         ("parent_name", "parentName"),
+        ("color", "color"),
     ]:
         if req_key in payload:
             category[snapshot_key] = payload.get(req_key)

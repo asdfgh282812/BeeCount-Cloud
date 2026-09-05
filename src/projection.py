@@ -598,6 +598,7 @@ def upsert_category(
         "icon_cloud_sha256": _as_str(payload.get("iconCloudSha256")),
         "parent_name": parent_name,
         "parent_sync_id": parent_sync_id,
+        "color": _as_str(payload.get("color")),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserCategoryProjection, ("user_id", "sync_id"), values)

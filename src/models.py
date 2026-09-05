@@ -490,11 +490,12 @@ class Notification(Base):
     payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    # 使用者反饋:欠款到期提醒會被新通知洗到看不到——釘選後排在最上面,
-    # 不隨新通知被擠走。目前只有 debt_reminders 會建立時傳 True,其餘
-    # 'reminder' 來源(installment_plans/recurring_materializer)維持預設值。
-    pinned: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=false(), default=False
+    # 使用者反饋:通知排序要先分優先度、同優先度再照時間——數字越大越優先,
+    # 排在最上面,不隨新通知被擠走。目前 2=欠款(debt_reminders/
+    # debt_unsettled_notifications)、1=信用卡帳單(credit_card_reminders)、
+    # 0=其餘(預設值,installment_plans/recurring_materializer/card_reward)。
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
     )
 
 
@@ -713,6 +714,7 @@ class UserCategoryProjection(Base):
     # parent_name 字段保留(老调用 / fallback / 显示用),parent_sync_id 才是
     # 稳定 FK,父分类重命名时不需要级联改子分类。
     parent_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

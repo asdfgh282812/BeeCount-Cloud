@@ -186,6 +186,7 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("iconCloudFileId", "icon_cloud_file_id"),
         ("iconCloudSha256", "icon_cloud_sha256"),
         ("parentName", "parent_name"),
+        ("color", "color"),
     ]),
     "tag": _MergeSpec(UserTagProjection, [
         ("syncId", "sync_id"),
