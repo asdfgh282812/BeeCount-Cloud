@@ -36,6 +36,31 @@ from .deferred_posting import attribution_date_expr
 # `happened_at`,對舊資料零行為變化。
 _ATTR_DATE = attribution_date_expr()
 
+# 交易级多币种(0018):信用卡群組會合併多張子卡的消費金額,子卡幣別可能
+# 互不相同(甚至跟帳本本位幣不同,例如一張日圓計價的子卡)——消費/收入類
+# 交易一律換算成帳本本位幣(`native_amount`,NULL 時回退 `amount`,同幣別
+# 帳本兩者本來就相等,行為不變)再加總,不然外幣消費會被當成本位幣數字
+# 直接加進「新增花費」/「應繳金額」,金額嚴重失真(2026-09 使用者反饋)。
+_NATIVE_AMOUNT = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+
+# 信用卡繳款/自動扣繳(2026-09 使用者反饋):`routers/write/accounts.py::
+# card_payment_ep`、`services/credit_card_autopay.py::materialize_due_card_autopay`
+# 兩處產生的「還款轉帳」,預設備註都是固定格式(使用者沒自訂 note 時)。
+# `routers/read/ledgers.py::get_account_statement` 對帳清單用這兩個前綴排除
+# 這類交易——它們是「清償某一期已結帳單」的動作本身,`compute_cycle_period_billing`
+# 已經用不分時間窗口的 lifetime `paid_total` FIFO 水位模型把清償效果算進
+# remaining_due/carryover_due,逐筆清單不該再收一次、讓使用者誤以為多了一筆
+# 「新增消費/待確認」項目。使用者自己手動轉帳、或自訂了 note 覆蓋預設值,
+# 兩者都不受影響(仍視為正常「還款/預繳」項目,對齊 Phase 6 的既有語意)。
+CARD_PAYMENT_NOTE_PREFIX = "信用卡繳款(帳單 "
+AUTOPAY_NOTE_PREFIX = "自動扣繳(帳單 "
+
+
+def is_card_settlement_note(note: str | None) -> bool:
+    if not note:
+        return False
+    return note.startswith(CARD_PAYMENT_NOTE_PREFIX) or note.startswith(AUTOPAY_NOTE_PREFIX)
+
 
 def compute_offset_totals(
     db: Session, *, ledger_id: str, member_ids: Sequence[str],
@@ -203,8 +228,8 @@ def compute_group_billing(
             select(
                 ReadTxProjection.account_sync_id,
                 func.coalesce(func.sum(sa_case(
-                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
-                    (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
+                    (ReadTxProjection.tx_type == "income", -_NATIVE_AMOUNT),
                     else_=0.0,
                 )), 0.0),
             ).where(
@@ -221,8 +246,8 @@ def compute_group_billing(
             select(
                 ReadTxProjection.account_sync_id,
                 func.coalesce(func.sum(sa_case(
-                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
-                    (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
+                    (ReadTxProjection.tx_type == "income", -_NATIVE_AMOUNT),
                     else_=0.0,
                 )), 0.0),
             ).where(
@@ -277,10 +302,10 @@ def compute_group_billing(
         open_exp, open_inc = db.execute(
             select(
                 func.coalesce(func.sum(sa_case(
-                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
                     else_=0.0)), 0.0),
                 func.coalesce(func.sum(sa_case(
-                    (ReadTxProjection.tx_type == "income", ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "income", _NATIVE_AMOUNT),
                     else_=0.0)), 0.0),
             ).where(
                 ReadTxProjection.ledger_id == ledger_id,
@@ -396,8 +421,8 @@ def compute_cycle_period_billing(
             select(
                 ReadTxProjection.account_sync_id,
                 func.coalesce(func.sum(sa_case(
-                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
-                    (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
+                    (ReadTxProjection.tx_type == "income", -_NATIVE_AMOUNT),
                     else_=0.0,
                 )), 0.0),
             ).where(
@@ -420,8 +445,8 @@ def compute_cycle_period_billing(
             return 0.0
         raw = float(db.scalar(
             select(func.coalesce(func.sum(sa_case(
-                (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
-                (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
+                (ReadTxProjection.tx_type == "income", -_NATIVE_AMOUNT),
                 else_=0.0,
             )), 0.0)).where(
                 ReadTxProjection.ledger_id == ledger_id,

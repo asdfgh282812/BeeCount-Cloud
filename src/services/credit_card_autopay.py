@@ -177,7 +177,7 @@ def materialize_due_card_autopay(db: Session, *, now: datetime | None = None) ->
             remaining_due_by_child=billing["per_child_remaining_due"],
             amount=remaining_due,
         )
-        note = f"自動扣繳(帳單 {cycle_start.isoformat()}~{cycle_end_iso})"
+        note = f"{credit_card_billing.AUTOPAY_NOTE_PREFIX}{cycle_start.isoformat()}~{cycle_end_iso})"
         for target_id, amount in allocations.items():
             if amount <= 0:
                 continue

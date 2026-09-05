@@ -337,6 +337,52 @@ def test_statement_confirming_transfer_in_reduces_confirmed_total():
         client.close()
 
 
+def test_statement_excludes_card_payment_settlement_transfer():
+    """2026-09 使用者反饋:「信用卡繳款」(`.../card-payment`,預設 note 是
+    `信用卡繳款(帳單 ...)`)產生的還款轉帳,是清償這一期帳單的動作本身,
+    就算繳款當下的 `happened_at` 剛好落在被清償的那一期窗口內(例如使用者
+    在帳單結束當天就繳清),也不該出現在該期的對帳清單裡,跟一般使用者
+    手動轉帳轉入這張卡(仍要出現,見 `test_statement_includes_transfer_in_
+    but_excludes_transfer_out`)不同。"""
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st12b@t.com", device_id="d-app")
+        web_tok = _login(client, "st12b@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st12b", "ledger", "st12b",
+              {"syncId": "st12b", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "st12b", "account", "cash12b",
+              {"syncId": "cash12b", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st12b", "card12b", billing_day=billing_day)
+        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        expense_id = _create_tx(client, hdr_web, "st12b", account_id="card12b", amount=100.0,
+                                 happened_at=_dt(cycle_start + timedelta(days=1)))
+
+        r = client.post(
+            "/api/v1/write/ledgers/st12b/accounts/card12b/card-payment",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "amount": 100.0, "from_account_id": "cash12b",
+                # 剛好在被清償那一期的最後一天繳清(對齊使用者截圖的場景)。
+                "happened_at": _dt(cycle_end),
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        data = _get_statement(client, hdr_web, "st12b", "card12b", cycle_offset=0).json()
+        ids = {t["id"] for t in data["transactions"]}
+        assert expense_id in ids
+        assert data["statement_count"] == 1
+        assert data["statement_total"] == 100.0
+    finally:
+        client.close()
+
+
 def test_statement_flags_reward_category_transaction_as_is_reward():
     client, _TS = _make_client()
     try:

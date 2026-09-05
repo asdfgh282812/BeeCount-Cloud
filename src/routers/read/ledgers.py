@@ -2003,6 +2003,21 @@ def get_account_statement(
         ).order_by(order_col)
     ).all()
 
+    # 2026-09 使用者反饋:轉入這張卡/群組的轉帳裡,「信用卡繳款」
+    # (routers/write/accounts.py::card_payment_ep)/「自動扣繳」
+    # (services/credit_card_autopay.py)產生的還款轉帳,是清償某一期已結
+    # 帳單的動作本身,不是這一期(它落入的那一期,通常是繳款當下所在的
+    # 下一期)新增的消費/待確認項目——`compute_cycle_period_billing` 已經用
+    # 不分時間窗口的 lifetime `paid_total` 把它算進 remaining_due/
+    # carryover_due,這裡再收一次會讓使用者看到一筆「多出來」、金額對不上
+    # 真實消費的轉帳列(見 credit_card_billing.is_card_settlement_note
+    # docstring)。使用者自己手動轉帳/自訂了 note 不受影響,仍照 Phase 6
+    # 既有語意當「還款/預繳」收進清單。
+    rows = [
+        row for row in rows
+        if not (row.tx_type == "transfer" and credit_card_billing.is_card_settlement_note(row.note))
+    ]
+
     # 2026-08 使用者反饋(需求 #7 改版):同一個回饋方案(rule)在這期帳單內
     # 的所有回饋入帳交易合併成一列顯示總金額,點擊才展開看原始消費明細(前端
     # 另外呼叫既有的 card-reward-rules/{rule_id}/transactions 端點,這裡只

@@ -323,7 +323,10 @@ async def card_payment_ep(
     note = req.note
     if not note:
         cycle_start, cycle_end = billing["cycle_start"], billing["cycle_end"]
-        note = f"信用卡繳款(帳單 {cycle_start.isoformat()}~{cycle_end.isoformat()})"
+        note = (
+            f"{credit_card_billing.CARD_PAYMENT_NOTE_PREFIX}"
+            f"{cycle_start.isoformat()}~{cycle_end.isoformat()})"
+        )
 
     # 分攤金額:key 是子帳戶 sync_id,群組自己的溢繳結轉用 account_id 當 key。
     # 分攤規則抽到 credit_card_billing.compute_card_payment_allocations,跟
