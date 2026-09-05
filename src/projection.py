@@ -29,6 +29,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectCategoryBudgetProjection,
     ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -830,6 +831,10 @@ def upsert_project(
         "visible_on_home": _as_bool(payload.get("visibleOnHome"), default=True),
         "enabled": _as_bool(payload.get("enabled"), default=True),
         "sort_order": _as_int(payload.get("sortOrder"), default=0),
+        "income_included_in_budget": _as_bool(payload.get("incomeIncludedInBudget"), default=False),
+        "daily_budget_enabled": _as_bool(payload.get("dailyBudgetEnabled"), default=False),
+        "daily_budget_mode": _as_str(payload.get("dailyBudgetMode")),
+        "reminder_threshold_percent": _as_int_or_none(payload.get("reminderThresholdPercent")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadProjectProjection, ("ledger_id", "sync_id"), values)
@@ -837,6 +842,41 @@ def upsert_project(
 
 def delete_project(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadProjectProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_project_category_budget(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """專案分類子預算(docs/2026-09-06-project-category-budget-period-switch-
+    design.md §2.2/§7.2)。`projectId`/`categoryId` 跟其它同步實體的外鍵一樣
+    只存 sync_id 字串,不做存在性驗證(這個 repo 沒有「sync_id 轉內部 id」的
+    機制,存在性 + 一級分類校驗放在 write router 層)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "project_sync_id": _as_str(payload.get("projectId")),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "mode": _as_str(payload.get("mode")) or "fixed",
+        "fixed_amount": _as_float_or_none(payload.get("fixedAmount")),
+        "percentage": _as_float_or_none(payload.get("percentage")),
+        "carryover_enabled": _as_bool(payload.get("carryoverEnabled"), default=False),
+        "sort_order": _as_int(payload.get("sortOrder"), default=0),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadProjectCategoryBudgetProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_project_category_budget(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadProjectCategoryBudgetProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def upsert_tx_template(

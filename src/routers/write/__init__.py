@@ -23,6 +23,7 @@ from . import (
     exchange_rate_overrides,
     installment_plans,
     ledgers,
+    project_category_budgets,
     projects,
     recurring_rules,
     tags,
@@ -47,5 +48,6 @@ router.include_router(installment_plans.router)
 router.include_router(debts.router)
 router.include_router(debts_rename_counterparty.router)
 router.include_router(projects.router)
+router.include_router(project_category_budgets.router)
 router.include_router(tx_templates.router)
 router.include_router(card_reward_rules.router)

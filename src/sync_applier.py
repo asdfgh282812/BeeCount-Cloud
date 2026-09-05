@@ -52,6 +52,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectCategoryBudgetProjection,
     ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -71,7 +72,7 @@ INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
     "installment_period", "debt", "tx_template", "card_reward_rule",
-    "project",
+    "project", "project_category_budget",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -321,6 +322,20 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("visibleOnHome", "visible_on_home"),
         ("enabled", "enabled"),
         ("sortOrder", "sort_order"),
+        ("incomeIncludedInBudget", "income_included_in_budget"),
+        ("dailyBudgetEnabled", "daily_budget_enabled"),
+        ("dailyBudgetMode", "daily_budget_mode"),
+        ("reminderThresholdPercent", "reminder_threshold_percent"),
+    ]),
+    "project_category_budget": _MergeSpec(ReadProjectCategoryBudgetProjection, [
+        ("syncId", "sync_id"),
+        ("projectId", "project_sync_id"),
+        ("categoryId", "category_sync_id"),
+        ("mode", "mode"),
+        ("fixedAmount", "fixed_amount"),
+        ("percentage", "percentage"),
+        ("carryoverEnabled", "carryover_enabled"),
+        ("sortOrder", "sort_order"),
     ]),
     "tx_template": _MergeSpec(ReadTxTemplateProjection, [
         ("syncId", "sync_id"),
@@ -425,6 +440,7 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
     "project": projection.upsert_project,
+    "project_category_budget": projection.upsert_project_category_budget,
     "tx_template": projection.upsert_tx_template,
 }
 
@@ -552,6 +568,13 @@ def _delete_project(db: Session, ledger_id: str, sync_id: str, user_id: str) -> 
     )
 
 
+def _delete_project_category_budget(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_project_category_budget(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="project_category_budget", entity_sync_id=sync_id,
+    )
+
+
 def _delete_tx_template(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     projection.delete_tx_template(db, ledger_id=ledger_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -595,6 +618,7 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "installment_period": _delete_installment_period,
     "debt": _delete_debt,
     "project": _delete_project,
+    "project_category_budget": _delete_project_category_budget,
     "tx_template": _delete_tx_template,
 }
 

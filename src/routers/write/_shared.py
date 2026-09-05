@@ -85,6 +85,8 @@ from ...schemas import (
     WriteInstallmentRebalanceRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteProjectCategoryBudgetCreateRequest,
+    WriteProjectCategoryBudgetUpdateRequest,
     WriteProjectCreateRequest,
     WriteProjectUpdateRequest,
     WriteRecurringOccurrenceUpdateRequest,
@@ -113,6 +115,7 @@ from ...snapshot_mutator import (
     create_installment_period,
     create_installment_plan,
     create_project,
+    create_project_category_budget,
     create_recurring_rule,
     create_tag,
     create_transaction,
@@ -125,6 +128,7 @@ from ...snapshot_mutator import (
     delete_installment_period,
     delete_installment_plan,
     delete_project,
+    delete_project_category_budget,
     delete_recurring_rule,
     delete_tag,
     delete_transaction,
@@ -138,6 +142,7 @@ from ...snapshot_mutator import (
     update_installment_period,
     update_installment_plan,
     update_project,
+    update_project_category_budget,
     update_recurring_rule,
     update_tag,
     update_transaction,
@@ -211,6 +216,7 @@ _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
     "project": projection.upsert_project,
+    "project_category_budget": projection.upsert_project_category_budget,
     "tx_template": projection.upsert_tx_template,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
@@ -221,6 +227,7 @@ _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "installment_period": projection.delete_installment_period,
     "debt": projection.delete_debt,
     "project": projection.delete_project,
+    "project_category_budget": projection.delete_project_category_budget,
     "tx_template": projection.delete_tx_template,
 }
 
@@ -506,6 +513,9 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("projects") or [], next_snapshot.get("projects") or [],
                       "project", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("projectCategoryBudgets") or [], next_snapshot.get("projectCategoryBudgets") or [],
+                      "project_category_budget", emitted_ids)
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("txTemplates") or [], next_snapshot.get("txTemplates") or [],
                       "tx_template", emitted_ids)
@@ -1922,7 +1932,7 @@ async def _commit_write(
         for _k in (
             "items", "accounts", "categories", "tags", "budgets",
             "recurringRules", "installmentPlans", "installmentPeriods",
-            "debts", "txTemplates",
+            "debts", "txTemplates", "projectCategoryBudgets",
         ):
             arr = snapshot.get(_k)
             if isinstance(arr, list):
@@ -2422,6 +2432,7 @@ __all__ = [
     'SyncPushIdempotency',
     'User',
     'UserAccountProjection',
+    'UserCategoryProjection',
     'WriteAccountCreateRequest',
     'WriteAccountDeleteRequest',
     'WriteAccountReorderRequest',
@@ -2448,6 +2459,8 @@ __all__ = [
     'WriteInstallmentRebalanceRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteProjectCategoryBudgetCreateRequest',
+    'WriteProjectCategoryBudgetUpdateRequest',
     'WriteProjectCreateRequest',
     'WriteProjectUpdateRequest',
     'WriteStatementClearConfirmationsRequest',
@@ -2476,6 +2489,7 @@ __all__ = [
     'create_installment_period',
     'create_installment_plan',
     'create_project',
+    'create_project_category_budget',
     'create_recurring_rule',
     'create_tag',
     'create_transaction',
@@ -2488,6 +2502,7 @@ __all__ = [
     'delete_installment_period',
     'delete_installment_plan',
     'delete_project',
+    'delete_project_category_budget',
     'delete_recurring_rule',
     'delete_tag',
     'delete_transaction',
@@ -2501,6 +2516,7 @@ __all__ = [
     'update_installment_period',
     'update_installment_plan',
     'update_project',
+    'update_project_category_budget',
     'update_recurring_rule',
     'update_tag',
     'update_transaction',

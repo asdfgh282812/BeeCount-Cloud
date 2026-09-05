@@ -22,6 +22,7 @@ from .models import (
     ReadDebtProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
+    ReadProjectCategoryBudgetProjection,
     ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
@@ -685,10 +686,16 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadProjectProjection.visible_on_home,
         ReadProjectProjection.enabled,
         ReadProjectProjection.sort_order,
+        ReadProjectProjection.income_included_in_budget,
+        ReadProjectProjection.daily_budget_enabled,
+        ReadProjectProjection.daily_budget_mode,
+        ReadProjectProjection.reminder_threshold_percent,
     ).where(ReadProjectProjection.ledger_id == ledger_id)
     for (
         sid, name, icon, budget_amount, period_type, period_start, period_end,
         carryover_enabled, visible_on_home, enabled, sort_order,
+        income_included_in_budget, daily_budget_enabled, daily_budget_mode,
+        reminder_threshold_percent,
     ) in db.execute(project_stmt).all():
         p: dict[str, Any] = {
             "syncId": sid,
@@ -698,6 +705,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             "visibleOnHome": bool(visible_on_home),
             "enabled": bool(enabled),
             "sortOrder": sort_order or 0,
+            "incomeIncludedInBudget": bool(income_included_in_budget),
+            "dailyBudgetEnabled": bool(daily_budget_enabled),
         }
         if icon is not None:
             p["icon"] = icon
@@ -707,7 +716,42 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             p["periodStart"] = period_start.isoformat()
         if period_end is not None:
             p["periodEnd"] = period_end.isoformat()
+        if daily_budget_mode is not None:
+            p["dailyBudgetMode"] = daily_budget_mode
+        if reminder_threshold_percent is not None:
+            p["reminderThresholdPercent"] = reminder_threshold_percent
         projects.append(p)
+
+    # 專案分類子預算(docs/2026-09-06-project-category-budget-period-switch-
+    # design.md §2.2/§7.2)
+    project_category_budgets: list[dict[str, Any]] = []
+    pcb_stmt = select(
+        ReadProjectCategoryBudgetProjection.sync_id,
+        ReadProjectCategoryBudgetProjection.project_sync_id,
+        ReadProjectCategoryBudgetProjection.category_sync_id,
+        ReadProjectCategoryBudgetProjection.mode,
+        ReadProjectCategoryBudgetProjection.fixed_amount,
+        ReadProjectCategoryBudgetProjection.percentage,
+        ReadProjectCategoryBudgetProjection.carryover_enabled,
+        ReadProjectCategoryBudgetProjection.sort_order,
+    ).where(ReadProjectCategoryBudgetProjection.ledger_id == ledger_id)
+    for (
+        sid, project_sid, category_sid, mode, fixed_amount, percentage,
+        carryover_enabled, sort_order,
+    ) in db.execute(pcb_stmt).all():
+        pcb: dict[str, Any] = {
+            "syncId": sid,
+            "projectId": project_sid,
+            "categoryId": category_sid,
+            "mode": mode or "fixed",
+            "carryoverEnabled": bool(carryover_enabled),
+            "sortOrder": sort_order or 0,
+        }
+        if fixed_amount is not None:
+            pcb["fixedAmount"] = fixed_amount
+        if percentage is not None:
+            pcb["percentage"] = percentage
+        project_category_budgets.append(pcb)
 
     # 交易範本(§2.7 Phase 3)
     tx_templates: list[dict[str, Any]] = []
@@ -852,6 +896,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "installmentPeriods": installment_periods,
         "debts": debts,
         "projects": projects,
+        "projectCategoryBudgets": project_category_budgets,
         "txTemplates": tx_templates,
         "cardRewardRules": card_reward_rules,
     }

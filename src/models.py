@@ -1167,6 +1167,15 @@ class ReadProjectProjection(Base):
     visible_on_home: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # 分類子預算 + 期間切換(docs/2026-09-06-project-category-budget-period-switch-
+    # design.md §2.1/§7.1)附加設定。`reminder_notified_period_key` 刻意不落在這裡
+    # ——App 端 spec 明講那是本機專用欄位,不進同步 payload。
+    income_included_in_budget: Mapped[bool] = mapped_column(Boolean, default=False)
+    daily_budget_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 'fixed' / 'proportional',daily_budget_enabled=false 時忽略。
+    daily_budget_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # null=不提醒;否則 1-200 的整數(可超過 100 代表「超支才提醒」)。
+    reminder_threshold_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -1178,6 +1187,51 @@ Index(
     "ix_read_project_ledger_sort",
     ReadProjectProjection.ledger_id,
     ReadProjectProjection.sort_order,
+)
+
+
+class ReadProjectCategoryBudgetProjection(Base):
+    """專案分類子預算(docs/2026-09-06-project-category-budget-period-switch-
+    design.md §2.2/§7.2)。ledger-scoped,PK 形狀比照 `ReadProjectProjection`:
+    `(ledger_id, sync_id)`。`project_sync_id`/`category_sync_id` 跟其它同步實體
+    的外鍵一樣只存 sync_id 字串,不建 SQL FK、不做存在性驗證(這個 repo 沒有
+    「sync_id 轉內部 id」的機制)——存在性 + 一級分類校驗放在 write router 層
+    (`routers/write/project_category_budgets.py`)。"""
+
+    __tablename__ = "read_project_category_budget_projection"
+    __table_args__ = (
+        UniqueConstraint(
+            "ledger_id", "project_sync_id", "category_sync_id",
+            name="uq_read_pcb_project_category",
+        ),
+    )
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    project_sync_id: Mapped[str] = mapped_column(String(255))
+    category_sync_id: Mapped[str] = mapped_column(String(255))
+    # 'fixed'(固定金額) / 'percentage'(按專案總預算比例)
+    mode: Mapped[str] = mapped_column(String(16), default="fixed")
+    fixed_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    carryover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_pcb_user_id",
+    ReadProjectCategoryBudgetProjection.user_id,
+)
+Index(
+    "ix_read_pcb_ledger_project",
+    ReadProjectCategoryBudgetProjection.ledger_id,
+    ReadProjectCategoryBudgetProjection.project_sync_id,
 )
 
 

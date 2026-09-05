@@ -1865,6 +1865,8 @@ def create_project(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "visibleOnHome": bool(payload.get("visible_on_home")) if payload.get("visible_on_home") is not None else True,
         "enabled": bool(payload.get("enabled")) if payload.get("enabled") is not None else True,
         "sortOrder": _to_optional_int(payload.get("sort_order")) or 0,
+        "incomeIncludedInBudget": bool(payload.get("income_included_in_budget")),
+        "dailyBudgetEnabled": bool(payload.get("daily_budget_enabled")),
     }
     if payload.get("icon") is not None:
         project["icon"] = str(payload.get("icon"))
@@ -1874,6 +1876,13 @@ def create_project(snapshot: dict, payload: dict) -> tuple[dict, str]:
         project["periodStart"] = _date_only_iso8601(period_start)
     if period_end is not None:
         project["periodEnd"] = _date_only_iso8601(period_end)
+    if payload.get("daily_budget_mode") is not None:
+        project["dailyBudgetMode"] = str(payload.get("daily_budget_mode"))
+    if payload.get("reminder_threshold_percent") is not None:
+        reminder_threshold_percent = _to_optional_int(payload.get("reminder_threshold_percent"))
+        if reminder_threshold_percent is None or not (1 <= reminder_threshold_percent <= 200):
+            raise ValueError("write validation failed: reminder_threshold_percent must be in [1, 200]")
+        project["reminderThresholdPercent"] = reminder_threshold_percent
     _mark_entity_actor(project, payload, create=True)
     projects.append(project)
     return target, sync_id
@@ -1934,6 +1943,25 @@ def update_project(snapshot: dict, project_id: str, payload: dict) -> dict:
         project["enabled"] = bool(payload.get("enabled"))
     if "sort_order" in payload:
         project["sortOrder"] = _to_optional_int(payload.get("sort_order")) or 0
+    if "income_included_in_budget" in payload:
+        project["incomeIncludedInBudget"] = bool(payload.get("income_included_in_budget"))
+    if "daily_budget_enabled" in payload:
+        project["dailyBudgetEnabled"] = bool(payload.get("daily_budget_enabled"))
+    if "daily_budget_mode" in payload:
+        value = payload.get("daily_budget_mode")
+        if value is None:
+            project.pop("dailyBudgetMode", None)
+        else:
+            project["dailyBudgetMode"] = str(value)
+    if "reminder_threshold_percent" in payload:
+        value = payload.get("reminder_threshold_percent")
+        if value is None:
+            project.pop("reminderThresholdPercent", None)
+        else:
+            reminder_threshold_percent = _to_optional_int(value)
+            if reminder_threshold_percent is None or not (1 <= reminder_threshold_percent <= 200):
+                raise ValueError("write validation failed: reminder_threshold_percent must be in [1, 200]")
+            project["reminderThresholdPercent"] = reminder_threshold_percent
     _mark_entity_actor(project, payload, create=False)
     return target
 
@@ -1944,6 +1972,103 @@ def delete_project(snapshot: dict, project_id: str, payload: dict | None = None)
     idx, project = _find_by_sync_id(projects, project_id, expected_prefix="proj")
     _assert_actor_can_modify(project, payload or {})
     projects.pop(idx)
+    return target
+
+
+_PROJECT_CATEGORY_BUDGET_MODES = {"fixed", "percentage"}
+
+
+def create_project_category_budget(snapshot: dict, project_id: str, payload: dict) -> tuple[dict, str]:
+    """專案分類子預算(docs/2026-09-06-project-category-budget-period-switch-
+    design.md §2.2/§5/§7.2)。`project_id`/`category_id` 的存在性 + 一級分類
+    校驗在 write router 層做(`_assert_project_ref_exists`/
+    `_assert_top_level_category_exists`),這裡只管資料本身的形狀。"""
+    target = ensure_snapshot_v2(snapshot)
+    rows = _ensure_list(target, "projectCategoryBudgets")
+    category_id = payload.get("category_id")
+    if not category_id:
+        raise ValueError("write validation failed: category_id is required")
+    if any(
+        r.get("projectId") == project_id and r.get("categoryId") == category_id
+        for r in rows
+    ):
+        raise ValueError(
+            "write validation failed: category already has a budget allocation for this project"
+        )
+    mode = str(payload.get("mode") or "fixed")
+    if mode not in _PROJECT_CATEGORY_BUDGET_MODES:
+        raise ValueError("write validation failed: invalid mode")
+    fixed_amount = _to_optional_float(payload.get("fixed_amount"))
+    percentage = _to_optional_float(payload.get("percentage"))
+    if mode == "fixed" and (fixed_amount is None or fixed_amount <= 0):
+        raise ValueError("write validation failed: fixed_amount required for fixed mode")
+    if mode == "percentage" and (percentage is None or not (0 < percentage <= 100)):
+        raise ValueError("write validation failed: percentage required for percentage mode (0,100]")
+    sync_id = _new_sync_id("pcb")
+    row: dict[str, object] = {
+        "syncId": sync_id,
+        "projectId": project_id,
+        "categoryId": str(category_id),
+        "mode": mode,
+        "carryoverEnabled": bool(payload.get("carryover_enabled")),
+        "sortOrder": _to_optional_int(payload.get("sort_order")) or 0,
+    }
+    if fixed_amount is not None:
+        row["fixedAmount"] = fixed_amount
+    if percentage is not None:
+        row["percentage"] = percentage
+    _mark_entity_actor(row, payload, create=True)
+    rows.append(row)
+    return target, sync_id
+
+
+def update_project_category_budget(snapshot: dict, budget_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rows = _ensure_list(target, "projectCategoryBudgets")
+    _, row = _find_by_sync_id(rows, budget_id, expected_prefix="pcb")
+    _assert_actor_can_modify(row, payload)
+    if "mode" in payload:
+        mode = str(payload.get("mode") or "")
+        if mode not in _PROJECT_CATEGORY_BUDGET_MODES:
+            raise ValueError("write validation failed: invalid mode")
+        row["mode"] = mode
+    if "fixed_amount" in payload:
+        value = payload.get("fixed_amount")
+        if value is None:
+            row.pop("fixedAmount", None)
+        else:
+            fixed_amount = _to_optional_float(value)
+            if fixed_amount is None or fixed_amount <= 0:
+                raise ValueError("write validation failed: fixed_amount must be > 0")
+            row["fixedAmount"] = fixed_amount
+    if "percentage" in payload:
+        value = payload.get("percentage")
+        if value is None:
+            row.pop("percentage", None)
+        else:
+            percentage = _to_optional_float(value)
+            if percentage is None or not (0 < percentage <= 100):
+                raise ValueError("write validation failed: percentage must be in (0,100]")
+            row["percentage"] = percentage
+    mode_now = str(row.get("mode") or "fixed")
+    if mode_now == "fixed" and row.get("fixedAmount") is None:
+        raise ValueError("write validation failed: fixed mode requires fixed_amount")
+    if mode_now == "percentage" and row.get("percentage") is None:
+        raise ValueError("write validation failed: percentage mode requires percentage")
+    if "carryover_enabled" in payload:
+        row["carryoverEnabled"] = bool(payload.get("carryover_enabled"))
+    if "sort_order" in payload:
+        row["sortOrder"] = _to_optional_int(payload.get("sort_order")) or 0
+    _mark_entity_actor(row, payload, create=False)
+    return target
+
+
+def delete_project_category_budget(snapshot: dict, budget_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    rows = _ensure_list(target, "projectCategoryBudgets")
+    idx, row = _find_by_sync_id(rows, budget_id, expected_prefix="pcb")
+    _assert_actor_can_modify(row, payload or {})
+    rows.pop(idx)
     return target
 
 

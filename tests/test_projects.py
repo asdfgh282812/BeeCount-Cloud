@@ -196,10 +196,58 @@ def test_create_project_and_list_defaults():
         assert p["carryover_enabled"] is False
         assert p["visible_on_home"] is True
         assert p["enabled"] is True
+        assert p["income_included_in_budget"] is False
+        assert p["daily_budget_enabled"] is False
+        assert p["daily_budget_mode"] is None
+        assert p["reminder_threshold_percent"] is None
         assert p["spent"] == 0.0
         assert p["remaining"] == 5000.0
         assert p["progress_pct"] == 0.0
         assert p["status"] == "ok"
+    finally:
+        client.close()
+
+
+def test_create_and_update_project_budget_settings():
+    """§7.1 新增的 4 個附加設定:收入併入預算/每日預算/預算提醒門檻,
+    透過 web write 路徑建立、更新、並在讀取路徑正確回傳。"""
+    client, _TS, token, hdr, ledger_id = _setup("proj_budget_settings@example.com")
+    try:
+        res = _create_project(
+            client, hdr, ledger_id, token,
+            budget_amount=3000.0,
+            income_included_in_budget=True,
+            daily_budget_enabled=True,
+            daily_budget_mode="proportional",
+            reminder_threshold_percent=80,
+        )
+        assert res.status_code == 200, res.text
+        project_id = res.json()["entity_id"]
+
+        p = _projects(client, hdr, ledger_id)[0]
+        assert p["income_included_in_budget"] is True
+        assert p["daily_budget_enabled"] is True
+        assert p["daily_budget_mode"] == "proportional"
+        assert p["reminder_threshold_percent"] == 80
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/projects/{project_id}",
+            headers=hdr,
+            json={
+                "base_change_id": base,
+                "daily_budget_mode": None,
+                "reminder_threshold_percent": None,
+            },
+        )
+        assert res.status_code == 200, res.text
+        p = _projects(client, hdr, ledger_id)[0]
+        # 顯式傳 null 清空,income_included_in_budget/daily_budget_enabled 沒帶
+        # 的欄位維持原值。
+        assert p["daily_budget_mode"] is None
+        assert p["reminder_threshold_percent"] is None
+        assert p["income_included_in_budget"] is True
+        assert p["daily_budget_enabled"] is True
     finally:
         client.close()
 
@@ -602,6 +650,10 @@ def test_mobile_push_project_partial_update_keeps_existing_fields():
             "budgetAmount": 2000.0,
             "periodType": "monthly",
             "enabled": True,
+            "incomeIncludedInBudget": True,
+            "dailyBudgetEnabled": True,
+            "dailyBudgetMode": "proportional",
+            "reminderThresholdPercent": 80,
         }, device_id=device)
 
         # 只带 name,其它字段应保留
@@ -621,6 +673,30 @@ def test_mobile_push_project_partial_update_keeps_existing_fields():
             assert row.budget_amount == 2000.0
             assert row.period_type == "monthly"
             assert row.enabled is True
+            assert row.income_included_in_budget is True
+            assert row.daily_budget_enabled is True
+            assert row.daily_budget_mode == "proportional"
+            assert row.reminder_threshold_percent == 80
+        finally:
+            db.close()
+
+        # 顯式傳 null 清空 dailyBudgetMode/reminderThresholdPercent
+        _push(client, hdr, ledger_id, "project", sync_id, {
+            "syncId": sync_id,
+            "dailyBudgetMode": None,
+            "reminderThresholdPercent": None,
+        }, device_id=device)
+        db = TS()
+        try:
+            row = db.scalar(
+                select(ReadProjectProjection).where(ReadProjectProjection.sync_id == sync_id)
+            )
+            assert row is not None
+            assert row.daily_budget_mode is None
+            assert row.reminder_threshold_percent is None
+            # 沒帶的欄位維持原值
+            assert row.income_included_in_budget is True
+            assert row.daily_budget_enabled is True
         finally:
             db.close()
     finally:

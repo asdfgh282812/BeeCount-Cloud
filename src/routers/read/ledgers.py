@@ -1913,6 +1913,10 @@ def list_projects(
                 visible_on_home=bool(row.visible_on_home),
                 enabled=bool(row.enabled),
                 sort_order=int(row.sort_order or 0),
+                income_included_in_budget=bool(row.income_included_in_budget),
+                daily_budget_enabled=bool(row.daily_budget_enabled),
+                daily_budget_mode=cast("Any", row.daily_budget_mode),
+                reminder_threshold_percent=row.reminder_threshold_percent,
                 spent=spent,
                 remaining=remaining,
                 progress_pct=progress_pct,
@@ -1923,6 +1927,54 @@ def list_projects(
             )
         )
     return out
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/projects/{project_id}/category-budgets",
+    response_model=list[ReadProjectCategoryBudgetOut],
+)
+def list_project_category_budgets(
+    ledger_external_id: str,
+    project_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadProjectCategoryBudgetOut]:
+    """專案分類子預算只读列表(docs/2026-09-06-project-category-budget-period-
+    switch-design.md §2.2/§7.2)。只回傳分配設定本身,不含花費統計(見
+    `ReadProjectCategoryBudgetOut` docstring)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadProjectCategoryBudgetProjection).where(
+            ReadProjectCategoryBudgetProjection.ledger_id == ledger.id,
+            ReadProjectCategoryBudgetProjection.project_sync_id == project_id,
+        ).order_by(
+            ReadProjectCategoryBudgetProjection.sort_order.asc(),
+            ReadProjectCategoryBudgetProjection.sync_id.asc(),
+        )
+    ).all()
+    return [
+        ReadProjectCategoryBudgetOut(
+            id=row.sync_id,
+            project_id=row.project_sync_id,
+            category_id=row.category_sync_id,
+            mode=cast("Any", row.mode or "fixed"),
+            fixed_amount=float(row.fixed_amount) if row.fixed_amount is not None else None,
+            percentage=float(row.percentage) if row.percentage is not None else None,
+            carryover_enabled=bool(row.carryover_enabled),
+            sort_order=int(row.sort_order or 0),
+            last_change_id=source_change_id,
+            ledger_id=ledger.external_id,
+            ledger_name=ledger_name,
+        )
+        for row in rows
+    ]
 
 
 @router.get(

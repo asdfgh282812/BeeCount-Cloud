@@ -1116,6 +1116,12 @@ ProjectPeriodType = Literal["fixed", "monthly", "yearly"]
 # 對齊 Moze 總覽頁狀態指標:✅ 正常 / ⚠️ 接近上限 / 🚨 超支。沒設預算
 # (budget_amount=None)一律 "ok"(純追蹤用途,無上限概念)。
 ProjectStatus = Literal["ok", "warning", "over"]
+# 每日預算模式(docs/2026-09-06-project-category-budget-period-switch-design.md
+# §2.1/§6.2):'fixed'=總預算/期間天數;'proportional'=剩餘預算/剩餘天數。
+DailyBudgetMode = Literal["fixed", "proportional"]
+# 專案分類子預算分配模式(同上 §2.2/§5):'fixed'=固定金額;'percentage'=按
+# 專案總預算比例(0-100),即時解析,不存快照。
+ProjectCategoryBudgetMode = Literal["fixed", "percentage"]
 
 
 class ReadProjectOut(BaseModel):
@@ -1134,12 +1140,34 @@ class ReadProjectOut(BaseModel):
     visible_on_home: bool
     enabled: bool
     sort_order: int
+    income_included_in_budget: bool
+    daily_budget_enabled: bool
+    daily_budget_mode: DailyBudgetMode | None = None
+    reminder_threshold_percent: int | None = None
     # 當期(依 period_type 滾動計算的起訖窗口)累計花費,取絕對值。
     spent: float
     # budget_amount 為 None 時 remaining/progress_pct 也是 None(沒有上限概念)。
     remaining: float | None = None
     progress_pct: float | None = None
     status: ProjectStatus
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadProjectCategoryBudgetOut(BaseModel):
+    """專案分類子預算只读视图(docs/2026-09-06-project-category-budget-period-
+    switch-design.md §2.2/§7.2)。只回傳分配設定本身,不含花費統計——分類
+    拆解的花費彙總是 App 端讀本機 SQLite 算的(`getProjectCategoryBreakdown`),
+    Cloud 端本次不做對應的 web 展示邏輯(spec §7.2 明講留待之後確認)。"""
+    id: str
+    project_id: str
+    category_id: str
+    mode: ProjectCategoryBudgetMode
+    fixed_amount: float | None = None
+    percentage: float | None = None
+    carryover_enabled: bool
+    sort_order: int
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -1975,6 +2003,11 @@ class WriteProjectCreateRequest(WriteBaseRequest):
     visible_on_home: bool = True
     enabled: bool = True
     sort_order: int = 0
+    income_included_in_budget: bool = False
+    daily_budget_enabled: bool = False
+    daily_budget_mode: DailyBudgetMode | None = None
+    # null=不提醒;否則 1-200 的整數(可超過 100 代表「超支才提醒」)。
+    reminder_threshold_percent: int | None = Field(default=None, ge=1, le=200)
 
 
 class WriteProjectUpdateRequest(WriteBaseRequest):
@@ -1988,6 +2021,32 @@ class WriteProjectUpdateRequest(WriteBaseRequest):
     carryover_enabled: bool | None = None
     visible_on_home: bool | None = None
     enabled: bool | None = None
+    sort_order: int | None = None
+    income_included_in_budget: bool | None = None
+    daily_budget_enabled: bool | None = None
+    daily_budget_mode: DailyBudgetMode | None = None
+    reminder_threshold_percent: int | None = Field(default=None, ge=1, le=200)
+
+
+class WriteProjectCategoryBudgetCreateRequest(WriteBaseRequest):
+    """`project_id` 來自 URL path(`/ledgers/{id}/projects/{project_id}/
+    category-budgets`),不重複放進 body,比照 `WriteCardRewardRuleCreateRequest`
+    的 `account_id` 慣例。"""
+    category_id: str
+    mode: ProjectCategoryBudgetMode = "fixed"
+    fixed_amount: float | None = Field(default=None, gt=0)
+    percentage: float | None = Field(default=None, gt=0, le=100)
+    carryover_enabled: bool = False
+    sort_order: int = 0
+
+
+class WriteProjectCategoryBudgetUpdateRequest(WriteBaseRequest):
+    """`category_id` 建立後不可改(比照 `account_id` 於
+    `WriteCardRewardRuleUpdateRequest` 的取捨——要換分類就刪除重建)。"""
+    mode: ProjectCategoryBudgetMode | None = None
+    fixed_amount: float | None = Field(default=None, gt=0)
+    percentage: float | None = Field(default=None, gt=0, le=100)
+    carryover_enabled: bool | None = None
     sort_order: int | None = None
 
 
