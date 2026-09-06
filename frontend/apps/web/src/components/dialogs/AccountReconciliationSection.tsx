@@ -780,6 +780,13 @@ function StatementRow({
           {tx.happened_at.slice(0, 10)}
           {tx.note && tx.category_name ? ` · ${tx.note}` : ''}
         </div>
+        {tx.fee_amount || tx.discount_amount ? (
+          <div className="truncate text-[11px] text-muted-foreground">
+            {t('transactions.field.fee')} {fmt(tx.fee_amount || 0)}
+            {' · '}
+            {t('transactions.field.discount')} {fmt(tx.discount_amount || 0)}
+          </div>
+        ) : null}
       </div>
       <span className={`shrink-0 font-mono font-semibold tabular-nums ${signed >= 0 ? 'text-expense' : 'text-income'}`}>
         {fmt(Math.abs(signed))}

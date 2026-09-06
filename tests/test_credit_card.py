@@ -735,6 +735,72 @@ def test_billing_summary_converts_foreign_currency_child_spend_to_ledger_currenc
         app.dependency_overrides.clear()
 
 
+def test_billing_summary_converts_foreign_currency_child_payment_to_ledger_currency():
+    """2026-09-06 使用者反饋:上面 `..._child_spend_...` 修的是「花費」側,
+    「已繳金額」側有同一個 bug ——群組底下一張日圓計價子卡,繳款轉帳的
+    `to_amount`(轉入帳戶自身幣別的金額)本來就是日圓,直接跟其它子卡的
+    台幣已繳金額加總、再拿去跟折算過帳本本位幣的 `charged` 相減比較,會把
+    日圓原始數字誤當台幣算,`remaining_due`/`paid_amount` 嚴重失真。
+    `src/services/credit_card_billing.py` 的聚合查詢應該改讀 `native_amount`
+    (轉出方折算帳本本位幣的快照),不是 `to_amount`。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccbfx2@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccbfx2@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lgfx2", "ledger", "lgfx2",
+              {"syncId": "lgfx2", "ledgerName": "台幣帳本", "currency": "TWD"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        yesterday = now.date() - timedelta(days=1)
+        billing_day = yesterday.day
+        payment_due_day = 20
+        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        _push(client, hdr_app, "lgfx2", "account", "acc-group2",
+              {"syncId": "acc-group2", "name": "永豐信用卡", "type": "account_group", "currency": "TWD",
+               "billingDay": billing_day, "paymentDueDay": payment_due_day, "creditLimit": 100000.0},
+              device_id="d-app")
+        _push(client, hdr_app, "lgfx2", "account", "acc-jpy2",
+              {"syncId": "acc-jpy2", "name": "永豐幣倍卡", "type": "credit_card", "currency": "JPY",
+               "parentAccountId": "acc-group2"}, device_id="d-app")
+        _push(client, hdr_app, "lgfx2", "account", "acc-jpy-cash",
+              {"syncId": "acc-jpy-cash", "name": "日幣現金", "type": "cash", "currency": "JPY"},
+              device_id="d-app")
+
+        # 子卡(日圓計價)消費:原幣 99387 日圓,折台幣本位幣快照 21200
+        # (同上一個測試的花費側場景)。
+        _push(client, hdr_app, "lgfx2", "transaction", "tx-jpy2",
+              {"syncId": "tx-jpy2", "type": "expense", "amount": 99387.0,
+               "currencyCode": "JPY", "nativeAmount": 21200.0,
+               "happenedAt": _dt(cycle_start + timedelta(days=1)),
+               "accountId": "acc-jpy2", "accountName": "永豐幣倍卡"}, device_id="d-app")
+        # 用日幣現金繳這張日圓子卡自己的帳(同幣別,不需要 to_amount):轉帳
+        # 原幣 8030 日圓,折台幣本位幣快照 2030(這是本次要修的 bug 現場
+        # 重現——`to_amount` 這裡不適用,聚合必須讀 `native_amount`)。
+        _push(client, hdr_app, "lgfx2", "transaction", "tx-pay-jpy",
+              {"syncId": "tx-pay-jpy", "type": "transfer", "amount": 8030.0,
+               "currencyCode": "JPY", "nativeAmount": 2030.0,
+               "happenedAt": _dt(cycle_start + timedelta(days=2)),
+               "fromAccountId": "acc-jpy-cash", "fromAccountName": "日幣現金",
+               "toAccountId": "acc-jpy2", "toAccountName": "永豐幣倍卡"}, device_id="d-app")
+
+        r = client.get(
+            "/api/v1/read/ledgers/lgfx2/accounts/acc-group2/billing-summary", headers=hdr_web,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # 已繳金額必須是折算後的 2030(帳本本位幣),不是轉帳原幣 8030。
+        assert data["paid_amount"] == 2030.0
+        assert data["remaining_due"] == 21200.0 - 2030.0
+        members_by_id = {m["account_id"]: m for m in data["members"]}
+        assert members_by_id["acc-jpy2"]["remaining_due"] == 21200.0 - 2030.0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_billing_summary_period_installment_summary_field():
     """帳戶詳情彈窗「帳單分期」欄位(2026-08-04 使用者反饋補上):建立一個
     進行中的分期計畫後,billing-summary 應該回報 active_count=1 + 已到期

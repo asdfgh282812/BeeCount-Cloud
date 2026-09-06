@@ -103,6 +103,7 @@ import {
   resolveCurrencyFields,
   loadRatesToBase,
   resolveEffectiveRate,
+  convertBetween,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
@@ -2140,6 +2141,27 @@ export function TransactionsPage() {
             return false
           }
           transferToAmount = totalAmountNum * effectiveRate
+        }
+        // 跨幣別轉帳(2026-09-06 使用者反饋):`native_amount` 是「轉出方金額
+        // 折算帳本本位幣」的快照,跟 `to_amount`(轉入帳戶自身幣別)是兩個
+        // 獨立概念——信用卡群組合併帳單(`compute_group_billing`)拿它當
+        // 「已繳金額」的幣別基準(子卡幣別可能跟帳本本位幣不同,不能直接用
+        // `to_amount` 加總,見 src/services/credit_card_billing.py 同批修正)。
+        // 只看轉出帳戶幣別跟帳本本位幣是否一致,跟轉入帳戶自己的幣別無關
+        // (就算轉入帳戶也是外幣,這裡仍是折「轉出方」到帳本本位幣)。故意用
+        // 市場自動匯率(不吃 fx_rate_override/fx_amount_override 這組使用者
+        // 手動覆蓋——那組覆蓋的是轉出/轉入之間的匯率,語意上是另一段換算)。
+        if (fromAccountRow && fromCurrency !== txWriteLedgerCurrency.trim().toUpperCase()) {
+          const native = convertBetween(
+            totalAmountNum,
+            fromCurrency,
+            txWriteLedgerCurrency,
+            txCurrencyRates,
+            txWriteLedgerCurrency
+          )
+          if (native != null) {
+            currencyFields = { ...currencyFields, native_amount: native }
+          }
         }
       }
 

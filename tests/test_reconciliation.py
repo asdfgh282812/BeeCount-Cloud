@@ -216,6 +216,42 @@ def test_statement_lists_current_cycle_and_totals_net_income_against_expense():
         client.close()
 
 
+def test_statement_includes_fee_and_discount_amounts():
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st-fee@t.com", device_id="d-app")
+        web_tok = _login(client, "st-fee@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "stfee", "ledger", "stfee",
+              {"syncId": "stfee", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "stfee", "card1", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        r = client.post(
+            "/api/v1/write/ledgers/stfee/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0, "tx_type": "expense", "amount": 1197.0,
+                "happened_at": _dt(cycle_start + timedelta(days=1)), "account_id": "card1",
+                "base_amount": 1180.0, "fee_amount": 17.0, "discount_amount": 0.0,
+            },
+        )
+        assert r.status_code == 200, r.text
+        tx_id = r.json()["entity_id"]
+
+        r = _get_statement(client, hdr_web, "stfee", "card1", cycle_offset=0)
+        assert r.status_code == 200, r.text
+        rows = {t["id"]: t for t in r.json()["transactions"]}
+        assert rows[tx_id]["fee_amount"] == 17.0
+        assert rows[tx_id]["discount_amount"] == 0.0
+    finally:
+        client.close()
+
+
 def test_statement_account_group_groups_transactions_by_member_card():
     client, _TS = _make_client()
     try:

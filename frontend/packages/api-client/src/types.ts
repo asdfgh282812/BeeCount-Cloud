@@ -1816,6 +1816,10 @@ export type StatementTransaction = {
   /** 這一行實際包含的原始交易 sync_id——確認/延後入帳要對清單裡每一筆各自
    *  呼叫 `updateTransaction`。非回饋合併列時只含自己這一筆(等同 `[id]`)。 */
   member_tx_ids?: string[]
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
 }
 
 export type StatementAccountTotal = {

@@ -269,14 +269,20 @@ def compute_group_billing(
         for cid, amt in offset_totals.items():
             per_child_lifetime_charged[cid] = per_child_lifetime_charged.get(cid, 0.0) - amt
 
-        # 跨幣別轉帳(2026-08):同 paid_total 下方的注釋,轉入卡片端要用卡片
-        # 自身幣別的金額。
+        # 跨幣別繳款(2026-09-06 使用者反饋,同 charged 側 `_NATIVE_AMOUNT` 的
+        # bug 模式):這裡是跟 `lifetime_charged_total`(帳本本位幣)相減比較
+        # 用的「已繳」聚合,必須跟 charged 側同一個幣別基準,不能用
+        # `to_amount`(轉入卡片自身幣別的金額)——子卡幣別可能跟帳本本位幣不同
+        # (例如日圓計價的子卡),用 `to_amount` 會把不同幣別的已繳金額直接
+        # 加總,或是把繳款來源帳戶的原幣金額誤當帳本本位幣讀進來,金額嚴重
+        # 失真。改用 `_NATIVE_AMOUNT`(轉出方 `amount` 折算帳本本位幣後的
+        # 快照,NULL 時代表轉出帳戶幣別本來就等於帳本本位幣,回退 `amount`
+        # 行為不變)——不管轉入卡片自己的幣別是什麼,經濟價值上「這筆繳款
+        # 值多少帳本本位幣」只看轉出方那一筆換算,才能跟 charged 側比較。
         paid_rows = db.execute(
             select(
                 ReadTxProjection.to_account_sync_id,
-                func.coalesce(
-                    func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
-                ),
+                func.coalesce(func.sum(_NATIVE_AMOUNT), 0.0),
             ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.to_account_sync_id.in_(member_ids),
@@ -461,14 +467,14 @@ def compute_cycle_period_billing(
     if member_ids:
         # member_ids 已经包含 group.sync_id(见 billing_member_ids),不用再
         # 额外 union 一次。
-        # 跨幣別轉帳(2026-08):繳款轉入卡片端要用卡片自身幣別的金額,不是
-        # 轉出端的 amount——同幣種繳款 to_amount 是 NULL,COALESCE 回退
-        # amount,行為不變。
+        # 跨幣別繳款(2026-09-06 使用者反饋):跟 `_charged_as_of`(帳本本位幣
+        # 的 `_NATIVE_AMOUNT`)相減比較用,必須同一個幣別基準——改用
+        # `_NATIVE_AMOUNT`(轉出方換算帳本本位幣後的金額),不是 `to_amount`
+        # (轉入卡片自身幣別的金額,子卡幣別可能跟帳本本位幣不同,直接加總
+        # 會失真,見 `compute_group_billing` 同款修正的完整說明)。
         paid_total = float(db.scalar(
             select(
-                func.coalesce(
-                    func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
-                )
+                func.coalesce(func.sum(_NATIVE_AMOUNT), 0.0)
             ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.to_account_sync_id.in_(member_ids),

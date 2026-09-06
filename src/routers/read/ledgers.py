@@ -2378,6 +2378,10 @@ def get_account_statement(
                 reconciled_at=row.reconciled_at,
                 is_reward=row.category_name == card_rewards.REWARD_CATEGORY_NAME,
                 member_tx_ids=[row.sync_id],
+                fee_amount=row.fee_amount,
+                fee_label=row.fee_label,
+                discount_amount=row.discount_amount,
+                discount_label=row.discount_label,
             )
         )
 

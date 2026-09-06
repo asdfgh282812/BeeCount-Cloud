@@ -1276,6 +1276,10 @@ class StatementTransactionOut(BaseModel):
     reward_rule_id: str | None = None
     reward_rule_label: str | None = None
     member_tx_ids: list[str] = Field(default_factory=list)
+    fee_amount: float | None = None
+    fee_label: str | None = None
+    discount_amount: float | None = None
+    discount_label: str | None = None
 
 
 class StatementAccountTotalOut(BaseModel):

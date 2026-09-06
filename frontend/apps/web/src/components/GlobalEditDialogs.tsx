@@ -34,6 +34,7 @@ import {
   resolveCurrencyFields,
   loadRatesToBase,
   resolveEffectiveRate,
+  convertBetween,
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
@@ -730,6 +731,17 @@ export function GlobalEditDialogs() {
           return false
         }
         transferToAmount = totalAmountNum * effectiveRate
+      }
+      // 跨幣別轉帳(2026-09-06 使用者反饋):同 TransactionsPage.onSaveTransaction
+      // ——`native_amount`(轉出方折算帳本本位幣)是信用卡群組合併帳單「已繳
+      // 金額」的幣別基準,跟 `to_amount`(轉入帳戶自身幣別)是兩個獨立概念,
+      // 只看轉出帳戶幣別是否跟帳本本位幣一致,不吃 fx_rate_override/
+      // fx_amount_override(那組覆蓋的是另一段換算)。
+      if (fromAccountRow && fromCurrency !== ledgerBase.trim().toUpperCase()) {
+        const native = convertBetween(totalAmountNum, fromCurrency, ledgerBase, editTxRates, ledgerBase)
+        if (native != null) {
+          currencyFields = { ...currencyFields, native_amount: native }
+        }
       }
     }
 
