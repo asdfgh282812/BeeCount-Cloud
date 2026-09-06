@@ -224,6 +224,11 @@ export type CategoryForm = {
   icon_cloud_file_id: string
   icon_cloud_sha256: string
   parent_name: string
+  /** 十六进制色值,如 `#FF9800`;空字符串 = 未设色(旧数据 / 转账分类),渲
+   *  染端 fallback 回灰色。只有一级分类(level=1)存值,二级分类固定传空
+   *  字符串,渲染时向上查父分类颜色 —— 跟 app 端 `Categories.color` 的约定
+   *  对齐(见 docs/changes/2026-09-05-category-colors-and-add-tile.md)。 */
+  color: string
 }
 
 import { pickRandomTagColor } from './lib/tagColorPalette'
@@ -327,6 +332,8 @@ export type DebtForm = {
 
 export type ProjectPeriodType = 'fixed' | 'monthly' | 'yearly'
 
+export type DailyBudgetMode = 'fixed' | 'proportional'
+
 export type ProjectForm = {
   /** 编辑模式 = project syncId,新建 = null。 */
   editingId: string | null
@@ -345,6 +352,12 @@ export type ProjectForm = {
    *  手動切回 true 重新啟用 —— 沒有獨立的「重新開啟」端點,靠 PATCH 這個
    *  欄位達成(跟 debt 的 close/reopen 不同,不需要專門的按鈕/端點)。 */
   enabled: boolean
+  /** 收入併入預算。純追蹤專案(budget_amount 空)沒有預算基準可併入,UI 停用。 */
+  income_included_in_budget: boolean
+  daily_budget_enabled: boolean
+  daily_budget_mode: DailyBudgetMode
+  /** 空字串 = 不提醒;否則 1-200 的整數字符串。 */
+  reminder_threshold_percent: string
 }
 
 export type TxTemplateForm = {
@@ -454,7 +467,11 @@ export const categoryDefaults = (): CategoryForm => ({
   custom_icon_path: '',
   icon_cloud_file_id: '',
   icon_cloud_sha256: '',
-  parent_name: ''
+  parent_name: '',
+  // 跟 tagDefaults 一样,新建默认从 20 色调色板随机选一个(对齐 app 端
+  // local_category_repository.dart::_nextAutoColor 的"自动配色"行为),用户
+  // 仍可在 dialog 里手动改选。
+  color: pickRandomTagColor()
 })
 
 export const tagDefaults = (): TagForm => ({
@@ -556,6 +573,33 @@ export const projectDefaults = (): ProjectForm => ({
   carryover_enabled: false,
   visible_on_home: true,
   enabled: true,
+  income_included_in_budget: false,
+  daily_budget_enabled: false,
+  daily_budget_mode: 'proportional',
+  reminder_threshold_percent: '',
+})
+
+export type ProjectCategoryBudgetForm = {
+  /** 编辑模式 = allocation syncId,新建 = null。 */
+  editingId: string | null
+  category_id: string
+  category_name: string
+  mode: 'fixed' | 'percentage'
+  /** 金额字符串,mode==='fixed' 時使用。 */
+  fixed_amount: string
+  /** 0-100 的百分比字符串,mode==='percentage' 時使用。 */
+  percentage: string
+  carryover_enabled: boolean
+}
+
+export const projectCategoryBudgetDefaults = (): ProjectCategoryBudgetForm => ({
+  editingId: null,
+  category_id: '',
+  category_name: '',
+  mode: 'fixed',
+  fixed_amount: '',
+  percentage: '',
+  carryover_enabled: false,
 })
 
 export const txTemplateDefaults = (): TxTemplateForm => ({

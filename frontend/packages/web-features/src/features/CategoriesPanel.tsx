@@ -23,6 +23,8 @@ import type { ReadCategory, WorkspaceCategory } from '@beecount/api-client'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
+import { categoryIconStyle, resolveCategoryColor } from '../lib/categoryColor'
+import { TAG_COLOR_PALETTE, tagTextColorOn } from '../lib/tagColorPalette'
 import type { CategoryForm } from '../forms'
 
 type CategoryKind = 'expense' | 'income' | 'transfer'
@@ -78,6 +80,7 @@ function pickColumns(): number {
  */
 function ManageCategoryCell({
   category,
+  allRows,
   renderIcon,
   count,
   countUnit,
@@ -93,6 +96,8 @@ function ManageCategoryCell({
   deleteLabel,
 }: {
   category: WorkspaceCategory
+  /** 完整分类列表(未按 kind 过滤),用来查找子分类的父级颜色。 */
+  allRows: readonly WorkspaceCategory[]
   renderIcon: RenderIcon
   count: number
   countUnit: string
@@ -108,6 +113,7 @@ function ManageCategoryCell({
   deleteLabel: string
 }) {
   const circleSize = compact ? 'h-12 w-12' : 'h-14 w-14'
+  const colorStyle = categoryIconStyle(resolveCategoryColor(category, allRows))
   return (
     <div
       role={interactive ? 'button' : undefined}
@@ -174,8 +180,11 @@ function ManageCategoryCell({
           className={`flex ${circleSize} items-center justify-center rounded-full transition-all ${
             expanded
               ? 'bg-primary/15 ring-2 ring-primary/50'
-              : 'bg-muted/60 group-hover:bg-accent/60'
+              : colorStyle
+                ? ''
+                : 'bg-muted/60 group-hover:bg-accent/60'
           }`}
+          style={!expanded ? colorStyle : undefined}
         >
           {renderIcon(category.icon, category.icon_type, category.icon_cloud_file_id)}
         </div>
@@ -975,11 +984,72 @@ export function CategoriesPanel({
               </div>
             ) : null}
 
+            {/* 颜色:只有一级分类(level=1)能设色,二级分类颜色继承自父分类
+                (跟 app 端 Categories.color 的约定对齐,见 forms.ts::CategoryForm
+                的说明)。20 色调色板复用 TAG_COLOR_PALETTE —— 跟 app 端
+                kCategoryColorPalette 是同一份色值。 */}
+            {form.level === '2' ? (
+              <div className="space-y-1">
+                <Label>{t('categories.table.color')}</Label>
+                <p className="text-xs text-muted-foreground">
+                  {t('categories.color.inherited')}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>{t('categories.table.color')}</Label>
+                <div className="flex flex-wrap gap-2">
+                  {TAG_COLOR_PALETTE.map((hex) => {
+                    const isSelected = form.color.toUpperCase() === hex.toUpperCase()
+                    const checkColor = tagTextColorOn(hex)
+                    return (
+                      <button
+                        key={hex}
+                        type="button"
+                        aria-label={hex}
+                        title={hex}
+                        onClick={() => onFormChange({ ...form, color: hex })}
+                        className={`flex h-9 w-9 items-center justify-center rounded-full transition-all ${
+                          isSelected
+                            ? 'scale-110 ring-2 ring-offset-2 ring-foreground ring-offset-background shadow-md'
+                            : 'hover:scale-105'
+                        }`}
+                        style={{ background: hex }}
+                      >
+                        {isSelected ? (
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke={checkColor}
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* 预览 */}
             <div className="space-y-1">
               <Label>{t('categories.preview')}</Label>
               <div className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/40 px-3 py-2">
-                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary/10">
+                <div
+                  className="flex h-9 w-9 items-center justify-center rounded-md"
+                  style={
+                    form.level !== '2' && form.color
+                      ? { background: form.color }
+                      : undefined
+                  }
+                >
                   {renderIcon(form.icon || 'category', form.icon_type, form.icon_cloud_file_id)}
                 </div>
                 <span className="text-sm font-medium">

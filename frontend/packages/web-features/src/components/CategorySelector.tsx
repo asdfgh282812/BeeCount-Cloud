@@ -9,6 +9,7 @@ import {
   buildTopLevelSuggestionRank,
   compareBySuggestionThenOrder,
 } from '../lib/categorySuggestionRank'
+import { categoryIconStyle, resolveCategoryColor } from '../lib/categoryColor'
 
 type CategorySelectorKind = 'expense' | 'income'
 
@@ -212,6 +213,7 @@ export function CategorySelector({
               <CategoryCell
                 key={cat.id}
                 category={cat}
+                allRows={rows}
                 iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                 selected={selectedId === cat.id}
                 suggested={suggestionRank?.has(cat.id) ?? false}
@@ -279,6 +281,7 @@ export function CategorySelector({
                   <CategoryCell
                     key={top.id}
                     category={top}
+                    allRows={rows}
                     iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                     selected={isSelected}
                     expanded={isExpanded}
@@ -306,6 +309,7 @@ export function CategorySelector({
                       <CategoryCell
                         key={child.id}
                         category={child}
+                        allRows={rows}
                         iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                         selected={isSelected}
                         compact
@@ -330,6 +334,7 @@ export function CategorySelector({
  */
 function CategoryCell({
   category,
+  allRows,
   iconPreviewUrlByFileId,
   selected,
   expanded,
@@ -339,6 +344,8 @@ function CategoryCell({
   onTap,
 }: {
   category: WorkspaceCategory
+  /** 完整分类列表(未按 kind 过滤),用来查找子分类的父级颜色。 */
+  allRows: readonly WorkspaceCategory[]
   iconPreviewUrlByFileId?: Record<string, string>
   selected: boolean
   expanded?: boolean
@@ -352,6 +359,8 @@ function CategoryCell({
   const iconSize = compact ? 22 : 26
   const circleSize = compact ? 'h-12 w-12' : 'h-14 w-14'
   const labelSize = compact ? 'text-[11px]' : 'text-xs'
+  const effectiveColor = resolveCategoryColor(category, allRows)
+  const colorStyle = !selected ? categoryIconStyle(effectiveColor) : undefined
 
   return (
     <button
@@ -365,8 +374,11 @@ function CategoryCell({
           className={`flex ${circleSize} items-center justify-center rounded-full transition-all ${
             selected
               ? 'bg-primary/15 text-primary ring-2 ring-primary/60'
-              : 'bg-muted/60 text-foreground group-hover:bg-accent/60'
+              : colorStyle
+                ? ''
+                : 'bg-muted/60 text-foreground group-hover:bg-accent/60'
           } ${expanded ? 'ring-1 ring-primary/40' : ''}`}
+          style={colorStyle}
         >
           <CategoryIcon
             icon={category.icon}

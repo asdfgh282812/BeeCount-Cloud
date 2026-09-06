@@ -22,6 +22,8 @@ import type {
   ReadLedger,
   ReadLedgerDetail,
   ReadProject,
+  ReadProjectBreakdown,
+  ReadProjectCategoryBudget,
   ReadRecurringRule,
   ReadTag,
   ReadTransaction,
@@ -48,12 +50,24 @@ export async function fetchReadLedgerDetail(token: string, ledgerId: string): Pr
 export async function fetchReadTransactions(
   token: string,
   ledgerId: string,
-  options?: { limit?: number; q?: string; txType?: string }
+  options?: {
+    limit?: number
+    q?: string
+    txType?: string
+    startAt?: string
+    endAt?: string
+    projectId?: string
+    categoryId?: string
+  }
 ): Promise<ReadTransaction[]> {
   const query = new URLSearchParams()
   if (options?.limit) query.set('limit', `${options.limit}`)
   if (options?.q) query.set('q', options.q)
   if (options?.txType) query.set('tx_type', options.txType)
+  if (options?.startAt) query.set('start_at', options.startAt)
+  if (options?.endAt) query.set('end_at', options.endAt)
+  if (options?.projectId) query.set('project_id', options.projectId)
+  if (options?.categoryId) query.set('category_id', options.categoryId)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const rows = await authedGet<ReadTransaction[]>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/transactions${suffix}`,
@@ -310,6 +324,35 @@ export async function fetchReadProjects(
 ): Promise<ReadProject[]> {
   return authedGet<ReadProject[]>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/projects`,
+    token,
+  )
+}
+
+/** docs/2026-09-06-project-category-budget-period-switch-design.md §2.2/§7.2
+ *  —— 專案分類子預算(僅回傳分配設定本身,不含花費統計)。 */
+export async function fetchReadProjectCategoryBudgets(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+): Promise<ReadProjectCategoryBudget[]> {
+  return authedGet<ReadProjectCategoryBudget[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/category-budgets`,
+    token,
+  )
+}
+
+/** docs/2026-09-06-project-category-budget-period-switch-design.md §4 ——
+ *  專案詳情頁:期間切換 + 統計條 + 分類拆解。`periodOffset` 語意同
+ *  `fetchAccountBillingSummary` 的 `cycleOffset`:0=當期,正整數=往回第幾期。 */
+export async function fetchReadProjectBreakdown(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  periodOffset = 0,
+): Promise<ReadProjectBreakdown> {
+  const qs = periodOffset ? `?period_offset=${encodeURIComponent(String(periodOffset))}` : ''
+  return authedGet<ReadProjectBreakdown>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/breakdown${qs}`,
     token,
   )
 }

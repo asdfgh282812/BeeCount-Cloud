@@ -252,6 +252,51 @@ def test_mobile_push_category_partial_update_keeps_existing_fields():
         app.dependency_overrides.clear()
 
 
+def test_workspace_categories_read_endpoint_includes_color():
+    """回归测试:GET /read/workspace/categories 是 Web 分类管理页/编辑弹窗实际
+    调用的接口,和 GET /ledgers/{id}/categories 是两个独立的 WorkspaceCategoryOut /
+    ReadCategoryOut 构造点。曾经只在后者加了 color 字段,前者(list_workspace_
+    categories,src/routers/read/workspace.py)漏加,导致 push 上去的 color 在
+    projection 表里其实是对的,但 Web 界面读回来一路是 None——手动在浏览器里
+    创建分类验证时才发现这个漏洞。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "m4c@t.com", device_id="m1", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        # category 是 user-global,push 它本身不会创建 Ledger/LedgerMember 行;
+        # workspace 系列 read 接口靠 LedgerMember 判定可见账本,没有账本就直接
+        # 提前 return []。这里额外推一笔 transaction(ledger-scoped)确保账本
+        # 存在,才能让 workspace/categories 走到真正的 category 查询分支。
+        _push(client, hdr, "m1", "lg4c", [
+            {"ledger_id": "lg4c", "entity_type": "transaction", "entity_sync_id": "t1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t1", "type": "expense", "amount": 1, "happenedAt": _iso()}},
+            {"ledger_id": "lg4c", "entity_type": "category", "entity_sync_id": "c1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "c1", "name": "餐饮", "kind": "expense",
+                         "color": "#9C27B0"}},
+        ])
+        # workspace 系列 read 接口要求 web scope(push 用的 app_write token
+        # 打这个接口会 403 AUTH_INSUFFICIENT_SCOPE),同一个账号另外用
+        # client_type=web 登入一次拿对应 scope 的 token。
+        web_login = client.post("/api/v1/auth/login", json={
+            "email": "m4c@t.com", "password": "Pa$$word1!",
+            "device_id": "w1", "client_type": "web",
+            "device_name": "pytest-web", "platform": "test",
+        })
+        assert web_login.status_code == 200, web_login.text
+        web_hdr = {"Authorization": f"Bearer {web_login.json()['access_token']}"}
+        r = client.get("/api/v1/read/workspace/categories", headers=web_hdr,
+                        params={"limit": 500})
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        cat = next((row for row in rows if row["id"] == "c1"), None)
+        assert cat is not None, "workspace categories 接口找不到刚 push 的分类"
+        assert cat["color"] == "#9C27B0"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_mobile_tag_rename_cascades_tx_projection():
     client, engine, sf = _make_client()
     try:

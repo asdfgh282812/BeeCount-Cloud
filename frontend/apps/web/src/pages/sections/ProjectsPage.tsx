@@ -2,19 +2,34 @@ import { useCallback, useEffect, useState } from 'react'
 
 import {
   createProject,
+  createProjectCategoryBudget,
   deleteProject,
+  deleteProjectCategoryBudget,
+  fetchReadProjectCategoryBudgets,
   fetchReadProjects,
+  fetchWorkspaceCategories,
   updateProject,
+  updateProjectCategoryBudget,
   type ReadProject,
+  type ReadProjectCategoryBudget,
+  type WorkspaceCategory,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
-import { ProjectsPanel, projectDefaults, type ProjectForm } from '@beecount/web-features'
+import {
+  ProjectsPanel,
+  projectCategoryBudgetDefaults,
+  projectDefaults,
+  type ProjectCategoryBudgetForm,
+  type ProjectForm,
+} from '@beecount/web-features'
 
+import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
+import { ProjectDetailDialog } from '../../components/dialogs/ProjectDetailDialog'
 import { localizeError } from '../../i18n/errors'
 
 /**
@@ -31,10 +46,19 @@ export function ProjectsPage() {
   const { token } = useAuth()
   const { activeLedgerId, currency, currentLedger } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
+  const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
   const projectBucket = activeLedgerId || '__none__'
   const [projects, setProjects] = usePageCache<ReadProject[]>(`projects:${projectBucket}:rows`, [])
+  const [categories, setCategories] = usePageCache<WorkspaceCategory[]>('projects:categories', [])
+  const [categoryBudgetsByProjectId, setCategoryBudgetsByProjectId] = useState<
+    Record<string, ReadProjectCategoryBudget[]>
+  >({})
   const [form, setForm] = useState<ProjectForm>(projectDefaults())
+  const [categoryBudgetForm, setCategoryBudgetForm] = useState<ProjectCategoryBudgetForm>(
+    projectCategoryBudgetDefaults(),
+  )
+  const [detailProject, setDetailProject] = useState<ReadProject | null>(null)
   const canManage = Boolean(activeLedgerId) && currentLedger?.role === 'owner'
 
   const notifyError = useCallback(
@@ -52,13 +76,35 @@ export function ProjectsPage() {
       return
     }
     try {
-      setProjects(await fetchReadProjects(token, activeLedgerId))
+      const [p, c] = await Promise.all([
+        fetchReadProjects(token, activeLedgerId),
+        fetchWorkspaceCategories(token, {}),
+      ])
+      setProjects(p)
+      setCategories(c)
     } catch (err) {
       notifyError(err)
     }
-    // setProjects 来自 usePageCache,引用稳定
+    // setProjects/setCategories 来自 usePageCache,引用稳定
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeLedgerId, notifyError])
+
+  useEffect(() => {
+    const ids = categories
+      .map((c) => c.icon_cloud_file_id || '')
+      .filter((v) => v.trim().length > 0)
+    if (ids.length > 0) ensureLoadedMany(ids)
+  }, [categories, ensureLoadedMany])
+
+  const onLoadCategoryBudgets = useCallback(
+    (project: ReadProject) => {
+      if (!activeLedgerId) return
+      void fetchReadProjectCategoryBudgets(token, activeLedgerId, project.id)
+        .then((rows) => setCategoryBudgetsByProjectId((prev) => ({ ...prev, [project.id]: rows })))
+        .catch(() => setCategoryBudgetsByProjectId((prev) => ({ ...prev, [project.id]: [] })))
+    },
+    [token, activeLedgerId],
+  )
 
   useEffect(() => {
     void refresh()
@@ -80,6 +126,9 @@ export function ProjectsPage() {
     const periodEnd = form.period_type === 'fixed' && form.period_end
       ? new Date(form.period_end).toISOString()
       : null
+    const reminderThresholdPercent = form.reminder_threshold_percent.trim()
+      ? Number(form.reminder_threshold_percent)
+      : null
     try {
       if (form.editingId) {
         await retryOnConflict(activeLedgerId, (base) =>
@@ -93,6 +142,10 @@ export function ProjectsPage() {
             carryover_enabled: form.carryover_enabled,
             visible_on_home: form.visible_on_home,
             enabled: form.enabled,
+            income_included_in_budget: form.income_included_in_budget,
+            daily_budget_enabled: form.daily_budget_enabled,
+            daily_budget_mode: form.daily_budget_enabled ? form.daily_budget_mode : null,
+            reminder_threshold_percent: reminderThresholdPercent,
           }),
         )
         notifySuccess(t('projects.notice.updated'))
@@ -107,6 +160,10 @@ export function ProjectsPage() {
             period_end: periodEnd,
             carryover_enabled: form.carryover_enabled,
             visible_on_home: form.visible_on_home,
+            income_included_in_budget: form.income_included_in_budget,
+            daily_budget_enabled: form.daily_budget_enabled,
+            daily_budget_mode: form.daily_budget_enabled ? form.daily_budget_mode : null,
+            reminder_threshold_percent: reminderThresholdPercent,
           }),
         )
         notifySuccess(t('projects.notice.created'))
@@ -133,19 +190,88 @@ export function ProjectsPage() {
     }
   }
 
+  const onSubmitCategoryBudget = async (project: ReadProject): Promise<boolean> => {
+    if (!activeLedgerId) return false
+    const f = categoryBudgetForm
+    const payload = {
+      mode: f.mode,
+      fixed_amount: f.mode === 'fixed' && f.fixed_amount.trim() ? Number(f.fixed_amount) : null,
+      percentage: f.mode === 'percentage' && f.percentage.trim() ? Number(f.percentage) : null,
+      carryover_enabled: f.carryover_enabled,
+    }
+    try {
+      if (f.editingId) {
+        await retryOnConflict(activeLedgerId, (base) =>
+          updateProjectCategoryBudget(token, activeLedgerId, project.id, f.editingId!, base, payload),
+        )
+        notifySuccess(t('projects.categoryBudgets.notice.updated'))
+      } else {
+        await retryOnConflict(activeLedgerId, (base) =>
+          createProjectCategoryBudget(token, activeLedgerId, project.id, base, {
+            category_id: f.category_id,
+            ...payload,
+          }),
+        )
+        notifySuccess(t('projects.categoryBudgets.notice.created'))
+      }
+      setCategoryBudgetForm(projectCategoryBudgetDefaults())
+      onLoadCategoryBudgets(project)
+      return true
+    } catch (err) {
+      if (isWriteConflict(err)) onLoadCategoryBudgets(project)
+      notifyError(err)
+      return false
+    }
+  }
+
+  const onDeleteCategoryBudget = async (
+    project: ReadProject,
+    budget: ReadProjectCategoryBudget,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        deleteProjectCategoryBudget(token, activeLedgerId, project.id, budget.id, base),
+      )
+      notifySuccess(t('projects.categoryBudgets.notice.deleted'))
+      onLoadCategoryBudgets(project)
+    } catch (err) {
+      if (isWriteConflict(err)) onLoadCategoryBudgets(project)
+      notifyError(err)
+    }
+  }
+
   if (!activeLedgerId) {
     return <p className="text-sm text-muted-foreground">{t('shell.selectLedgerFirst')}</p>
   }
 
   return (
-    <ProjectsPanel
-      projects={projects}
-      currency={currency}
-      form={form}
-      onFormChange={setForm}
-      onSubmit={onSubmit}
-      onDelete={onDelete}
-      canManage={canManage}
-    />
+    <>
+      <ProjectsPanel
+        projects={projects}
+        currency={currency}
+        form={form}
+        onFormChange={setForm}
+        onSubmit={onSubmit}
+        onDelete={onDelete}
+        canManage={canManage}
+        categories={categories}
+        categoryBudgetsByProjectId={categoryBudgetsByProjectId}
+        onLoadCategoryBudgets={onLoadCategoryBudgets}
+        categoryBudgetForm={categoryBudgetForm}
+        onCategoryBudgetFormChange={setCategoryBudgetForm}
+        onSubmitCategoryBudget={onSubmitCategoryBudget}
+        onDeleteCategoryBudget={onDeleteCategoryBudget}
+        iconPreviewUrlByFileId={iconPreviewByFileId}
+        onOpenDetail={setDetailProject}
+      />
+      <ProjectDetailDialog
+        project={detailProject}
+        onClose={() => setDetailProject(null)}
+        categories={categories}
+        currency={currency}
+        iconPreviewUrlByFileId={iconPreviewByFileId}
+      />
+    </>
   )
 }

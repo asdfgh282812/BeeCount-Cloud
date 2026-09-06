@@ -22,6 +22,8 @@ import type {
   InstallmentRebalancePayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
+  ProjectCategoryBudgetCreatePayload,
+  ProjectCategoryBudgetUpdatePayload,
   ProjectCreatePayload,
   ProjectUpdatePayload,
   ReadAccount,
@@ -730,6 +732,51 @@ export async function deleteProject(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** docs/2026-09-06-project-category-budget-period-switch-design.md §2.2/§7.2
+ *  —— 專案分類子預算,巢狀在專案底下(`project_id` 來自 URL path)。 */
+export async function createProjectCategoryBudget(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  baseChangeId: number,
+  payload: ProjectCategoryBudgetCreatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/category-budgets`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function updateProjectCategoryBudget(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  budgetId: string,
+  baseChangeId: number,
+  payload: ProjectCategoryBudgetUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/category-budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+export async function deleteProjectCategoryBudget(
+  token: string,
+  ledgerId: string,
+  projectId: string,
+  budgetId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/category-budgets/${encodeURIComponent(budgetId)}`,
     token,
     { base_change_id: baseChangeId },
   )

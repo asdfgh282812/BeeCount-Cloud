@@ -39,6 +39,7 @@ compute_account_balance` 也會正確算進餘額。回饋是系統依規則算�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date, datetime, timezone
@@ -47,7 +48,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import projection
-from ..models import CardRewardPayout, ReadCardRewardRuleProjection, ReadTxProjection, SyncChange, UserAccountProjection
+from ..database import SessionLocal
+from ..models import (
+    CardRewardPayout,
+    Ledger,
+    ReadCardRewardRuleProjection,
+    ReadTxProjection,
+    SyncChange,
+    UserAccountProjection,
+    UserExchangeRateProjection,
+)
 from . import card_rewards
 from . import notifications as notification_service
 from .recurring_materializer import emit_tx, new_sync_id
@@ -100,6 +110,69 @@ def _record_payout(
     ))
 
 
+def _currency_fields_for_reward(
+    db: Session, *, user_id: str, ledger_id: str, reward_account_id: str, amount: float,
+) -> dict[str, object]:
+    """回饋帳戶幣別跟帳本本位幣不同時,補上 `currencyCode`/`nativeAmount`
+    (2026-09-06 使用者反饋:日幣卡的回饋金原樣以幣值數字寫進 income,沒有
+    折算欄位,App 端拉取時對缺鍵退化成 1:1,週曆/月報加總直接把日幣數字
+    當台幣加,總額嚴重失真)。
+
+    換算規則比照 `mcp.tools.write_tools._build_currency_fields`:手動
+    override(`UserExchangeRateProjection`,1 quote = rate base,乘)優先,
+    自動源 `exchange_rate.fetcher`(1 base = x quote,除)其次,兩者皆缺
+    才退化 1:1(currencyCode 仍落,同 App L11 橫幅「重新計算外幣折算」可事後
+    捞回的既有慣例)。
+
+    這裡跟 `_build_currency_fields` 不同的是同步呼叫:`materialize_due_
+    card_reward_payouts` 這條排程 job 全程是同步 `Session`,呼叫鏈頂端
+    `main.py::_start_scheduled_jobs_loop` 用 `asyncio.to_thread` 把整個
+    tick 丟進獨立執行緒跑,該執行緒沒有 running event loop,`asyncio.run`
+    可以放心直接呼叫 `fetcher.get_rates`(它本身是 async,因為要打外部
+    匯率 API)。自動源查詢刻意開一個獨立 `SessionLocal()`,不動呼叫端
+    正在使用中的交易性 `db`(同 `_build_currency_fields` 的既有做法)。"""
+    base = (db.scalar(select(Ledger.currency).where(Ledger.id == ledger_id)) or "CNY").strip().upper()
+    account_currency = db.scalar(
+        select(UserAccountProjection.currency).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == reward_account_id,
+        )
+    )
+    cc = (account_currency or base).strip().upper()
+    if cc == base:
+        return {}  # 本位币:body 不带两字段(server 落 NULL,统计 COALESCE 回退 amount)
+
+    override = db.scalar(
+        select(UserExchangeRateProjection.rate).where(
+            UserExchangeRateProjection.user_id == user_id,
+            UserExchangeRateProjection.base_currency == base,
+            UserExchangeRateProjection.quote_currency == cc,
+        ).limit(1)
+    )
+    native: float | None = None
+    if override is not None:
+        try:
+            r = float(override)
+            if r > 0:
+                native = amount * r  # 1 cc = r base
+        except (TypeError, ValueError):
+            native = None
+    if native is None:
+        try:
+            from .exchange_rate import fetcher as _rf
+            with SessionLocal() as rate_db:
+                row, _stale = asyncio.run(_rf.get_rates(rate_db, base))
+            raw = dict(row.payload_json).get(cc) or dict(row.payload_json).get(cc.lower())
+            x = float(raw) if raw is not None else 0.0
+            native = amount / x if x > 0 else amount  # 1 base = x cc → cc 折 base 要除
+        except Exception:  # noqa: BLE001 — 匯率上游掛了不能讓整個排程 job 失敗
+            logger.warning(
+                "card_reward_payout: exchange rate lookup failed base=%s quote=%s", base, cc,
+            )
+            native = amount
+    return {"currencyCode": cc, "nativeAmount": native}
+
+
 def _emit_reward_tx(
     db: Session, *, ledger_id: str, user_id: str, now: datetime, happened_at: datetime,
     reward_account_id: str, amount: float, note: str,
@@ -131,6 +204,9 @@ def _emit_reward_tx(
         "createdByUserId": user_id,
         "updatedByUserId": user_id,
     }
+    item.update(_currency_fields_for_reward(
+        db, user_id=user_id, ledger_id=ledger_id, reward_account_id=reward_account_id, amount=amount,
+    ))
     if source_tx_id is not None:
         item["rewardSourceTxId"] = source_tx_id
     return emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item)

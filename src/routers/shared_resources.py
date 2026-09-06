@@ -48,6 +48,7 @@ class SharedCategoryItem(BaseModel):
     # 共享账本二级分类父子关系的稳定 FK,跟 parent_name 并存;client 优先用
     # parent_sync_id 做父子链(同名不再歧义,父分类重命名也不需要级联子)。
     parent_sync_id: str | None = None
+    color: str | None = None
 
 
 class SharedAccountItem(BaseModel):
@@ -128,6 +129,7 @@ def get_shared_resources(
                 level=c.level,
                 parent_name=c.parent_name,
                 parent_sync_id=c.parent_sync_id,
+                color=c.color,
             )
             for c in cats
         ],

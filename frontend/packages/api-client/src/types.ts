@@ -351,6 +351,7 @@ export type ReadCategory = {
   icon_cloud_file_id?: string | null
   icon_cloud_sha256?: string | null
   parent_name: string | null
+  color?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -1132,6 +1133,7 @@ export type CategoryPayload = {
   icon_cloud_file_id?: string | null
   icon_cloud_sha256?: string | null
   parent_name?: string | null
+  color?: string | null
 }
 
 export type TagPayload = {
@@ -1636,6 +1638,10 @@ export type ProjectStatus = 'ok' | 'warning' | 'over'
  * `project_sync_id` 反查交易、依 period_type 算出當期起訖窗口即時彙總出的
  * derived 字段(见 server `ReadProjectProjection` docstring)。
  */
+/** 每日預算模式(docs/2026-09-06-project-category-budget-period-switch-design.md
+ *  §2.1/§6.2):'fixed'=總預算/期間天數;'proportional'=剩餘預算/剩餘天數。 */
+export type DailyBudgetMode = 'fixed' | 'proportional'
+
 export type ReadProject = {
   id: string
   name: string
@@ -1648,6 +1654,10 @@ export type ReadProject = {
   visible_on_home: boolean
   enabled: boolean
   sort_order: number
+  income_included_in_budget: boolean
+  daily_budget_enabled: boolean
+  daily_budget_mode?: DailyBudgetMode | null
+  reminder_threshold_percent?: number | null
   spent: number
   remaining?: number | null
   progress_pct?: number | null
@@ -1669,6 +1679,10 @@ export type ProjectCreatePayload = {
   visible_on_home?: boolean
   enabled?: boolean
   sort_order?: number
+  income_included_in_budget?: boolean
+  daily_budget_enabled?: boolean
+  daily_budget_mode?: DailyBudgetMode | null
+  reminder_threshold_percent?: number | null
 }
 
 /** key 不出現 = 不變;`budget_amount` 顯式傳 null = 清空預算(改回純追蹤
@@ -1685,6 +1699,90 @@ export type ProjectUpdatePayload = {
   visible_on_home?: boolean
   enabled?: boolean
   sort_order?: number
+  income_included_in_budget?: boolean
+  daily_budget_enabled?: boolean
+  daily_budget_mode?: DailyBudgetMode | null
+  reminder_threshold_percent?: number | null
+}
+
+// ────────── 專案分類子預算 (Project Category Budgets，docs/2026-09-06-
+// project-category-budget-period-switch-design.md §2.2/§7.2）──────────
+
+export type ProjectCategoryBudgetMode = 'fixed' | 'percentage'
+
+export type ReadProjectCategoryBudget = {
+  id: string
+  project_id: string
+  category_id: string
+  mode: ProjectCategoryBudgetMode
+  fixed_amount?: number | null
+  percentage?: number | null
+  carryover_enabled: boolean
+  sort_order: number
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+}
+
+export type ProjectCategoryBudgetCreatePayload = {
+  category_id: string
+  mode?: ProjectCategoryBudgetMode
+  fixed_amount?: number | null
+  percentage?: number | null
+  carryover_enabled?: boolean
+  sort_order?: number
+}
+
+/** key 不出現 = 不變;`category_id` 建立後不可改(同 card_reward_rule 的
+ *  account_id 慣例,要換分類走刪除重建)。 */
+export type ProjectCategoryBudgetUpdatePayload = {
+  mode?: ProjectCategoryBudgetMode
+  fixed_amount?: number | null
+  percentage?: number | null
+  carryover_enabled?: boolean
+  sort_order?: number
+}
+
+// ────────── 專案詳情頁：期間切換 + 分類花費拆解（docs/2026-09-06-project-
+// category-budget-period-switch-design.md §4）──────────
+
+export type ReadProjectBreakdownCategory = {
+  category_id: string
+  spent: number
+  count: number
+  has_budget: boolean
+  budget_mode?: ProjectCategoryBudgetMode | null
+  budget_target?: number | null
+  progress_pct?: number | null
+}
+
+/** `spent`/`remaining`/`progress_pct`/`status`/分類拆解都是 server 針對指定
+ *  `period_offset` 即時彙總出的 derived 值,不落库。`effective_budget` 是
+ *  `budget_amount` 併入本期收入(`income_included_in_budget`)後的有效預算,
+ *  跟 `ReadProject.remaining`(目前仍固定用 budget_amount)刻意不同步。 */
+export type ReadProjectBreakdown = {
+  project_id: string
+  period_type: ProjectPeriodType
+  period_start: string
+  period_end: string
+  period_offset: number
+  period_has_newer: boolean
+  period_has_older: boolean
+  expense_total: number
+  expense_count: number
+  income_total: number
+  income_count: number
+  budget_amount?: number | null
+  effective_budget?: number | null
+  spent: number
+  remaining?: number | null
+  progress_pct?: number | null
+  status: ProjectStatus
+  allocated_total: number
+  unallocated_amount?: number | null
+  allocated_categories: ReadProjectBreakdownCategory[]
+  unallocated_categories: ReadProjectBreakdownCategory[]
+  unset_categories: ReadProjectBreakdownCategory[]
 }
 
 // ────────── 對帳模式 (Statement Mode，MOZE_FEATURE_GAP_SD.md §2.10 Phase 5，

@@ -1560,6 +1560,8 @@ export function TransactionsPage() {
         visible_on_home: true,
         enabled: true,
         sort_order: 0,
+        income_included_in_budget: false,
+        daily_budget_enabled: false,
         spent: 0,
         status: 'ok',
         last_change_id: res.new_change_id,

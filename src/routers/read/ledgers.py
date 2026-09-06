@@ -246,6 +246,8 @@ def list_transactions(
     q: str | None = Query(default=None),
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    category_id: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -275,6 +277,10 @@ def list_transactions(
         query = query.where(ReadTxProjection.happened_at >= _to_utc(start_at))
     if end_at:
         query = query.where(ReadTxProjection.happened_at <= _to_utc(end_at))
+    if project_id:
+        query = query.where(ReadTxProjection.project_sync_id == project_id)
+    if category_id:
+        query = query.where(ReadTxProjection.category_sync_id == category_id)
     if q:
         pattern = f"%{q}%"
         query = query.where(or_(
@@ -1813,14 +1819,15 @@ def list_debts(
 
 
 def _project_period_range(
-    period_type: str, period_start, period_end, now: datetime,
+    period_type: str, period_start, period_end, now: datetime, offset: int = 0,
 ) -> tuple[datetime, datetime] | None:
-    """專案(Phase 13)當期起訖窗口:
+    """專案(Phase 13)當期/往期起訖窗口:
     - `fixed`:直接用 period_start/period_end(轉成當天 UTC 零點 ~ 隔天零點,
       含頭尾兩天)。缺欄位時視為無有效窗口(彙總回 0),不拋錯——歷史髒資料
-      不該讓整個列表 500。
+      不該讓整個列表 500。忽略 `offset`(只有單一區間)。
     - `monthly`/`yearly`:依「當下日期」滾動計算(不依賴帳本 month_start_day,
-      專案沒有自己的 start_day 欄位,固定用日曆月/年 1 號起算)。
+      專案沒有自己的 start_day 欄位,固定用日曆月/年 1 號起算),`offset` 往回
+      推算第幾期(0=當期,1=上一期...),供 §4 期間切換使用。
     """
     if period_type == "fixed":
         if period_start is None or period_end is None:
@@ -1830,11 +1837,16 @@ def _project_period_range(
         end = end_day + timedelta(days=1)
         return start, end
     if period_type == "yearly":
-        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        start = now.replace(year=now.year - offset, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(year=start.year + 1)
         return start, end
-    # monthly(默认兜底)
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # monthly(默认兜底):把「年*12+月」换成一个连续整数再减 offset,避免月份
+    # 借位要手写進位判斷。
+    month_index = now.year * 12 + (now.month - 1) - offset
+    anchor_year, anchor_month0 = divmod(month_index, 12)
+    start = now.replace(
+        year=anchor_year, month=anchor_month0 + 1, day=1, hour=0, minute=0, second=0, microsecond=0
+    )
     if start.month == 12:
         end = start.replace(year=start.year + 1, month=1)
     else:
@@ -1975,6 +1987,217 @@ def list_project_category_budgets(
         )
         for row in rows
     ]
+
+
+def _resolve_project_category_budget_target(
+    row: ReadProjectCategoryBudgetProjection, budget_amount: float | None,
+) -> float | None:
+    """把一筆分類子預算解析成金額。`percentage` 模式用專案原始
+    `budget_amount`(不是收入併入後的 `effective_budget`),跟既有前端
+    `ProjectCategoryBudgetsSection` 的 `allocatedTotal` 計算口徑保持一致。"""
+    if (row.mode or "fixed") == "percentage":
+        if budget_amount is None or row.percentage is None:
+            return None
+        return budget_amount * float(row.percentage) / 100.0
+    return float(row.fixed_amount) if row.fixed_amount is not None else None
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/projects/{project_id}/breakdown",
+    response_model=ReadProjectBreakdownOut,
+)
+def get_project_breakdown(
+    ledger_external_id: str,
+    project_id: str,
+    period_offset: int = Query(default=0, ge=0, le=1200),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadProjectBreakdownOut:
+    """專案詳情頁:期間切換 + 統計條 + 分類拆解(docs/2026-09-06-project-
+    category-budget-period-switch-design.md §4)。`period_offset` 語意同
+    `_project_period_range`:0=當期,正整數=往回第幾期;`fixed` 週期只有單一
+    區間,忽略請求的 offset,一律視為 0。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    project = db.scalar(
+        select(ReadProjectProjection).where(
+            ReadProjectProjection.ledger_id == ledger.id,
+            ReadProjectProjection.sync_id == project_id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    period_type = project.period_type or "monthly"
+    effective_offset = 0 if period_type == "fixed" else period_offset
+    now = datetime.now(timezone.utc)
+    window = _project_period_range(period_type, project.period_start, project.period_end, now, effective_offset)
+    if window is None:
+        start = end = now
+    else:
+        start, end = window
+    period_has_newer = period_type != "fixed" and effective_offset > 0
+    period_has_older = period_type != "fixed"
+
+    # 統計條(出帳/入帳):只看 exclude_from_stats,跟預算用量的
+    # exclude_from_budget 是獨立開關(D2 慣例,見 list_budget_usage 附近註解)。
+    stats_rows = db.execute(
+        select(
+            ReadTxProjection.tx_type,
+            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+            func.count(),
+        ).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.project_sync_id == project_id,
+            ReadTxProjection.tx_type.in_(["expense", "income"]),
+            ReadTxProjection.exclude_from_stats == sa_false(),
+            ReadTxProjection.happened_at >= start,
+            ReadTxProjection.happened_at < end,
+        ).group_by(ReadTxProjection.tx_type)
+    ).all()
+    expense_total = expense_count = income_total = income_count = 0.0
+    for tx_type, total, count in stats_rows:
+        if tx_type == "expense":
+            expense_total, expense_count = abs(float(total or 0.0)), int(count or 0)
+        elif tx_type == "income":
+            income_total, income_count = abs(float(total or 0.0)), int(count or 0)
+
+    # 預算用量(spent)/收入併入預算(income_included_in_budget)都只看
+    # exclude_from_budget,一次 group by 查兩個 tx_type 取代分開查詢。
+    budget_stats_rows = db.execute(
+        select(
+            ReadTxProjection.tx_type,
+            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+        ).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.project_sync_id == project_id,
+            ReadTxProjection.tx_type.in_(["expense", "income"]),
+            ReadTxProjection.exclude_from_budget == sa_false(),
+            ReadTxProjection.happened_at >= start,
+            ReadTxProjection.happened_at < end,
+        ).group_by(ReadTxProjection.tx_type)
+    ).all()
+    spent = income_for_budget = 0.0
+    for tx_type, total in budget_stats_rows:
+        if tx_type == "expense":
+            spent = abs(float(total or 0.0))
+        elif tx_type == "income":
+            income_for_budget = abs(float(total or 0.0))
+
+    budget_amount = float(project.budget_amount) if project.budget_amount is not None else None
+    effective_budget: float | None = None
+    remaining: float | None = None
+    progress_pct: float | None = None
+    project_status: str = "ok"
+    if budget_amount is not None and budget_amount > 0:
+        effective_budget = budget_amount + (income_for_budget if project.income_included_in_budget else 0.0)
+        remaining = effective_budget - spent
+        progress_pct = round(min(spent / effective_budget, 999.0) * 100.0, 2) if effective_budget > 0 else None
+        if spent >= effective_budget:
+            project_status = "over"
+        elif spent >= effective_budget * 0.8:
+            project_status = "warning"
+
+    # 分類子預算配置(期間無關,不受 offset 影響)。
+    budget_rows = db.scalars(
+        select(ReadProjectCategoryBudgetProjection).where(
+            ReadProjectCategoryBudgetProjection.ledger_id == ledger.id,
+            ReadProjectCategoryBudgetProjection.project_sync_id == project_id,
+        )
+    ).all()
+    budget_by_category = {b.category_sync_id: b for b in budget_rows if b.category_sync_id}
+    allocated_total = 0.0
+    for b in budget_rows:
+        target = _resolve_project_category_budget_target(b, budget_amount)
+        if target is not None:
+            allocated_total += target
+    unallocated_amount = (effective_budget - allocated_total) if effective_budget is not None else None
+
+    # 分類全集:使用者所有一級消費分類 + 這個專案已設定分配的分類(理論上恆為
+    # 消費分類,但配置端沒擋 kind,兩者聯集避免漏掉邊界情況)。
+    expense_category_ids = list(db.scalars(
+        select(UserCategoryProjection.sync_id).where(
+            UserCategoryProjection.user_id == ledger.user_id,
+            UserCategoryProjection.level == 1,
+            UserCategoryProjection.kind == "expense",
+        ).order_by(UserCategoryProjection.sort_order.asc(), UserCategoryProjection.sync_id.asc())
+    ).all())
+    category_universe = list(dict.fromkeys([*expense_category_ids, *budget_by_category.keys()]))
+
+    # 這期各分類花費(跟 spent 同一組過濾條件:exclude_from_budget)。拆帳
+    # (has_splits)父行 category_sync_id 是 NULL,group by 天然跳過,這次不做
+    # 拆帳折算(見計畫「明確不做的部分」)。
+    spend_rows = db.execute(
+        select(
+            ReadTxProjection.category_sync_id,
+            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+            func.count(),
+        ).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.project_sync_id == project_id,
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.exclude_from_budget == sa_false(),
+            ReadTxProjection.happened_at >= start,
+            ReadTxProjection.happened_at < end,
+            ReadTxProjection.category_sync_id.isnot(None),
+        ).group_by(ReadTxProjection.category_sync_id)
+    ).all()
+    spend_by_category = {row[0]: (abs(float(row[1] or 0.0)), int(row[2] or 0)) for row in spend_rows}
+
+    allocated_categories: list[ReadProjectBreakdownCategoryOut] = []
+    unallocated_categories: list[ReadProjectBreakdownCategoryOut] = []
+    unset_categories: list[ReadProjectBreakdownCategoryOut] = []
+    for cat_id in category_universe:
+        cat_spent, cat_count = spend_by_category.get(cat_id, (0.0, 0))
+        budget_row = budget_by_category.get(cat_id)
+        if cat_count > 0 and budget_row is not None:
+            target = _resolve_project_category_budget_target(budget_row, budget_amount)
+            cat_progress = (
+                round(min(cat_spent / target, 999.0) * 100.0, 2) if target is not None and target > 0 else None
+            )
+            allocated_categories.append(ReadProjectBreakdownCategoryOut(
+                category_id=cat_id, spent=cat_spent, count=cat_count, has_budget=True,
+                budget_mode=cast("Any", budget_row.mode or "fixed"), budget_target=target,
+                progress_pct=cat_progress,
+            ))
+        elif cat_count > 0:
+            unallocated_categories.append(ReadProjectBreakdownCategoryOut(
+                category_id=cat_id, spent=cat_spent, count=cat_count, has_budget=False,
+            ))
+        else:
+            unset_categories.append(ReadProjectBreakdownCategoryOut(
+                category_id=cat_id, spent=0.0, count=0, has_budget=budget_row is not None,
+            ))
+    allocated_categories.sort(key=lambda c: c.spent, reverse=True)
+    unallocated_categories.sort(key=lambda c: c.spent, reverse=True)
+
+    return ReadProjectBreakdownOut(
+        project_id=project_id,
+        period_type=cast("Any", period_type),
+        period_start=start,
+        period_end=end,
+        period_offset=effective_offset,
+        period_has_newer=period_has_newer,
+        period_has_older=period_has_older,
+        expense_total=expense_total,
+        expense_count=int(expense_count),
+        income_total=income_total,
+        income_count=int(income_count),
+        budget_amount=budget_amount,
+        effective_budget=effective_budget,
+        spent=spent,
+        remaining=remaining,
+        progress_pct=progress_pct,
+        status=cast("Any", project_status),
+        allocated_total=allocated_total,
+        unallocated_amount=unallocated_amount,
+        allocated_categories=allocated_categories,
+        unallocated_categories=unallocated_categories,
+        unset_categories=unset_categories,
+    )
 
 
 @router.get(

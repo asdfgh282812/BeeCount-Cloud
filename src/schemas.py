@@ -1158,8 +1158,8 @@ class ReadProjectOut(BaseModel):
 class ReadProjectCategoryBudgetOut(BaseModel):
     """專案分類子預算只读视图(docs/2026-09-06-project-category-budget-period-
     switch-design.md §2.2/§7.2)。只回傳分配設定本身,不含花費統計——分類
-    拆解的花費彙總是 App 端讀本機 SQLite 算的(`getProjectCategoryBreakdown`),
-    Cloud 端本次不做對應的 web 展示邏輯(spec §7.2 明講留待之後確認)。"""
+    拆解的花費彙總(這期實際花了多少)改由 `ReadProjectBreakdownOut`(§4 期間
+    切換 + 花費拆解)提供,兩者是獨立來源,不在這個 schema 裡合併。"""
     id: str
     project_id: str
     category_id: str
@@ -1171,6 +1171,53 @@ class ReadProjectCategoryBudgetOut(BaseModel):
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
+
+
+class ReadProjectBreakdownCategoryOut(BaseModel):
+    """專案詳情頁分類拆解單列(docs/2026-09-06-project-category-budget-period-
+    switch-design.md §4.4 item 5-7)。`spent`/`count` 是指定期間窗口內即時彙總
+    出的 derived 值,不落库。"""
+    category_id: str
+    spent: float
+    count: int
+    has_budget: bool
+    budget_mode: ProjectCategoryBudgetMode | None = None
+    # fixed 模式原樣回傳 fixed_amount;percentage 模式已解析成金額(用專案
+    # `budget_amount` 而非 `effective_budget`,跟既有前端 `allocatedTotal` 計算
+    # 口徑一致)。`has_budget=False` 時恆為 None。
+    budget_target: float | None = None
+    progress_pct: float | None = None
+
+
+class ReadProjectBreakdownOut(BaseModel):
+    """專案詳情頁:期間切換 + 統計條 + 分類拆解(docs/2026-09-06-project-
+    category-budget-period-switch-design.md §4)。對齐 `list_projects` 的
+    `_project_period_range` 當期窗口算法,`period_offset` 往回推算成往期窗口。
+    `effective_budget`(收入併入預算後的有效預算)是這個端點首次接進
+    `income_included_in_budget` 這個既有欄位——`list_projects` 目前仍固定用
+    `budget_amount`,兩者這裡刻意不同步(§3.4.1)。"""
+    project_id: str
+    period_type: ProjectPeriodType
+    period_start: datetime
+    period_end: datetime
+    period_offset: int
+    period_has_newer: bool
+    period_has_older: bool
+    expense_total: float
+    expense_count: int
+    income_total: float
+    income_count: int
+    budget_amount: float | None = None
+    effective_budget: float | None = None
+    spent: float
+    remaining: float | None = None
+    progress_pct: float | None = None
+    status: ProjectStatus
+    allocated_total: float
+    unallocated_amount: float | None = None
+    allocated_categories: list[ReadProjectBreakdownCategoryOut] = Field(default_factory=list)
+    unallocated_categories: list[ReadProjectBreakdownCategoryOut] = Field(default_factory=list)
+    unset_categories: list[ReadProjectBreakdownCategoryOut] = Field(default_factory=list)
 
 
 class ReadTxTemplateOut(BaseModel):

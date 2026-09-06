@@ -117,6 +117,9 @@ export function CategoriesPage() {
         icon_cloud_file_id: form.icon_cloud_file_id || null,
         icon_cloud_sha256: form.icon_cloud_sha256 || null,
         parent_name: form.parent_name || null,
+        // 只有一级分类(level=1)存 color;二级分类固定传 null,颜色渲染时
+        // 向上查父分类,跟 app 端约定对齐。
+        color: form.level === '2' ? null : form.color || null,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -148,6 +151,7 @@ export function CategoriesPage() {
       icon_cloud_file_id: row.icon_cloud_file_id || '',
       icon_cloud_sha256: row.icon_cloud_sha256 || '',
       parent_name: row.parent_name || '',
+      color: row.color || '',
     })
     setEditDialogOpen(true)
   }, [])

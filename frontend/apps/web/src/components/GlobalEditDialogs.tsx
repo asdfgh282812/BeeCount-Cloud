@@ -328,6 +328,8 @@ export function GlobalEditDialogs() {
           visible_on_home: true,
           enabled: true,
           sort_order: 0,
+          income_included_in_budget: false,
+          daily_budget_enabled: false,
           spent: 0,
           status: 'ok',
           last_change_id: res.new_change_id,
@@ -994,6 +996,7 @@ export function GlobalEditDialogs() {
         icon_cloud_file_id: cat.icon_cloud_file_id || '',
         icon_cloud_sha256: cat.icon_cloud_sha256 || '',
         parent_name: cat.parent_name || '',
+        color: cat.color || '',
       })
       try {
         const cats = await fetchWorkspaceCategories(token, { ledgerId, limit: 500 })
@@ -1023,6 +1026,7 @@ export function GlobalEditDialogs() {
         icon_cloud_file_id: editCatForm.icon_cloud_file_id || null,
         icon_cloud_sha256: editCatForm.icon_cloud_sha256 || null,
         parent_name: editCatForm.parent_name || null,
+        color: editCatForm.level === '2' ? null : editCatForm.color || null,
       }
       await retryOnConflict(ledgerId, (base) =>
         editCatForm.editingId
