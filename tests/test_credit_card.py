@@ -937,6 +937,92 @@ def test_billing_summary_overpayment_carries_forward_across_cycles():
 
 
 # --------------------------------------------------------------------------- #
+# 3b. GET .../accounts/{id}/billing-periods (2026-09-06「選擇區間」清單)      #
+# --------------------------------------------------------------------------- #
+
+
+def test_billing_periods_requires_billing_schedule():
+    """跟 billing-summary 共用同一個 `_require_credit_card_schedule` 檢查,
+    沒設定 billing_day/payment_due_day 一樣要 400。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccp0@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccp0@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _seed_group_and_child(client, hdr_app, "lgbp0")
+
+        r = client.get(
+            "/api/v1/read/ledgers/lgbp0/accounts/acc-group/billing-periods", headers=hdr_web,
+        )
+        assert r.status_code == 400, r.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_billing_periods_only_current_when_no_transactions():
+    """沒有任何交易時,清單只該有目前還在累積中的那一期(offset=+1),不該
+    無條件往回列一堆空清單項目。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccp1@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccp1@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _seed_group_and_child(client, hdr_app, "lgbp1", billing_day=15, payment_due_day=25)
+
+        r = client.get(
+            "/api/v1/read/ledgers/lgbp1/accounts/acc-group/billing-periods", headers=hdr_web,
+        )
+        assert r.status_code == 200, r.text
+        periods = r.json()["periods"]
+        assert [p["offset"] for p in periods] == [1]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_billing_periods_stops_at_earliest_activity():
+    """清單只該往回列到最早一筆交易所在的週期為止,不列沒有資料的更舊帳期
+    (2026-09-06 使用者回報)。這裡把唯一一筆交易埋在「最近一次已結束週期」
+    往前 3 期的那一期裡,清單應該從 +1(目前累積中)連續列到 -3,不含 -4。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccp2@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccp2@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        billing_day = 15
+        _push(client, hdr_app, "lgbp2", "ledger", "lgbp2",
+              {"syncId": "lgbp2", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgbp2", "account", "acc-group",
+              {"syncId": "acc-group", "name": "主帳戶", "type": "account_group", "currency": "CNY",
+               "billingDay": billing_day, "paymentDueDay": 25}, device_id="d-app")
+        _push(client, hdr_app, "lgbp2", "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "parentAccountId": "acc-group"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        base_start, base_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+        target_start, _target_end = credit_card.shift_cycle(base_start, base_end, billing_day, -3)
+        earliest_date = target_start + timedelta(days=1)
+
+        _push(client, hdr_app, "lgbp2", "transaction", "tx-old",
+              {"syncId": "tx-old", "type": "expense", "amount": 42.0,
+               "happenedAt": _dt(earliest_date),
+               "accountId": "acc-card", "accountName": "卡"}, device_id="d-app")
+
+        r = client.get(
+            "/api/v1/read/ledgers/lgbp2/accounts/acc-group/billing-periods", headers=hdr_web,
+        )
+        assert r.status_code == 200, r.text
+        offsets = [p["offset"] for p in r.json()["periods"]]
+        assert offsets == list(range(1, -4, -1))
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
 # 4. GET .../accounts/{id}/interest-free-suggestion                           #
 # --------------------------------------------------------------------------- #
 

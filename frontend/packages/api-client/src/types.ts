@@ -859,6 +859,19 @@ export type AccountBillingSummary = {
   period_installment_periods: number | null
 }
 
+/** 「選擇區間」清單(2026-09-06)單一選項:`offset` 跟 `AccountBillingSummary`
+ *  的 `cycle_offset` 同語意(0=最近一次已結束的週期,+1=目前還在累積中的
+ *  那期)。 */
+export type AccountBillingPeriodOption = {
+  offset: number
+  cycle_start: string
+  cycle_end: string
+}
+
+export type AccountBillingPeriodList = {
+  periods: AccountBillingPeriodOption[]
+}
+
 export type AccountInterestFreeSuggestion = {
   account_id: string
   as_of: string

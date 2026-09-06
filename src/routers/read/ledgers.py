@@ -741,6 +741,84 @@ def get_account_billing_summary(
 
 
 @router.get(
+    "/ledgers/{ledger_external_id}/accounts/{account_id}/billing-periods",
+    response_model=ReadBillingPeriodListOut,
+)
+def list_account_billing_periods(
+    ledger_external_id: str,
+    account_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadBillingPeriodListOut:
+    """「選擇區間」清單(2026-09-06,對齊 mobile app `account_detail_page.dart`
+    同名功能,web 端原本只有 `get_account_billing_summary` 的 cycle_offset
+    前後箭頭,一期一期翻很慢):列出這個帳戶(含合併帳單子卡)所有實際有
+    交易資料涵蓋到的帳單週期,供前端一次跳轉。`offset` 跟 `get_account_
+    billing_summary` 的 `cycle_offset` 同語意——`+1`(目前還在累積中的那期)
+    永遠列出,即使還沒有任何交易;往回只列到最早一筆交易所在的週期為止,
+    跟 `compute_cycle_period_billing` 判斷 `has_older` 用的是同一個
+    `MIN(happened_at)` 查詢,兩處判斷結果一定一致,不會有清單漏列/多列
+    `has_older` 判定為 true 的那一期。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    account = db.scalar(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    _require_billing_root(account)
+    billing_day, _payment_due_day = _require_credit_card_schedule(account)
+
+    children = credit_card_billing.resolve_billing_children(db, account=account)
+    member_ids = credit_card_billing.billing_member_ids(account, children)
+
+    now = datetime.now(timezone.utc)
+    base_start, base_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+    earliest = db.scalar(
+        select(func.min(ReadTxProjection.happened_at)).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.account_sync_id.in_(member_ids),
+        )
+    )
+    if earliest is not None and earliest.tzinfo is None:
+        earliest = earliest.replace(tzinfo=timezone.utc)
+    earliest_date = earliest.date() if earliest is not None else None
+
+    # `+1`(目前還在累積中的那期)一律列出當作清單最新一列;往回一期一期看,
+    # 只要「這一期的起點之後還有更早的資料」(跟 has_older 同一個判斷式)就
+    # 繼續往回收一期,直到收到涵蓋 earliest_date 那一期為止。-600 是防禦性
+    # 上限(理論上不會有帳戶累積這麼多期資料),避免資料異常時無限迴圈。
+    oldest_offset = 1
+    if earliest_date is not None:
+        while oldest_offset > -600:
+            cycle_start, _cycle_end = credit_card.shift_cycle(
+                base_start, base_end, billing_day, oldest_offset,
+            )
+            if cycle_start <= earliest_date:
+                break
+            oldest_offset -= 1
+
+    periods = []
+    for offset in range(1, oldest_offset - 1, -1):
+        cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, billing_day, offset)
+        periods.append(
+            ReadBillingPeriodOptionOut(
+                offset=offset,
+                cycle_start=_date_to_utc_dt(cycle_start),
+                cycle_end=_date_to_utc_dt(cycle_end),
+            )
+        )
+    return ReadBillingPeriodListOut(periods=periods)
+
+
+@router.get(
     "/ledgers/{ledger_external_id}/accounts/{account_id}/interest-free-suggestion",
     response_model=ReadInterestFreeSuggestionOut,
 )
@@ -1819,15 +1897,20 @@ def list_debts(
 
 
 def _project_period_range(
-    period_type: str, period_start, period_end, now: datetime, offset: int = 0,
+    period_type: str, period_start, period_end, now: datetime, offset: int = 0, tz_offset_minutes: int = 0,
 ) -> tuple[datetime, datetime] | None:
     """專案(Phase 13)當期/往期起訖窗口:
     - `fixed`:直接用 period_start/period_end(轉成當天 UTC 零點 ~ 隔天零點,
       含頭尾兩天)。缺欄位時視為無有效窗口(彙總回 0),不拋錯——歷史髒資料
       不該讓整個列表 500。忽略 `offset`(只有單一區間)。
-    - `monthly`/`yearly`:依「當下日期」滾動計算(不依賴帳本 month_start_day,
-      專案沒有自己的 start_day 欄位,固定用日曆月/年 1 號起算),`offset` 往回
-      推算第幾期(0=當期,1=上一期...),供 §4 期間切換使用。
+    - `monthly`/`yearly`:依「使用者本地時區的當下日期」滾動計算(不依賴帳本
+      month_start_day,專案沒有自己的 start_day 欄位,固定用本地日曆月/年 1 號
+      起算),`offset` 往回推算第幾期(0=當期,1=上一期...),供 §4 期間切換使用。
+      `tz_offset_minutes` 跟 `_analytics_range`/`_bucket_key` 同慣例(JS
+      `-new Date().getTimezoneOffset()`,CST 傳 +480):先在本地時區切邊界,
+      再轉回 UTC 給 SQL 用,避免 UTC 裸切把本地月初/月底附近的交易歸到錯誤
+      月份(這是本地時間 07/31 23:00 存成 UTC 08/01 15:00、跟一般分類明細/
+      analytics 對不上的根因)。
     """
     if period_type == "fixed":
         if period_start is None or period_end is None:
@@ -1836,22 +1919,26 @@ def _project_period_range(
         end_day = datetime(period_end.year, period_end.month, period_end.day, tzinfo=timezone.utc)
         end = end_day + timedelta(days=1)
         return start, end
+    tz = timezone(timedelta(minutes=tz_offset_minutes))
+    local_now = now.astimezone(tz)
     if period_type == "yearly":
-        start = now.replace(year=now.year - offset, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        end = start.replace(year=start.year + 1)
-        return start, end
+        start_local = local_now.replace(
+            year=local_now.year - offset, month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        end_local = start_local.replace(year=start_local.year + 1)
+        return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
     # monthly(默认兜底):把「年*12+月」换成一个连续整数再减 offset,避免月份
     # 借位要手写進位判斷。
-    month_index = now.year * 12 + (now.month - 1) - offset
+    month_index = local_now.year * 12 + (local_now.month - 1) - offset
     anchor_year, anchor_month0 = divmod(month_index, 12)
-    start = now.replace(
+    start_local = local_now.replace(
         year=anchor_year, month=anchor_month0 + 1, day=1, hour=0, minute=0, second=0, microsecond=0
     )
-    if start.month == 12:
-        end = start.replace(year=start.year + 1, month=1)
+    if start_local.month == 12:
+        end_local = start_local.replace(year=start_local.year + 1, month=1)
     else:
-        end = start.replace(month=start.month + 1)
-    return start, end
+        end_local = start_local.replace(month=start_local.month + 1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 @router.get(
@@ -1860,6 +1947,7 @@ def _project_period_range(
 )
 def list_projects(
     ledger_external_id: str,
+    tz_offset_minutes: int = Query(default=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -1886,7 +1974,10 @@ def list_projects(
     now = datetime.now(timezone.utc)
     out: list[ReadProjectOut] = []
     for row in rows:
-        window = _project_period_range(row.period_type or "monthly", row.period_start, row.period_end, now)
+        window = _project_period_range(
+            row.period_type or "monthly", row.period_start, row.period_end, now,
+            tz_offset_minutes=tz_offset_minutes,
+        )
         spent = 0.0
         if window is not None:
             start, end = window
@@ -2010,6 +2101,7 @@ def get_project_breakdown(
     ledger_external_id: str,
     project_id: str,
     period_offset: int = Query(default=0, ge=0, le=1200),
+    tz_offset_minutes: int = Query(default=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -2034,7 +2126,10 @@ def get_project_breakdown(
     period_type = project.period_type or "monthly"
     effective_offset = 0 if period_type == "fixed" else period_offset
     now = datetime.now(timezone.utc)
-    window = _project_period_range(period_type, project.period_start, project.period_end, now, effective_offset)
+    window = _project_period_range(
+        period_type, project.period_start, project.period_end, now, effective_offset,
+        tz_offset_minutes=tz_offset_minutes,
+    )
     if window is None:
         start = end = now
     else:

@@ -749,6 +749,23 @@ class ReadAccountBillingSummaryOut(BaseModel):
     period_installment_periods: int | None = None
 
 
+class ReadBillingPeriodOptionOut(BaseModel):
+    """「選擇區間」清單(2026-09-06,對齊 mobile app `account_detail_page.dart`
+    同名功能)單一選項。`offset` 跟 `get_account_billing_summary` 的
+    `cycle_offset` 同語意:`0` 是最近一次已結束的週期,`+1` 是目前還在累積
+    中的那期,負數往回是更早的歷史週期。"""
+    offset: int
+    cycle_start: datetime
+    cycle_end: datetime
+
+
+class ReadBillingPeriodListOut(BaseModel):
+    """由新到舊排序(`+1` 開頭),只列到這個帳戶(含合併帳單子卡)最早一筆
+    交易所在的週期為止——沒有資料的更舊週期不列出來(2026-09-06 使用者
+    回報)。"""
+    periods: list[ReadBillingPeriodOptionOut]
+
+
 class ReadInterestFreeSuggestionOut(BaseModel):
     """信用卡免息期推薦(§2.9 Phase 4)。純計算,不查交易 —— 只依賴帳戶自己
     的 `billing_day`/`payment_due_day`。"""

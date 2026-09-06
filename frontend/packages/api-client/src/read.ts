@@ -1,6 +1,7 @@
 import { API_BASE, authedGet, resolveApiUrl } from './http'
 import { extractApiError } from './errors'
 import type {
+  AccountBillingPeriodList,
   AccountBillingSummary,
   AccountInterestFreeSuggestion,
   AccountStatement,
@@ -98,6 +99,21 @@ export async function fetchAccountBillingSummary(
   const qs = cycleOffset ? `?cycle_offset=${encodeURIComponent(String(cycleOffset))}` : ''
   return authedGet<AccountBillingSummary>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/billing-summary${qs}`,
+    token
+  )
+}
+
+/** 「選擇區間」清單(2026-09-06,對齊 mobile app 同名功能):列出這個帳戶
+ *  (含合併帳單子卡)所有實際有交易資料涵蓋到的帳單週期,供前端一次跳轉,
+ *  不用一期一期點箭頭找。帳戶未設定 billing_day/payment_due_day 时后端回
+ *  400,调用方需自行 catch(通常表示不显示這個入口)。 */
+export async function fetchAccountBillingPeriods(
+  token: string,
+  ledgerId: string,
+  accountId: string
+): Promise<AccountBillingPeriodList> {
+  return authedGet<AccountBillingPeriodList>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}/billing-periods`,
     token
   )
 }
@@ -317,13 +333,19 @@ export async function fetchReadDebts(
 /** MOZE_FEATURE_GAP_SD.md §2.10 Phase 5 —— 對帳記錄列表,按 statement_date
  *  降序(最近的在前)。`computed_balance`/`difference` 由 server 即时算出。 */
 /** docs/PH13_PROJECT_SD.md Phase 13 —— 專案列表,按 sort_order 升序。
- *  `spent`/`remaining`/`progress_pct`/`status` 由 server 即时算出。 */
+ *  `spent`/`remaining`/`progress_pct`/`status` 由 server 即时算出。`tzOffsetMinutes`
+ *  預設用瀏覽器本地時區偏移(JS `-new Date().getTimezoneOffset()`),讓月度週期
+ *  邊界按使用者本地日曆月切,避免 UTC 裸切把本地月初/月底附近的交易歸到錯誤月份。 */
 export async function fetchReadProjects(
   token: string,
   ledgerId: string,
+  tzOffsetMinutes?: number,
 ): Promise<ReadProject[]> {
+  const tz = typeof tzOffsetMinutes === 'number'
+    ? tzOffsetMinutes
+    : (typeof window !== 'undefined' ? -new Date().getTimezoneOffset() : 0)
   return authedGet<ReadProject[]>(
-    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects`,
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects?tz_offset_minutes=${encodeURIComponent(String(tz))}`,
     token,
   )
 }
@@ -343,16 +365,24 @@ export async function fetchReadProjectCategoryBudgets(
 
 /** docs/2026-09-06-project-category-budget-period-switch-design.md §4 ——
  *  專案詳情頁:期間切換 + 統計條 + 分類拆解。`periodOffset` 語意同
- *  `fetchAccountBillingSummary` 的 `cycleOffset`:0=當期,正整數=往回第幾期。 */
+ *  `fetchAccountBillingSummary` 的 `cycleOffset`:0=當期,正整數=往回第幾期。
+ *  `tzOffsetMinutes` 預設用瀏覽器本地時區偏移(同 `fetchReadProjects`),讓月度
+ *  週期邊界按使用者本地日曆月切,跟一般分類明細/analytics 的月份邊界對齊。 */
 export async function fetchReadProjectBreakdown(
   token: string,
   ledgerId: string,
   projectId: string,
   periodOffset = 0,
+  tzOffsetMinutes?: number,
 ): Promise<ReadProjectBreakdown> {
-  const qs = periodOffset ? `?period_offset=${encodeURIComponent(String(periodOffset))}` : ''
+  const tz = typeof tzOffsetMinutes === 'number'
+    ? tzOffsetMinutes
+    : (typeof window !== 'undefined' ? -new Date().getTimezoneOffset() : 0)
+  const params = new URLSearchParams()
+  if (periodOffset) params.set('period_offset', String(periodOffset))
+  params.set('tz_offset_minutes', String(tz))
   return authedGet<ReadProjectBreakdown>(
-    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/breakdown${qs}`,
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/projects/${encodeURIComponent(projectId)}/breakdown?${params.toString()}`,
     token,
   )
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import type {
+  AccountBillingPeriodOption,
   AccountBillingSummary,
   AccountInterestFreeSuggestion,
   InstallmentInterestPeriod,
@@ -17,6 +18,7 @@ import {
   createCategory,
   createInstallmentPlan,
   createTransaction,
+  fetchAccountBillingPeriods,
   fetchAccountBillingSummary,
   fetchAccountInterestFreeSuggestion,
   fetchWorkspaceAccounts,
@@ -139,6 +141,12 @@ function useAccountBilling(
   const [suggestion, setSuggestion] = useState<AccountInterestFreeSuggestion | null>(null)
   const [loading, setLoading] = useState(false)
   const [available, setAvailable] = useState(false)
+  // 「選擇區間」清單(2026-09-06,對齊 mobile app 同名功能):跟 summary/
+  // suggestion 不同,不需要每次 cycleOffset 改變就重新抓——清單本身只跟
+  // 「今天」+「最早一筆交易在哪」有關,不受目前瀏覽到哪一期影響,所以改成
+  // 點開彈窗時才拉(loadPeriodOptions),不放進上面那個 useEffect。
+  const [periodOptions, setPeriodOptions] = useState<AccountBillingPeriodOption[]>([])
+  const [periodOptionsLoading, setPeriodOptionsLoading] = useState(false)
   // 帳單週期瀏覽(§2.9 補強,2026-08-02):0 = 最近一次已結束的週期,負數 =
   // 更早的歷史週期,+1 = 目前還在累積中的那期。切換帳戶時歸零,不沿用上一
   // 張卡瀏覽到的期數。
@@ -200,6 +208,17 @@ function useAccountBilling(
       .catch(() => {})
   }, [canViewBilling, token, activeLedgerId, billingAccountId, cycleOffset])
 
+  // 點開「選擇區間」清單彈窗時才拉一次(不快取跨帳戶——切換帳戶後
+  // billingAccountId 變了,呼叫端每次開彈窗都會重新拉,天然拿到最新資料)。
+  const loadPeriodOptions = useCallback(() => {
+    if (!canViewBilling || !token || !activeLedgerId || !billingAccountId) return
+    setPeriodOptionsLoading(true)
+    fetchAccountBillingPeriods(token, activeLedgerId, billingAccountId)
+      .then((res) => setPeriodOptions(res.periods))
+      .catch(() => setPeriodOptions([]))
+      .finally(() => setPeriodOptionsLoading(false))
+  }, [canViewBilling, token, activeLedgerId, billingAccountId])
+
   // 2026-08-07 使用者反饋(§2.9.6 Phase 7):子卡自己的詳情頁不該顯示整組
   // 合併金額(其它子卡/主帳戶的消費會混進來看到)。查詢仍然只能用主帳戶的
   // billingAccountId(後端 is_billing_root 限制,子卡自己過不了這個檢查),
@@ -221,6 +240,9 @@ function useAccountBilling(
     cycleOffset,
     setCycleOffset,
     reload,
+    periodOptions,
+    periodOptionsLoading,
+    loadPeriodOptions,
   }
 }
 
@@ -251,6 +273,13 @@ export function AccountDetailDialog({
   // AccountStatsHeader)跟頭部新增的週期選擇器(見 DialogHeader)都需要
   // 同一份資料,以前只有 CreditCardBillingSection 自己知道。
   const billing = useAccountBilling(account, token, activeLedgerId)
+  // 「選擇區間」清單彈窗(2026-09-06,對齊 mobile app 同名功能 + 比照
+  // `ProjectDetailDialog` 同款 UI):切換帳戶時關閉,不沿用上一張卡的展開
+  // 狀態。
+  const [periodPickerOpen, setPeriodPickerOpen] = useState(false)
+  useEffect(() => {
+    setPeriodPickerOpen(false)
+  }, [account?.id])
 
   useEffect(() => {
     if (!billing.canViewBilling || !billing.summary) {
@@ -287,7 +316,7 @@ export function AccountDetailDialog({
               當前帳本 切換之間,尺寸比照那顆切換按鈕)。只在 billing-root
               帳戶且帳單資料抓取成功時顯示。 */}
           {billing.canViewBilling && billing.available && billing.summary ? (
-            <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs">
+            <div className="relative inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs">
               <button
                 type="button"
                 disabled={!billing.summary.period_has_older}
@@ -297,9 +326,17 @@ export function AccountDetailDialog({
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-              <span className="whitespace-nowrap px-0.5 font-mono font-medium tabular-nums text-foreground">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !periodPickerOpen
+                  setPeriodPickerOpen(next)
+                  if (next) billing.loadPeriodOptions()
+                }}
+                className="whitespace-nowrap px-0.5 font-mono font-medium tabular-nums text-foreground hover:underline"
+              >
                 {formatDateSlash(billing.summary.period_cycle_start)} – {formatDateSlash(billing.summary.period_cycle_end)}
-              </span>
+              </button>
               <button
                 type="button"
                 disabled={!billing.summary.period_has_newer}
@@ -309,6 +346,35 @@ export function AccountDetailDialog({
               >
                 <ChevronRight className="h-3.5 w-3.5" />
               </button>
+              {/* 「選擇區間」清單(2026-09-06):比照 ProjectDetailDialog 同款
+                  下拉,差別是選項來自 `billing.periodOptions`(後端依實際
+                  交易資料算出的範圍),不是前端寫死一個固定長度的清單。 */}
+              {periodPickerOpen ? (
+                <div className="absolute right-0 top-full z-20 mt-1 max-h-64 w-40 overflow-y-auto rounded-md border border-border/60 bg-popover p-1 shadow-md">
+                  {billing.periodOptionsLoading ? (
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">{t('cardBilling.loading')}</div>
+                  ) : (
+                    billing.periodOptions.map((opt) => (
+                      <button
+                        key={opt.offset}
+                        type="button"
+                        onClick={() => {
+                          billing.setCycleOffset(opt.offset)
+                          setPeriodPickerOpen(false)
+                        }}
+                        className={[
+                          'block w-full rounded px-2 py-1 text-left text-xs tabular-nums',
+                          opt.offset === billing.cycleOffset
+                            ? 'bg-primary/10 font-medium text-primary'
+                            : 'hover:bg-accent/40',
+                        ].join(' ')}
+                      >
+                        {formatDateSlash(opt.cycle_start)} – {formatDateSlash(opt.cycle_end)}
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
             </div>
           ) : null}
           <DetailScopeToggle value={scope} onChange={onScopeChange} className="shrink-0" />
