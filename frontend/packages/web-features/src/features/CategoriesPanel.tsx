@@ -356,6 +356,7 @@ function CategoriesCardBody({
                       <ManageCategoryCell
                         key={parent.id}
                         category={parent}
+                        allRows={rows}
                         renderIcon={renderIcon}
                         count={txCountById[parent.id] ?? 0}
                         countUnit={countUnit}
@@ -386,6 +387,7 @@ function CategoriesCardBody({
                         <ManageCategoryCell
                           key={child.id}
                           category={child}
+                          allRows={rows}
                           renderIcon={renderIcon}
                           count={txCountById[child.id] ?? 0}
                           countUnit={countUnit}
