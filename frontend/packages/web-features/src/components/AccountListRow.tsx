@@ -105,10 +105,19 @@ export function buildAccountChildrenMap(groups: AssetGroup[]): {
   childrenByParent: Map<string, ReadAccount[]>
   childIds: Set<string>
 } {
+  // 2026-09-06 使用者反饋:候選清單裡的父帳戶列有時會因為其它理由被抽掉
+  // (例如繳費對話框的付款帳戶清單,一定會先排除「正在被繳款的那個
+  // account_group 自己」——不可能拿群組本身當繳費來源)。這種情況下,單純
+  // 看 `parent_account_id` 有沒有值來判斷「是子帳戶」是不夠的:父列不在
+  // 清單裡,底下這些子帳戶就沒有巢狀父列可以掛,原本的寫法會把它們直接
+  // 判定成 childIds 而從 topLevelRows 濾掉,整批孤兒消失、不會退回跟其它
+  // 同類型帳戶並列顯示。改成只有「父帳戶列真的也在這份候選清單裡」才算
+  // 巢狀子帳戶,不然當普通頂層列處理。
+  const rowIds = new Set(groups.flatMap((group) => group.rows.map((row) => row.id)))
   const childrenByParent = new Map<string, ReadAccount[]>()
   for (const group of groups) {
     for (const row of group.rows) {
-      if (!row.parent_account_id) continue
+      if (!row.parent_account_id || !rowIds.has(row.parent_account_id)) continue
       const arr = childrenByParent.get(row.parent_account_id)
       if (arr) arr.push(row)
       else childrenByParent.set(row.parent_account_id, [row])

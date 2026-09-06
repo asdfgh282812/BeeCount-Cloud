@@ -308,6 +308,30 @@ async def card_payment_ep(
     )
     if from_account_name is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="from_account_id not found")
+    # 跨幣別繳費(2026-09-06 使用者反饋):這個端點的 `req.amount`/分攤金額
+    # 全部是卡片/群組自己幣別的數字,不像一般轉帳有 `to_amount` 做換算,直接
+    # 寫進去只會讓來源帳戶被扣一筆「同數字但錯幣別」的金額,且不會有任何
+    # 錯誤訊息或匯率提示——比照 App 端 `CreditCardGroupPaymentPage` 明確
+    # 排除跨幣別(付款來源帳戶選擇器篩同幣別),这裡直接擋在後端(不能只靠
+    # 前端 UI 篩選,行動端/其它呼叫者都可能繞過)。
+    from_account_currency = db.scalar(
+        select(UserAccountProjection.currency).where(
+            UserAccountProjection.user_id == current_user.id,
+            UserAccountProjection.sync_id == req.from_account_id,
+        )
+    )
+    if (
+        from_account_currency
+        and group.currency
+        and from_account_currency != group.currency
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "from_account_id currency does not match the card's currency; "
+                "cross-currency card payment is not supported"
+            ),
+        )
 
     now = req.happened_at or _utcnow()
     if now.tzinfo is None:

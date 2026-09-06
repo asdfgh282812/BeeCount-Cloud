@@ -16,6 +16,7 @@ import {
   cardPayment,
   createCategory,
   createInstallmentPlan,
+  createTransaction,
   fetchAccountBillingSummary,
   fetchAccountInterestFreeSuggestion,
   fetchWorkspaceAccounts,
@@ -840,7 +841,14 @@ function CreditCardBillingSection({
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
   const openPayDialog = () => {
-    setPayAmount(summary.remaining_due > 0 ? String(summary.remaining_due) : '')
+    // 2026-09-06 使用者反饋:子卡自己詳情頁點繳費,預設金額該用這張卡自己的
+    // 應繳(`ownMember.remaining_due`),不是整組合併帳單的應繳——不然繳款
+    // 送出去(見下面 submitPayment)會誤導使用者以為在還自己這張卡,金額卻
+    // 是整組的。
+    const defaultDue = billing.isBillingChild && billing.ownMember
+      ? billing.ownMember.remaining_due
+      : summary.remaining_due
+    setPayAmount(defaultDue > 0 ? String(defaultDue) : '')
     let remembered = ''
     if (payAccountStorageKey) {
       try {
@@ -855,14 +863,23 @@ function CreditCardBillingSection({
       fetchWorkspaceAccounts(token, { limit: 500 })
         .then((accts) => {
           // 付款來源不能是實際被繳款的那個帳戶(billingAccountId,子卡時是
-          // 它掛靠的主帳戶而不是子卡自己)、也不能是正在瀏覽的這張子卡自己
-          // 、也不能是任何 account_group(§2.9 Phase 4:群組沒有自己的資金,
-          // 不能拿來當繳費來源,對齊後端 `_assert_account_not_group` 校驗)。
+          // 它掛靠的主帳戶而不是子卡自己)、也不能是正在瀏覽的這張子卡自己。
+          // 幣別必須跟這張卡一致(2026-09-06 使用者反饋:這個繳費對話框的
+          // 金額欄位沒有匯率換算,不像一般轉帳有 `to_amount`——比照 App 端
+          // `CreditCardGroupPaymentPage` 明確排除跨幣別,篩掉幣別不同的帳戶,
+          // 避免使用者選了不同幣別的來源卻沒發現金額沒換算)。
+          // 注意:不能把 `account_group` 整批濾掉——`AccountPickerDialog`
+          // 需要清單裡留著群組列才能正確把掛靠它的子帳戶巢狀渲染在底下
+          // (見 `AccountPickerDialog.tsx::buildAccountChildrenMap`,群組列
+          // 一旦被抽掉,底下子帳戶會因為 `childIds` 誤判成孤兒而整個消失,
+          // 不會回退跟其它同類型帳戶並列)——選不到群組本身這件事已經由
+          // `AccountPickerDialog` 自己的 `handleSelect` 擋掉,對齊
+          // `TransactionsPanel.tsx::pickerAccountRows` 的既有用法。
           const filtered = accts.filter(
             (a) =>
               a.id !== account.id &&
               a.id !== billing.billingAccountId &&
-              a.account_type !== 'account_group',
+              a.currency === account.currency,
           )
           setPayAccounts(filtered)
           // 上次記住的帳戶如果已經不在候選清單裡(刪除/隱藏),放棄這個殘留值。
@@ -880,12 +897,32 @@ function CreditCardBillingSection({
     if (!Number.isFinite(amount) || amount <= 0 || !payFromAccountId) return
     setPaying(true)
     try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        cardPayment(token, activeLedgerId, billing.billingAccountId!, base, {
-          amount,
-          from_account_id: payFromAccountId,
-        }),
-      )
+      const fromAccountName = payAccounts.find((a) => a.id === payFromAccountId)?.name || ''
+      if (billing.isBillingChild) {
+        // 2026-09-06 使用者反饋:子卡自己詳情頁點繳費,伺服器不該把這筆錢
+        // 拿去跑群組分攤(`cardPayment` 會依各子卡應繳比例攤給群組底下
+        // *所有*子卡,不是只還這張卡)——比照 App 端 `_onAddPaymentRecord`
+        // 在 `children.isEmpty`(打開的是子卡自己,不是有掛靠子帳戶的主
+        // 帳戶)時的行為,改成一筆單純轉帳直接記在這張卡自己身上。
+        await retryOnConflict(activeLedgerId, (base) =>
+          createTransaction(token, activeLedgerId, base, {
+            tx_type: 'transfer',
+            amount,
+            happened_at: new Date().toISOString(),
+            from_account_id: payFromAccountId,
+            from_account_name: fromAccountName,
+            to_account_id: account.id,
+            to_account_name: account.name,
+          }),
+        )
+      } else {
+        await retryOnConflict(activeLedgerId, (base) =>
+          cardPayment(token, activeLedgerId, billing.billingAccountId!, base, {
+            amount,
+            from_account_id: payFromAccountId,
+          }),
+        )
+      }
       if (payAccountStorageKey) {
         try {
           window.localStorage.setItem(payAccountStorageKey, payFromAccountId)
