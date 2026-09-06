@@ -219,19 +219,49 @@ export function ProjectDetailDialog({ project, onClose, categories, currency, ic
                     {unsetExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                   </button>
                   {unsetExpanded ? (
-                    <div className="mt-1 space-y-1">
+                    <div className="mt-1 space-y-1.5">
                       {breakdown.unset_categories.map((cat) => {
                         const c = categories.find((x) => x.id === cat.category_id)
+                        const expanded = expandedCategoryId === cat.category_id
+                        const rows = txByCategory[cat.category_id]
                         return (
-                          <div key={cat.category_id} className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-                            <CategoryIcon
-                              icon={c?.icon}
-                              iconType={c?.icon_type || 'material'}
-                              iconCloudFileId={c?.icon_cloud_file_id}
-                              iconPreviewUrlByFileId={iconPreviewUrlByFileId}
-                              size={14}
-                            />
-                            <span className="truncate">{c?.name || cat.category_id}</span>
+                          <div key={cat.category_id} className="rounded-md border border-border/40 bg-card">
+                            <button
+                              type="button"
+                              onClick={() => toggleCategory(cat.category_id)}
+                              className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+                            >
+                              <CategoryIcon
+                                icon={c?.icon}
+                                iconType={c?.icon_type || 'material'}
+                                iconCloudFileId={c?.icon_cloud_file_id}
+                                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                                size={14}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-xs">{c?.name || cat.category_id}</span>
+                              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                {t('overview.summary.txCount', { count: cat.count })}
+                              </span>
+                              <span className="shrink-0">
+                                <Amount value={cat.spent} currency={currency} size="sm" bold tone="default" />
+                              </span>
+                            </button>
+                            {expanded ? (
+                              <div className="border-t border-border/40">
+                                {rows === undefined ? (
+                                  <p className="px-3 py-2 text-center text-xs text-muted-foreground">{t('common.loading')}</p>
+                                ) : (
+                                  <TransactionList
+                                    items={rows}
+                                    categories={categories as WorkspaceCategory[]}
+                                    iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                                    variant="compact"
+                                    canManage={false}
+                                    emptyTitle={t('projects.detail.transactions.empty')}
+                                  />
+                                )}
+                              </div>
+                            ) : null}
                           </div>
                         )
                       })}

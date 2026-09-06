@@ -1898,14 +1898,18 @@ def list_debts(
 
 def _project_period_range(
     period_type: str, period_start, period_end, now: datetime, offset: int = 0, tz_offset_minutes: int = 0,
+    month_start_day: int = 1,
 ) -> tuple[datetime, datetime] | None:
     """專案(Phase 13)當期/往期起訖窗口:
     - `fixed`:直接用 period_start/period_end(轉成當天 UTC 零點 ~ 隔天零點,
       含頭尾兩天)。缺欄位時視為無有效窗口(彙總回 0),不拋錯——歷史髒資料
       不該讓整個列表 500。忽略 `offset`(只有單一區間)。
-    - `monthly`/`yearly`:依「使用者本地時區的當下日期」滾動計算(不依賴帳本
-      month_start_day,專案沒有自己的 start_day 欄位,固定用本地日曆月/年 1 號
-      起算),`offset` 往回推算第幾期(0=當期,1=上一期...),供 §4 期間切換使用。
+    - `monthly`:比照預算週期(`_current_period_range`)跟隨帳本
+      `month_start_day` 滾動計算(2026-09-07 修正:專案原本固定用日曆月 1
+      號起算,跟帳本自訂記帳週期起始日對不上,使用者手動設定的月結日在專案
+      頁面上完全被忽略),`offset` 往回推算第幾期(0=當期,1=上一期...),供
+      §4 期間切換使用。
+    - `yearly`:仍固定用本地日曆年 1 號起算(帳本沒有自訂的年週期起始設定)。
       `tz_offset_minutes` 跟 `_analytics_range`/`_bucket_key` 同慣例(JS
       `-new Date().getTimezoneOffset()`,CST 傳 +480):先在本地時區切邊界,
       再轉回 UTC 給 SQL 用,避免 UTC 裸切把本地月初/月底附近的交易歸到錯誤
@@ -1927,17 +1931,23 @@ def _project_period_range(
         )
         end_local = start_local.replace(year=start_local.year + 1)
         return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
-    # monthly(默认兜底):把「年*12+月」换成一个连续整数再减 offset,避免月份
-    # 借位要手写進位判斷。
-    month_index = local_now.year * 12 + (local_now.month - 1) - offset
+    # monthly(默认兜底):跟 `_current_period_range` 同款演算法,把「年*12+月」
+    # 换成一个连续整数再减 offset,避免月份借位要手写進位判斷;錨點日改用
+    # 帳本 month_start_day(邊界收斂到 [1, 28],避免 29/30/31 在 2 月翻车)。
+    anchor_day = max(1, min(28, month_start_day or 1))
+    if local_now.day >= anchor_day:
+        base_index = local_now.year * 12 + (local_now.month - 1)
+    else:
+        base_index = local_now.year * 12 + (local_now.month - 1) - 1
+    month_index = base_index - offset
     anchor_year, anchor_month0 = divmod(month_index, 12)
     start_local = local_now.replace(
-        year=anchor_year, month=anchor_month0 + 1, day=1, hour=0, minute=0, second=0, microsecond=0
+        year=anchor_year, month=anchor_month0 + 1, day=anchor_day, hour=0, minute=0, second=0, microsecond=0
     )
     if start_local.month == 12:
-        end_local = start_local.replace(year=start_local.year + 1, month=1)
+        end_local = start_local.replace(year=start_local.year + 1, month=1, day=anchor_day)
     else:
-        end_local = start_local.replace(month=start_local.month + 1)
+        end_local = start_local.replace(month=start_local.month + 1, day=anchor_day)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
@@ -1977,6 +1987,7 @@ def list_projects(
         window = _project_period_range(
             row.period_type or "monthly", row.period_start, row.period_end, now,
             tz_offset_minutes=tz_offset_minutes,
+            month_start_day=ledger.month_start_day or 1,
         )
         spent = 0.0
         if window is not None:
@@ -2129,6 +2140,7 @@ def get_project_breakdown(
     window = _project_period_range(
         period_type, project.period_start, project.period_end, now, effective_offset,
         tz_offset_minutes=tz_offset_minutes,
+        month_start_day=ledger.month_start_day or 1,
     )
     if window is None:
         start = end = now
@@ -2211,20 +2223,12 @@ def get_project_breakdown(
             allocated_total += target
     unallocated_amount = (effective_budget - allocated_total) if effective_budget is not None else None
 
-    # 分類全集:使用者所有一級消費分類 + 這個專案已設定分配的分類(理論上恆為
-    # 消費分類,但配置端沒擋 kind,兩者聯集避免漏掉邊界情況)。
-    expense_category_ids = list(db.scalars(
-        select(UserCategoryProjection.sync_id).where(
-            UserCategoryProjection.user_id == ledger.user_id,
-            UserCategoryProjection.level == 1,
-            UserCategoryProjection.kind == "expense",
-        ).order_by(UserCategoryProjection.sort_order.asc(), UserCategoryProjection.sync_id.asc())
-    ).all())
-    category_universe = list(dict.fromkeys([*expense_category_ids, *budget_by_category.keys()]))
-
     # 這期各分類花費(跟 spent 同一組過濾條件:exclude_from_budget)。拆帳
     # (has_splits)父行 category_sync_id 是 NULL,group by 天然跳過,這次不做
-    # 拆帳折算(見計畫「明確不做的部分」)。
+    # 拆帳折算(見計畫「明確不做的部分」)。直接依交易自己的 category_sync_id
+    # 分組,不論該分類是一級或二級(比照 mobile
+    # `getProjectCategoryBreakdown`「依交易自己的 category_id 分組」的口徑,
+    # 不做子分類 -> 父分類上卷)。
     spend_rows = db.execute(
         select(
             ReadTxProjection.category_sync_id,
@@ -2241,6 +2245,23 @@ def get_project_breakdown(
         ).group_by(ReadTxProjection.category_sync_id)
     ).all()
     spend_by_category = {row[0]: (abs(float(row[1] or 0.0)), int(row[2] or 0)) for row in spend_rows}
+
+    # 分類全集:使用者所有一級消費分類(給「未設定預算」列出從沒使用過的分類
+    # 用) + 這個專案已設定分配的分類 + 這期實際有交易的分類(可能是二級子
+    # 分類——分類子預算設計雖然只做到一級`docs/2026-09-06-project-category-
+    # budget-period-switch-design.md §3.2/§11`,但拆解統計不能因此漏掉二級
+    # 分類的交易,否則那筆交易連在畫面上都看不到,見「專案詳情頁看不到二級
+    # 分類交易」修正)。
+    expense_category_ids = list(db.scalars(
+        select(UserCategoryProjection.sync_id).where(
+            UserCategoryProjection.user_id == ledger.user_id,
+            UserCategoryProjection.level == 1,
+            UserCategoryProjection.kind == "expense",
+        ).order_by(UserCategoryProjection.sort_order.asc(), UserCategoryProjection.sync_id.asc())
+    ).all())
+    category_universe = list(dict.fromkeys([
+        *expense_category_ids, *budget_by_category.keys(), *spend_by_category.keys(),
+    ]))
 
     allocated_categories: list[ReadProjectBreakdownCategoryOut] = []
     unallocated_categories: list[ReadProjectBreakdownCategoryOut] = []
