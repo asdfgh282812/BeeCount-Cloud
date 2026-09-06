@@ -801,6 +801,88 @@ def test_billing_summary_converts_foreign_currency_child_payment_to_ledger_curre
         app.dependency_overrides.clear()
 
 
+def test_billing_summary_settled_foreign_child_does_not_leak_fx_residual_into_remaining_due():
+    """2026-09-07 使用者反饋:上面兩個 `..._converts_foreign_currency_..._`
+    測試修的是「原始金額 vs 折算金額」的 bug——這個測試修的是折算金額本身
+    在「已經用該子卡自己幣別結清」時會出現的另一個 bug。
+
+    日圓子卡在自己的幣別下淨額剛好結清(消費 99387 日圓、繳款也是 99387
+    日圓),但消費當下折算成台幣的 `nativeAmount`(21200)跟繳款當下折算成
+    台幣的 `nativeAmount`(21100)不會完全一樣——兩邊獨立折算後相減,會殘留
+    一筆 100 元的匯差。修法之前,這筆匯差會被誤當成「這張已結清的日圓子卡
+    還欠群組 100 元」,疊加進合併群組的 `remaining_due`,讓總額比只看台幣
+    子卡真正欠的金額(4657)還多。
+
+    `compute_group_billing` 應該先用每個子帳戶自己的幣別(`amount`/
+    `to_amount`,不折算)算淨額,已結清(`abs(...) <= 0.005`)的子帳戶不該
+    貢獻任何折算殘值。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccbfx3@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccbfx3@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lgfx3", "ledger", "lgfx3",
+              {"syncId": "lgfx3", "ledgerName": "台幣帳本", "currency": "TWD"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        yesterday = now.date() - timedelta(days=1)
+        billing_day = yesterday.day
+        payment_due_day = 20
+        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        _push(client, hdr_app, "lgfx3", "account", "acc-group3",
+              {"syncId": "acc-group3", "name": "玉山信用卡", "type": "account_group", "currency": "TWD",
+               "billingDay": billing_day, "paymentDueDay": payment_due_day, "creditLimit": 100000.0},
+              device_id="d-app")
+        _push(client, hdr_app, "lgfx3", "account", "acc-twd3",
+              {"syncId": "acc-twd3", "name": "台幣子卡", "type": "credit_card", "currency": "TWD",
+               "parentAccountId": "acc-group3"}, device_id="d-app")
+        _push(client, hdr_app, "lgfx3", "account", "acc-jpy3",
+              {"syncId": "acc-jpy3", "name": "日圓子卡", "type": "credit_card", "currency": "JPY",
+               "parentAccountId": "acc-group3"}, device_id="d-app")
+        _push(client, hdr_app, "lgfx3", "account", "acc-jpy3-cash",
+              {"syncId": "acc-jpy3-cash", "name": "日幣現金", "type": "cash", "currency": "JPY"},
+              device_id="d-app")
+
+        # 台幣子卡:單純消費 4657、未繳款,這是唯一真正還欠的金額。
+        _push(client, hdr_app, "lgfx3", "transaction", "tx-twd3",
+              {"syncId": "tx-twd3", "type": "expense", "amount": 4657.0,
+               "happenedAt": _dt(cycle_start + timedelta(days=1)),
+               "accountId": "acc-twd3", "accountName": "台幣子卡"}, device_id="d-app")
+
+        # 日圓子卡:消費當下匯率折算 nativeAmount=21200。
+        _push(client, hdr_app, "lgfx3", "transaction", "tx-jpy3",
+              {"syncId": "tx-jpy3", "type": "expense", "amount": 99387.0,
+               "currencyCode": "JPY", "nativeAmount": 21200.0,
+               "happenedAt": _dt(cycle_start + timedelta(days=1)),
+               "accountId": "acc-jpy3", "accountName": "日圓子卡"}, device_id="d-app")
+        # 用同幣別(JPY→JPY)把日圓子卡全額繳清:原幣一樣是 99387,但繳款
+        # 當下匯率已經跌到 nativeAmount=21100——同一筆錢,兩次獨立折算的
+        # 帳本本位幣快照不會剛好相等,這就是匯差殘值的來源。
+        _push(client, hdr_app, "lgfx3", "transaction", "tx-pay-jpy3",
+              {"syncId": "tx-pay-jpy3", "type": "transfer", "amount": 99387.0,
+               "currencyCode": "JPY", "nativeAmount": 21100.0,
+               "happenedAt": _dt(cycle_start + timedelta(days=2)),
+               "fromAccountId": "acc-jpy3-cash", "fromAccountName": "日幣現金",
+               "toAccountId": "acc-jpy3", "toAccountName": "日圓子卡"}, device_id="d-app")
+
+        r = client.get(
+            "/api/v1/read/ledgers/lgfx3/accounts/acc-group3/billing-summary", headers=hdr_web,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # 日圓子卡已經用自己的幣別結清,不該貢獻任何匯差殘值——剩餘帳款只剩
+        # 台幣子卡真正欠的 4657,不是 4657 + 100 的殘值。
+        assert data["remaining_due"] == 4657.0
+        members_by_id = {m["account_id"]: m for m in data["members"]}
+        assert members_by_id["acc-jpy3"]["remaining_due"] == 0.0
+        assert members_by_id["acc-twd3"]["remaining_due"] == 4657.0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_billing_summary_period_installment_summary_field():
     """帳戶詳情彈窗「帳單分期」欄位(2026-08-04 使用者反饋補上):建立一個
     進行中的分期計畫後,billing-summary 應該回報 active_count=1 + 已到期

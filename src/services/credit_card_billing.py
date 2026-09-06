@@ -290,18 +290,73 @@ def compute_group_billing(
             ).group_by(ReadTxProjection.to_account_sync_id)
         ).all()
         per_child_lifetime_paid = {acc: float(amt) for acc, amt in paid_rows}
+
+        # 合併帳單群組多幣別淨額換算修正(2026-09-07 使用者反饋,跟 App 端
+        # `credit_card_billing_providers.dart::creditCardDueByChildAsOf` 同一個
+        # 根因/同一套修法):上面的 `per_child_lifetime_charged`/
+        # `per_child_lifetime_paid` 都是「每筆交易各自折算成帳本本位幣再加總」
+        # ——對於一張已經用自己幣別淨額結清的外幣子卡,消費當下的匯率跟繳款
+        # 當下的匯率不會完全一樣,兩邊各自折算後相減會殘留一筆匯差,被誤當成
+        # 「這張已結清的子卡還欠群組一筆錢」疊加進 `remaining_due`/
+        # `per_child_remaining_due`。修法:先用每個子帳戶**自己的幣別**(`amount`/
+        # `to_amount`,不折算)算淨額,結清(含些微溢繳,`abs(...) <= 0.005`)的
+        # 直接當 0,徹底避開匯差殘值;只有真的還沒結清的子帳戶,才用上面已經
+        # 折算過帳本本位幣的 charged/paid 相減。
+        native_charged_rows = db.execute(
+            select(
+                ReadTxProjection.account_sync_id,
+                func.coalesce(func.sum(sa_case(
+                    (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                    (ReadTxProjection.tx_type == "income", -ReadTxProjection.amount),
+                    else_=0.0,
+                )), 0.0),
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.account_sync_id.in_(member_ids),
+                ReadTxProjection.tx_type.in_(["expense", "income"]),
+                _ATTR_DATE <= cycle_end_query_dt,
+            ).group_by(ReadTxProjection.account_sync_id)
+        ).all()
+        per_child_native_charged = {acc: float(amt) for acc, amt in native_charged_rows}
+
+        native_paid_rows = db.execute(
+            select(
+                ReadTxProjection.to_account_sync_id,
+                func.coalesce(func.sum(func.coalesce(
+                    ReadTxProjection.to_amount, ReadTxProjection.amount,
+                )), 0.0),
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.to_account_sync_id.in_(member_ids),
+                ReadTxProjection.tx_type == "transfer",
+            ).group_by(ReadTxProjection.to_account_sync_id)
+        ).all()
+        per_child_native_paid = {acc: float(amt) for acc, amt in native_paid_rows}
     else:
         lifetime_charged_total_raw = 0.0
+        per_child_native_charged = {}
+        per_child_native_paid = {}
 
     statement_amount = sum(per_child_cycle_spend.values())
-    lifetime_charged_total = sum(per_child_lifetime_charged.values())
     lifetime_paid_total = sum(per_child_lifetime_paid.values())
-    remaining_due = lifetime_charged_total - lifetime_paid_total
     credit_used = lifetime_charged_total_raw - lifetime_paid_total
 
+    per_child_remaining_due_signed: dict[str, float] = {}
+    for cid in member_ids:
+        native_due = (
+            per_child_native_charged.get(cid, 0.0)
+            - offset_totals.get(cid, 0.0)
+            - per_child_native_paid.get(cid, 0.0)
+        )
+        if abs(native_due) <= 0.005:
+            per_child_remaining_due_signed[cid] = 0.0
+        else:
+            per_child_remaining_due_signed[cid] = (
+                per_child_lifetime_charged.get(cid, 0.0) - per_child_lifetime_paid.get(cid, 0.0)
+            )
+    remaining_due = sum(per_child_remaining_due_signed.values())
     per_child_remaining_due = {
-        cid: max(per_child_lifetime_charged.get(cid, 0.0) - per_child_lifetime_paid.get(cid, 0.0), 0.0)
-        for cid in member_ids
+        cid: max(due, 0.0) for cid, due in per_child_remaining_due_signed.items()
     }
 
     if member_ids:
@@ -444,46 +499,77 @@ def compute_cycle_period_billing(
 
     # 帳單分期沖銷(§2.3,2026-08-02 第三輪):見 compute_offset_totals
     # docstring —— 對所有 cutoff 一律扣掉同一個總額,不分時間視窗。
-    offset_total = sum(compute_offset_totals(db, ledger_id=ledger_id, member_ids=member_ids).values())
+    offset_totals = compute_offset_totals(db, ledger_id=ledger_id, member_ids=member_ids)
 
-    def _charged_as_of(cutoff_dt: datetime) -> float:
+    def _grouped_charged(cutoff_dt: datetime, *, amount_expr) -> dict[str, float]:
         if not member_ids:
-            return 0.0
-        raw = float(db.scalar(
-            select(func.coalesce(func.sum(sa_case(
-                (ReadTxProjection.tx_type == "expense", _NATIVE_AMOUNT),
-                (ReadTxProjection.tx_type == "income", -_NATIVE_AMOUNT),
-                else_=0.0,
-            )), 0.0)).where(
+            return {}
+        rows = db.execute(
+            select(
+                ReadTxProjection.account_sync_id,
+                func.coalesce(func.sum(sa_case(
+                    (ReadTxProjection.tx_type == "expense", amount_expr),
+                    (ReadTxProjection.tx_type == "income", -amount_expr),
+                    else_=0.0,
+                )), 0.0),
+            ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type.in_(["expense", "income"]),
                 _ATTR_DATE <= cutoff_dt,
-            )
-        ) or 0.0)
-        return raw - offset_total
+            ).group_by(ReadTxProjection.account_sync_id)
+        ).all()
+        return {acc: float(amt) for acc, amt in rows}
 
-    paid_total = 0.0
-    if member_ids:
-        # member_ids 已经包含 group.sync_id(见 billing_member_ids),不用再
-        # 额外 union 一次。
-        # 跨幣別繳款(2026-09-06 使用者反饋):跟 `_charged_as_of`(帳本本位幣
-        # 的 `_NATIVE_AMOUNT`)相減比較用,必須同一個幣別基準——改用
-        # `_NATIVE_AMOUNT`(轉出方換算帳本本位幣後的金額),不是 `to_amount`
-        # (轉入卡片自身幣別的金額,子卡幣別可能跟帳本本位幣不同,直接加總
-        # 會失真,見 `compute_group_billing` 同款修正的完整說明)。
-        paid_total = float(db.scalar(
+    def _grouped_paid(*, amount_expr) -> dict[str, float]:
+        if not member_ids:
+            return {}
+        rows = db.execute(
             select(
-                func.coalesce(func.sum(_NATIVE_AMOUNT), 0.0)
+                ReadTxProjection.to_account_sync_id,
+                func.coalesce(func.sum(amount_expr), 0.0),
             ).where(
                 ReadTxProjection.ledger_id == ledger_id,
                 ReadTxProjection.to_account_sync_id.in_(member_ids),
                 ReadTxProjection.tx_type == "transfer",
-            )
-        ) or 0.0)
+            ).group_by(ReadTxProjection.to_account_sync_id)
+        ).all()
+        return {acc: float(amt) for acc, amt in rows}
 
-    carryover_due = max(_charged_as_of(cycle_start_dt) - paid_total, 0.0)
-    remaining_due = max(_charged_as_of(query_end_dt) - paid_total, 0.0)
+    # 跨幣別繳款(2026-09-06 使用者反饋)+ 合併帳單群組多幣別淨額換算修正
+    # (2026-09-07 使用者反饋,跟 `compute_group_billing`/App 端
+    # `credit_card_billing_providers.dart::creditCardDueByChildAsOf` 同一個
+    # 根因/同一套修法,完整說明見該處文件註解):先用每個成員自己的幣別
+    # (`amount`/`to_amount`,不折算)算淨額,結清(`<= 0.005`)的直接當 0—
+    # 徹底避開「消費/繳款兩次獨立折算帳本本位幣,匯率快照對不齊殘留匯差」
+    # 的問題;只有真的還沒結清的成員,才用折算過帳本本位幣的 `_NATIVE_AMOUNT`
+    # 相減。
+    native_paid = _grouped_paid(
+        amount_expr=func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount),
+    )
+    converted_paid = _grouped_paid(amount_expr=_NATIVE_AMOUNT)
+
+    def _member_due_as_of(cutoff_dt: datetime) -> float:
+        native_charged = _grouped_charged(cutoff_dt, amount_expr=ReadTxProjection.amount)
+        converted_charged = _grouped_charged(cutoff_dt, amount_expr=_NATIVE_AMOUNT)
+        total = 0.0
+        for cid in member_ids:
+            n_due = (
+                native_charged.get(cid, 0.0)
+                - offset_totals.get(cid, 0.0)
+                - native_paid.get(cid, 0.0)
+            )
+            if abs(n_due) <= 0.005:
+                continue
+            total += (
+                converted_charged.get(cid, 0.0)
+                - offset_totals.get(cid, 0.0)
+                - converted_paid.get(cid, 0.0)
+            )
+        return total
+
+    carryover_due = max(_member_due_as_of(cycle_start_dt), 0.0)
+    remaining_due = max(_member_due_as_of(query_end_dt), 0.0)
     total_due = carryover_due + new_spend
     paid_in_cycle = round(total_due - remaining_due, 2)
 
