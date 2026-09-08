@@ -50,6 +50,7 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "card_autopay": (15 * 60, False),
     "card_reward_payout": (5 * 60, False),
     "swipesmart_usage_backfill": (15 * 60, False),
+    "check_latest_app_version": (30 * 60, False),
 }
 
 
@@ -168,6 +169,18 @@ def _run_swipesmart_usage_backfill(db: Session) -> dict:
     return swipesmart_backfill.run_swipesmart_usage_backfill(db)
 
 
+def _run_check_latest_app_version(db: Session) -> dict:
+    """App 端新版本提醒(§3):實際偵測邏輯在 `app_version_check.py`,跟
+    `routers/admin_app_version.py` 的「立即偵測」按鈕共用同一個函式 ——
+    這裡只是包一層讓它出現在通用的排程管理後台(調頻率/停用/查看
+    last_run_at 都走這張表,跟其它 job 一致);偵測結果本身(latest_version /
+    last_checked_at / last_check_error)寫在 `AppVersionCheckConfig` 那張獨立
+    的單例表上,不是這裡的 `ScheduledJobConfig`。"""
+    from . import app_version_check
+
+    return app_version_check.check_latest_app_version(db)
+
+
 # job_key -> (db) -> dict 摘要。`ensure_default_configs` 在每次啟動時自動補齊
 # 這裡新登記、但舊部署 DB 裡還沒有的 job_key 列(見該函式 docstring),所以
 # 新增 job 不需要另外寫 migration seed。
@@ -182,6 +195,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "card_autopay": _run_card_autopay,
     "card_reward_payout": _run_card_reward_payout,
     "swipesmart_usage_backfill": _run_swipesmart_usage_backfill,
+    "check_latest_app_version": _run_check_latest_app_version,
 }
 
 

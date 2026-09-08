@@ -24,7 +24,8 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, swipesmart, write, ws
-from .routers import admin_backup, admin_scheduled_jobs, internal_tasks, mcp_calls, two_factor
+from .routers import admin_app_version, admin_backup, admin_scheduled_jobs, internal_tasks, mcp_calls, two_factor
+from .routers import app_version as app_version_router
 from .routers import ai as ai_router
 from .routers import import_data as import_router
 from .routers import invites as invites_router
@@ -168,6 +169,16 @@ app.include_router(
     admin_scheduled_jobs.router,
     prefix=f"{settings.api_prefix}/admin/scheduled-jobs",
     tags=["admin-scheduled-jobs"],
+)
+app.include_router(
+    admin_app_version.router,
+    prefix=f"{settings.api_prefix}/admin/app-version-config",
+    tags=["admin-app-version"],
+)
+app.include_router(
+    app_version_router.router,
+    prefix=f"{settings.api_prefix}/app-version",
+    tags=["app-version"],
 )
 app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["read"])
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])

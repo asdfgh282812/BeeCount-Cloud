@@ -10,7 +10,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes, require_scopes
 from ..models import Device, RefreshToken, User
-from ..schemas import DeviceOut
+from ..schemas import DeviceOut, DeviceVersionReportIn
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE
 
 router = APIRouter()
@@ -122,3 +122,27 @@ def revoke_device(
 
     db.commit()
     return {"ok": True, "device_id": device_id}
+
+
+@router.post("/{device_id}/report-version")
+def report_device_version(
+    device_id: str,
+    payload: DeviceVersionReportIn,
+    _scopes: set[str] = Depends(_DEVICE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """App 端偵測到自己的版本跟上次回報的不一樣時呼叫,補足 login/register/sso
+    只在登入當下寫 app_version 的缺口 —— 使用者靠 refresh token 續 session 不會
+    重新登入,升級 app 後若不補這一支,devices.app_version 会一直停在上次登入的
+    版本。"""
+    device = db.scalar(
+        select(Device).where(Device.id == device_id, Device.user_id == current_user.id)
+    )
+    if not device:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+
+    device.app_version = payload.app_version
+    device.last_seen_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True, "device_id": device_id, "app_version": device.app_version}

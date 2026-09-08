@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 10
+            assert len(rows) == 11
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 10
+            assert len(rows2) == 11
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 10
+        assert len(rows) == 11
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -412,6 +412,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "card_autopay",
             "card_reward_payout",
             "swipesmart_usage_backfill",
+            "check_latest_app_version",
         }
 
         assert _TEST_SESSION is not None

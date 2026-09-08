@@ -1,4 +1,4 @@
-import { authedDelete, authedGet, authedPatch, authedPost, resolveApiUrl } from './http'
+import { authedDelete, authedGet, authedPatch, authedPost, authedPut, resolveApiUrl } from './http'
 import type {
   AdminBackupArtifact,
   AdminBackupCreateResponse,
@@ -8,6 +8,8 @@ import type {
   AdminLogList,
   AdminOverview,
   AdminSyncErrors,
+  AppVersionCheckNowResult,
+  AppVersionConfig,
   DataCleanupRecord,
   DataCleanupResult,
   DataCleanupScanReport,
@@ -147,6 +149,26 @@ export async function runScheduledJobNow(
     token,
     {},
   )
+}
+
+export async function fetchAppVersionConfig(token: string): Promise<AppVersionConfig> {
+  return authedGet<AppVersionConfig>('/admin/app-version-config', token)
+}
+
+export async function updateAppVersionConfig(
+  token: string,
+  payload: {
+    latest_version?: string
+    nas_webdav_url?: string
+    nas_webdav_user?: string
+    nas_webdav_password?: string
+  },
+): Promise<AppVersionConfig> {
+  return authedPut<AppVersionConfig>('/admin/app-version-config', token, payload)
+}
+
+export async function checkAppVersionNow(token: string): Promise<AppVersionCheckNowResult> {
+  return authedPost<AppVersionCheckNowResult>('/admin/app-version-config/check-now', token, {})
 }
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {

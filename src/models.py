@@ -1511,3 +1511,32 @@ class ScheduledJobConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class AppVersionCheckConfig(Base):
+    """App 端新版本提醒(docs/superpowers/specs/2026-09-08-app-update-reminder-design.md)。
+
+    單例表,固定 `id=1`(比照 `ExchangeRateCache` 的單行寫法,但這裡連
+    base_currency 這種天然 key 都沒有,索性用整數 PK 固定為 1)。
+    `latest_version` 是公開端點 `/app-version/latest` 讀取的來源,由
+    `services/scheduled_jobs.py` 的 `check_latest_app_version` job 定期從
+    `nas_webdav_url` 偵測寫入,管理者也可以在後台直接手動改。
+
+    `nas_webdav_password` 明文存 DB —— 跟 `BackupRemote` 的 rclone 密碼欄位
+    同款考量:這台 server 本來就是自架、只有管理者能存取,不在這次範圍內
+    加額外加密層。Admin API 讀取時只回傳「是否已設定」的布林值,不回顯明文
+    (見 `routers/admin_app_version.py`)。
+    """
+
+    __tablename__ = "app_version_check_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    latest_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    nas_webdav_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    nas_webdav_user: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    nas_webdav_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_check_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

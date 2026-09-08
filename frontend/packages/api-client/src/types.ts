@@ -614,6 +614,22 @@ export type ScheduledJobRunNowResult = {
   next_run_at?: string | null
 }
 
+export type AppVersionConfig = {
+  latest_version: string | null
+  nas_webdav_url: string | null
+  nas_webdav_user: string | null
+  nas_webdav_password_set: boolean
+  last_checked_at: string | null
+  last_check_error: string | null
+}
+
+export type AppVersionCheckNowResult = {
+  status: string
+  latest_version: string | null
+  last_checked_at: string | null
+  last_check_error: string | null
+}
+
 export type AdminSyncErrorItem = {
   id: number
   action: string

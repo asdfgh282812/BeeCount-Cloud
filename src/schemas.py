@@ -223,6 +223,10 @@ class DeviceOut(BaseModel):
     session_count: int = 1
 
 
+class DeviceVersionReportIn(BaseModel):
+    app_version: str = Field(min_length=1, max_length=64)
+
+
 class SyncChangeIn(BaseModel):
     # user-global change(category/account/tag)在新协议下不依附 ledger,这里
     # 允许 None。老 mobile 会发当前 ledger_id —— server 按 entity_type 强制
@@ -2416,6 +2420,37 @@ class ScheduledJobRunNowOut(BaseModel):
     summary: dict
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
+
+
+class AppVersionCheckConfigOut(BaseModel):
+    latest_version: str | None = None
+    nas_webdav_url: str | None = None
+    nas_webdav_user: str | None = None
+    # 密碼欄位不回傳明文,只回傳「是否已設定」,避免在網路上明文往返。
+    nas_webdav_password_set: bool = False
+    last_checked_at: datetime | None = None
+    last_check_error: str | None = None
+
+
+class AppVersionCheckConfigUpdateRequest(BaseModel):
+    latest_version: str | None = None
+    nas_webdav_url: str | None = None
+    nas_webdav_user: str | None = None
+    # 只有明確帶非空字串時才覆蓋既有密碼——前端不會把已設定的密碼明文帶回來,
+    # 留空/不帶這個欄位一律視為「不變更」。
+    nas_webdav_password: str | None = None
+
+
+class AppVersionCheckNowOut(BaseModel):
+    status: str
+    latest_version: str | None = None
+    last_checked_at: datetime | None = None
+    last_check_error: str | None = None
+
+
+class PublicAppVersionOut(BaseModel):
+    version: str | None = None
+    updated_at: datetime | None = None
 
 
 class BackupRunTargetOut(BaseModel):

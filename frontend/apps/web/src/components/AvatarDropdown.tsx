@@ -227,6 +227,13 @@ export function AvatarDropdown({
               >
                 {t('nav.scheduledJobs')}
               </MenuButton>
+              <MenuButton
+                icon={Smartphone}
+                active={currentSection === 'admin-app-version'}
+                onClick={() => onNavigate('admin-app-version')}
+              >
+                {t('nav.appVersion')}
+              </MenuButton>
             </>
           ) : null}
 

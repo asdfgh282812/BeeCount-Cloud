@@ -33,7 +33,8 @@ export const APP_SECTIONS: AppSection[] = [
   'admin-users',
   'admin-backup',
   'admin-data-cleanup',
-  'admin-scheduled-jobs'
+  'admin-scheduled-jobs',
+  'admin-app-version'
 ]
 
 export const DEFAULT_APP_SECTION: AppSection = 'transactions'
@@ -182,6 +183,7 @@ export function parseRoute(pathname: string): AppRoute {
     if (parts[2] === 'backup') return { kind: 'app', ledgerId: '', section: 'admin-backup' }
     if (parts[2] === 'data-cleanup') return { kind: 'app', ledgerId: '', section: 'admin-data-cleanup' }
     if (parts[2] === 'scheduled-jobs') return { kind: 'app', ledgerId: '', section: 'admin-scheduled-jobs' }
+    if (parts[2] === 'app-version') return { kind: 'app', ledgerId: '', section: 'admin-app-version' }
     return { kind: 'app', ledgerId: '', section: DEFAULT_APP_SECTION }
   }
   if (parts[1] === 'settings') {
@@ -266,6 +268,8 @@ export function routePath(route: AppRoute): string {
       return '/app/admin/data-cleanup'
     case 'admin-scheduled-jobs':
       return '/app/admin/scheduled-jobs'
+    case 'admin-app-version':
+      return '/app/admin/app-version'
     case 'import':
       return '/app/import'
   }
