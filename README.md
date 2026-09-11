@@ -3,7 +3,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
 [![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
 
-**[BeeCount(蜜蜂记账)](https://github.com/TNT-Likely/BeeCount) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
+**[BeeCount(蜜蜂記帳)](https://github.com/TNT-Likely/BeeCount) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
 
 ![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
 

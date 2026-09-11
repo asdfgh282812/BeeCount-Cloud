@@ -12,7 +12,7 @@ const CSV_RE = /\.(csv|tsv|xlsx?)$/i
 const IMAGE_RE = /^image\//
 
 /**
- * Share Target / File Handler 的统一着陆页 —— 用户从系统分享菜单选「蜜蜂记账」
+ * Share Target / File Handler 的统一着陆页 —— 用户从系统分享菜单选「蜜蜂記帳」
  * 或双击 CSV 文件,浏览器都会跳到这里。本页本身不渲染业务,只做:
  *   1. 从 sw.js 的 SHARE_CACHE 读 share target 投递的 FormData
  *   2. 从 window.launchQueue 读 file handler 投递的 FileSystemHandle

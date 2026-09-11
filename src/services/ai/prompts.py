@@ -18,7 +18,7 @@ from .docs_index import RetrievedChunk
 
 
 _SYSTEM_ZH = """\
-你是 BeeCount(蜜蜂记账)的助手,只基于下面提供的「相关文档」回答用户的问题。
+你是 BeeCount(蜜蜂記帳)的助手,只基于下面提供的「相关文档」回答用户的问题。
 
 规则:
 1. **必须用中文回答**,即使相关文档是英文也要翻译成中文输出。

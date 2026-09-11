@@ -72,9 +72,9 @@ const zhCN = {
   'nav.group.tools': '工具',
   'nav.group.settings': '设置',
   'nav.group.admin': '管理',
-  'shell.appName': '蜜蜂记账',
+  'shell.appName': '蜜蜂記帳',
   'shell.goHome': '回到首页',
-  'shell.docTitle': '蜜蜂记账 · Web',
+  'shell.docTitle': '蜜蜂記帳 · Web',
   'shell.userDefault': '蜜蜂用户',
   'shell.selectLedgerFirst': '请先在顶部选一个账本。',
 
@@ -2323,11 +2323,11 @@ const zhCN = {
   'pwa.share.imageNotYet': '图片自动识别暂在 mobile 端,网页端请手动记一笔',
   'pwa.update.available': '检测到新版本',
   'pwa.update.apply': '立即更新',
-  'pwa.install.title': '把蜜蜂记账添加到桌面?',
+  'pwa.install.title': '把蜜蜂記帳添加到桌面?',
   'pwa.install.subtitle': '装到 dock / 主屏后可直接打开,支持记一笔等快捷入口',
   'pwa.install.apply': '添加',
   'pwa.install.never': '不再提示',
-  'pwa.install.accepted': '已安装,可在 dock / 主屏找到「蜜蜂记账」',
+  'pwa.install.accepted': '已安装,可在 dock / 主屏找到「蜜蜂記帳」',
 
   // 多币种:主币种设置 / 汇率管理 / 资产折算
   'settings.primaryCurrency': '主币种',

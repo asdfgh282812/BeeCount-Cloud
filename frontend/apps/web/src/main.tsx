@@ -25,7 +25,7 @@ applyDocumentLocale(initialLocale())
 // 启动时立刻 apply primary color，避免 React hydration 前首屏闪烁默认金色。
 applyPrimaryColor(initialPrimaryColor())
 
-// File Handler:订阅 launchQueue,接住「双击 .csv 用蜜蜂记账打开」的文件
+// File Handler:订阅 launchQueue,接住「双击 .csv 用蜜蜂記帳打开」的文件
 setupLaunchQueue()
 
 // PWA install prompt:接住 beforeinstallprompt,延后到 engagement 达标再弹

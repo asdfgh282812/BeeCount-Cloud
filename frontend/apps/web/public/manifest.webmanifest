@@ -1,7 +1,7 @@
 {
   "id": "/?source=pwa",
-  "name": "蜜蜂记账",
-  "short_name": "蜜蜂记账",
+  "name": "蜜蜂記帳",
+  "short_name": "蜜蜂記帳",
   "description": "自部署的个人记账云 · 移动端 / 网页端实时同步",
   "lang": "zh-CN",
   "dir": "ltr",

@@ -91,7 +91,7 @@ class Settings(BaseSettings):
 
     # ===== 2FA(TOTP)=====
     # authenticator app 扫描 QR 后展示的"账号名"前缀。默认 "BeeCount",
-    # 自托管用户可以改成自己的品牌(如 "蜜蜂记账云" / "MyAcme")。
+    # 自托管用户可以改成自己的品牌(如 "蜜蜂記帳云" / "MyAcme")。
     totp_issuer_name: str = Field(default="BeeCount", alias="TOTP_ISSUER_NAME")
     # otpauth URI 上挂的 image= 参数,部分 authenticator app(Microsoft Authenticator
     # 等)会取这个 URL 显示账号 logo。需要是公网可访问的 https PNG/SVG。
