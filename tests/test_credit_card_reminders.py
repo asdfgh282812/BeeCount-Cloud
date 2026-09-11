@@ -93,14 +93,16 @@ def _setup_group_with_debt(client, hdr_app, ledger_id, email, *, billing_day, pa
            "accountId": "acc-card", "accountName": "卡"}, device_id="d-app")
 
 
-def test_statement_closed_reminder_fires_on_billing_day():
+def test_statement_closed_reminder_fires_day_after_billing_day():
     client, TS = _make_client()
     try:
         email = "ccr1@t.com"
         tok = _login(client, email, device_id="d-app", client_type="app")
         hdr_app = {"Authorization": f"Bearer {tok}"}
         now = datetime.now(timezone.utc)
-        billing_day = now.day  # 今天就是結帳日
+        # 結帳日當天銀行才剛結帳,實際帳單隔天才出來 —— 昨天是結帳日,
+        # 今天才是該提醒「帳單已結算」的那天(2026-09-11 使用者反饋)。
+        billing_day = (now.date() - timedelta(days=1)).day
         _setup_group_with_debt(client, hdr_app, "lgr1", email, billing_day=billing_day, payment_due_day=20)
 
         with TS() as db:
@@ -124,8 +126,9 @@ def test_due_soon_and_due_today_reminders():
         hdr_app = {"Authorization": f"Bearer {tok}"}
         now = datetime.now(timezone.utc)
         # 让 payment_due_day 落在 7 天后:billing_day 设成"这个周期已结束",
-        # due_date = cycle_end + N 天,凑成 today + 7。
-        billing_day = (now.date() - timedelta(days=1)).day
+        # due_date = cycle_end + N 天,凑成 today + 7。用 2 天前(不是 1 天前)
+        # 避免撞上 statement_closed 的判斷时机(cycle_end+1 天==昨天,不是今天)。
+        billing_day = (now.date() - timedelta(days=2)).day
         cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
         target_due = now.date() + timedelta(days=7)
         # payment_due_day 用 due_date_for_cycle_end 反推:直接用 target_due.day,
@@ -135,9 +138,21 @@ def test_due_soon_and_due_today_reminders():
         actual_due = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
         assert actual_due == target_due, "test setup: adjust billing_day so due falls exactly 7 days out"
 
-        _setup_group_with_debt(
-            client, hdr_app, "lgr2", email, billing_day=billing_day, payment_due_day=payment_due_day,
-        )
+        # 花費要落在「已結束的那個帳單週期」內(cycle_start~cycle_end),不能用
+        # _setup_group_with_debt 預設的 now-1天(那已經落在 cycle_end 之後、
+        # 還沒結束的當期窗口內了,見上面 billing_day 改成 2 天前的說明)。
+        _push(client, hdr_app, "lgr2", "ledger", "lgr2",
+              {"syncId": "lgr2", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgr2", "account", "acc-group",
+              {"syncId": "acc-group", "name": "主帳戶", "type": "account_group", "currency": "CNY",
+               "billingDay": billing_day, "paymentDueDay": payment_due_day}, device_id="d-app")
+        _push(client, hdr_app, "lgr2", "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "parentAccountId": "acc-group"}, device_id="d-app")
+        _push(client, hdr_app, "lgr2", "transaction", "tx-spend",
+              {"syncId": "tx-spend", "type": "expense", "amount": 100.0,
+               "happenedAt": _iso(datetime.combine(cycle_start, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)),
+               "accountId": "acc-card", "accountName": "卡"}, device_id="d-app")
 
         with TS() as db:
             sent = credit_card_reminders.send_due_card_reminders(db, now=now)
@@ -156,7 +171,7 @@ def test_no_reminder_when_already_paid():
         tok = _login(client, email, device_id="d-app", client_type="app")
         hdr_app = {"Authorization": f"Bearer {tok}"}
         now = datetime.now(timezone.utc)
-        billing_day = now.day
+        billing_day = (now.date() - timedelta(days=1)).day
         _setup_group_with_debt(client, hdr_app, "lgr3", email, billing_day=billing_day, payment_due_day=20, spend=100.0)
         _push(client, hdr_app, "lgr3", "account", "acc-cash",
               {"syncId": "acc-cash", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
@@ -182,7 +197,7 @@ def test_reminder_not_duplicated_for_same_cycle():
         tok = _login(client, email, device_id="d-app", client_type="app")
         hdr_app = {"Authorization": f"Bearer {tok}"}
         now = datetime.now(timezone.utc)
-        billing_day = now.day
+        billing_day = (now.date() - timedelta(days=1)).day
         _setup_group_with_debt(client, hdr_app, "lgr4", email, billing_day=billing_day, payment_due_day=20)
 
         with TS() as db:

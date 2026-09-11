@@ -10,8 +10,9 @@ kind,不是"這張卡有没有提醒过"而是"這一期的這種提醒发过没
 
 四種提醒時機(對齊使用者需求,2026-08-02 确认;`overdue` 為 2026-08-04
 補):
-- `statement_closed`:結帳日當天(`now.date() == cycle_end`),帳單金額
-  剛结算出來。
+- `statement_closed`:結帳日隔天(`now.date() == cycle_end + 1 天`),帳單
+  金額剛结算出來(結帳日當天銀行才剛結帳,實際帳單要隔天才會出來,2026-09-11
+  使用者反饋補上這個 1 天的落差)。
 - `due_soon`:到期前 7 天(`now.date() == due_date - 7 天`)。
 - `due_today`:到期當天(`now.date() == due_date`)。
 - `overdue`:已逾期(`now.date() > due_date` 且 `remaining_due > 0`)。原本
@@ -30,7 +31,7 @@ billing_day/payment_due_day 的帳戶跑,且該期 `remaining_due <= 0`
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -91,7 +92,7 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
         due_date = credit_card.due_date_for_cycle_end(cycle_end, group.payment_due_day)
 
         kind: str | None = None
-        if today == cycle_end:
+        if today == cycle_end + timedelta(days=1):
             kind = "statement_closed"
         elif today == due_date:
             kind = "due_today"

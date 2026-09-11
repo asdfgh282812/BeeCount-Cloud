@@ -983,7 +983,11 @@ async def list_workspace_accounts(
         billing = credit_card_billing.compute_group_billing(
             db, ledger_id=billing_ledger_id, group=raw, children=children, now=now,
         )
-        if billing["remaining_due"] > 0.01:
+        # 結帳日當天銀行才剛結帳,實際帳單要隔天才會出來,「可繳款」徽章要等
+        # 隔天才顯示(2026-09-11 使用者反饋:結帳日 11 號當天就跳出來,應該
+        # 12 號才對),不能結帳日當天就顯示,跟 credit_card_reminders.py 的
+        # `statement_closed` 时机同一个判断。
+        if billing["remaining_due"] > 0.01 and now.date() > billing["cycle_end"]:
             due = billing["due_date"]
             acc.billing_due_date = datetime(due.year, due.month, due.day, tzinfo=timezone.utc)
             acc.billing_remaining_due = round(billing["remaining_due"], 2)
