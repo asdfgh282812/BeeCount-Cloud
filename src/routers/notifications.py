@@ -19,6 +19,7 @@ from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
 from ..models import Notification, User
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
+from ..services import debt_status
 
 router = APIRouter()
 
@@ -79,9 +80,11 @@ def list_notifications(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> NotificationListResponse:
-    """分页列出当前用户的通知(先按 priority 倒序分优先度,同优先度内再按
-    created_at 倒序)。unread_count 不受 limit/offset/category/unread_only
-    影响,始终是该用户全部未读数,方便前端渲染角标。"""
+    """分页列出当前用户的通知,依序按(1)未读优先(2)"未结清"优先度——但
+    若该笔欠款/对象「现在」已结清/已结案则不再享有较高优先度,即时重新
+    判断,不是当年建通知时写死的 priority 字段(3)建立时间倒序。
+    unread_count 不受 limit/offset/category/unread_only 影响,始终是该
+    用户全部未读数,方便前端渲染角标。"""
     base = select(Notification).where(Notification.user_id == current_user.id)
     if category:
         base = base.where(Notification.category == category)
@@ -105,20 +108,65 @@ def list_notifications(
         or 0
     )
 
-    rows = db.scalars(
-        base.order_by(
-            Notification.priority.desc(),
-            Notification.created_at.desc(),
-            Notification.id.desc(),
-        )
-        .limit(limit)
-        .offset(offset)
-    ).all()
+    # 排序键(即时判断"未结清"是否仍然成立)依赖每笔欠款/对象目前的还款
+    # 状态,SQL 层的 ORDER BY 做不到,所以先把该用户全部符合筛选条件的
+    # 记录取出来,在 Python 里排序完再切页。个人记账 app 单一用户的通知
+    # 笔数有限,这里不做游标式增量优化。
+    all_rows = db.scalars(base).all()
+
+    reminder_pairs: set[tuple[str, str]] = set()
+    counterparty_pairs: set[tuple[str, str]] = set()
+    for row in all_rows:
+        if row.priority != 2:
+            continue
+        payload = row.payload_json or {}
+        ledger_ext = payload.get("ledgerId")
+        if not isinstance(ledger_ext, str):
+            continue
+        if row.category == "reminder":
+            debt_id = payload.get("debtId")
+            if isinstance(debt_id, str):
+                reminder_pairs.add((ledger_ext, debt_id))
+        elif row.category == "debt_unsettled":
+            counterparty = payload.get("counterpartyName")
+            if isinstance(counterparty, str):
+                counterparty_pairs.add((ledger_ext, counterparty))
+
+    still_unsettled_reminders = debt_status.unsettled_debt_reminder_keys(
+        db, user_id=current_user.id, pairs=reminder_pairs
+    )
+    still_unsettled_groups = debt_status.unsettled_counterparty_group_keys(
+        db, user_id=current_user.id, pairs=counterparty_pairs
+    )
+
+    def _effective_priority(row: Notification) -> int:
+        if row.priority != 2:
+            return row.priority
+        payload = row.payload_json or {}
+        ledger_ext = payload.get("ledgerId")
+        if row.category == "reminder":
+            key = (ledger_ext, payload.get("debtId"))
+            return row.priority if key in still_unsettled_reminders else 0
+        if row.category == "debt_unsettled":
+            key = (ledger_ext, payload.get("counterpartyName"))
+            return row.priority if key in still_unsettled_groups else 0
+        return row.priority
+
+    effective_priority_by_id = {row.id: _effective_priority(row) for row in all_rows}
+
+    # 用稳定排序由最不重要的键排到最重要的键:未读优先于一切,同读/未读
+    # 状态内再比"(即时判断后的)未结清"优先度,最后比建立时间。
+    sorted_rows = sorted(all_rows, key=lambda r: r.id, reverse=True)
+    sorted_rows.sort(key=lambda r: r.created_at, reverse=True)
+    sorted_rows.sort(key=lambda r: effective_priority_by_id[r.id], reverse=True)
+    sorted_rows.sort(key=lambda r: r.read_at is None, reverse=True)
+
+    page_rows = sorted_rows[offset : offset + limit]
 
     return NotificationListResponse(
         total=total,
         unread_count=unread_count,
-        items=[_to_item(row) for row in rows],
+        items=[_to_item(row) for row in page_rows],
     )
 
 

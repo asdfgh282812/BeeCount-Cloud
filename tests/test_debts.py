@@ -1098,6 +1098,77 @@ def test_unsettled_counterparty_notification_stays_single_after_marked_read():
         client.close()
 
 
+def test_list_notifications_unread_then_unsettled_then_time():
+    """驗證通知列表新排序規則(2026-09-11 改版)三層鍵:未讀 > 現在仍未結清
+    > 建立時間。舊規則只看建通知當下寫死的 `priority`,已結清的欠款通知
+    會永遠卡在最上面;新規則要即時重新判斷「現在」是否仍未結清。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "debt32@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_DEBT32"
+        _seed_ledger(client, app_token, device, ledger_id)
+        web = _login_web(client, "debt32@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+
+        # 小明:未結清。小華:稍後全額還清。
+        _create_debt(client, hdr, ledger_id, token, counterparty_name="小明", principal_amount=100.0)
+        res_hua = _create_debt(client, hdr, ledger_id, token, counterparty_name="小華", principal_amount=200.0)
+        debt_hua_id = res_hua.json()["entity_id"]
+
+        db = TS()
+        try:
+            debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+        finally:
+            db.close()
+
+        tx_res = _create_tx(client, hdr, ledger_id, token, amount=200.0, debt_id=debt_hua_id)
+        assert tx_res.status_code == 200, tx_res.text
+
+        db = TS()
+        try:
+            # 小華全額還清後,既有通知被自動標記已讀,但 priority 欄位仍是
+            # 2(既有行為,見 test_unsettled_counterparty_notification_
+            # auto_resolves_when_settled)。
+            debt_unsettled_notifications.sync_unsettled_counterparty_notifications(db)
+            db.commit()
+
+            rows = db.scalars(
+                select(Notification).where(Notification.category == "debt_unsettled")
+            ).all()
+            assert len(rows) == 2
+            by_name = {r.payload_json["counterpartyName"]: r for r in rows}
+            assert by_name["小明"].read_at is None
+            assert by_name["小華"].read_at is not None
+            assert by_name["小華"].priority == 2
+
+            # 再插兩條一般通知:一條很舊但已讀,一條剛建立且未讀。
+            uid = by_name["小明"].user_id
+            old_time = datetime.now(timezone.utc) - timedelta(days=10)
+            db.add(Notification(
+                user_id=uid, category="system", title="sys_old",
+                read_at=old_time, created_at=old_time, priority=0,
+            ))
+            db.add(Notification(
+                user_id=uid, category="system", title="sys_new_unread",
+                read_at=None, priority=0,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        res = client.get("/api/v1/notifications", headers=hdr)
+        assert res.status_code == 200, res.text
+        titles = [it["title"] for it in res.json()["items"]]
+        # 未讀組(小明未結清 > 一般未讀)排在已讀組前面;已讀組內,已結清的
+        # 小華不再享有較高優先度,退回跟一般已讀通知一樣按時間排序。
+        assert titles == ["小明有未結清款項", "sys_new_unread", "小華有未結清款項", "sys_old"]
+    finally:
+        client.close()
+
+
 # ---------------------------------------------------------------------------
 # 起點交易(欠款紀錄)可見性 + 刪起點交易的級聯刪除
 #
