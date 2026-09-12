@@ -11,7 +11,7 @@ import {
   type ReadLedger,
 } from '@beecount/api-client'
 import { usePrimaryColor } from '@beecount/ui'
-import type { AppSection } from '@beecount/web-features'
+import { CategoryIconStyleProvider, type AppSection } from '@beecount/web-features'
 
 import { AboutDialog } from '../components/AboutDialog'
 import { PwaInstallBanner } from '../components/PwaInstallBanner'
@@ -179,6 +179,11 @@ export function AppShell({ token, onLogout }: Props) {
     return parsed.kind === 'app' ? parsed.section : 'transactions'
   }, [location.pathname])
 
+  // 「可爱类别图示」画风:跟 mobile 的 appearance.category_icon_style 同步,
+  // 见 profile.appearance 整包下行(refreshProfile / profile_change 都会更新
+  // profileMe,这里只是把值转给 web-features 的 context,不用另外订阅事件)。
+  const categoryIconStyle = profileMe?.appearance?.category_icon_style === 'cute' ? 'cute' : 'material'
+
   const handleSectionNavigate = useCallback(
     (section: AppSection) => {
       navigate(routePath({ kind: 'app', ledgerId: '', section }))
@@ -196,6 +201,7 @@ export function AppShell({ token, onLogout }: Props) {
       refreshProfile={refreshProfile}
       logout={onLogout}
     >
+      <CategoryIconStyleProvider value={categoryIconStyle}>
       <LedgersProvider
         ledgers={ledgers}
         activeLedgerId={activeLedgerId}
@@ -242,6 +248,7 @@ export function AppShell({ token, onLogout }: Props) {
         </PageDataCacheProvider>
         </SyncSocketProvider>
       </LedgersProvider>
+      </CategoryIconStyleProvider>
     </AuthProvider>
   )
 }

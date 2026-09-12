@@ -97,6 +97,8 @@ class UserProfile(Base):
     #   - header_decoration_style: 月显示头部装饰 "none"/"minimal"/…
     #   - compact_amount: 紧凑金额显示 true/false
     #   - show_transaction_time: 交易是否显示时间 true/false
+    #   - category_icon_style: 类别图示画风 "material"（默认）/"cute"（手绘可
+    #     爱线稿，跟 mobile CategoryIconStyle / web CategoryIconStyleContext 对齐）
     # 字体缩放 font_scale 故意不进来（跨设备屏幕尺寸不同，不该强行拉齐）。
     # 用 Text 存 JSON string；/profile/me 接口 GET/PATCH 时序列化为 dict。
     appearance_json: Mapped[str | None] = mapped_column(Text, nullable=True)

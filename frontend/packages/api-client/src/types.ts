@@ -47,6 +47,9 @@ export type ProfileAppearance = {
   show_transaction_time?: boolean
   /** 明细行第一行显示方式:'category'(默认,分类+备注括号) | 'note'(备注优先) */
   note_display_mode?: 'category' | 'note'
+  /** 分类图示画风:'material'(默认,Material Symbols) | 'cute'(手绘可爱线稿,
+   *  跟 mobile `CategoryIconStyle` 对齐,详见 mobile 侧 `theme_providers.dart`)。 */
+  category_icon_style?: 'material' | 'cute'
 }
 
 /**

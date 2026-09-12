@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <circle cx="24" cy="24" r="15" fill="#C79A63" stroke="currentColor" stroke-width="3"/>
+  <circle cx="18" cy="19" r="2" fill="currentColor" stroke="none"/>
+  <circle cx="29" cy="20" r="2" fill="currentColor" stroke="none"/>
+  <circle cx="22" cy="29" r="2" fill="currentColor" stroke="none"/>
+  <circle cx="30" cy="28" r="2" fill="currentColor" stroke="none"/>
+</svg>

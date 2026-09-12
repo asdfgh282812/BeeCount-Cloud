@@ -10,6 +10,7 @@ import {
   compareBySuggestionThenOrder,
 } from '../lib/categorySuggestionRank'
 import { categoryIconStyle, resolveCategoryColor } from '../lib/categoryColor'
+import { useCategoryIconStyle } from '../context/CategoryIconStyleContext'
 
 type CategorySelectorKind = 'expense' | 'income'
 
@@ -359,8 +360,12 @@ function CategoryCell({
   const iconSize = compact ? 22 : 26
   const circleSize = compact ? 'h-12 w-12' : 'h-14 w-14'
   const labelSize = compact ? 'text-[11px]' : 'text-xs'
+  const iconStyle = useCategoryIconStyle()
+  const isCute = iconStyle === 'cute'
   const effectiveColor = resolveCategoryColor(category, allRows)
-  const colorStyle = !selected ? categoryIconStyle(effectiveColor) : undefined
+  // cute 画风不画色底圆圈(手绘图示配色底看起来很奇怪),分类色改用
+  // CategoryIcon 自己的底线呈现。
+  const colorStyle = !selected && !isCute ? categoryIconStyle(effectiveColor) : undefined
 
   return (
     <button
@@ -376,7 +381,9 @@ function CategoryCell({
               ? 'bg-primary/15 text-primary ring-2 ring-primary/60'
               : colorStyle
                 ? ''
-                : 'bg-muted/60 text-foreground group-hover:bg-accent/60'
+                : isCute
+                  ? 'text-foreground group-hover:bg-accent/40'
+                  : 'bg-muted/60 text-foreground group-hover:bg-accent/60'
           } ${expanded ? 'ring-1 ring-primary/40' : ''}`}
           style={colorStyle}
         >
@@ -386,6 +393,7 @@ function CategoryCell({
             iconCloudFileId={category.icon_cloud_file_id}
             iconPreviewUrlByFileId={iconPreviewUrlByFileId}
             size={iconSize}
+            underlineColor={!selected && isCute ? effectiveColor : undefined}
           />
         </div>
 

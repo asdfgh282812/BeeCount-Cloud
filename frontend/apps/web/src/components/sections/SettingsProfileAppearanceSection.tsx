@@ -207,6 +207,7 @@ export function SettingsProfileAppearanceSection() {
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
+  const cuteIcons = appearance.category_icon_style === 'cute'
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
   const saveAppearance = async (
@@ -559,6 +560,32 @@ export function SettingsProfileAppearanceSection() {
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                     showTransactionTime ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 可爱类别图示:跟 mobile CategoryIconStyle 双向同步 —— 这里改会
+                推给 server,mobile/其它分页也会跟着切换手绘画风。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.cuteIcons')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={cuteIcons}
+                aria-label={t('profile.sync.cuteIcons') as string}
+                disabled={appearanceSaving}
+                onClick={() =>
+                  void saveAppearance({ category_icon_style: cuteIcons ? 'material' : 'cute' })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  cuteIcons ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    cuteIcons ? 'translate-x-[18px]' : 'translate-x-0.5'
                   }`}
                 />
               </button>

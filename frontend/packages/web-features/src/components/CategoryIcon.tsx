@@ -1,6 +1,8 @@
 import { CSSProperties } from 'react'
 
 import { resolveMaterialIconName } from '../lib/categoryIconMap'
+import { resolveCuteIconSvg } from '../lib/cuteCategoryIconMap'
+import { useCategoryIconStyle } from '../context/CategoryIconStyleContext'
 
 interface Props {
   icon: string | null | undefined
@@ -13,6 +15,13 @@ interface Props {
   size?: number
   /** 图标颜色,默认 `currentColor`(继承父元素)。 */
   color?: string
+  /**
+   * 可爱画风(cute)下,图示正下方的分类色底线颜色。不传就不画底线。
+   * 只在全局 `useCategoryIconStyle()` 为 `'cute'` 时生效,material 画风忽略此项。
+   * 呼叫端如果已经自己解析过分类颜色(例如二级分类继承父分类色),直接传解析
+   * 好的颜色即可,不需要 `CategoryIcon` 重新查一次。
+   */
+  underlineColor?: string | null
 }
 
 /**
@@ -33,7 +42,10 @@ export function CategoryIcon({
   style,
   size = 20,
   color,
+  underlineColor,
 }: Props) {
+  // Hooks 必须在任何 early return 之前无条件调用。
+  const iconStyle = useCategoryIconStyle()
   const normalized = (icon || '').trim()
   const kind = (iconType || 'material').trim() || 'material'
   const cloudFileId = typeof iconCloudFileId === 'string' ? iconCloudFileId.trim() : ''
@@ -101,6 +113,43 @@ export function CategoryIcon({
         }}
       >
         sync
+      </span>
+    )
+  }
+
+  // 「可爱类别图示」画风:手绘 SVG 线稿 + 分类色底线,不画色底圆圈(圆圈由
+  // 呼叫端自己的 wrapper 负责跳过,这里只管图示本身)。inline 渲染(而不是
+  // `<img>`)是为了让 SVG 里的 `currentColor` 描边跟着 `color` 换色。
+  if (iconStyle === 'cute') {
+    const svg = resolveCuteIconSvg(normalized)
+    return (
+      <span
+        className={className}
+        style={{
+          display: 'inline-flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 2,
+          ...style,
+        }}
+      >
+        <span
+          aria-hidden
+          style={{ width: size, height: size, color: color || 'currentColor' }}
+          // 素材是打包进 repo 的静态原创 SVG,不是使用者输入,可以放心 inline。
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+        {underlineColor ? (
+          <span
+            aria-hidden
+            style={{
+              width: Math.round(size * 0.6),
+              height: 3,
+              borderRadius: 2,
+              background: underlineColor,
+            }}
+          />
+        ) : null}
       </span>
     )
   }

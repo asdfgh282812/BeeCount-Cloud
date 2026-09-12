@@ -24,6 +24,7 @@ import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
 import { categoryIconStyle, resolveCategoryColor } from '../lib/categoryColor'
+import { useCategoryIconStyle } from '../context/CategoryIconStyleContext'
 import { TAG_COLOR_PALETTE, tagTextColorOn } from '../lib/tagColorPalette'
 import type { CategoryForm } from '../forms'
 
@@ -50,14 +51,19 @@ type CardBodyProps = {
   renderIcon: (
     icon: string | null | undefined,
     iconType: string | null | undefined,
-    iconCloudFileId?: string | null
+    iconCloudFileId?: string | null,
+    underlineColor?: string | null
   ) => ReactNode
 }
 
 type RenderIcon = (
   icon: string | null | undefined,
   iconType: string | null | undefined,
-  iconCloudFileId?: string | null
+  iconCloudFileId?: string | null,
+  /** cute 画风底线色 —— 只有需要「拿掉色底圆圈、换底线呈现分类色」的呼叫点
+   *  (目前是分类卡片的圆圈)才会传,其它 renderIcon 用途(图示选取格预览等)
+   *  不传就是 undefined,行为不变。 */
+  underlineColor?: string | null
 ) => ReactNode
 
 /** 按窗口宽度选网格列数(管理页比选择器宽,桌面端铺密一点)。 */
@@ -113,7 +119,12 @@ function ManageCategoryCell({
   deleteLabel: string
 }) {
   const circleSize = compact ? 'h-12 w-12' : 'h-14 w-14'
-  const colorStyle = categoryIconStyle(resolveCategoryColor(category, allRows))
+  const iconStyle = useCategoryIconStyle()
+  const isCute = iconStyle === 'cute'
+  const effectiveColor = resolveCategoryColor(category, allRows)
+  // cute 画风不画色底圆圈,分类色改由 CategoryIcon 的底线呈现(见下面
+  // renderIcon 的第 4 个参数)。
+  const colorStyle = isCute ? undefined : categoryIconStyle(effectiveColor)
   return (
     <div
       role={interactive ? 'button' : undefined}
@@ -182,11 +193,18 @@ function ManageCategoryCell({
               ? 'bg-primary/15 ring-2 ring-primary/50'
               : colorStyle
                 ? ''
-                : 'bg-muted/60 group-hover:bg-accent/60'
+                : isCute
+                  ? 'group-hover:bg-accent/40'
+                  : 'bg-muted/60 group-hover:bg-accent/60'
           }`}
           style={!expanded ? colorStyle : undefined}
         >
-          {renderIcon(category.icon, category.icon_type, category.icon_cloud_file_id)}
+          {renderIcon(
+            category.icon,
+            category.icon_type,
+            category.icon_cloud_file_id,
+            !expanded && isCute ? effectiveColor : undefined
+          )}
         </div>
         {hasChildren && !compact ? (
           <span
@@ -416,9 +434,10 @@ function CategoriesCardBody({
 /**
  * 分类图标选择器。
  *
- * 跟 app 端 `lib/pages/category/icon_picker_page.dart` 行为一致:
+ * 跟 app 端 `lib/widgets/biz/grouped_icon_grid.dart`(app 目前实际在用的分类
+ * 图标选取格,不是已死的 `icon_picker_page.dart`)行为一致:
  * - 按当前 `kind`(支出 / 收入)拿到分组(`getIconGroupsByKind`),组里都是
- *   app 已经在用的图标(8 组支出 + 4 组收入,≈70 个),所有 key 都在
+ *   app 已经在用的图标(12 组支出 + 6 组收入,267 个),所有 key 都在
  *   categoryIconMap.ts 的 KNOWN_NAMES / FLUTTER_RENAMES 里有定义,Material
  *   Symbols 字体一定能渲出来,不会再出现"图标渲成字面文字"的乱码。
  * - 顶部 group tabs(餐饮/出行/购物...)切换。
@@ -692,7 +711,8 @@ export function CategoriesPanel({
   const renderIcon = (
     icon: string | null | undefined,
     iconType: string | null | undefined,
-    iconCloudFileId?: string | null
+    iconCloudFileId?: string | null,
+    underlineColor?: string | null
   ) => (
     <CategoryIcon
       icon={icon}
@@ -701,6 +721,7 @@ export function CategoriesPanel({
       iconPreviewUrlByFileId={iconPreviewUrlByFileId}
       size={20}
       className="text-primary"
+      underlineColor={underlineColor}
     />
   )
 
