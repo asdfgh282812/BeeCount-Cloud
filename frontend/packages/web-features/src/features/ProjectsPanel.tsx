@@ -29,6 +29,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DatePicker } from '../components/DatePicker'
 import type { DailyBudgetMode, ProjectCategoryBudgetForm, ProjectForm, ProjectPeriodType } from '../forms'
 import { projectCategoryBudgetDefaults, projectDefaults } from '../forms'
+import { isKnownCategoryIconKey } from '../lib/categoryIconMap'
 
 type ProjectsPanelProps = {
   projects: readonly ReadProject[]
@@ -466,7 +467,15 @@ function ProjectCard({
           aria-hidden
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xl"
         >
-          {project.icon || '📁'}
+          {project.icon ? (
+            isKnownCategoryIconKey(project.icon) ? (
+              <CategoryIcon icon={project.icon} iconType="material" size={24} />
+            ) : (
+              project.icon
+            )
+          ) : (
+            '📁'
+          )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

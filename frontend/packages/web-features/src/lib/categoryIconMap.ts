@@ -357,6 +357,27 @@ export function resolveMaterialIconName(stored: string | null | undefined): stri
 }
 
 /**
+ * 判斷 stored 值是不是一個「合法的 App 內建圖示 key」(即 mobile 端圖示選擇
+ * 器 —— 分類 icon_picker_page.dart / GroupedIconGrid —— 挑出來、寫進 DB 的
+ * 原始字串),而不是使用者自己打的字面 emoji。
+ *
+ * 用途:專案 (Project) 的 `icon` 欄位跟分類共用同一份 App 內建圖示 key 空間
+ * (mobile 端專案圖示選擇器直接複用 GroupedIconGrid),但同時 web 端也允許
+ * 使用者在專案表單直接打任意 emoji 存進同一個欄位。兩種來源存的字串長得
+ * 完全不像(前者是 `restaurant`/`home_work` 這種語意 key,後者是 `🏠` 這種
+ * 真正的 emoji 字元),渲染前必須先判斷是哪一種,才能決定要不要走
+ * `CategoryIcon`(App key → Material 字體 / 可愛 SVG)還是直接把字串當
+ * emoji 印出來 —— 误把 App key 走 emoji 分支会显示空白方块,误把使用者
+ * 自订 emoji 走 `resolveMaterialIconName` 又会一律 fallback 成 `category`
+ * 图示、丢失使用者自己选的 emoji。
+ */
+export function isKnownCategoryIconKey(stored: string | null | undefined): boolean {
+  const s = (stored || '').trim()
+  if (!s) return false
+  return KNOWN_NAMES.has(s) || Object.prototype.hasOwnProperty.call(FLUTTER_RENAMES, s)
+}
+
+/**
  * Google Fonts 子集下载清单 —— 包含所有可能被渲染的 Material Symbols 名字,
  * 字典序排好。= `KNOWN_NAMES` ∪ `FLUTTER_RENAMES` 的 target(大多已在 KNOWN
  * 里,去重)。

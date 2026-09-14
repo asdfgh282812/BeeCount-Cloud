@@ -3,6 +3,9 @@ import { useMemo, useState } from 'react'
 import { Input, useT } from '@beecount/ui'
 import type { ReadProject } from '@beecount/api-client'
 
+import { CategoryIcon } from './CategoryIcon'
+import { isKnownCategoryIconKey } from '../lib/categoryIconMap'
+
 type ProjectSelectorProps = {
   /** 全量專案列表(該帳本維度,通常從 fetchReadProjects 拿)。已停用
    *  (`enabled=false`,§4.2 軟刪除)的專案不會出現在挑選器裡。 */
@@ -110,7 +113,13 @@ export function ProjectSelector({
                     : 'border-border/60 text-foreground hover:bg-accent/40',
                 ].join(' ')}
               >
-                {project.icon ? <span aria-hidden>{project.icon}</span> : null}
+                {project.icon ? (
+                  isKnownCategoryIconKey(project.icon) ? (
+                    <CategoryIcon icon={project.icon} iconType="material" size={16} />
+                  ) : (
+                    <span aria-hidden>{project.icon}</span>
+                  )
+                ) : null}
                 <span className="max-w-[10rem] truncate">{project.name}</span>
               </button>
             )
