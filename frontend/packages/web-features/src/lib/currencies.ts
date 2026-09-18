@@ -257,3 +257,57 @@ export function isForeignTx(row: {
     row.currency_code && row.native_amount != null && row.native_amount !== row.amount
   )
 }
+
+export interface TransferConversionDisplay {
+  /** 转入帐户自身币别的金额,直接来自 `to_amount`(使用者实际输入/确认的
+   *  到账数字),不经过任何即时匯率再加工——不管这个币别是不是帐本本位
+   *  币,这个数字本身永远精确。 */
+  amount: number
+  /** 转入帐户的币别代码。 */
+  currencyCode: string
+  /** true = 这个币别剛好是帐本本位币,沿用既有「≈」语意(已按记帐时匯率
+   *  折算为帐本本位币);false = 单纯呈现转入帐户自己币别的到账金额,不
+   *  宣称这是本位币换算值,渲染端要换一个不提「本位币」的 tooltip。 */
+  isBaseCurrency: boolean
+}
+
+/**
+ * 转帐交易「≈折算金额」的显示专用换算(2026-09-18 使用者反馈:折算金额跟
+ * 实际转入金额对不上,后续测试又发现「本位币转外币」方向完全没有任何换算
+ * 提示)。`native_amount` 故意折算「转出方」金额,专供信用卡群组合并帐单
+ * (`compute_group_billing`)当「已缴金额」的换算基准用,跟使用者实际转入
+ * 多少是两个独立概念,不能直接拿来当这里的显示依据(动 `native_amount`
+ * 本身会让帐单重新出现汇差残值,已修过两轮)。
+ *
+ * 这里改成直接用 `to_amount`(转入帐户自身币别的金额,使用者实际输入/确
+ * 认的到账数字,含 fx_rate_override/fx_amount_override 生效后的结果)—— 不
+ * 管转入帐户币别是不是帐本本位币,这个数字都是精确值,不需要查即时匯率。
+ * 只有转出/转入帐户币别相同(非跨币别转帐,`to_amount === amount` 恆成立)
+ * 时才不显示,避免冗余。两边都是外币且互不相同(既不是本位币也彼此不同)
+ * 的三币情境仍然显示——`to_amount` 一样是精确值,没有理由跟着限制只准
+ * 「其中一边是本位币」才显示。
+ */
+export function transferConversionDisplay(
+  row: {
+    tx_type?: string | null
+    amount: number
+    to_amount?: number | null
+    from_account_name?: string | null
+    to_account_name?: string | null
+  },
+  accountCurrencyByName: Map<string, string> | undefined,
+  ledgerBaseCurrency: string | undefined
+): TransferConversionDisplay | null {
+  if (row.tx_type !== 'transfer' || row.to_amount == null || !accountCurrencyByName) return null
+  const fromCurrency = accountCurrencyByName.get((row.from_account_name || '').trim().toLowerCase())
+  const toCurrency = accountCurrencyByName.get((row.to_account_name || '').trim().toLowerCase())
+  if (!fromCurrency || !toCurrency) return null
+  const from = fromCurrency.trim().toUpperCase()
+  const to = toCurrency.trim().toUpperCase()
+  if (from === to) return null
+  return {
+    amount: row.to_amount,
+    currencyCode: to,
+    isBaseCurrency: !!ledgerBaseCurrency && to === ledgerBaseCurrency.trim().toUpperCase()
+  }
+}

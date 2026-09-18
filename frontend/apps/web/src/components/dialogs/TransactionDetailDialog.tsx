@@ -16,8 +16,8 @@ import {
   DialogTitle,
   useT,
 } from '@beecount/ui'
-import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Briefcase, Calendar, ChevronLeft, ChevronRight, Copy, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, User, Wallet, X } from 'lucide-react'
+import { buildTagColorMap, TagChip, transferConversionDisplay } from '@beecount/web-features'
+import { Briefcase, Calendar, ChevronLeft, ChevronRight, Copy, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, Trash2, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -48,6 +48,15 @@ interface Props {
   /** 點某條「使用回饋」chip 跳去該帳戶詳情彈窗,自動展開紅利回饋區塊並打開
    *  這條規則的交易明細彈窗。 */
   onJumpToReward?: (accountId: string, ruleId: string) => void
+  /** 转帐「≈折算金额」显示用(见 transferConversionDisplay)。帐户名(小写
+   *  trim)→ 币别字典;不传 → 转帐一律不显示「≈」(现有行为)。 */
+  accountCurrencyByName?: Map<string, string>
+  /** 该笔交易所属帐本的本位币,配合 accountCurrencyByName 使用。 */
+  ledgerBaseCurrency?: string
+  /** 刪除交易(2026-09-18 使用者反饋:詳情彈窗只能編輯、沒有刪除入口)。
+   *  跟 onEdit/onRefund/onDuplicate 同款慣例——只負責觸發,實際的二次確認
+   *  + API 呼叫由呼叫端(GlobalEntityDialogs)處理。不傳 → 隱藏刪除按鈕。 */
+  onDelete?: (tx: WorkspaceTransaction) => void
 }
 
 /**
@@ -73,6 +82,9 @@ export function TransactionDetailDialog({
   onJumpToDebt,
   rewardRules,
   onJumpToReward,
+  accountCurrencyByName,
+  ledgerBaseCurrency,
+  onDelete,
 }: Props) {
   const t = useT()
 
@@ -109,6 +121,19 @@ export function TransactionDetailDialog({
       ? `${tx.from_account_name || '-'} → ${tx.to_account_name || '-'}`
       : tx.account_name || '-'
     : '-'
+  const transferConversion = tx
+    ? transferConversionDisplay(tx, accountCurrencyByName, ledgerBaseCurrency)
+    : null
+  // 转帐主金额(tx.amount)永远是转出帐户自身币别——转出帐户是外币时标上
+  // 币种符号(2026-09-18 使用者反馈:600/9016 这类数字看不出是哪个币别)。
+  const transferFromCurrency =
+    tx?.tx_type === 'transfer'
+      ? accountCurrencyByName?.get((tx.from_account_name || '').trim().toLowerCase())
+      : undefined
+  const transferFromIsForeign =
+    !!transferFromCurrency &&
+    !!ledgerBaseCurrency &&
+    transferFromCurrency.trim().toUpperCase() !== ledgerBaseCurrency.trim().toUpperCase()
   const attachments = Array.isArray(tx?.attachments) ? tx.attachments : []
   const tagsList =
     tx?.tags_list && tx.tags_list.length > 0
@@ -173,6 +198,10 @@ export function TransactionDetailDialog({
                   <span className="ml-2 align-middle text-sm font-medium text-muted-foreground">
                     {tx.currency_code}
                   </span>
+                ) : transferFromIsForeign ? (
+                  <span className="ml-2 align-middle text-sm font-medium text-muted-foreground">
+                    {transferFromCurrency}
+                  </span>
                 ) : null}
               </span>
               {/* 交易级多币种:外币交易显示折账本本位币快照(记账时汇率) */}
@@ -185,6 +214,24 @@ export function TransactionDetailDialog({
                     minimumFractionDigits: 0,
                     maximumFractionDigits: 2,
                   })}
+                </span>
+              ) : transferConversion ? (
+                <span
+                  className="text-sm tabular-nums text-muted-foreground"
+                  title={
+                    transferConversion.isBaseCurrency
+                      ? t('transactions.convertedToBase')
+                      : t('transactions.transferReceivedAmount')
+                  }
+                >
+                  ≈ {transferConversion.amount.toLocaleString('zh-CN', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 2,
+                  })}
+                  {/* 本位币维持既有纯数字观感(跟其它「≈」用法一致);非本位
+                      币一律标上币别代码,不然「转入帐户实际到账多少」这句
+                      title 说的币别看不出对应哪个数字。 */}
+                  {transferConversion.isBaseCurrency ? '' : ` ${transferConversion.currencyCode}`}
                 </span>
               ) : null}
               <span className="text-xs text-muted-foreground">
@@ -464,6 +511,23 @@ export function TransactionDetailDialog({
               规则 —— 退款表单不预填分类(categoryName 留空,见
               GlobalEntityDialogs.tsx::handleRefundTx),用户自己选退款交易
               要挂到哪个分类,不尝试拆回原交易的多个分类明细。 */}
+          {/* 刪除(2026-09-18 使用者反饋:詳情彈窗只能編輯、沒有刪除入口)。
+              放最左邊 + mr-auto,跟其它非破壞性動作(退款/複製/取消/編輯)
+              視覺上拉開距離,避免誤觸。餘額調整交易(isAdjustmentTx)不擋
+              刪除——只有「編輯」才會意外把 tx_type 改壞,刪除沒有這個問題,
+              跟 TransactionRow 的 onDelete 既有行為一致。 */}
+          {tx && onDelete ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="mr-auto"
+              disabled={!canManage}
+              onClick={() => onDelete(tx)}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              {t('common.delete')}
+            </Button>
+          ) : null}
           {tx && (tx.tx_type === 'expense' || tx.tx_type === 'income') && !isRefundTx && onRefund ? (
             <Button
               variant="outline"

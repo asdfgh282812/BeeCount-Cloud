@@ -57,6 +57,11 @@ interface Props {
   showLedger?: boolean
   /** 备注显示方式,透传到 TransactionRow。默认 'category'。 */
   noteDisplayMode?: 'category' | 'note'
+  /** 转帐「≈折算金额」显示用,透传到 TransactionRow(见其 prop 说明)。
+   *  不传 → 转帐一律不显示「≈」,不影响其它字段(现有行为)。 */
+  accountCurrencyByName?: Map<string, string>
+  /** 帐本本位币,配合 accountCurrencyByName 使用。 */
+  ledgerBaseCurrency?: string
 }
 
 /**
@@ -91,7 +96,9 @@ export function TransactionList({
   showCreator = false,
   currentUserId,
   showLedger = false,
-  noteDisplayMode = 'category'
+  noteDisplayMode = 'category',
+  accountCurrencyByName,
+  ledgerBaseCurrency
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -162,6 +169,8 @@ export function TransactionList({
                 onToggleSelect={onToggleSelect}
                 showLedger={showLedger}
                 noteDisplayMode={noteDisplayMode}
+                accountCurrencyByName={accountCurrencyByName}
+                ledgerBaseCurrency={ledgerBaseCurrency}
               />
             </li>
           ))}

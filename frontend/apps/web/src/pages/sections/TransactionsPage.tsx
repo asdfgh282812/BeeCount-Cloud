@@ -425,6 +425,12 @@ export function TransactionsPage() {
   // 结果,造成"筛选标签显示全部,但列表只有今日数据"的不一致。用递增序号只让
   // 最后发起的那次请求的结果生效。
   const txFetchSeqRef = useRef(0)
+  // loadTxDictionaries 現在會在同一時間窗口內被多處並發呼叫(onSaveTransaction/
+  // onDeleteTransaction/批量刪除/WS sync_change 觸發的 refreshAllSections 都各
+  // 自呼叫一次),沒有排序保護的話,較早發出但較晚 resolve 的那次請求會用舊
+  // 資料蓋掉後面已經刷新成功的新資料——跟上面 txFetchSeqRef 同一個理由,只讓
+  // 最後發起的那次請求的結果生效。
+  const txDictFetchSeqRef = useRef(0)
 
   // 原来用 Notice 顶栏显示成功/失败,改成 toast 后不再需要这个 state。
   const [baseChangeId, setBaseChangeId] = useState(0)
@@ -1057,6 +1063,12 @@ export function TransactionsPage() {
       section === 'tags' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'tags'),
       section === 'categories' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'categories'),
       section === 'accounts' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'accounts'),
+      // GlobalEntityDialogs 詳情彈窗的刪除入口(2026-09-18 補強)不持有這個
+      // page 的 baseChangeId,純靠這裡的 sync_change WS 事件觸發刷新——上面
+      // 幾行刷的 accounts 狀態跟表單帳戶選單吃的 txDictionaryAccounts 是
+      // 兩份不同字典(理由同 onDeleteTransaction),漏了這行的話透過詳情彈窗
+      // 刪除交易後,交易表單的帳戶選單餘額不會反映刪除結果。
+      loadTxDictionaries(),
     ])
   }
 
@@ -1424,6 +1436,7 @@ export function TransactionsPage() {
 
   const loadTxDictionaries = async () => {
     const targetUserId = resolveTxDictionaryUserId()
+    const fetchSeq = ++txDictFetchSeqRef.current
     // 账户 / 分类 / 标签在本产品里是"用户级"的 —— 一个用户的所有账本共享一套，
     // 所以这里拉全量，不按 ledger 过滤。具体哪些账户能在某个账本做交易的校验
     // 交给下面 useMemo（同币种 + 非估值账户）。
@@ -1443,6 +1456,9 @@ export function TransactionsPage() {
           limit: 2000
         })
       ])
+      // 較早發出但較晚 resolve 的請求到這裡時已經不是最新一次呼叫,丟棄它的
+      // 結果——不然會用舊資料蓋掉後面已經 apply 成功的新資料(理由同上)。
+      if (fetchSeq !== txDictFetchSeqRef.current) return
       setTxDictionaryAccounts(accountRows)
       setTxDictionaryCategories(categoryRows)
       setTxDictionaryTags(tagRows)
@@ -2350,6 +2366,10 @@ export function TransactionsPage() {
       setRecurringEditContext(null)
       const refreshLedger = activeLedgerId || ledgerId
       await refreshSectionData(refreshLedger, 'transactions')
+      // 新增/編輯交易同樣會改變帳戶餘額,理由同 onDeleteTransaction——
+      // txDictionaryAccounts 是表單帳戶選單自己那份字典,refreshSectionData
+      // 刷的是另一份 accounts 狀態,不刷這行的話選單餘額不會反映剛存的交易。
+      await loadTxDictionaries()
       // 再打一次查询看服务端回给我们的具体这条 tx 的 tags/account_name；
       // 排查"更新没生效"时先看 server 是不是真的返回新值了。
       if (editingTxId) {
@@ -2423,6 +2443,12 @@ export function TransactionsPage() {
       original_account_name: tx.account_name || '',
       from_account_name: tx.from_account_name || '',
       to_account_name: tx.to_account_name || '',
+      // 转帐「转入金额」(2026-09-18 使用者反馈:重开编辑表单会用当下市场
+      // 汇率现算一个跟原存值不同的数字,使用者没注意到就按更新会静默把
+      // to_amount 覆盖掉):必须显式回填这笔交易实际存的 to_amount,不能
+      // 留空让 resolveEffectiveRate 退回现查匯率。同 GlobalEditDialogs.tsx。
+      fx_amount_override:
+        tx.tx_type === 'transfer' && tx.to_amount != null ? String(tx.to_amount) : '',
       currency: (tx.currency_code || '').toUpperCase() === txWriteLedgerCurrency
         ? ''
         : (tx.currency_code || '').toUpperCase(),
@@ -2476,6 +2502,10 @@ export function TransactionsPage() {
       setBaseChangeId(res.new_change_id)
     }
     await refreshSectionData(activeLedgerId || ledgerId, 'transactions')
+    // 刪除交易會改變帳戶餘額,但表單帳戶選單吃的是 txDictionaryAccounts
+    // (跟上面 refreshSectionData 刷的 accounts 狀態是兩份不同的字典),
+    // 沒有這行的話立刻新增/編輯交易時帳戶選單看到的餘額還是刪除前的舊值。
+    await loadTxDictionaries()
     setSuccessNotice(t('notice.txDeleted'))
   }
 
@@ -2711,6 +2741,10 @@ export function TransactionsPage() {
       setBatchDeleteOpen(false)
       exitSelection()
       void onRefresh()
+      // 同 onDeleteTransaction 理由:onRefresh 刷的是另一份 accounts 狀態,
+      // 不會動到表單帳戶選單吃的 txDictionaryAccounts,漏刷的話批量刪除
+      // 後立刻新增交易,選單餘額還是刪除前的舊值。
+      void loadTxDictionaries()
     } catch (err) {
       toast.error(localizeError(err, t))
     } finally {

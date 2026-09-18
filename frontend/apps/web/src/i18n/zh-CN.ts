@@ -1687,6 +1687,7 @@ const zhCN = {
   'transactions.table.type': '类型',
   'transactions.table.amount': '金额',
   'transactions.convertedToBase': '已按记账时汇率折算为账本本位币',
+  'transactions.transferReceivedAmount': '转入账户实际到账金额',
   'transactions.error.rateMissing': '汇率获取失败,无法折算为账本本位币,请稍后重试',
   'transactions.fx.rateMissing': '缺少汇率,请手动输入换算汇率',
   'transactions.error.splitTransferNotAllowed': '转账交易不支持拆分到多个分类',

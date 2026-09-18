@@ -548,6 +548,15 @@ export function TransactionsPanel({
     )
     return accounts.filter((row) => !row.hidden || pinned.has(row.name.trim().toLowerCase()))
   }, [accounts, form.account_name, form.from_account_name, form.to_account_name])
+  // 转帐「≈折算金额」显示用(见 TransactionRow::transferDisplayNative):
+  // 帐户名(小写 trim)→ 币别字典,列表已有完整帐户清单,零额外请求。
+  const accountCurrencyByName = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const row of accounts) {
+      if (row.name && row.currency) map.set(row.name.trim().toLowerCase(), row.currency)
+    }
+    return map
+  }, [accounts])
   const [accountPickerOpen, setAccountPickerOpen] = useState(false)
   const [fromAccountPickerOpen, setFromAccountPickerOpen] = useState(false)
   const [toAccountPickerOpen, setToAccountPickerOpen] = useState(false)
@@ -755,6 +764,8 @@ export function TransactionsPanel({
             selectionMode={selectionMode}
             selectedIds={selectedIds}
             onToggleSelect={onToggleSelect}
+            accountCurrencyByName={accountCurrencyByName}
+            ledgerBaseCurrency={baseCurrency}
           />
           <Pagination
             page={page}

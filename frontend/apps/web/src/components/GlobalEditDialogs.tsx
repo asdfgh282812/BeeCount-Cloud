@@ -403,6 +403,12 @@ export function GlobalEditDialogs() {
         original_account_name: tx.account_name || '',
         from_account_name: tx.from_account_name || '',
         to_account_name: tx.to_account_name || '',
+        // 转帐「转入金额」(2026-09-18 使用者反馈:重开编辑表单会用当下市场
+        // 汇率现算一个跟原存值不同的数字,使用者没注意到就按更新会静默把
+        // to_amount 覆盖掉):必须显式回填这笔交易实际存的 to_amount,不能
+        // 留空让 resolveEffectiveRate 退回现查匯率。
+        fx_amount_override:
+          tx.tx_type === 'transfer' && tx.to_amount != null ? String(tx.to_amount) : '',
         tags:
           tx.tags_list && tx.tags_list.length > 0
             ? tx.tags_list

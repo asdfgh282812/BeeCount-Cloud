@@ -1648,6 +1648,7 @@ const en = {
   'transactions.table.type': 'type',
   'transactions.table.amount': 'amount',
   'transactions.convertedToBase': 'Converted to ledger base currency at the rate recorded at entry time',
+  'transactions.transferReceivedAmount': 'Actual amount received in the destination account',
   'transactions.error.rateMissing': 'Failed to get exchange rate; cannot convert to ledger base currency. Try again later.',
   'transactions.fx.rateMissing': 'Exchange rate unavailable — enter a rate manually.',
   'transactions.error.splitTransferNotAllowed': 'Transfers cannot be split across categories.',

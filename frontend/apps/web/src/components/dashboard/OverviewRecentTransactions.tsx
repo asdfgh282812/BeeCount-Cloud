@@ -70,7 +70,13 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                     </div>
                     <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                       <span>{formatDate(tx.happened_at)}</span>
-                      {tx.account_name ? <span>· {tx.account_name}</span> : null}
+                      {tx.tx_type === 'transfer' ? (
+                        <span>
+                          · {tx.from_account_name || '-'} → {tx.to_account_name || '-'}
+                        </span>
+                      ) : tx.account_name ? (
+                        <span>· {tx.account_name}</span>
+                      ) : null}
                       {tx.ledger_name ? <span>· {tx.ledger_name}</span> : null}
                     </div>
                   </div>

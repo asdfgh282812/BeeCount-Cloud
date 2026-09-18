@@ -823,7 +823,9 @@ function DayTxList({ txs, loading, currency }: DayTxListProps) {
                       : '—')}
               </div>
               <div className="truncate text-[11px] text-muted-foreground">
-                {tx.account_name || tx.from_account_name || '—'}
+                {tx.tx_type === 'transfer'
+                  ? `${tx.from_account_name || '-'} → ${tx.to_account_name || '-'}`
+                  : tx.account_name || '—'}
                 {tx.note ? ` · ${tx.note}` : ''}
               </div>
             </div>

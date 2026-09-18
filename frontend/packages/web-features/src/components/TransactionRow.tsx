@@ -3,7 +3,7 @@ import { useT } from '@beecount/ui'
 
 import { CategoryIcon } from './CategoryIcon'
 import { TagChip } from './TagChip'
-import { currencySymbol } from '../lib/currencies'
+import { currencySymbol, transferConversionDisplay } from '../lib/currencies'
 import { composeTransactionRowTitle, type NoteDisplayMode } from '../lib/transactionRowTitle'
 
 export type TransactionRowVariant = 'default' | 'compact'
@@ -52,6 +52,12 @@ type CommonProps = {
   showLedger?: boolean
   /** 备注显示方式:'note' = 备注优先(有备注显示备注);默认 'category' = 分类 + 备注括号。 */
   noteDisplayMode?: NoteDisplayMode
+  /** 帐户名(小写 trim)→ 币别字典,用于转帐「≈折算金额」显示(见
+   *  {@link transferDisplayNative})。不传 → 转帐一律不显示「≈」,不影响
+   *  其它字段(现有行为)。 */
+  accountCurrencyByName?: Map<string, string>
+  /** 帐本本位币,配合 accountCurrencyByName 判断转入帐户是否等于本位币。 */
+  ledgerBaseCurrency?: string
 }
 
 /**
@@ -82,7 +88,9 @@ export function TransactionRow({
   selected = false,
   onToggleSelect,
   showLedger = false,
-  noteDisplayMode = 'category'
+  noteDisplayMode = 'category',
+  accountCurrencyByName,
+  ledgerBaseCurrency
 }: CommonProps) {
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
@@ -95,6 +103,21 @@ export function TransactionRow({
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
+  // 转帐「≈折算金额」(2026-09-18):跟 isForeignCurrency 是两条互斥路径 ——
+  // native_amount 专供信用卡帐单计算,转帐不能用它显示,见
+  // transferConversionDisplay 说明。
+  const transferConversion = transferConversionDisplay(row, accountCurrencyByName, ledgerBaseCurrency)
+  // 转帐主金额(row.amount)永远是转出帐户自身币别 —— 转出帐户是外币时比照
+  // isForeignCurrency 的既有惯例标上币种符号,不然使用者看不出这串数字是
+  // 哪个币别(2026-09-18 使用者反馈)。
+  const transferFromCurrency =
+    row.tx_type === 'transfer'
+      ? accountCurrencyByName?.get((row.from_account_name || '').trim().toLowerCase())
+      : undefined
+  const transferFromIsForeign =
+    !!transferFromCurrency &&
+    !!ledgerBaseCurrency &&
+    transferFromCurrency.trim().toUpperCase() !== ledgerBaseCurrency.trim().toUpperCase()
   // 拆帳(§2.4):has_splits=True 时 category_name 是 null,改显示各分类名
   // 拼接(如"餐饮、交通"),让列表一眼看出这笔已拆到多个分类,而不是显示"-"。
   const splitCategoryNames = row.has_splits
@@ -283,8 +306,14 @@ export function TransactionRow({
                 : 'text-foreground'
           } ${isCompact ? 'text-sm' : 'text-base'}`}>
             {sign}
-            {/* 外币显示其币种符号(JP¥/US$…,与本位币一眼区分);本位币维持纯数字 */}
-            {isForeignCurrency ? currencySymbol(row.currency_code as string) : ''}
+            {/* 外币显示其币种符号(JP¥/US$…,与本位币一眼区分);本位币维持纯数字。
+                转帐的 currency_code 从不设置(见 transferConversionDisplay 说明),
+                外币转出帐户改查 transferFromIsForeign。 */}
+            {isForeignCurrency
+              ? currencySymbol(row.currency_code as string)
+              : transferFromIsForeign
+                ? currencySymbol(transferFromCurrency as string)
+                : ''}
             {row.amount.toLocaleString('zh-CN', {
               minimumFractionDigits: 0,
               maximumFractionDigits: 2
@@ -350,6 +379,26 @@ export function TransactionRow({
                 minimumFractionDigits: 0,
                 maximumFractionDigits: 2
               })}
+            </span>
+          ) : transferConversion ? (
+            <span
+              className={`font-mono tabular-nums text-muted-foreground ${
+                isCompact ? 'text-[11px]' : 'text-xs'
+              }`}
+              title={
+                transferConversion.isBaseCurrency
+                  ? t('transactions.convertedToBase')
+                  : t('transactions.transferReceivedAmount')
+              }
+            >
+              ≈{transferConversion.amount.toLocaleString('zh-CN', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 2
+              })}
+              {/* 本位币维持既有纯数字观感;非本位币一律标上币别代码 —— 部分
+                  币别(CNY/JPY)的 currencySymbol 刻意留空,单靠符号看不出
+                  是哪个币别(2026-09-18 使用者反馈)。 */}
+              {transferConversion.isBaseCurrency ? '' : ` ${transferConversion.currencyCode}`}
             </span>
           ) : null}
         </div>

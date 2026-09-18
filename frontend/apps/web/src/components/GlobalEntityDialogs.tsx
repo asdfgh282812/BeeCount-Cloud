@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   deleteInstallmentPlan,
+  deleteTransaction,
   fetchCardRewardRules,
   fetchWorkspaceAccounts,
   fetchWorkspaceTags,
@@ -66,12 +67,20 @@ export function GlobalEntityDialogs() {
   const t = useT()
   const toast = useToast()
   const { token } = useAuth()
-  const { activeLedgerId, currentLedger, currency: activeCurrency } = useLedgers()
+  const { ledgers, activeLedgerId, currentLedger, currency: activeCurrency } = useLedgers()
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
   const { retryOnConflict } = useLedgerWrite()
 
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
   const [tx, setTx] = useState<WorkspaceTransaction | null>(null)
+
+  // 交易详情弹窗的刪除入口(2026-09-18 使用者反饋補強):只存要刪的那筆
+  // tx,實際刪除前彈 ConfirmDialog 二次確認 —— 跟 TransactionsPage.tsx 的
+  // pendingDelete 是各自獨立的一份(那份只服務交易主頁列表的刪除按鈕,這裡
+  // 服務全域詳情彈窗,兩者不共用 state,但都是呼叫同一支 deleteTransaction
+  // API,刪除後靠 sync 事件讓其它頁面自己刷新,不需要在這裡手動通知）。
+  const [pendingDeleteTx, setPendingDeleteTx] = useState<WorkspaceTransaction | null>(null)
+  const [deleteTxBusy, setDeleteTxBusy] = useState(false)
 
   // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):tx.reward_rule_ids 只有 id,
   // 详情弹窗要显示规则名称 —— 反查同一张卡(tx.account_id)的规则列表,过滤
@@ -165,6 +174,36 @@ export function GlobalEntityDialogs() {
       })
       .catch(() => {
         if (!cancelled) setTxRewardRules([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tx, token])
+
+  // 转帐「≈折算金额」显示用(2026-09-18):详情弹窗没有现成的完整帐户清单
+  // 缓存(不像 TransactionsPanel 那样已经手上有 accounts prop),只在打开
+  // 一笔转帐交易时才多拉一次,查出帐户名→币别字典给 TransactionDetailDialog
+  // 判断转入帐户是否等于本位币(见 transferDisplayNative)。
+  const [txAccountCurrencyByName, setTxAccountCurrencyByName] = useState<
+    Map<string, string> | undefined
+  >(undefined)
+  useEffect(() => {
+    if (!tx || tx.tx_type !== 'transfer') {
+      setTxAccountCurrencyByName(undefined)
+      return
+    }
+    let cancelled = false
+    fetchWorkspaceAccounts(token, { ledgerId: tx.ledger_id, limit: 500 })
+      .then((accounts) => {
+        if (cancelled) return
+        const map = new Map<string, string>()
+        for (const a of accounts) {
+          if (a.name && a.currency) map.set(a.name.trim().toLowerCase(), a.currency)
+        }
+        setTxAccountCurrencyByName(map)
+      })
+      .catch(() => {
+        if (!cancelled) setTxAccountCurrencyByName(undefined)
       })
     return () => {
       cancelled = true
@@ -522,6 +561,33 @@ export function GlobalEntityDialogs() {
     })
   }, [])
 
+  // 刪除(2026-09-18 使用者反饋補強):關掉詳情彈窗、記住目標交易,彈
+  // ConfirmDialog 二次確認,實際刪除在 handleConfirmDeleteTx。
+  const handleDeleteTx = useCallback((target: WorkspaceTransaction) => {
+    setTx(null)
+    setPendingDeleteTx(target)
+  }, [])
+
+  const handleConfirmDeleteTx = useCallback(async () => {
+    const target = pendingDeleteTx
+    if (!target) return
+    setDeleteTxBusy(true)
+    try {
+      // 跟 TransactionsPage.tsx::onDeleteTransaction 不同,這裡不持有任何
+      // 帳本的 baseChangeId 狀態——刪除後由各 Page 自己監聽 sync_change
+      // 事件刷新資料,這個全域彈窗容器不需要跟著推進。
+      await retryOnConflict(target.ledger_id, (base) =>
+        deleteTransaction(token, target.ledger_id, target.id, base),
+      )
+      toast.success(t('notice.txDeleted'), t('notice.success'))
+      setPendingDeleteTx(null)
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setDeleteTxBusy(false)
+    }
+  }, [pendingDeleteTx, retryOnConflict, token, toast, t])
+
   // 退款双向勾稽(ph1.5+):点击退款徽章 / 反查清单里的某一笔,原地把 detail
   // 弹窗切换成那笔交易 —— 用 tx_sync_id 精确查(跨分页/跨账本都能查到,不
   // 局限在当前已加载的列表里)。
@@ -654,6 +720,19 @@ export function GlobalEntityDialogs() {
         onJumpToDebt={handleJumpToDebt}
         rewardRules={txRewardRules}
         onJumpToReward={(accountId, ruleId) => void handleJumpToReward(accountId, ruleId)}
+        accountCurrencyByName={txAccountCurrencyByName}
+        ledgerBaseCurrency={tx ? ledgers.find((l) => l.ledger_id === tx.ledger_id)?.currency : undefined}
+        onDelete={handleDeleteTx}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingDeleteTx)}
+        title={t('dialog.delete.title')}
+        description={t('dialog.delete.description')}
+        cancelText={t('dialog.cancel')}
+        confirmText={t('dialog.delete.confirm')}
+        loading={deleteTxBusy}
+        onCancel={() => setPendingDeleteTx(null)}
+        onConfirm={() => void handleConfirmDeleteTx()}
       />
       <InstallmentRefundChoiceDialog
         open={installmentRefund?.step === 'choice'}
