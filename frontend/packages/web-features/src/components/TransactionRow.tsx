@@ -99,7 +99,15 @@ export function TransactionRow({
   const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
   // 交易级多币种:折算快照存在且 ≠ 原币值 → 外币交易,金额旁标币种 + ≈ 折算行。
   // 同币种交易 native === amount 恒成立,自然不显示;无需引入账本本位币 prop。
+  // 排除 transfer(2026-09-18 使用者反馈踩到的既有资料):部分转帐记录是由
+  // 其它客户端(例如 mobile app)寫入的,它们會帶上 currency_code +
+  // native_amount(語意是「轉出方折算」,专供信用卡帐单计算,见
+  // transferConversionDisplay 说明)——如果不排除,这类旧转帐记录会命中
+  // 这个分支,显示回退到已知不准确的 native_amount,盖掉下面 transferConversion
+  // 算出来的正确值。转帐一律走 transferConversion,不管 currency_code 是否
+  // 被别的客户端设置过。
   const isForeignCurrency =
+    row.tx_type !== 'transfer' &&
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount

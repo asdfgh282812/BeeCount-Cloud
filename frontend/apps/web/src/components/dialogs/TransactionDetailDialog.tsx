@@ -124,6 +124,19 @@ export function TransactionDetailDialog({
   const transferConversion = tx
     ? transferConversionDisplay(tx, accountCurrencyByName, ledgerBaseCurrency)
     : null
+  // 排除 transfer(2026-09-18 使用者反馈踩到的既有资料):部分转帐记录是由
+  // 其它客户端(例如 mobile app)寫入的,会帶上 currency_code + native_amount
+  // (語意是「轉出方折算」,专供信用卡帐单计算,见 transferConversionDisplay
+  // 说明)——不排除的话这类旧转帐记录会命中这个分支,显示回退到已知不准确
+  // 的 native_amount,盖掉上面 transferConversion 算出来的正确值。转帐一律
+  // 走 transferConversion,不管 currency_code 是否被别的客户端设置过。同
+  // TransactionRow.tsx 的 isForeignCurrency。
+  const isForeignCurrency =
+    !!tx &&
+    tx.tx_type !== 'transfer' &&
+    !!tx.currency_code &&
+    tx.native_amount != null &&
+    tx.native_amount !== tx.amount
   // 转帐主金额(tx.amount)永远是转出帐户自身币别——转出帐户是外币时标上
   // 币种符号(2026-09-18 使用者反馈:600/9016 这类数字看不出是哪个币别)。
   const transferFromCurrency =
@@ -194,7 +207,7 @@ export function TransactionDetailDialog({
                   minimumFractionDigits: 0,
                   maximumFractionDigits: 2,
                 })}
-                {tx.currency_code && tx.native_amount != null && tx.native_amount !== tx.amount ? (
+                {isForeignCurrency ? (
                   <span className="ml-2 align-middle text-sm font-medium text-muted-foreground">
                     {tx.currency_code}
                   </span>
@@ -205,12 +218,12 @@ export function TransactionDetailDialog({
                 ) : null}
               </span>
               {/* 交易级多币种:外币交易显示折账本本位币快照(记账时汇率) */}
-              {tx.currency_code && tx.native_amount != null && tx.native_amount !== tx.amount ? (
+              {isForeignCurrency ? (
                 <span
                   className="text-sm tabular-nums text-muted-foreground"
                   title={t('transactions.convertedToBase')}
                 >
-                  ≈ {tx.native_amount.toLocaleString('zh-CN', {
+                  ≈ {(tx.native_amount as number).toLocaleString('zh-CN', {
                     minimumFractionDigits: 0,
                     maximumFractionDigits: 2,
                   })}
