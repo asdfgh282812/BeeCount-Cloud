@@ -2232,63 +2232,80 @@ def get_project_breakdown(
     spend_rows = db.execute(
         select(
             ReadTxProjection.category_sync_id,
+            ReadTxProjection.tx_type,
             func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
             func.count(),
         ).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.project_sync_id == project_id,
-            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.tx_type.in_(["expense", "income"]),
             ReadTxProjection.exclude_from_budget == sa_false(),
             ReadTxProjection.happened_at >= start,
             ReadTxProjection.happened_at < end,
             ReadTxProjection.category_sync_id.isnot(None),
-        ).group_by(ReadTxProjection.category_sync_id)
+        ).group_by(ReadTxProjection.category_sync_id, ReadTxProjection.tx_type)
     ).all()
-    spend_by_category = {row[0]: (abs(float(row[1] or 0.0)), int(row[2] or 0)) for row in spend_rows}
+    # (expense_total, income_total, count) 三元組,跟 mobile app
+    # `getProjectCategoryBreakdown` 的 expense_total/income_total 雙軌口徑一致
+    # ——純退款分類(只有 income 交易)也要能落進這個 dict,而不是被过滤掉。
+    spend_by_category: dict[str, tuple[float, float, int]] = {}
+    for cat_id, tx_type, total, count in spend_rows:
+        cat_expense, cat_income, cat_count = spend_by_category.get(cat_id, (0.0, 0.0, 0))
+        amount = abs(float(total or 0.0))
+        if tx_type == "expense":
+            cat_expense += amount
+        else:
+            cat_income += amount
+        spend_by_category[cat_id] = (cat_expense, cat_income, cat_count + int(count or 0))
 
-    # 分類全集:使用者所有一級消費分類(給「未設定預算」列出從沒使用過的分類
-    # 用) + 這個專案已設定分配的分類 + 這期實際有交易的分類(可能是二級子
-    # 分類——分類子預算設計雖然只做到一級`docs/2026-09-06-project-category-
-    # budget-period-switch-design.md §3.2/§11`,但拆解統計不能因此漏掉二級
-    # 分類的交易,否則那筆交易連在畫面上都看不到,見「專案詳情頁看不到二級
-    # 分類交易」修正)。
-    expense_category_ids = list(db.scalars(
+    # 分類全集:使用者所有一級分類(給「未設定預算」列出從沒使用過的分類用,
+    # 收支兩種 kind 都要涵蓋——否則像「退款」這種收入類分類永遠不會出現在任
+    # 一個分組) + 這個專案已設定分配的分類 + 這期實際有交易的分類(可能是二
+    # 級子分類——分類子預算設計雖然只做到一級`docs/2026-09-06-project-
+    # category-budget-period-switch-design.md §3.2/§11`,但拆解統計不能因此漏
+    # 掉二級分類的交易,否則那筆交易連在畫面上都看不到,見「專案詳情頁看不到
+    # 二級分類交易」修正)。
+    level1_category_ids = list(db.scalars(
         select(UserCategoryProjection.sync_id).where(
             UserCategoryProjection.user_id == ledger.user_id,
             UserCategoryProjection.level == 1,
-            UserCategoryProjection.kind == "expense",
         ).order_by(UserCategoryProjection.sort_order.asc(), UserCategoryProjection.sync_id.asc())
     ).all())
     category_universe = list(dict.fromkeys([
-        *expense_category_ids, *budget_by_category.keys(), *spend_by_category.keys(),
+        *level1_category_ids, *budget_by_category.keys(), *spend_by_category.keys(),
     ]))
 
     allocated_categories: list[ReadProjectBreakdownCategoryOut] = []
     unallocated_categories: list[ReadProjectBreakdownCategoryOut] = []
     unset_categories: list[ReadProjectBreakdownCategoryOut] = []
     for cat_id in category_universe:
-        cat_spent, cat_count = spend_by_category.get(cat_id, (0.0, 0))
+        cat_spent, cat_income_spent, cat_count = spend_by_category.get(cat_id, (0.0, 0.0, 0))
         budget_row = budget_by_category.get(cat_id)
         if cat_count > 0 and budget_row is not None:
             target = _resolve_project_category_budget_target(budget_row, budget_amount)
+            # 進度以淨額(支出-收入/退款)計算,跟 mobile app 的
+            # `_CategoryBudgetTile` netAmount 口徑一致,退款會把已用進度打回去。
+            cat_net = cat_spent - cat_income_spent
             cat_progress = (
-                round(min(cat_spent / target, 999.0) * 100.0, 2) if target is not None and target > 0 else None
+                round(min(cat_net / target, 999.0) * 100.0, 2) if target is not None and target > 0 else None
             )
             allocated_categories.append(ReadProjectBreakdownCategoryOut(
-                category_id=cat_id, spent=cat_spent, count=cat_count, has_budget=True,
+                category_id=cat_id, spent=cat_spent, income_spent=cat_income_spent,
+                count=cat_count, has_budget=True,
                 budget_mode=cast("Any", budget_row.mode or "fixed"), budget_target=target,
                 progress_pct=cat_progress,
             ))
         elif cat_count > 0:
             unallocated_categories.append(ReadProjectBreakdownCategoryOut(
-                category_id=cat_id, spent=cat_spent, count=cat_count, has_budget=False,
+                category_id=cat_id, spent=cat_spent, income_spent=cat_income_spent,
+                count=cat_count, has_budget=False,
             ))
         else:
             unset_categories.append(ReadProjectBreakdownCategoryOut(
                 category_id=cat_id, spent=0.0, count=0, has_budget=budget_row is not None,
             ))
-    allocated_categories.sort(key=lambda c: c.spent, reverse=True)
-    unallocated_categories.sort(key=lambda c: c.spent, reverse=True)
+    allocated_categories.sort(key=lambda c: c.spent - c.income_spent, reverse=True)
+    unallocated_categories.sort(key=lambda c: c.spent - c.income_spent, reverse=True)
 
     return ReadProjectBreakdownOut(
         project_id=project_id,

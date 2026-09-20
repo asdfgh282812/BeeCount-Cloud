@@ -1197,9 +1197,13 @@ class ReadProjectCategoryBudgetOut(BaseModel):
 class ReadProjectBreakdownCategoryOut(BaseModel):
     """專案詳情頁分類拆解單列(docs/2026-09-06-project-category-budget-period-
     switch-design.md §4.4 item 5-7)。`spent`/`count` 是指定期間窗口內即時彙總
-    出的 derived 值,不落库。"""
+    出的 derived 值,不落库。`spent` 恆為該分類這期的「支出」毛額(不含退款/
+    收入折抵);`income_spent` 是同分類這期的收入/退款毛額,用來讓純退款分類
+    (spent=0)也能被前端顯示出來,並算出淨額——比照 mobile app
+    `getProjectCategoryBreakdown` 的 expense_total/income_total 雙軌設計。"""
     category_id: str
     spent: float
+    income_spent: float = 0.0
     count: int
     has_budget: bool
     budget_mode: ProjectCategoryBudgetMode | None = None

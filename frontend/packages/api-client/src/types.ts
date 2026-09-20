@@ -1780,7 +1780,11 @@ export type ProjectCategoryBudgetUpdatePayload = {
 
 export type ReadProjectBreakdownCategory = {
   category_id: string
+  /** 該分類這期的支出毛額，不含退款/收入折抵。 */
   spent: number
+  /** 該分類這期的收入/退款毛額；`spent - income_spent` 才是要顯示給使用者
+   *  的淨額，比照 mobile app 的 expense_total/income_total 雙軌設計。 */
+  income_spent: number
   count: number
   has_budget: boolean
   budget_mode?: ProjectCategoryBudgetMode | null

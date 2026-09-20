@@ -243,7 +243,7 @@ export function ProjectDetailDialog({ project, onClose, categories, currency, ic
                                 {t('overview.summary.txCount', { count: cat.count })}
                               </span>
                               <span className="shrink-0">
-                                <Amount value={cat.spent} currency={currency} size="sm" bold tone="default" />
+                                <Amount value={cat.spent - cat.income_spent} currency={currency} size="sm" bold tone={categoryNetTone(cat)} />
                               </span>
                             </button>
                             {expanded ? (
@@ -275,6 +275,16 @@ export function ProjectDetailDialog({ project, onClose, categories, currency, ic
       </DialogContent>
     </Dialog>
   )
+}
+
+/** 分類淨額(支出-收入/退款)的顯示色調:淨支出用 negative(跟隨使用者的收支
+ *  配色方案),淨收入/純退款用 positive,淨額為 0 用 default。比照 mobile app
+ *  `_CategoryBudgetTile` 的 netAmount 正負配色。 */
+function categoryNetTone(cat: ReadProjectBreakdownCategory): 'default' | 'positive' | 'negative' {
+  const net = cat.spent - cat.income_spent
+  if (net > 0) return 'negative'
+  if (net < 0) return 'positive'
+  return 'default'
 }
 
 function StatsBar({
@@ -422,9 +432,10 @@ function CategoryGroup({
           const c = categories.find((x) => x.id === cat.category_id)
           const expanded = expandedCategoryId === cat.category_id
           const rows = txByCategory[cat.category_id]
+          const catNet = cat.spent - cat.income_spent
           const progressRatio =
             showProgress && cat.budget_target != null && cat.budget_target > 0
-              ? Math.min(cat.spent / cat.budget_target, 1)
+              ? Math.min(catNet / cat.budget_target, 1)
               : null
           return (
             <div key={cat.category_id} className="rounded-md border border-border/40 bg-card">
@@ -445,8 +456,8 @@ function CategoryGroup({
                   {progressRatio != null ? (
                     <span className="mt-1 block h-1 overflow-hidden rounded-full bg-muted">
                       <span
-                        className={`block h-full ${cat.spent > (cat.budget_target || 0) ? 'bg-red-500' : 'bg-primary/70'}`}
-                        style={{ width: `${progressRatio * 100}%` }}
+                        className={`block h-full ${catNet > (cat.budget_target || 0) ? 'bg-red-500' : 'bg-primary/70'}`}
+                        style={{ width: `${Math.max(progressRatio, 0) * 100}%` }}
                       />
                     </span>
                   ) : null}
@@ -460,7 +471,7 @@ function CategoryGroup({
                   </span>
                 ) : null}
                 <span className="shrink-0">
-                  <Amount value={cat.spent} currency={currency} size="sm" bold tone="default" />
+                  <Amount value={catNet} currency={currency} size="sm" bold tone={categoryNetTone(cat)} />
                 </span>
               </button>
               {expanded ? (

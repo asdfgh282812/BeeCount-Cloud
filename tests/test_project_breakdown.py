@@ -333,6 +333,66 @@ def test_breakdown_no_budget_project_has_no_budget_fields():
         client.app.dependency_overrides.clear()
 
 
+def test_breakdown_income_only_category_appears_with_income_spent():
+    """純退款/收入分類(spent=0)過去會被 expense-only 的 spend_by_category /
+    category_universe 過濾掉,整個消失在拆解列表裡。修正後應落在
+    unallocated_categories,並帶出 income_spent 讓前端能顯示淨額。"""
+    client, _TS, token, hdr, ledger_id = _setup("pbd6@example.com")
+    try:
+        refund_id = _create_category(client, hdr, ledger_id, token, name="退款", kind="income")
+        project_id = _create_project(client, hdr, ledger_id, token, budget_amount=6000.0)
+        now = _this_month_mid()
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="income", amount=2806.0, category_id=refund_id,
+            project_id=project_id, happened_at=_iso(now),
+        )
+
+        out = _breakdown(client, hdr, ledger_id, project_id)
+        unallocated = {c["category_id"]: c for c in out["unallocated_categories"]}
+        assert refund_id in unallocated
+        assert unallocated[refund_id]["spent"] == 0.0
+        assert unallocated[refund_id]["income_spent"] == 2806.0
+        assert unallocated[refund_id]["count"] == 1
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_breakdown_category_with_expense_and_refund_uses_net_progress():
+    """同分類內既有支出又有退款時,progress_pct 應以淨額(支出-退款)計算,
+    跟 mobile app `_CategoryBudgetTile` 的 netAmount 口徑一致。"""
+    client, _TS, token, hdr, ledger_id = _setup("pbd7@example.com")
+    try:
+        app_cat = _create_category(client, hdr, ledger_id, token, name="應用軟體", kind="expense")
+        project_id = _create_project(client, hdr, ledger_id, token, budget_amount=10000.0)
+        _create_category_budget(
+            client, hdr, ledger_id, token, project_id,
+            category_id=app_cat, mode="fixed", fixed_amount=1000.0,
+        )
+        now = _this_month_mid()
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=800.0, category_id=app_cat,
+            project_id=project_id, happened_at=_iso(now),
+        )
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="income", amount=800.0, category_id=app_cat,
+            project_id=project_id, happened_at=_iso(now),
+        )
+
+        out = _breakdown(client, hdr, ledger_id, project_id)
+        allocated = {c["category_id"]: c for c in out["allocated_categories"]}
+        assert app_cat in allocated
+        assert allocated[app_cat]["spent"] == 800.0
+        assert allocated[app_cat]["income_spent"] == 800.0
+        assert allocated[app_cat]["count"] == 2
+        # net = 800 - 800 = 0 → progress_pct = 0,不是 800/1000=80%。
+        assert allocated[app_cat]["progress_pct"] == 0.0
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_list_transactions_filters_by_project_and_category():
     client, _TS, token, hdr, ledger_id = _setup("pbd5@example.com")
     try:
