@@ -1322,6 +1322,7 @@ const zhTW = {
   'projects.detail.stats.income': '入帳',
   'projects.detail.stats.net': '總計',
   'projects.detail.budget.dailyBudget': '今日可用',
+  'projects.detail.budget.carriedOver': '結轉',
   'projects.detail.categories.allocated': '已分配預算',
   'projects.detail.categories.unallocated': '未分配預算',
   'projects.detail.categories.unset': '未設定預算',

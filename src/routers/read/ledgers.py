@@ -2195,12 +2195,45 @@ def get_project_breakdown(
             income_for_budget = abs(float(total or 0.0))
 
     budget_amount = float(project.budget_amount) if project.budget_amount is not None else None
+
+    # 結轉(carryover_enabled):比照 App 端 `LocalProjectRepository.getProjectUsage`
+    # 的口徑——只算「上一期」一次,不做多期遞迴結轉,`fixed` 週期沒有「上一期」
+    # 概念故不生效(§ design doc,見 project_repository.dart 對應註解)。
+    # carried_over = 上一期的名目 budget_amount - 上一期的實際支出(spent 用同
+    # 一組 tx_type=='expense' + exclude_from_budget 過濾條件)。
+    carried_over: float | None = None
+    if project.carryover_enabled and period_type != "fixed" and budget_amount is not None and budget_amount > 0:
+        prev_window = _project_period_range(
+            period_type, project.period_start, project.period_end, now, effective_offset + 1,
+            tz_offset_minutes=tz_offset_minutes,
+            month_start_day=ledger.month_start_day or 1,
+        )
+        if prev_window is not None:
+            prev_start, prev_end = prev_window
+            prev_spent = float(db.scalar(
+                select(func.coalesce(func.sum(
+                    func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+                ), 0.0)).where(
+                    ReadTxProjection.ledger_id == ledger.id,
+                    ReadTxProjection.project_sync_id == project_id,
+                    ReadTxProjection.tx_type == "expense",
+                    ReadTxProjection.exclude_from_budget == sa_false(),
+                    ReadTxProjection.happened_at >= prev_start,
+                    ReadTxProjection.happened_at < prev_end,
+                )
+            ) or 0.0)
+            carried_over = budget_amount - abs(prev_spent)
+
     effective_budget: float | None = None
     remaining: float | None = None
     progress_pct: float | None = None
     project_status: str = "ok"
     if budget_amount is not None and budget_amount > 0:
-        effective_budget = budget_amount + (income_for_budget if project.income_included_in_budget else 0.0)
+        effective_budget = (
+            budget_amount
+            + (income_for_budget if project.income_included_in_budget else 0.0)
+            + (carried_over or 0.0)
+        )
         remaining = effective_budget - spent
         progress_pct = round(min(spent / effective_budget, 999.0) * 100.0, 2) if effective_budget > 0 else None
         if spent >= effective_budget:
@@ -2321,6 +2354,7 @@ def get_project_breakdown(
         income_count=int(income_count),
         budget_amount=budget_amount,
         effective_budget=effective_budget,
+        carried_over=carried_over,
         spent=spent,
         remaining=remaining,
         progress_pct=progress_pct,

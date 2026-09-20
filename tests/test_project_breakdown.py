@@ -289,6 +289,67 @@ def test_breakdown_income_included_in_budget_raises_effective_budget():
         client.app.dependency_overrides.clear()
 
 
+def test_breakdown_carryover_enabled_adds_previous_period_shortfall():
+    """`carryover_enabled=True` 時,上一期名目 budget_amount 扣掉上一期實際
+    支出後的結轉金額要併入 effective_budget(比照 App 端
+    `LocalProjectRepository.getProjectUsage` 的口徑,只算前一期一次)。"""
+    client, _TS, token, hdr, ledger_id = _setup("pbd7@example.com")
+    try:
+        project_id = _create_project(
+            client, hdr, ledger_id, token,
+            budget_amount=6000.0, carryover_enabled=True,
+        )
+        last_month = _last_month_mid()
+        this_month = _this_month_mid()
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=3051.0, project_id=project_id, happened_at=_iso(last_month),
+        )
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=6797.0, project_id=project_id, happened_at=_iso(this_month),
+        )
+
+        out = _breakdown(client, hdr, ledger_id, project_id)
+        assert out["spent"] == 6797.0
+        assert out["carried_over"] == 6000.0 - 3051.0
+        assert out["effective_budget"] == 6000.0 + (6000.0 - 3051.0)
+        assert out["remaining"] == out["effective_budget"] - 6797.0
+        assert out["status"] == "ok"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_breakdown_carryover_disabled_or_fixed_period_has_no_carried_over():
+    client, _TS, token, hdr, ledger_id = _setup("pbd8@example.com")
+    try:
+        # carryover_enabled 預設 False → carried_over 為 None,effective_budget
+        # 不受上期支出影響。
+        project_id = _create_project(client, hdr, ledger_id, token, budget_amount=6000.0)
+        last_month = _last_month_mid()
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=3051.0, project_id=project_id, happened_at=_iso(last_month),
+        )
+        out = _breakdown(client, hdr, ledger_id, project_id)
+        assert out["carried_over"] is None
+        assert out["effective_budget"] == 6000.0
+
+        # fixed 週期沒有「上一期」概念,即使 carryover_enabled=True 也不生效。
+        fixed_start = _this_month_mid().date().isoformat()
+        fixed_end = _this_month_mid().date().isoformat()
+        fixed_project_id = _create_project(
+            client, hdr, ledger_id, token,
+            budget_amount=6000.0, carryover_enabled=True, period_type="fixed",
+            period_start=fixed_start, period_end=fixed_end,
+        )
+        out_fixed = _breakdown(client, hdr, ledger_id, fixed_project_id)
+        assert out_fixed["carried_over"] is None
+        assert out_fixed["effective_budget"] == 6000.0
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_breakdown_period_offset_switches_to_previous_month():
     client, _TS, token, hdr, ledger_id = _setup("pbd3@example.com")
     try:

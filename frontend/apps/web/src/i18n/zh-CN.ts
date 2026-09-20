@@ -813,6 +813,7 @@ const zhCN = {
   'projects.detail.stats.income': '入账',
   'projects.detail.stats.net': '总计',
   'projects.detail.budget.dailyBudget': '今日可用',
+  'projects.detail.budget.carriedOver': '结转',
   'projects.detail.categories.allocated': '已分配预算',
   'projects.detail.categories.unallocated': '未分配预算',
   'projects.detail.categories.unset': '未设定预算',

@@ -1810,6 +1810,10 @@ export type ReadProjectBreakdown = {
   income_count: number
   budget_amount?: number | null
   effective_budget?: number | null
+  /** carryover_enabled 時，上一期名目 budget_amount 扣掉上一期實際支出後的
+   *  結轉金額（可能為負，代表上期超支）；已併入 effective_budget，未啟用/
+   *  fixed 週期/無預算時為 null。 */
+  carried_over?: number | null
   spent: number
   remaining?: number | null
   progress_pct?: number | null

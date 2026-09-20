@@ -396,6 +396,11 @@ function BudgetCard({
           </span>
         ) : null}
       </div>
+      {breakdown.carried_over != null ? (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          {t('projects.detail.budget.carriedOver')} <Amount value={breakdown.carried_over} currency={currency} size="sm" tone="muted" />
+        </div>
+      ) : null}
     </div>
   )
 }

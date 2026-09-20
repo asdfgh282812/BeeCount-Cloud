@@ -1234,6 +1234,10 @@ class ReadProjectBreakdownOut(BaseModel):
     income_count: int
     budget_amount: float | None = None
     effective_budget: float | None = None
+    # `carryover_enabled` 時,上一期(單一期,不遞迴)名目 budget_amount 扣掉上一
+    # 期實際支出後的結轉金額(可能為負,代表上期超支);未啟用/`fixed` 週期沒有
+    # 上一期概念/無預算時為 None,`effective_budget` 不含此項。
+    carried_over: float | None = None
     spent: float
     remaining: float | None = None
     progress_pct: float | None = None

@@ -1320,6 +1320,7 @@ const en = {
   'projects.detail.stats.income': 'Income',
   'projects.detail.stats.net': 'Total',
   'projects.detail.budget.dailyBudget': 'Today',
+  'projects.detail.budget.carriedOver': 'Carried over',
   'projects.detail.categories.allocated': 'Allocated categories',
   'projects.detail.categories.unallocated': 'Unallocated categories',
   'projects.detail.categories.unset': 'No activity this period',
