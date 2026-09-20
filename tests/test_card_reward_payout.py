@@ -1082,6 +1082,152 @@ def test_refund_after_payout_reverses_reward_and_auto_categorizes():
         app.dependency_overrides.clear()
 
 
+def test_partial_refund_before_payout_settles_net_amount():
+    """部分退款發生在排程還沒跑到結算日之前(2026-09-20 使用者反饋,對齊
+    App 端 `_summarizeRulePeriod` 按淨額比例扣減的修法):不再像全額退款
+    那樣整筆排除,`_qualifying_transactions` 改用「原始金額 − 已退款金額」
+    的淨額算回饋——消費 100、退款 40,淨額 60,10% 規則應該入帳 6.0 而不是
+    10.0 或 0。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-pref1@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgppr1", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgppr1",
+            settlement_type="immediate_after_tx", settlement_days=3, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgppr1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        base = _latest_change_id(client, hdr_web, "lgppr1")
+        r = client.post(
+            "/api/v1/write/ledgers/lgppr1/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 40.0,
+                "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        now2 = tx_day + timedelta(days=3)
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now2)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+        assert [t.amount for t in _income_tx_to(TS, "acc-wallet")] == [6.0]
+        payouts = _payout_rows(TS, email, rule_id)
+        assert len(payouts) == 1
+        assert payouts[0].amount == 6.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_partial_refund_after_payout_reverses_only_proportional_reward():
+    """部分退款發生在排程已經跑過、回饋已經按退款前的全額入帳之後——沖銷
+    金額不是整筆 payout,是「原回饋 − 用淨額重算的回饋」差額:消費 100 已
+    入帳 10.0(10%),退款 40 後淨額 60 應得 6.0,所以只沖銷 4.0,使用者仍
+    保留 6.0 的回饋淨額。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-pref2@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgppr2", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgppr2",
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgppr2", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+        assert [t.amount for t in _income_tx_to(TS, "acc-wallet")] == [10.0]
+
+        base = _latest_change_id(client, hdr_web, "lgppr2")
+        r = client.post(
+            "/api/v1/write/ledgers/lgppr2/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 40.0,
+                "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        expenses = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(expenses) == 1
+        clawback = expenses[0]
+        assert clawback.amount == 4.0
+        assert clawback.category_name == "退款"
+        assert clawback.category_kind == "expense"
+        assert clawback.reward_source_tx_sync_id == "tx-1"
+
+        # 原本的去重記錄維持不變(沖銷是另一筆獨立交易,不是改寫歷史 payout)。
+        payouts = _payout_rows(TS, email, rule_id)
+        assert len(payouts) == 1
+        assert payouts[0].amount == 10.0
+
+        # 重跑排程不會再對 tx-1 做任何動作:已經在 `already_paid` 去重集合裡。
+        with TS() as db:
+            result2 = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result2 == {"tx_payouts": 0, "period_payouts": 0}
+        assert len([t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_partial_refund_with_fixed_amount_rule_keeps_full_reward():
+    """`fixed_amount` 規則不隨金額縮放(比照 App 端 `estimateCardRewardForRule`
+    對 fixed_amount 的既有語意):部分退款只要淨額仍 > 0,固定回饋維持不變、
+    不用比例重算,只有淨額真的歸零(全額退款)才會沖銷掉。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-pref3@t.com"
+        hdr_app, hdr_web = _login_and_seed(client, "lgppr3", email)
+        rule_id = _create_rule(
+            client, hdr_web, "lgppr3",
+            rate_type="fixed_amount", rate_value=15.0,
+            settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+        )
+        tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+        _push(client, hdr_app, "lgppr3", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db)
+            db.commit()
+        assert result == {"tx_payouts": 1, "period_payouts": 0}
+        assert [t.amount for t in _income_tx_to(TS, "acc-wallet")] == [15.0]
+
+        base = _latest_change_id(client, hdr_web, "lgppr3")
+        r = client.post(
+            "/api/v1/write/ledgers/lgppr3/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": base, "tx_type": "income", "amount": 40.0,
+                "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # 淨額 60 > 0,fixed_amount 回饋維持 15 不變,不用沖銷。
+        expenses = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(expenses) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_plain_refund_without_reward_rule_gets_refund_category():
     """跟信用卡回饋完全無關的普通退款,也要自動歸到「退款」分類——income/
     expense 各自獨立一份(退款可能是任一方向,見 §2.6 反向类型设计)。"""

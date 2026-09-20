@@ -229,16 +229,26 @@ def reverse_card_reward_payouts_for_refund(
     (v1 不處理,同這個 codebase 其它「已知限制」慣例,不在這裡另外強行
     重算整期分攤)。
 
-    `card_rewards._qualifying_transactions` 已經把「被退款的交易」整個排除
-    在未來的結算掃描之外(見該函式 docstring),所以「退款發生在排程跑之前」
-    的情況天然不會被排入、不需要這裡處理;這個函式只處理「排程已經跑過,
-    回饋已經入帳」的情況——兩條路徑合起來,退款前/退款後結算的淨效果一致
-    (這筆消費的回饋淨額最終都是 0)。
+    `card_rewards._qualifying_transactions` 已經把「被退款的交易」的淨額
+    (原始金額 − 已退款金額)算進未來的結算掃描(見該函式 docstring),所以
+    「退款發生在排程跑之前」的情況天然會算出正確金額、不需要這裡處理;這個
+    函式只處理「排程已經跑過,回饋已經按舊的(退款前)金額入帳」的情況。
 
-    沖銷交易本身是一筆 `expense`,金額/入帳帳戶取自當初實際入帳的那筆回饋
-    交易(`payout.payout_tx_sync_id`,而不是重新计算——實際落袋的錢是唯一
-    權威來源),分類用自建的「退款」分類(`ensure_refund_category`,expense
-    kind)。回傳新建的沖銷交易 sync_id 列表(通常 0~規則勾選數量那麼多筆)。
+    2026-09-20 補強(對齊 App 端 `card_reward_rule_providers.dart::
+    _summarizeRulePeriod` 這次的按比例扣減修法):沖銷金額不再直接等於整筆
+    `payout.amount`,改成「原回饋(payout.amount)− 用淨額重新計算出來的回饋
+    (new_reward_amount)」的差額——全額退款時淨額歸零、`new_reward_amount`
+    跟著歸零,差額等於整筆 `payout.amount`,效果等同舊行為;部分退款時只
+    沖銷「淨額比對應該少拿的那一部分」,不會把整筆回饋一次沖光。`new_
+    reward_amount` 額外夾在 `[0, payout.amount]` 之間,不讓重算結果超過當初
+    實際入帳的金額(payout.amount 可能已經被期間 cap_amount 夾過,這裡不重新
+    模擬 cap 分攤,對齊 v1 已知限制的既有慣例)。找不到規則(已刪除)時退回
+    舊行為整筆沖銷,因為沒有 rate_type/rate_value 可以重算。
+
+    沖銷交易本身是一筆 `expense`,入帳帳戶取自當初實際入帳的那筆回饋交易
+    (`payout.payout_tx_sync_id`),分類用自建的「退款」分類
+    (`ensure_refund_category`,expense kind)。回傳新建的沖銷交易 sync_id
+    列表(通常 0~規則勾選數量那麼多筆)。
     """
     refunded_tx = db.scalar(
         select(ReadTxProjection).where(
@@ -254,6 +264,12 @@ def reverse_card_reward_payouts_for_refund(
         rule_ids = []
     if not isinstance(rule_ids, list) or not rule_ids:
         return []
+
+    original_base = card_rewards._reward_base_amount(refunded_tx)
+    refunded_amount = card_rewards._refunded_amounts(
+        db, ledger_id=ledger_id, sync_ids=[refunded_tx_id],
+    ).get(refunded_tx_id, 0.0)
+    net_base = max(0.0, original_base - refunded_amount)
 
     created: list[str] = []
     for rule_id in rule_ids:
@@ -285,11 +301,26 @@ def reverse_card_reward_payouts_for_refund(
         )
         rule_label = rule.label if rule is not None else rule_sync_id
 
+        if rule is None:
+            reversal_amount = payout.amount
+        else:
+            new_reward_amount = (
+                0.0 if net_base <= 0
+                else card_rewards._round_amount(
+                    card_rewards.compute_tx_reward_amount(rule, net_base),
+                    rule.total_rounding, to_integer=True,
+                )
+            )
+            new_reward_amount = min(max(new_reward_amount, 0.0), payout.amount)
+            reversal_amount = payout.amount - new_reward_amount
+        if reversal_amount <= 0:
+            continue  # 淨額重算後回饋不變(常見於部分退款的 fixed_amount 規則),不用沖銷
+
         category_id = card_rewards.ensure_refund_category(db, user_id=user_id, kind="expense")
         item: dict[str, object] = {
             "syncId": new_sync_id("tx"),
             "type": "expense",
-            "amount": reward_tx.amount,
+            "amount": reversal_amount,
             "happenedAt": now.isoformat(),
             "note": f"退款沖銷回饋金：{rule_label}",
             "accountId": reward_tx.account_sync_id,

@@ -37,8 +37,8 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
-from sqlalchemy import exists, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ..models import (
     CardRewardPayout,
@@ -415,6 +415,31 @@ def compute_tx_reward_amount(rule: ReadCardRewardRuleProjection, tx_amount: floa
 class QualifyingTx(TypedDict):
     tx: ReadTxProjection
     reward_amount: float
+    reward_base: float
+
+
+def _refunded_amounts(
+    db: Session, *, ledger_id: str, sync_ids: Sequence[str],
+) -> dict[str, float]:
+    """`sync_ids` 這批交易裡,每一筆已經被退款掉多少金額(2026-09-20 使用者
+    反饋,跟 App 端 `card_reward_rule_providers.dart::_summarizeRulePeriod`
+    這次的修法同語意):退款交易用 `refund_of_sync_id` 指回原始交易,原始
+    交易本身的 `amount` 不會被改——查「誰的 `refund_of_sync_id` 指向我」
+    反查出退款金額,呼叫端再拿去跟原始金額相減得到淨額。目前 `_assert_
+    refund_target_not_already_refunded` 只允許一筆原始交易對應最多一筆
+    退款,但這裡仍用加總寫法,不假設上游限制永遠成立。"""
+    if not sync_ids:
+        return {}
+    rows = db.execute(
+        select(ReadTxProjection.refund_of_sync_id, ReadTxProjection.amount).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.refund_of_sync_id.in_(sync_ids),
+        )
+    ).all()
+    result: dict[str, float] = {}
+    for refund_of_sync_id, amount in rows:
+        result[refund_of_sync_id] = result.get(refund_of_sync_id, 0.0) + abs(amount)
+    return result
 
 
 def _qualifying_transactions(
@@ -438,23 +463,22 @@ def _qualifying_transactions(
     消費」讓使用者對照(reward_amount 由呼叫端強制歸零),不該再套用單筆
     交易層級的生效窗過濾,否則規則整期都沒生效時又會變回清單一律清空。
 
-    2026-08-04 使用者反饋(退款沖銷回饋):已經被退款的消費(有另一筆交易的
-    `refund_of_sync_id` 指向它)一律排除,不管排程有沒有結算過——還沒結算
-    的话直接在这裡被排除掉,永遠不會被排入,等同「退款發生在排程跑之前」
-    的情況天然一致;已經結算過的话這裡的排除不影響歷史 payout 記錄,由
+    2026-08-04 使用者反饋(退款沖銷回饋)/2026-09-20 補強(按淨額比例扣減,
+    對齊 App 端 `card_reward_rule_providers.dart::_summarizeRulePeriod` 這次
+    的修法):被退款的消費不再整筆排除,改成用「原始金額 − 已退款金額」的
+    淨額(`reward_base`)去算回饋——全額退款淨額歸零,等同排除;部分退款
+    淨額 > 0,回饋按淨額重算(`percentage` 規則按比例縮小,`fixed_amount`
+    規則維持原樣,除非淨額被 `min_tx_amount` 門檻擋下),不再無論退款金額
+    多少都整筆歸零。還沒結算的话這裡用淨額直接算出正確金額,永遠不會排入
+    錯誤的全額;已經結算過的话這裡的重算不影響歷史 payout 記錄,由
     `card_reward_payout.reverse_card_reward_payouts_for_refund` 在退款當下
-    另外補一筆沖銷交易,兩條路徑合起來保證「退款前/退款後結算」淨效果一致
-    (使用者最終從這筆消費拿到的回饋淨額都是 0)。"""
-    RefundTx = aliased(ReadTxProjection)
+    另外補一筆等於「原回饋 − 淨額重算回饋」差額的沖銷交易,兩條路徑合起來
+    保證「退款前/退款後結算」淨效果一致。"""
     conditions = [
         ReadTxProjection.ledger_id == ledger_id,
         ReadTxProjection.account_sync_id == rule.account_sync_id,
         ReadTxProjection.tx_type == "expense",
         ReadTxProjection.reward_rule_sync_ids_json.like(f'%"{rule.sync_id}"%'),
-        ~exists().where(
-            RefundTx.ledger_id == ledger_id,
-            RefundTx.refund_of_sync_id == ReadTxProjection.sync_id,
-        ),
     ]
     start_dt = end_dt = None
     if period_start is not None:
@@ -467,6 +491,9 @@ def _qualifying_transactions(
     tx_rows = db.scalars(
         select(ReadTxProjection).where(*conditions).order_by(ReadTxProjection.happened_at.asc())
     ).all()
+    refunded_amounts = _refunded_amounts(
+        db, ledger_id=ledger_id, sync_ids=[tx.sync_id for tx in tx_rows],
+    )
 
     items: list[QualifyingTx] = []
     for tx in tx_rows:
@@ -493,9 +520,18 @@ def _qualifying_transactions(
         if not isinstance(tagged_rule_ids, list) or rule.sync_id not in tagged_rule_ids:
             continue
         reward_base = _reward_base_amount(tx)
+        refunded = refunded_amounts.get(tx.sync_id, 0.0)
+        if refunded > 0:
+            reward_base = max(0.0, reward_base - refunded)
+        if reward_base <= 0:
+            continue  # 全額退款(或退款金額 ≥ 原始金額):淨額歸零,不產生回饋
         if rule.min_tx_amount is not None and reward_base < rule.min_tx_amount:
             continue
-        items.append({"tx": tx, "reward_amount": compute_tx_reward_amount(rule, reward_base)})
+        items.append({
+            "tx": tx,
+            "reward_amount": compute_tx_reward_amount(rule, reward_base),
+            "reward_base": reward_base,
+        })
     return items
 
 
@@ -690,7 +726,7 @@ def compute_account_card_rewards(
             items = _qualifying_transactions(
                 db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
             )
-            qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+            qualifying_spend = sum(item["reward_base"] for item in items)
             threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
             raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
             # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
@@ -840,7 +876,7 @@ def list_rule_qualifying_transactions(
                     enforce_active_window=False,
                 )
             ]
-            qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+            qualifying_spend = sum(item["reward_base"] for item in items)
             period_details.append({
                 "period_start": period_start, "period_end": period_end,
                 "status": "expired", "qualifying_spend": round(qualifying_spend, 2),
@@ -854,7 +890,7 @@ def list_rule_qualifying_transactions(
         items = _qualifying_transactions(
             db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
         )
-        qualifying_spend = sum(_reward_base_amount(item["tx"]) for item in items)
+        qualifying_spend = sum(item["reward_base"] for item in items)
         threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
         raw_reward = round(sum(item["reward_amount"] for item in items), 2) if threshold_met else 0.0
         if not threshold_met:
