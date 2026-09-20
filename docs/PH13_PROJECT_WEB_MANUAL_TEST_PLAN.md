@@ -133,10 +133,13 @@ migration）+ `make dev-web`，登入既有測試帳號、對著「測試帳本�
    日）」，確認兩個日期輸入框正確顯示、送出後卡片正確顯示「起始日 ~
    結束日」文字（`ProjectsPanel.tsx::ProjectCard` 有這段邏輯，pytest 已
    驗證後端邊界正確，但沒有實際在瀏覽器裡選過日期輸入框）。
-2. **`carryover_enabled`（預算結轉）checkbox**：目前 UI 只是存這個
-   欄位，花費彙總（`list_projects`）**沒有**真的把上一期結轉金額疊加進
-   `remaining`（PH13_PROJECT_SD.md 本身也沒有規定確切的結轉演算法），
-   如果你預期這個開關要有計算效果，需要再另外討論演算法後補上。
+2. **`carryover_enabled`（預算結轉）checkbox**：2026-09-21 已補上演算法
+   （`_project_carried_over`，`src/routers/read/ledgers.py`，`list_projects`/
+   `get_project_breakdown` 共用）——比照 App 端 `LocalProjectRepository.
+   getProjectUsage`：結轉金額 = 上一期名目 `budget_amount` − 上一期實際
+   支出，只算前一期一次不遞迴，`fixed` 週期沒有「上一期」概念故不生效；
+   已併入 `effective_budget`/`remaining`/`progress_pct`/`status`，總覽頁
+   卡片與詳情頁的「已超支」判斷已統一。
 3. **`GlobalEditDialogs.tsx`（從交易列表點「編輯」以外的全域入口，比如
    從首頁/日曆點交易編輯）**：程式碼改動跟 `TransactionsPage.tsx` 是
    同一套邏輯抄過去的（`onCreateTxProject`/`editTxProjects` 等），但這

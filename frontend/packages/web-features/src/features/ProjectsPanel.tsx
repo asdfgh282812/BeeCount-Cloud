@@ -451,7 +451,11 @@ function ProjectCard({
 }) {
   const t = useT()
   const hasBudget = project.budget_amount != null && project.budget_amount > 0
-  const ratio = hasBudget ? Math.min(project.spent / (project.budget_amount as number), 1) : 0
+  // 進度條/顯示的「總預算」用 effective_budget（併入結轉/收入後的有效預算），
+  // 不是原始 budget_amount，否則會跟 status（server 端已用 effective_budget
+  // 判斷超支）對不上，出現「已超支」標籤但長度沒滿條的錯覺。
+  const displayBudget = project.effective_budget ?? project.budget_amount ?? 0
+  const ratio = hasBudget && displayBudget > 0 ? Math.min(project.spent / displayBudget, 1) : 0
   const barColor =
     project.status === 'over' ? 'bg-red-500' : project.status === 'warning' ? 'bg-orange-500' : 'bg-primary/70'
 
@@ -514,7 +518,7 @@ function ProjectCard({
           {hasBudget ? (
             <div className="text-[11px] text-muted-foreground">
               {t('projects.label.budget')}{' '}
-              <Amount value={project.budget_amount as number} currency={currency} size="sm" tone="muted" />
+              <Amount value={displayBudget} currency={currency} size="sm" tone="muted" />
             </div>
           ) : (
             <div className="text-[11px] text-muted-foreground">{t('projects.label.noBudget')}</div>

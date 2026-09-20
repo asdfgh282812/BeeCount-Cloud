@@ -1679,6 +1679,11 @@ export type ReadProject = {
   name: string
   icon?: string | null
   budget_amount?: number | null
+  /** budget_amount 併入本期收入（income_included_in_budget 時）+ 結轉
+   *  （carryover_enabled 時）後的有效預算，跟 ReadProjectBreakdown.effective_budget
+   *  同一套演算法——列表卡片的進度條/超支判斷應該用這個欄位，不是 budget_amount。 */
+  effective_budget?: number | null
+  carried_over?: number | null
   period_type: ProjectPeriodType
   period_start?: string | null
   period_end?: string | null

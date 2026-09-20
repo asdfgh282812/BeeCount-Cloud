@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -171,6 +171,17 @@ def _projects(client, hdr, ledger_id):
     r = client.get(f"/api/v1/read/ledgers/{ledger_id}/projects", headers=hdr)
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def _this_month_mid():
+    now = datetime.now(timezone.utc)
+    return now.replace(day=min(now.day, 15), hour=12, minute=0, second=0, microsecond=0)
+
+
+def _last_month_mid():
+    this = _this_month_mid()
+    prev_end = this.replace(day=1) - timedelta(days=1)
+    return prev_end.replace(day=min(prev_end.day, 15))
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +446,10 @@ def test_adjustment_tx_with_project_id_rejected():
 
 
 def test_expense_and_income_tx_with_project_id_accepted():
+    """`spent` 只算 tx_type=='expense'(跟 `get_project_breakdown`/App 端
+    `ProjectRepository.getProjectUsage` 同口徑),income 交易只在
+    `income_included_in_budget=True` 時併入 `effective_budget`,不會直接疊加
+    進 `spent`。"""
     client, _TS, token, hdr, ledger_id = _setup("proj12@example.com")
     try:
         proj_res = _create_project(client, hdr, ledger_id, token)
@@ -446,7 +461,7 @@ def test_expense_and_income_tx_with_project_id_accepted():
         assert income_res.status_code == 200, income_res.text
 
         p = _projects(client, hdr, ledger_id)[0]
-        assert p["spent"] == 150.0
+        assert p["spent"] == 100.0
     finally:
         client.close()
 
@@ -624,6 +639,45 @@ def test_project_status_thresholds():
         _create_tx(client, hdr, ledger_id, token, amount=200.0, project_id=project_id)
         p = _projects(client, hdr, ledger_id)[0]
         assert p["status"] == "over"  # 1050/1000 > 100%
+    finally:
+        client.close()
+
+
+def test_list_projects_carryover_matches_breakdown_effective_budget():
+    """`list_projects`(專案總覽卡片)跟 `get_project_breakdown`(詳情頁)的
+    `effective_budget`/`carried_over` 演算法必須一致,否則總覽頁會顯示「已
+    超支」但詳情頁/App 端沒有(2026-09-21 實際案例:budget=6000,上期花
+    3051,本期花 6797 → 總覽頁曾經算出 spent=9603(誤把收入疊加進 spent)、
+    budget 固定 6000 沒有併入結轉,顯示已超支;實際 effective_budget 應為
+    6000+2949=8949,6797 < 8949,不該超支)。"""
+    client, _TS, token, hdr, ledger_id = _setup("proj21@example.com")
+    try:
+        project_id = _create_project(
+            client, hdr, ledger_id, token,
+            budget_amount=6000.0, carryover_enabled=True,
+        ).json()["entity_id"]
+
+        last_month = _last_month_mid()
+        this_month = _this_month_mid()
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=3051.0, project_id=project_id, happened_at=_iso(last_month),
+        )
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="expense", amount=6797.0, project_id=project_id, happened_at=_iso(this_month),
+        )
+        _create_tx(
+            client, hdr, ledger_id, token,
+            tx_type="income", amount=2806.0, project_id=project_id, happened_at=_iso(this_month),
+        )
+
+        p = _projects(client, hdr, ledger_id)[0]
+        assert p["spent"] == 6797.0
+        assert p["carried_over"] == 6000.0 - 3051.0
+        assert p["effective_budget"] == 6000.0 + (6000.0 - 3051.0)
+        assert p["remaining"] == p["effective_budget"] - 6797.0
+        assert p["status"] == "ok"
     finally:
         client.close()
 

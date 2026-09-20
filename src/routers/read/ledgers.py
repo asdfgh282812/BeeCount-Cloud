@@ -1951,6 +1951,41 @@ def _project_period_range(
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
+def _project_carried_over(
+    db: Session, *, ledger, project_sync_id: str, period_type: str, period_start, period_end,
+    now: datetime, effective_offset: int, tz_offset_minutes: int, month_start_day: int,
+    budget_amount: float | None, carryover_enabled: bool,
+) -> float | None:
+    """結轉(carryover_enabled)金額,`list_projects`/`get_project_breakdown` 共用
+    —— 比照 App 端 `LocalProjectRepository.getProjectUsage` 的口徑:只算「上一
+    期」一次,不做多期遞迴結轉,`fixed` 週期沒有「上一期」概念故不生效。
+    carried_over = 上一期的名目 budget_amount - 上一期的實際支出(只算
+    tx_type=='expense' 且未標記 exclude_from_budget 的交易,同「預算用量」口徑)。
+    """
+    if not carryover_enabled or period_type == "fixed" or budget_amount is None or budget_amount <= 0:
+        return None
+    prev_window = _project_period_range(
+        period_type, period_start, period_end, now, effective_offset + 1,
+        tz_offset_minutes=tz_offset_minutes, month_start_day=month_start_day,
+    )
+    if prev_window is None:
+        return None
+    prev_start, prev_end = prev_window
+    prev_spent = float(db.scalar(
+        select(func.coalesce(func.sum(
+            func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+        ), 0.0)).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.project_sync_id == project_sync_id,
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.exclude_from_budget == sa_false(),
+            ReadTxProjection.happened_at >= prev_start,
+            ReadTxProjection.happened_at < prev_end,
+        )
+    ) or 0.0)
+    return budget_amount - abs(prev_spent)
+
+
 @router.get(
     "/ledgers/{ledger_external_id}/projects",
     response_model=list[ReadProjectOut],
@@ -1965,7 +2000,12 @@ def list_projects(
     """專案只读列表(Phase 13,docs/PH13_PROJECT_SD.md)。`spent`/`remaining`/
     `progress_pct`/`status` 不落库,从 `read_tx_projection.project_sync_id`
     反查交易,依 period_type 算出當期起訖窗口即時彙總算出(见
-    `ReadProjectProjection` docstring)。"""
+    `ReadProjectProjection` docstring)。`spent`/收入併入預算/結轉的口徑跟
+    `get_project_breakdown` 一致(比照 App 端 `ProjectRepository.getProjectUsage`
+    ——`spent` 只算 tx_type=='expense' 且未標記 `exclude_from_budget` 的交易,
+    `effective_budget` = budget_amount + 本期收入(income_included_in_budget
+    時)+ 結轉(carryover_enabled 時),避免這個列表端點跟詳情頁/App 端算出不
+    同的「已超支」判斷)。"""
     is_admin = _is_admin(current_user)
     ledger, _ = _require_ledger(
         db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
@@ -1982,37 +2022,59 @@ def list_projects(
         return []
 
     now = datetime.now(timezone.utc)
+    month_start_day = ledger.month_start_day or 1
     out: list[ReadProjectOut] = []
     for row in rows:
+        period_type = row.period_type or "monthly"
         window = _project_period_range(
-            row.period_type or "monthly", row.period_start, row.period_end, now,
+            period_type, row.period_start, row.period_end, now,
             tz_offset_minutes=tz_offset_minutes,
-            month_start_day=ledger.month_start_day or 1,
+            month_start_day=month_start_day,
         )
-        spent = 0.0
+        spent = income_for_budget = 0.0
         if window is not None:
             start, end = window
-            spent = float(db.scalar(
-                select(func.coalesce(func.sum(
-                    func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
-                ), 0.0)).where(
+            budget_stats_rows = db.execute(
+                select(
+                    ReadTxProjection.tx_type,
+                    func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+                ).where(
                     ReadTxProjection.ledger_id == ledger.id,
                     ReadTxProjection.project_sync_id == row.sync_id,
+                    ReadTxProjection.tx_type.in_(["expense", "income"]),
+                    ReadTxProjection.exclude_from_budget == sa_false(),
                     ReadTxProjection.happened_at >= start,
                     ReadTxProjection.happened_at < end,
-                )
-            ) or 0.0)
-            spent = abs(spent)
+                ).group_by(ReadTxProjection.tx_type)
+            ).all()
+            for tx_type, total in budget_stats_rows:
+                if tx_type == "expense":
+                    spent = abs(float(total or 0.0))
+                elif tx_type == "income":
+                    income_for_budget = abs(float(total or 0.0))
         budget_amount = float(row.budget_amount) if row.budget_amount is not None else None
+        carried_over = _project_carried_over(
+            db, ledger=ledger, project_sync_id=row.sync_id,
+            period_type=period_type, period_start=row.period_start, period_end=row.period_end,
+            now=now, effective_offset=0, tz_offset_minutes=tz_offset_minutes,
+            month_start_day=month_start_day,
+            budget_amount=budget_amount, carryover_enabled=bool(row.carryover_enabled),
+        )
+        effective_budget: float | None = None
         remaining: float | None = None
         progress_pct: float | None = None
         project_status: str = "ok"
         if budget_amount is not None and budget_amount > 0:
-            remaining = budget_amount - spent
-            progress_pct = round(min(spent / budget_amount, 999.0) * 100.0, 2)
-            if spent >= budget_amount:
+            effective_budget = (
+                budget_amount
+                + (income_for_budget if row.income_included_in_budget else 0.0)
+                + (carried_over or 0.0)
+            )
+            remaining = effective_budget - spent
+            progress_pct = round(min(spent / effective_budget, 999.0) * 100.0, 2) if effective_budget > 0 else None
+            if spent >= effective_budget:
                 project_status = "over"
-            elif spent >= budget_amount * 0.8:
+            elif spent >= effective_budget * 0.8:
                 project_status = "warning"
         out.append(
             ReadProjectOut(
@@ -2020,6 +2082,8 @@ def list_projects(
                 name=row.name or "",
                 icon=row.icon,
                 budget_amount=budget_amount,
+                effective_budget=effective_budget,
+                carried_over=carried_over,
                 period_type=cast("Any", row.period_type or "monthly"),
                 period_start=row.period_start,
                 period_end=row.period_end,
@@ -2195,34 +2259,13 @@ def get_project_breakdown(
             income_for_budget = abs(float(total or 0.0))
 
     budget_amount = float(project.budget_amount) if project.budget_amount is not None else None
-
-    # 結轉(carryover_enabled):比照 App 端 `LocalProjectRepository.getProjectUsage`
-    # 的口徑——只算「上一期」一次,不做多期遞迴結轉,`fixed` 週期沒有「上一期」
-    # 概念故不生效(§ design doc,見 project_repository.dart 對應註解)。
-    # carried_over = 上一期的名目 budget_amount - 上一期的實際支出(spent 用同
-    # 一組 tx_type=='expense' + exclude_from_budget 過濾條件)。
-    carried_over: float | None = None
-    if project.carryover_enabled and period_type != "fixed" and budget_amount is not None and budget_amount > 0:
-        prev_window = _project_period_range(
-            period_type, project.period_start, project.period_end, now, effective_offset + 1,
-            tz_offset_minutes=tz_offset_minutes,
-            month_start_day=ledger.month_start_day or 1,
-        )
-        if prev_window is not None:
-            prev_start, prev_end = prev_window
-            prev_spent = float(db.scalar(
-                select(func.coalesce(func.sum(
-                    func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
-                ), 0.0)).where(
-                    ReadTxProjection.ledger_id == ledger.id,
-                    ReadTxProjection.project_sync_id == project_id,
-                    ReadTxProjection.tx_type == "expense",
-                    ReadTxProjection.exclude_from_budget == sa_false(),
-                    ReadTxProjection.happened_at >= prev_start,
-                    ReadTxProjection.happened_at < prev_end,
-                )
-            ) or 0.0)
-            carried_over = budget_amount - abs(prev_spent)
+    carried_over = _project_carried_over(
+        db, ledger=ledger, project_sync_id=project_id,
+        period_type=period_type, period_start=project.period_start, period_end=project.period_end,
+        now=now, effective_offset=effective_offset, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=ledger.month_start_day or 1,
+        budget_amount=budget_amount, carryover_enabled=bool(project.carryover_enabled),
+    )
 
     effective_budget: float | None = None
     remaining: float | None = None

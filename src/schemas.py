@@ -1154,6 +1154,11 @@ class ReadProjectOut(BaseModel):
     name: str
     icon: str | None = None
     budget_amount: float | None = None
+    # budget_amount 併入本期收入(income_included_in_budget 時)+ 結轉
+    # (carryover_enabled 時)後的有效預算,跟 `ReadProjectBreakdownOut.
+    # effective_budget` 同一套演算法(§ get_project_breakdown docstring)。
+    effective_budget: float | None = None
+    carried_over: float | None = None
     period_type: ProjectPeriodType
     period_start: date | None = None
     period_end: date | None = None
@@ -1165,7 +1170,8 @@ class ReadProjectOut(BaseModel):
     daily_budget_enabled: bool
     daily_budget_mode: DailyBudgetMode | None = None
     reminder_threshold_percent: int | None = None
-    # 當期(依 period_type 滾動計算的起訖窗口)累計花費,取絕對值。
+    # 當期(依 period_type 滾動計算的起訖窗口)累計支出(只算 tx_type=='expense'
+    # 且未標記 exclude_from_budget 的交易),取絕對值。
     spent: float
     # budget_amount 為 None 時 remaining/progress_pct 也是 None(沒有上限概念)。
     remaining: float | None = None
@@ -1218,9 +1224,10 @@ class ReadProjectBreakdownOut(BaseModel):
     """專案詳情頁:期間切換 + 統計條 + 分類拆解(docs/2026-09-06-project-
     category-budget-period-switch-design.md §4)。對齐 `list_projects` 的
     `_project_period_range` 當期窗口算法,`period_offset` 往回推算成往期窗口。
-    `effective_budget`(收入併入預算後的有效預算)是這個端點首次接進
-    `income_included_in_budget` 這個既有欄位——`list_projects` 目前仍固定用
-    `budget_amount`,兩者這裡刻意不同步(§3.4.1)。"""
+    `effective_budget`(budget_amount 併入本期收入 + 結轉後的有效預算)跟
+    `ReadProjectOut.effective_budget` 是同一套演算法(`_project_carried_over`
+    共用函式,2026-09-21 修正——`list_projects` 曾經固定只用 `budget_amount`,
+    導致總覽頁卡片跟這個詳情頁端點算出不同的「已超支」判斷,現已統一)。"""
     project_id: str
     period_type: ProjectPeriodType
     period_start: datetime
