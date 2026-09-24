@@ -12,6 +12,12 @@ logger = logging.getLogger("beecount.errors")
 
 _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("invalid token", "AUTH_INVALID_TOKEN"),
+    ("license required", "LICENSE_REQUIRED"),
+    ("app version too old", "APP_VERSION_TOO_OLD"),
+    ("license key format invalid", "LICENSE_KEY_INVALID"),
+    ("license key not found", "LICENSE_KEY_NOT_FOUND"),
+    ("license key revoked", "LICENSE_KEY_REVOKED"),
+    ("license key already redeemed", "LICENSE_KEY_ALREADY_REDEEMED"),
     ("insufficient scope", "AUTH_INSUFFICIENT_SCOPE"),
     ("invalid credentials", "AUTH_INVALID_CREDENTIALS"),
     ("password login is disabled", "AUTH_SSO_ONLY"),
@@ -66,6 +72,7 @@ _STATUS_ERROR_CODE_MAP: dict[int, str] = {
     status.HTTP_400_BAD_REQUEST: "BAD_REQUEST",
     status.HTTP_401_UNAUTHORIZED: "UNAUTHORIZED",
     status.HTTP_403_FORBIDDEN: "FORBIDDEN",
+    status.HTTP_402_PAYMENT_REQUIRED: "LICENSE_REQUIRED",
     status.HTTP_404_NOT_FOUND: "NOT_FOUND",
     status.HTTP_409_CONFLICT: "CONFLICT",
     status.HTTP_422_UNPROCESSABLE_CONTENT: "VALIDATION_ERROR",

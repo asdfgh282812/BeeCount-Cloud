@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, extractApiError } from '@beecount/api-client'
+import { ApiError, configureHttp, extractApiError } from '@beecount/api-client'
 
 describe('extractApiError', () => {
   it('parses write conflict metadata', async () => {
@@ -32,5 +32,38 @@ describe('extractApiError', () => {
     expect(err).toBeInstanceOf(ApiError)
     expect(err.status).toBe(500)
     expect(err.message).toBe('boom')
+  })
+
+  describe('license required hook', () => {
+    afterEach(() => {
+      configureHttp({ refreshToken: null, onLogout: null, onLicenseRequired: null })
+    })
+
+    it('fires onLicenseRequired for 402 LICENSE_REQUIRED', async () => {
+      const onLicenseRequired = vi.fn()
+      configureHttp({ onLicenseRequired })
+      const response = new Response(
+        JSON.stringify({
+          error: { code: 'LICENSE_REQUIRED', message: 'License required' },
+          detail: 'License required',
+          error_code: 'LICENSE_REQUIRED'
+        }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } }
+      )
+      const err = await extractApiError(response)
+      expect(err.code).toBe('LICENSE_REQUIRED')
+      expect(onLicenseRequired).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not fire for other errors', async () => {
+      const onLicenseRequired = vi.fn()
+      configureHttp({ onLicenseRequired })
+      await extractApiError(
+        new Response(JSON.stringify({ error: { code: 'LICENSE_KEY_NOT_FOUND', message: 'x' } }), {
+          status: 404
+        })
+      )
+      expect(onLicenseRequired).not.toHaveBeenCalled()
+    })
   })
 })

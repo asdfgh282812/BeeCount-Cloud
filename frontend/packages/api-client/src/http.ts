@@ -1,4 +1,4 @@
-import { extractApiError } from './errors'
+import { extractApiError, setLicenseRequiredListener } from './errors'
 
 export const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '/api/v1'
 
@@ -54,10 +54,19 @@ let refreshInFlight: Promise<string> | null = null
 /**
  * Wire the http layer to app-level auth callbacks. Call once after login
  * succeeds; no-op safe to call repeatedly.
+ *
+ * `onLicenseRequired`:任何回應是 402 / LICENSE_REQUIRED 時呼叫(偵測點在
+ * errors.ts::extractApiError),app 用來把畫面切回授權閘門。跟另外兩個
+ * callback 一樣,沒帶 = 清掉。
  */
-export function configureHttp(opts: { refreshToken?: RefreshFn | null; onLogout?: LogoutFn | null }): void {
+export function configureHttp(opts: {
+  refreshToken?: RefreshFn | null
+  onLogout?: LogoutFn | null
+  onLicenseRequired?: (() => void) | null
+}): void {
   refreshFn = opts.refreshToken ?? null
   logoutFn = opts.onLogout ?? null
+  setLicenseRequiredListener(opts.onLicenseRequired ?? null)
 }
 
 async function parseResponse<T>(res: Response): Promise<T> {

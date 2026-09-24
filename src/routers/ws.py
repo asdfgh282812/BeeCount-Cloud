@@ -6,6 +6,7 @@ from sqlalchemy import select
 from ..database import SessionLocal
 from ..models import User
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE, decode_token
+from ..services import license as license_service
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,11 @@ router = APIRouter()
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = Query(default="")) -> None:
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: str = Query(default=""),
+    app_version: str | None = Query(default=None),
+) -> None:
     if not token:
         logger.warning("ws.reject reason=no_token")
         await websocket.close(code=1008)
@@ -48,12 +53,27 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
         return
 
     db = SessionLocal()
-    user = db.scalar(select(User).where(User.id == user_id))
-    db.close()
-    if user is None:
-        logger.warning("ws.reject reason=user_not_found user_id=%r jti=%r", user_id, payload.get("jti"))
-        await websocket.close(code=1008)
-        return
+    try:
+        user = db.scalar(select(User).where(User.id == user_id))
+        if user is None or not user.is_enabled:
+            logger.warning("ws.reject reason=user_not_found user_id=%r jti=%r", user_id, payload.get("jti"))
+            await websocket.close(code=1008)
+            return
+        # 跟 deps.get_current_user 同一組門檻(docs/LICENSE_KEYS.md):App 版本
+        # 過舊(WS 沒辦法帶自訂 header,App 改用 `?app_version=` 帶)→ 4426;
+        # 沒有有效授權 → 4402。
+        client_type = payload.get("client_type")
+        if client_type == "app" or (client_type is None and SCOPE_APP_WRITE in normalized):
+            if license_service.app_version_rejection(db, app_version) is not None:
+                logger.warning("ws.reject reason=app_version_too_old user=%s version=%r", user_id, app_version)
+                await websocket.close(code=4426)
+                return
+        if not license_service.is_user_licensed(db, user):
+            logger.warning("ws.reject reason=license_required user=%s", user_id)
+            await websocket.close(code=4402)
+            return
+    finally:
+        db.close()
 
     manager = websocket.app.state.ws_manager
     await manager.connect(user_id, websocket)

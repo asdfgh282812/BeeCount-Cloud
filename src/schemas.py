@@ -2439,6 +2439,8 @@ class ScheduledJobRunNowOut(BaseModel):
 
 class AppVersionCheckConfigOut(BaseModel):
     latest_version: str | None = None
+    # 最低可同步版本(docs/LICENSE_KEYS.md)。null = 不限制。
+    min_sync_version: str | None = None
     nas_webdav_url: str | None = None
     nas_webdav_user: str | None = None
     # 密碼欄位不回傳明文,只回傳「是否已設定」,避免在網路上明文往返。
@@ -2449,6 +2451,8 @@ class AppVersionCheckConfigOut(BaseModel):
 
 class AppVersionCheckConfigUpdateRequest(BaseModel):
     latest_version: str | None = None
+    # 帶空字串 = 清除限制;不帶 = 不變更。
+    min_sync_version: str | None = None
     nas_webdav_url: str | None = None
     nas_webdav_user: str | None = None
     # 只有明確帶非空字串時才覆蓋既有密碼——前端不會把已設定的密碼明文帶回來,
@@ -2466,6 +2470,8 @@ class AppVersionCheckNowOut(BaseModel):
 class PublicAppVersionOut(BaseModel):
     version: str | None = None
     updated_at: datetime | None = None
+    # 低於此版本的 App 無法同步;新版 App 啟動時比對,低於就整個擋住強制更新。
+    min_sync_version: str | None = None
 
 
 class BackupRunTargetOut(BaseModel):
@@ -2523,3 +2529,55 @@ class BackupRestoreOut(BaseModel):
 
 class BackupRestoreListOut(BaseModel):
     items: list[BackupRestoreOut]
+
+
+# ============================================================================
+# 授權金鑰(docs/LICENSE_KEYS.md)
+# ============================================================================
+
+
+class LicenseStatusOut(BaseModel):
+    user_id: str
+    email: str
+    is_admin: bool = False
+    # 目前是否可以使用(admin 永遠 True)。
+    licensed: bool
+    # admin 免金鑰。
+    exempt: bool = False
+    # 名下金鑰最晚到期日(可能已過期;沒有任何金鑰 = null)。
+    expires_at: datetime | None = None
+    server_time: datetime
+    # App 本地授權的離線寬限天數(App 每次成功驗證後延長到 now + 這個天數,
+    # 不超過 expires_at)。
+    offline_grace_days: int
+
+
+class LicenseActivateRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+
+
+class AdminLicenseKeyOut(BaseModel):
+    id: str
+    key: str
+    duration_days: int
+    note: str | None = None
+    # unused / active / expired / revoked
+    status: str
+    created_at: datetime
+    created_by_email: str | None = None
+    redeemed_by_user_id: str | None = None
+    redeemed_by_email: str | None = None
+    redeemed_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class AdminLicenseKeyListOut(BaseModel):
+    items: list[AdminLicenseKeyOut]
+    total: int
+
+
+class AdminLicenseKeyCreateRequest(BaseModel):
+    count: int = Field(default=1, ge=1, le=100)
+    duration_days: int = Field(default=365, ge=1, le=3650)
+    note: str | None = Field(default=None, max_length=255)

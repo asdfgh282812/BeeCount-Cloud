@@ -12,10 +12,12 @@ from .ledger_access import get_accessible_ledger_by_external_id
 from .models import Device, Ledger, PersonalAccessToken, User
 from .security import (
     PAT_PREFIX,
+    SCOPE_APP_WRITE,
     decode_token,
     looks_like_pat,
     verify_pat_hash,
 )
+from .services import license as license_service
 
 # device.last_seen_at bump 节流 —— 高频 pull / 轮询的场景下,每请求都写 DB
 # 会吵。60s 内同一 device_id 最多 bump 一次。进程级内存字典(多 worker 各自
@@ -111,6 +113,9 @@ def _resolve_pat(
     user = db.scalar(select(User).where(User.id == row.user_id))
     if user is None or not user.is_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User disabled")
+    # PAT(MCP)一樣要有效授權 —— 否則授權過期的使用者可以改用 PAT 繞過
+    # web/App 的門檻繼續讀寫資料(docs/LICENSE_KEYS.md)。
+    license_service.assert_user_licensed(db, user)
 
     try:
         scopes = set(_json.loads(row.scopes_json or "[]"))
@@ -316,6 +321,16 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if not user.is_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User disabled")
+
+    # 授權金鑰 + App 最低可同步版本(docs/LICENSE_KEYS.md)。必須在寫入
+    # request.state.bc_user 快取**之前**檢查 —— 同一請求內第二次呼叫
+    # get_current_user 會直接吃快取,不能讓沒過門檻的 user 被快取住。
+    client_type = payload.get("client_type")
+    if not isinstance(client_type, str):
+        scopes = payload.get("scopes") or []
+        client_type = "app" if isinstance(scopes, list) and SCOPE_APP_WRITE in scopes else None
+    license_service.enforce_request_gates(request, db, user, client_type=client_type)
+
     request.state.bc_user = user
     request.state.bc_auth_kind = "jwt"
 

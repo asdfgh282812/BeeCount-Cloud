@@ -28,5 +28,9 @@ router = APIRouter()
 def get_latest_app_version(db: Session = Depends(get_db)) -> PublicAppVersionOut:
     config = db.get(AppVersionCheckConfig, 1)
     if config is None:
-        return PublicAppVersionOut(version=None, updated_at=None)
-    return PublicAppVersionOut(version=config.latest_version, updated_at=config.updated_at)
+        return PublicAppVersionOut(version=None, updated_at=None, min_sync_version=None)
+    return PublicAppVersionOut(
+        version=config.latest_version,
+        updated_at=config.updated_at,
+        min_sync_version=(config.min_sync_version or "").strip() or None,
+    )

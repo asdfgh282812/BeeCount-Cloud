@@ -5,6 +5,10 @@ import type {
   AdminBackupRestoreResponse,
   AdminDeviceList,
   AdminHealth,
+  AdminLicenseKey,
+  AdminLicenseKeyCreatePayload,
+  AdminLicenseKeyList,
+  AdminLicenseKeyStatusFilter,
   AdminLogList,
   AdminOverview,
   AdminSyncErrors,
@@ -159,6 +163,8 @@ export async function updateAppVersionConfig(
   token: string,
   payload: {
     latest_version?: string
+    /** 不帶 = 不變更;空字串 = 清除限制;格式須為 x.y.z(server 會 400)。 */
+    min_sync_version?: string
     nas_webdav_url?: string
     nas_webdav_user?: string
     nas_webdav_password?: string
@@ -169,6 +175,38 @@ export async function updateAppVersionConfig(
 
 export async function checkAppVersionNow(token: string): Promise<AppVersionCheckNowResult> {
   return authedPost<AppVersionCheckNowResult>('/admin/app-version-config/check-now', token, {})
+}
+
+// 授權金鑰管理(docs/LICENSE_KEYS.md)。server 端疊 require_admin_user +
+// SCOPE_OPS_WRITE,跟 app-version-config 同一組權限。
+
+export async function fetchAdminLicenseKeys(
+  token: string,
+  options?: { status?: AdminLicenseKeyStatusFilter; q?: string; limit?: number },
+): Promise<AdminLicenseKeyList> {
+  const params = new URLSearchParams()
+  if (options?.status) params.set('status', options.status)
+  if (options?.q?.trim()) params.set('q', options.q.trim())
+  if (options?.limit) params.set('limit', String(options.limit))
+  const query = params.toString()
+  return authedGet<AdminLicenseKeyList>(`/admin/licenses${query ? `?${query}` : ''}`, token)
+}
+
+/** 批次產生金鑰,回傳的只有這次新建的那幾把。 */
+export async function createAdminLicenseKeys(
+  token: string,
+  payload: AdminLicenseKeyCreatePayload,
+): Promise<AdminLicenseKeyList> {
+  return authedPost<AdminLicenseKeyList>('/admin/licenses', token, payload)
+}
+
+export async function revokeAdminLicenseKey(token: string, id: string): Promise<AdminLicenseKey> {
+  return authedPost<AdminLicenseKey>(`/admin/licenses/${encodeURIComponent(id)}/revoke`, token, {})
+}
+
+/** 只能刪「從未被啟用」的金鑰;已啟用的 server 回 409,要改用撤銷。 */
+export async function deleteAdminLicenseKey(token: string, id: string): Promise<{ deleted: boolean }> {
+  return authedDelete<{ deleted: boolean }>(`/admin/licenses/${encodeURIComponent(id)}`, token)
 }
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {

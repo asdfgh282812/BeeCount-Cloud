@@ -21,6 +21,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from ..database import SessionLocal
 from ..models import PersonalAccessToken, User
 from ..security import looks_like_pat, verify_pat_hash
+from ..services import license as license_service
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,9 @@ def _resolve_pat_sync(
         user = db.scalar(select(User).where(User.id == row.user_id))
         if user is None or not user.is_enabled:
             raise _AuthError(403, "User disabled")
+        # 授權金鑰檢查(docs/LICENSE_KEYS.md)—— 跟 deps._resolve_pat 同一道門檻。
+        if not license_service.is_user_licensed(db, user):
+            raise _AuthError(402, license_service.LICENSE_REQUIRED_MESSAGE)
 
         try:
             scopes = set(json.loads(row.scopes_json or "[]"))

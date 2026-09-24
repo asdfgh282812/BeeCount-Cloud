@@ -5,6 +5,7 @@ import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAu
 import { useT } from '@beecount/ui'
 
 import { AppShell } from './app/AppShell'
+import { LicenseGate } from './app/LicenseGate'
 import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
 import { SsoCallbackPage } from './pages/SsoCallbackPage'
@@ -36,6 +37,9 @@ const AdminAppVersionPage = lazy(() =>
   import('./pages/sections/AdminAppVersionPage').then((m) => ({
     default: m.AdminAppVersionPage,
   })),
+)
+const AdminLicensesPage = lazy(() =>
+  import('./pages/sections/AdminLicensesPage').then((m) => ({ default: m.AdminLicensesPage })),
 )
 const AdminUsersPage = lazy(() =>
   import('./pages/sections/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })),
@@ -188,6 +192,11 @@ function AppRoutes() {
     navigate('/login', { replace: true })
   }, [navigate])
 
+  // 授權失效通知計數(docs/LICENSE_KEYS.md):http 層偵測到 402 /
+  // LICENSE_REQUIRED 就 +1,LicenseGate 看到數值變化就切回金鑰輸入頁。用計數
+  // 而不是 boolean,是因為閘門自己會在啟用成功後切回 app,不需要這裡重設。
+  const [licenseLapseSignal, setLicenseLapseSignal] = useState(0)
+
   useEffect(() => {
     configureHttp({
       refreshToken: async () => {
@@ -195,19 +204,24 @@ function AppRoutes() {
         setToken(fresh)
         return fresh
       },
-      onLogout: handleLogout
+      onLogout: handleLogout,
+      onLicenseRequired: () => setLicenseLapseSignal((n) => n + 1)
     })
     return () => {
-      configureHttp({ refreshToken: null, onLogout: null })
+      configureHttp({ refreshToken: null, onLogout: null, onLicenseRequired: null })
     }
   }, [handleLogout])
 
   // Nested routes:AppShell 作为 /app 父路由的 element,其 <Outlet /> 渲染
   // 当前子路由,切换 section 时 AppShell 不 unmount —— profileMe / ledgers
   // 等全局数据跨页面保持。所有 section 都有独立 Page,挂到 Outlet 下。
+  // LicenseGate 夾在 RequireAuth 跟 AppShell 之間:沒有有效授權時整頁換成
+  // 金鑰輸入畫面,AppShell 完全不掛載。
   const shellElement = (
     <RequireAuth isAuthed={!!token}>
-      <AppShell token={token} onLogout={handleLogout} />
+      <LicenseGate token={token} onLogout={handleLogout} lapseSignal={licenseLapseSignal}>
+        <AppShell token={token} onLogout={handleLogout} />
+      </LicenseGate>
     </RequireAuth>
   )
 
@@ -404,6 +418,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <AdminAppVersionPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/licenses"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminLicensesPage />
             </Suspense>
           }
         />

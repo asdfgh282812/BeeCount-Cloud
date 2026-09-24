@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -22,6 +22,7 @@ from ..schemas import (
 )
 from ..security import SCOPE_OPS_WRITE
 from ..services import app_version_check
+from ..services import license as license_service
 
 router = APIRouter()
 
@@ -35,6 +36,7 @@ def _audit(db: Session, *, user_id: str, action: str, metadata: dict[str, Any]) 
 def _build_out(config) -> AppVersionCheckConfigOut:  # noqa: ANN001
     return AppVersionCheckConfigOut(
         latest_version=config.latest_version,
+        min_sync_version=config.min_sync_version,
         nas_webdav_url=config.nas_webdav_url,
         nas_webdav_user=config.nas_webdav_user,
         nas_webdav_password_set=bool(config.nas_webdav_password),
@@ -63,6 +65,13 @@ def update_app_version_config(
     config = app_version_check.get_or_create_config(db)
     if req.latest_version is not None:
         config.latest_version = req.latest_version.strip() or None
+    if req.min_sync_version is not None:
+        normalized_min = req.min_sync_version.strip()
+        # 格式錯誤的門檻會讓 `license.parse_version` 回 None → 等於沒設限制,
+        # 管理者會以為有擋其實沒擋;寫入前就先拒絕。
+        if normalized_min and license_service.parse_version(normalized_min) is None:
+            raise HTTPException(status_code=400, detail="min_sync_version format invalid, expected x.y.z")
+        config.min_sync_version = normalized_min or None
     if req.nas_webdav_url is not None:
         config.nas_webdav_url = req.nas_webdav_url.strip() or None
     if req.nas_webdav_user is not None:
@@ -79,6 +88,7 @@ def update_app_version_config(
         action="app_version_config_update",
         metadata={
             "latestVersion": req.latest_version,
+            "minSyncVersion": req.min_sync_version,
             "nasWebdavUrl": req.nas_webdav_url,
             "nasWebdavUser": req.nas_webdav_user,
             "nasWebdavPasswordChanged": bool(req.nas_webdav_password),

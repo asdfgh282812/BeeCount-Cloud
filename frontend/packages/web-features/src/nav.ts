@@ -23,6 +23,7 @@ export type AppSection =
   | 'admin-data-cleanup'
   | 'admin-scheduled-jobs'
   | 'admin-app-version'
+  | 'admin-licenses'
   | 'import'
 
 export type NavItem = {

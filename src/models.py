@@ -1539,6 +1539,46 @@ class AppVersionCheckConfig(Base):
     nas_webdav_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_check_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # 最低可同步版本(docs/LICENSE_KEYS.md §版本門檻)。App 帶的 `X-App-Version`
+    # 低於這個版本(或根本沒帶 —— 舊版 App)時,server 拒絕該 App 的所有
+    # 鑑權請求(426)。null = 不限制。
+    min_sync_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class LicenseKey(Base):
+    """授權金鑰(docs/LICENSE_KEYS.md)。
+
+    管理者在後台 `/admin/licenses` 產生;一把金鑰只能被**一個帳號**啟用一次
+    (`redeemed_by_user_id` 一旦寫入就不再變動),啟用當下才開始算效期:
+    `expires_at = max(現在, 該帳號目前授權到期日) + duration_days`——已經有
+    有效授權時再輸入新金鑰會「接在剩下的天數後面」,不會吃掉剩餘天數。
+
+    使用者目前的授權狀態不另存欄位,一律即時從這張表算
+    (`services/license.py::get_user_license_expiry`):該使用者名下
+    未撤銷、`expires_at` 最大的那一筆。這樣撤銷一把金鑰(`revoked_at`)
+    會立刻生效,不會有「User 表上的快取欄位忘了同步」的漏洞。
+
+    `key` 明文存放 —— 跟 `AppVersionCheckConfig.nas_webdav_password` 同款
+    考量:這台 server 只有管理者能碰 DB,管理者需要能在後台重新複製「還沒
+    賣出去」的金鑰。已被啟用的金鑰就算外洩也無法再被別的帳號啟用。
+    """
+
+    __tablename__ = "license_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    duration_days: Mapped[int] = mapped_column(Integer, default=365, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    redeemed_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

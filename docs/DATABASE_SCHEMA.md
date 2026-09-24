@@ -822,6 +822,29 @@ rclone 遠端儲存位置配置（如 S3、Google Drive），也可以是加密�
 
 ---
 
+## 11. 授權金鑰
+
+### `license_keys` — 授權金鑰（LicenseKey）
+
+管理者在後台產生、使用者啟用後綁定帳號。使用者目前授權 = 名下未撤銷金鑰中最晚的 `expires_at`，不另存欄位。詳見 [`LICENSE_KEYS.md`](./LICENSE_KEYS.md)。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | String(36) | PK | UUID |
+| key | String(64) | unique, index | 金鑰明文（`BC-XXXXX-XXXXX-XXXXX-XXXXX`） |
+| duration_days | Integer | default 365 | 啟用後可用天數 |
+| note | String(255) | nullable | 管理者備註 |
+| created_by_user_id | String(36) | FK users, SET NULL | 產生者 |
+| created_at | DateTime | default 建立時 | 產生時間 |
+| redeemed_by_user_id | String(36) | FK users, SET NULL, index | 啟用的帳號（null = 未使用） |
+| redeemed_at | DateTime | nullable | 啟用時間 |
+| expires_at | DateTime | nullable | 到期時間（啟用時才寫入） |
+| revoked_at | DateTime | nullable | 撤銷時間（非 null = 立即失效） |
+
+另：`app_version_check_config.min_sync_version`（String(32), nullable）= 最低可同步 App 版本，null 不限制。
+
+---
+
 ## 附錄：常見疑問
 
 **Q：`read_deferred_posting_projection` 或「延後入帳表」在哪裡？**

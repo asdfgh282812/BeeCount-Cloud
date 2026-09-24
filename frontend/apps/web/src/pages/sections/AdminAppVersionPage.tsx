@@ -21,7 +21,16 @@ import { localizeError } from '../../i18n/errors'
  * 密碼欄位刻意不回顯明文(server 只回傳 `nas_webdav_password_set` 布林值),
  * 所以這裡永遠不會把已設定的密碼帶回 PUT body —— 空白 = 不變更,這是
  * server 端 `nas_webdav_password` 更新語意的唯一合理對應。
+ *
+ * 「最低可同步版本」(docs/LICENSE_KEYS.md)跟最新版本號不同:這個值是硬
+ * 門檻,低於它的 App(以及從來不送版本的舊版 App)同步會被 server 回 426。
+ * 每次儲存都帶上目前的輸入值 —— 空字串 = 清除限制,跟 server 語意一致。
  */
+
+// 跟 server `services/license.py::parse_version` 同一套規則(`3.5.7`、
+// `3.5.7+1` 都可以),先在前端擋,否則 server 回的 400 只會被
+// localizeError 翻成通用「操作失敗」。
+const MIN_SYNC_VERSION_RE = /^\d+(\.\d+){0,3}([+\s-].*)?$/
 export function AdminAppVersionPage() {
   const t = useT()
   const toast = useToast()
@@ -33,6 +42,7 @@ export function AdminAppVersionPage() {
   const [checking, setChecking] = useState(false)
 
   const [latestVersionDraft, setLatestVersionDraft] = useState('')
+  const [minSyncVersionDraft, setMinSyncVersionDraft] = useState('')
   const [urlDraft, setUrlDraft] = useState('')
   const [userDraft, setUserDraft] = useState('')
   const [passwordDraft, setPasswordDraft] = useState('')
@@ -45,6 +55,7 @@ export function AdminAppVersionPage() {
   const applyConfig = useCallback((row: AppVersionConfig) => {
     setConfig(row)
     setLatestVersionDraft(row.latest_version ?? '')
+    setMinSyncVersionDraft(row.min_sync_version ?? '')
     setUrlDraft(row.nas_webdav_url ?? '')
     setUserDraft(row.nas_webdav_user ?? '')
     setPasswordDraft('')
@@ -69,10 +80,16 @@ export function AdminAppVersionPage() {
   }, [isAdminResolved, isAdmin, refresh])
 
   const handleSave = useCallback(async () => {
+    const minSyncVersion = minSyncVersionDraft.trim()
+    if (minSyncVersion && !MIN_SYNC_VERSION_RE.test(minSyncVersion)) {
+      toast.error(t('admin.appVersion.error.minSyncVersionFormat'), t('notice.error'))
+      return
+    }
     setSaving(true)
     try {
       const updated = await updateAppVersionConfig(token, {
         latest_version: latestVersionDraft,
+        min_sync_version: minSyncVersion,
         nas_webdav_url: urlDraft,
         nas_webdav_user: userDraft,
         ...(passwordDraft ? { nas_webdav_password: passwordDraft } : {}),
@@ -84,7 +101,18 @@ export function AdminAppVersionPage() {
     } finally {
       setSaving(false)
     }
-  }, [token, latestVersionDraft, urlDraft, userDraft, passwordDraft, applyConfig, toast, t, notifyError])
+  }, [
+    token,
+    latestVersionDraft,
+    minSyncVersionDraft,
+    urlDraft,
+    userDraft,
+    passwordDraft,
+    applyConfig,
+    toast,
+    t,
+    notifyError,
+  ])
 
   const handleCheckNow = useCallback(async () => {
     setChecking(true)
@@ -163,6 +191,23 @@ export function AdminAppVersionPage() {
               placeholder="3.2.0"
               disabled={saving}
             />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground" htmlFor="app-version-min-sync">
+              {t('admin.appVersion.field.minSyncVersion')}
+            </label>
+            <Input
+              id="app-version-min-sync"
+              className="h-9"
+              value={minSyncVersionDraft}
+              onChange={(e) => setMinSyncVersionDraft(e.target.value)}
+              placeholder="3.5.7"
+              disabled={saving}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('admin.appVersion.field.minSyncVersionHint')}
+            </p>
           </div>
 
           <div className="space-y-1">

@@ -619,11 +619,66 @@ export type ScheduledJobRunNowResult = {
 
 export type AppVersionConfig = {
   latest_version: string | null
+  /** 最低可同步版本(docs/LICENSE_KEYS.md):App 版本低於這個值、或舊版 App
+   *  完全沒回報版本,同步一律被 server 以 426 擋下。null = 不限制。 */
+  min_sync_version: string | null
   nas_webdav_url: string | null
   nas_webdav_user: string | null
   nas_webdav_password_set: boolean
   last_checked_at: string | null
   last_check_error: string | null
+}
+
+// ---------------------------------------------------------------------------
+// 授權金鑰(docs/LICENSE_KEYS.md)
+// ---------------------------------------------------------------------------
+
+/** GET /license/status、POST /license/activate 的回應。沒有授權時也查得到。 */
+export type LicenseStatus = {
+  user_id: string
+  email: string
+  is_admin: boolean
+  /** 目前是否可以使用(管理者永遠 true)。 */
+  licensed: boolean
+  /** 管理者免金鑰。 */
+  exempt: boolean
+  /** 名下金鑰最晚到期日(可能已過期;從沒啟用過任何金鑰 = null)。 */
+  expires_at: string | null
+  server_time: string
+  /** App 本地授權的離線寬限天數,web 端只做顯示用。 */
+  offline_grace_days: number
+}
+
+export type AdminLicenseKeyStatus = 'unused' | 'active' | 'expired' | 'revoked'
+
+export type AdminLicenseKeyStatusFilter = 'all' | AdminLicenseKeyStatus
+
+export type AdminLicenseKey = {
+  id: string
+  key: string
+  duration_days: number
+  note: string | null
+  status: AdminLicenseKeyStatus
+  created_at: string
+  created_by_email: string | null
+  redeemed_by_user_id: string | null
+  redeemed_by_email: string | null
+  redeemed_at: string | null
+  expires_at: string | null
+  revoked_at: string | null
+}
+
+export type AdminLicenseKeyList = {
+  items: AdminLicenseKey[]
+  total: number
+}
+
+export type AdminLicenseKeyCreatePayload = {
+  /** 1..100 */
+  count: number
+  /** 1..3650,預設 365。 */
+  duration_days?: number
+  note?: string
 }
 
 export type AppVersionCheckNowResult = {

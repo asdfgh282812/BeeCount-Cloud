@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { AuthExhaustedError } from '@beecount/api-client'
+import { AuthExhaustedError, notifyLicenseRequired } from '@beecount/api-client'
 
 export type SyncSocketStatus = 'idle' | 'connecting' | 'connected' | 'disconnected'
 
@@ -196,8 +196,12 @@ export function useSyncSocket({
         // onclose will follow; let that drive the backoff.
       }
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (destroyedRef.current) return
+        // server 以 4402 關閉 = 授權已失效(routers/ws.py)。通知 App 切回授權
+        // 閘門 —— 閘門會卸載 AppShell,這個 supervisor 跟著 cleanup,不會
+        // 真的一直拿著沒授權的 token 重連。
+        if (event.code === 4402) notifyLicenseRequired()
         if (heartbeatIntervalRef.current) {
           clearInterval(heartbeatIntervalRef.current)
           heartbeatIntervalRef.current = null

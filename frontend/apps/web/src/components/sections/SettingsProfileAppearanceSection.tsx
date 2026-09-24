@@ -44,6 +44,7 @@ import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
 import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
+import { SettingsLicenseSection } from './SettingsLicenseSection'
 import { SettingsSwipeSmartSection } from './SettingsSwipeSmartSection'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
@@ -419,6 +420,8 @@ export function SettingsProfileAppearanceSection() {
           <PrimaryColorPicker />
         </DialogContent>
       </Dialog>
+
+      <SettingsLicenseSection />
 
       <Card className="bc-panel">
         <CardHeader>

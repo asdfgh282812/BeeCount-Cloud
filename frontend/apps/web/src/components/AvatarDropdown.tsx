@@ -11,6 +11,7 @@ import {
   HandCoins,
   Info,
   Key,
+  KeyRound,
   Languages,
   LogOut,
   Moon,
@@ -233,6 +234,13 @@ export function AvatarDropdown({
                 onClick={() => onNavigate('admin-app-version')}
               >
                 {t('nav.appVersion')}
+              </MenuButton>
+              <MenuButton
+                icon={KeyRound}
+                active={currentSection === 'admin-licenses'}
+                onClick={() => onNavigate('admin-licenses')}
+              >
+                {t('nav.licenses')}
               </MenuButton>
             </>
           ) : null}
