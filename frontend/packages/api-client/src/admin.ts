@@ -3,6 +3,9 @@ import type {
   AdminBackupArtifact,
   AdminBackupCreateResponse,
   AdminBackupRestoreResponse,
+  AdminBroadcast,
+  AdminBroadcastCreatePayload,
+  AdminBroadcastList,
   AdminDeviceList,
   AdminHealth,
   AdminLicenseKey,
@@ -257,4 +260,26 @@ export async function restoreAdminBackup(
   payload: { snapshot_id: string; device_id?: string | null }
 ): Promise<AdminBackupRestoreResponse> {
   return authedPost<AdminBackupRestoreResponse>('/admin/backups/restore', token, payload)
+}
+
+/** 系統公告歷史(新到舊)。 */
+export async function fetchAdminBroadcasts(token: string): Promise<AdminBroadcastList> {
+  return authedGet<AdminBroadcastList>('/admin/broadcasts', token)
+}
+
+/** 目前會收到公告的人數(所有啟用中的使用者,含管理者自己)。 */
+export async function fetchAdminBroadcastRecipientCount(token: string): Promise<{ count: number }> {
+  return authedGet<{ count: number }>('/admin/broadcasts/recipient-count', token)
+}
+
+export async function createAdminBroadcast(
+  token: string,
+  payload: AdminBroadcastCreatePayload,
+): Promise<AdminBroadcast> {
+  return authedPost<AdminBroadcast>('/admin/broadcasts', token, payload)
+}
+
+/** 撤回:刪掉所有使用者名下那一筆通知(已跳出的系統通知收不回來)。 */
+export async function retractAdminBroadcast(token: string, id: string): Promise<AdminBroadcast> {
+  return authedPost<AdminBroadcast>(`/admin/broadcasts/${encodeURIComponent(id)}/retract`, token, {})
 }

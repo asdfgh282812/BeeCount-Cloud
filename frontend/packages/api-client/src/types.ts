@@ -673,6 +673,29 @@ export type AdminLicenseKeyList = {
   total: number
 }
 
+/** 管理者系統公告(server `routers/admin_broadcasts.py`)。 */
+export type AdminBroadcast = {
+  id: string
+  title: string
+  body: string | null
+  created_at: string
+  created_by_email: string | null
+  recipient_count: number
+  /** 撤回後通知已刪除,固定回 0 */
+  read_count: number
+  retracted_at: string | null
+}
+
+export type AdminBroadcastList = {
+  items: AdminBroadcast[]
+  total: number
+}
+
+export type AdminBroadcastCreatePayload = {
+  title: string
+  body?: string
+}
+
 export type AdminLicenseKeyCreatePayload = {
   /** 1..100 */
   count: number

@@ -2581,3 +2581,29 @@ class AdminLicenseKeyCreateRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=100)
     duration_days: int = Field(default=365, ge=1, le=3650)
     note: str | None = Field(default=None, max_length=255)
+
+
+class AdminBroadcastCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    body: str | None = Field(default=None, max_length=2000)
+
+
+class AdminBroadcastOut(BaseModel):
+    id: str
+    title: str
+    body: str | None = None
+    created_at: datetime
+    created_by_email: str | None = None
+    recipient_count: int
+    # 撤回後通知已刪除,已讀數固定回 0
+    read_count: int
+    retracted_at: datetime | None = None
+
+
+class AdminBroadcastListOut(BaseModel):
+    items: list[AdminBroadcastOut]
+    total: int
+
+
+class AdminBroadcastRecipientCountOut(BaseModel):
+    count: int

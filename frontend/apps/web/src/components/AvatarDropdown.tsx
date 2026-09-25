@@ -14,6 +14,7 @@ import {
   KeyRound,
   Languages,
   LogOut,
+  Megaphone,
   Moon,
   Smartphone,
   Sparkles,
@@ -241,6 +242,13 @@ export function AvatarDropdown({
                 onClick={() => onNavigate('admin-licenses')}
               >
                 {t('nav.licenses')}
+              </MenuButton>
+              <MenuButton
+                icon={Megaphone}
+                active={currentSection === 'admin-broadcasts'}
+                onClick={() => onNavigate('admin-broadcasts')}
+              >
+                {t('nav.broadcasts')}
               </MenuButton>
             </>
           ) : null}

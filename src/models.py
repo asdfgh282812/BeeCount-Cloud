@@ -496,8 +496,18 @@ class Notification(Base):
     # 排在最上面,不隨新通知被擠走。目前 2=欠款(debt_reminders/
     # debt_unsettled_notifications)、1=信用卡帳單(credit_card_reminders)、
     # 0=其餘(預設值,installment_plans/recurring_materializer/card_reward)。
+    # 3=管理者系統公告(admin_broadcasts)——排最前面,避免使用者累積一堆
+    # 未讀提醒時公告被擠出 App 輪詢的前 50 筆而漏跳系統通知。
     priority: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
+    )
+    # 由管理者系統公告產生的通知才有值;撤回公告時靠這個欄位一次刪掉所有
+    # 使用者名下的那一筆。其它功能產生的通知一律是 NULL。
+    broadcast_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("system_broadcasts.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
 
 
@@ -506,6 +516,32 @@ Index(
     Notification.user_id,
     Notification.created_at.desc(),
 )
+
+
+class SystemBroadcast(Base):
+    """管理者系統公告(後台 `/app/admin/broadcasts`)。
+
+    發送時對當下所有 `is_enabled` 的使用者各寫一筆 `category='system'`
+    的 `Notification`(帶 `broadcast_id` 指回這裡),App 與 web 都靠既有的
+    通知輪詢拿到——App 輪詢到新未讀會順便跳本機系統通知,所以 App 在前景
+    時最多延遲一個輪詢週期(60 秒)就會跳出來;背景/被殺掉時要等下次開 App
+    才補跳(沒有接 FCM/APNs)。發送後才註冊的新帳號不會收到。
+
+    撤回(`retracted_at`)= 刪掉所有使用者名下對應的那一筆通知,這張表的
+    紀錄保留作為發送歷史。已經跳出去的系統通知收不回來。
+    """
+
+    __tablename__ = "system_broadcasts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ============================================================================

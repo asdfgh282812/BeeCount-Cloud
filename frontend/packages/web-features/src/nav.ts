@@ -25,6 +25,7 @@ export type AppSection =
   | 'admin-scheduled-jobs'
   | 'admin-app-version'
   | 'admin-licenses'
+  | 'admin-broadcasts'
   | 'import'
 
 export type NavItem = {

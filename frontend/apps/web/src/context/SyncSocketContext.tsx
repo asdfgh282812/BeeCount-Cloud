@@ -42,6 +42,9 @@ export type SyncEventKind =
   /** §7 共享账本:Owner user-global 资源变化 — category/account/tag。
    *  payload: { ledgerId, resourceType, action, payload } */
   | 'shared_resource_change'
+  /** 通知中心有变化(目前只有管理者系统公告发送/撤回时推送),
+   *  payload: { broadcastId }。收到后重拉 `GET /notifications` 即可。 */
+  | 'notification_changed'
   /** 订阅"任何 server 事件",原始 payload 透传 */
   | 'any'
 

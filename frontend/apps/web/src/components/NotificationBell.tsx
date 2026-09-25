@@ -24,6 +24,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
+import { useSyncEvent } from '../context/SyncSocketContext'
 import { dispatchOpenDetailAccount, dispatchOpenDetailTx } from '../lib/txDialogEvents'
 
 const POLL_INTERVAL_MS = 60_000
@@ -32,8 +33,9 @@ const POLL_INTERVAL_MS = 60_000
  * 通知中心入口(MOZE_FEATURE_GAP_SD.md §2.1，Phase 0 web UI)。
  *
  * 跟其余 header 图标不同 —— notifications 是 user-global 的普通 REST 资源,
- * **不**进 `sync_changes`,没有 WS 推送(server 端注释已确认),所以这里靠
- * 定时轮询 + "打开面板时立即刷新" 两条路径拿新数据,不接 useSyncRefresh。
+ * **不**进 `sync_changes`,所以这里靠定时轮询 + "打开面板时立即刷新" 两条
+ * 路径拿新数据,不接 useSyncRefresh。唯一的例外是管理者系统公告:发送/撤回
+ * 时 server 会推 `notification_changed`,收到就立即重拉,不用等下一轮轮询。
  */
 export function NotificationBell() {
   const t = useT()
@@ -69,6 +71,8 @@ export function NotificationBell() {
     const timer = window.setInterval(() => void refresh(), POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [token, refresh])
+
+  useSyncEvent('notification_changed', () => void refresh())
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)

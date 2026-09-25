@@ -41,6 +41,9 @@ const AdminAppVersionPage = lazy(() =>
 const AdminLicensesPage = lazy(() =>
   import('./pages/sections/AdminLicensesPage').then((m) => ({ default: m.AdminLicensesPage })),
 )
+const AdminBroadcastsPage = lazy(() =>
+  import('./pages/sections/AdminBroadcastsPage').then((m) => ({ default: m.AdminBroadcastsPage })),
+)
 const AdminUsersPage = lazy(() =>
   import('./pages/sections/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })),
 )
@@ -437,6 +440,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <AdminLicensesPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/broadcasts"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminBroadcastsPage />
             </Suspense>
           }
         />
