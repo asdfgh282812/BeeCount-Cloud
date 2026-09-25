@@ -7,7 +7,7 @@ projection 做聚合(tx 计数 / balance / category 排行等)。
 from __future__ import annotations
 
 import statistics as _stats
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
 from sqlalchemy import false as sa_false
@@ -1435,6 +1435,7 @@ def workspace_analytics(
 
     if ledger_internal_ids:
         tx_query = select(
+            ReadTxProjection.ledger_id,
             ReadTxProjection.tx_type,
             # 账本维度折本位币口径(0018):amount 是原币,下面按 native_amount
             # 是否存在算折算比例(拆帳的每个 split 金额也要按同一比例缩放)。
@@ -1466,14 +1467,16 @@ def workspace_analytics(
         # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
         from datetime import timedelta as _td
 
-        for (tx_type_val, raw_amount, native_amount_val, happened_at_raw, cat_name,
-             refund_of_id, has_splits, splits_json) in db.execute(tx_query).all():
+        tx_rows = db.execute(tx_query).all()
+        refund_targets = _load_refund_targets(
+            db, ledger_ids=ledger_internal_ids,
+            refund_ids={r[6] for r in tx_rows if r[6]},
+        )
+        for (lg_id, tx_type_val, raw_amount, native_amount_val, happened_at_raw, cat_name,
+             refund_of_id, has_splits, splits_json) in tx_rows:
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
-            raw_amt = float(raw_amount or 0.0)
-            # 账本维度折本位币口径(0018):native_amount ?? amount。
-            coalesced_amt = float(native_amount_val) if native_amount_val is not None else raw_amt
             transaction_count += 1
             local_for_day = happened_at + _td(minutes=tz_offset_minutes)
             distinct_days_set.add(local_for_day.strftime("%Y-%m-%d"))
@@ -1484,65 +1487,27 @@ def workspace_analytics(
             bucket = _bucket_key(scope, happened_at, tz_offset_minutes, month_start_day)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
 
-            # 拆帳(§2.4):has_splits 时展开成多个 (category, amount) "腿",
-            # 每个 split 的原币金额按整笔的 native/amount 折算比例缩放,
-            # 分别累加到各自的 category_map/series/anomaly 归因里,而不是
-            # 整笔归到父行 category(此时已是 NULL)。非拆帳交易维持单一
-            # "腿" == 整笔金额,行为跟改动前完全一致。
-            legs: list[tuple[str, float]] = []
-            if has_splits and splits_json:
-                try:
-                    raw_splits = json.loads(splits_json)
-                except (TypeError, json.JSONDecodeError):
-                    raw_splits = None
-                if isinstance(raw_splits, list) and raw_splits:
-                    scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
-                    for entry in raw_splits:
-                        if not isinstance(entry, dict):
-                            continue
-                        leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
-                        leg_amt = float(entry.get("amount") or 0.0) * scale
-                        legs.append((leg_cat, leg_amt))
-            if not legs:
-                legs = [((cat_name or "").strip() or "Uncategorized", coalesced_amt)]
-
-            # 退款(§2.6/§2.12.3):不计入自己那个分项,改冲抵对方分项净额
-            # (自己所在的 bucket/category,不追溯回被退那笔交易原本的月份/
-            # 分类 —— 简化口径,退款和被退交易通常发生在相近时间)。income
-            # 退 expense(原逻辑)与 expense 退 income(income 也能退款)对称。
-            # 拆帳交易不会同时是退款(write 层已挡两者组合),legs 循环对
-            # 非拆帳交易等价于原来的单笔处理。
-            is_income_refund = tx_type_val == "income" and refund_of_id is not None
-            is_expense_refund = tx_type_val == "expense" and refund_of_id is not None
-            for leg_cat, leg_amt in legs:
+            # 拆帳展開、退款 netting(扣回原交易分類、算在退款自己的 bucket)
+            # 見 [_stat_legs]。退款 leg 已是反方向的負值,直接累加即可。
+            for flow, leg_cat, _sid, leg_amt in _stat_legs(
+                tx_type=tx_type_val, raw_amount=raw_amount, native_amount=native_amount_val,
+                category_name=cat_name, category_sync_id=None, refund_of_sync_id=refund_of_id,
+                has_splits=has_splits, splits_json=splits_json,
+                refund_target=(refund_targets.get((lg_id, refund_of_id))
+                               if refund_of_id else None),
+            ):
                 category_slot = category_map.setdefault(
                     leg_cat, {"income": 0.0, "expense": 0.0, "count": 0.0})
-                if is_income_refund:
-                    expense_total -= leg_amt
-                    slot["expense"] -= leg_amt
-                    category_slot["count"] += 1.0
-                    category_slot["expense"] -= leg_amt
-                    bucket_cat = category_by_bucket.setdefault(bucket, {})
-                    bucket_cat[leg_cat] = bucket_cat.get(leg_cat, 0.0) - leg_amt
-                    continue
-                if is_expense_refund:
-                    income_total -= leg_amt
-                    slot["income"] -= leg_amt
-                    category_slot["count"] += 1.0
-                    category_slot["income"] -= leg_amt
-                    continue
-                if tx_type_val == "income":
-                    income_total += leg_amt
-                    slot["income"] += leg_amt
-                elif tx_type_val == "expense":
-                    expense_total += leg_amt
-                    slot["expense"] += leg_amt
-                else:
+                if flow is None:
                     continue
                 category_slot["count"] += 1.0
-                if tx_type_val == "income":
+                if flow == "income":
+                    income_total += leg_amt
+                    slot["income"] += leg_amt
                     category_slot["income"] += leg_amt
-                elif tx_type_val == "expense":
+                else:
+                    expense_total += leg_amt
+                    slot["expense"] += leg_amt
                     category_slot["expense"] += leg_amt
                     # 同步累加 per-bucket category → anomaly 归因输入
                     bucket_cat = category_by_bucket.setdefault(bucket, {})
@@ -1712,14 +1677,142 @@ def _compute_anomaly_months(
 # ---------------------------------------------------------------------------
 
 
+class _RefundTarget(NamedTuple):
+    """退款單指向的原交易(統計歸屬用),見 [_load_refund_targets]。"""
+    category_name: str | None
+    category_sync_id: str | None
+    has_splits: bool | None
+    splits_json: str | None
+    exclude_from_stats: bool
+    project_sync_id: str | None
+
+
+def _load_refund_targets(
+    db: Session, *, ledger_ids: list[str], refund_ids: set[str],
+) -> dict[tuple[str, str], _RefundTarget]:
+    """批次查退款單指向的原交易(不限日期——退款常常跟原交易不在同一期),
+    key = `(ledger_id, sync_id)`。"""
+    out: dict[tuple[str, str], _RefundTarget] = {}
+    ids = sorted(i for i in refund_ids if i)
+    if not ids or not ledger_ids:
+        return out
+    for i in range(0, len(ids), 500):
+        for row in db.execute(
+            select(
+                ReadTxProjection.ledger_id,
+                ReadTxProjection.sync_id,
+                ReadTxProjection.category_name,
+                ReadTxProjection.category_sync_id,
+                ReadTxProjection.has_splits,
+                ReadTxProjection.splits_json,
+                ReadTxProjection.exclude_from_stats,
+                ReadTxProjection.project_sync_id,
+            ).where(
+                ReadTxProjection.ledger_id.in_(ledger_ids),
+                ReadTxProjection.sync_id.in_(ids[i:i + 500]),
+            )
+        ).all():
+            out[(row[0], row[1])] = _RefundTarget(
+                category_name=row[2], category_sync_id=row[3], has_splits=row[4],
+                splits_json=row[5], exclude_from_stats=bool(row[6]), project_sync_id=row[7],
+            )
+    return out
+
+
+def _split_entries(splits_json: str | None) -> list[tuple[str, str | None, float]]:
+    """拆帳 JSON → `(category_name, category_sync_id, 原幣金額)` 列表。"""
+    if not splits_json:
+        return []
+    try:
+        raw_splits = json.loads(splits_json)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw_splits, list):
+        return []
+    out: list[tuple[str, str | None, float]] = []
+    for entry in raw_splits:
+        if not isinstance(entry, dict):
+            continue
+        leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
+        leg_sid = entry.get("categoryId") or entry.get("categorySyncId")
+        out.append((leg_cat, leg_sid if isinstance(leg_sid, str) else None,
+                    float(entry.get("amount") or 0.0)))
+    return out
+
+
+def _stat_legs(
+    *,
+    tx_type: str | None,
+    raw_amount: float | None,
+    native_amount: float | None,
+    category_name: str | None,
+    category_sync_id: str | None,
+    refund_of_sync_id: str | None,
+    has_splits: bool | None,
+    splits_json: str | None,
+    refund_target: _RefundTarget | None = None,
+) -> list[tuple[str | None, str, str | None, float]]:
+    """把一筆交易展開成統計用的 legs:`(flow, category_name, category_sync_id,
+    signed_amount)`。
+
+    口徑:本位幣(native_amount ?? amount)、拆帳按明細展開並按折算比例縮放、
+    退款 netting —— income 退款記成 `flow="expense"` 的負值、expense 退款
+    (含自動產生的回饋金沖銷)記成 `flow="income"` 的負值。非收支類型(轉帳
+    等)的 leg `flow=None`、金額 0(仍回傳,讓呼叫端能保留「分類有出現過」的
+    語意)。
+
+    退款的分類歸屬(2026-09-25,跟 App `utils/refund_netting.dart` 同口徑):
+    有 [refund_target](原交易)就扣回原交易的分類——原交易拆帳就按明細比例
+    分攤;原交易本身不計入統計時退款也不計入(回傳空列表);查不到原交易才
+    用退款單自己的分類。退款仍算在退款單自己的日期。
+
+    `workspace_analytics`、比較報表(`/workspace/comparison`)與比較矩陣
+    (`/workspace/comparison-matrix`)共用這一份,數字才對得上。
+    """
+    raw_amt = float(raw_amount or 0.0)
+    coalesced_amt = float(native_amount) if native_amount is not None else raw_amt
+    is_refund = refund_of_sync_id is not None
+
+    legs: list[tuple[str, str | None, float]] = []
+    if is_refund and refund_target is not None:
+        if refund_target.exclude_from_stats:
+            return []
+        target_splits = _split_entries(refund_target.splits_json) if refund_target.has_splits else []
+        base = sum(a for _, _, a in target_splits)
+        if target_splits and base:
+            legs = [(c, sid, coalesced_amt * a / base) for c, sid, a in target_splits]
+        else:
+            legs = [(
+                "Uncategorized" if refund_target.has_splits
+                else ((refund_target.category_name or "").strip() or "Uncategorized"),
+                None if refund_target.has_splits else refund_target.category_sync_id,
+                coalesced_amt,
+            )]
+    elif has_splits:
+        scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
+        legs = [(c, sid, a * scale) for c, sid, a in _split_entries(splits_json)]
+    if not legs:
+        legs = [((category_name or "").strip() or "Uncategorized", category_sync_id, coalesced_amt)]
+
+    out: list[tuple[str | None, str, str | None, float]] = []
+    for leg_cat, leg_sid, leg_amt in legs:
+        if tx_type == "income" and is_refund:
+            out.append(("expense", leg_cat, leg_sid, -leg_amt))
+        elif tx_type == "expense" and is_refund:
+            out.append(("income", leg_cat, leg_sid, -leg_amt))
+        elif tx_type in ("income", "expense"):
+            out.append((tx_type, leg_cat, leg_sid, leg_amt))
+        else:
+            out.append((None, leg_cat, leg_sid, 0.0))
+    return out
+
+
 def _comparison_period_totals(
     db: Session, *, ledger_internal_ids: list[str], start_at: datetime | None, end_at: datetime | None,
 ) -> tuple[float, float, dict[str, dict[str, float]]]:
     """回傳 (income_total, expense_total, category_map)。category_map 的
     value 是 `{"income": x, "expense": y}`(跟 `workspace_analytics` 的
-    `category_map` 同款結構,只是不需要 count)。口徑對齊
-    `workspace_analytics`:账本本位币(native_amount ?? amount)、
-    exclude_from_stats 排除、退款 netting、拆帳展開。"""
+    `category_map` 同款結構,只是不需要 count)。口徑見 [_stat_legs]。"""
     income_total = 0.0
     expense_total = 0.0
     category_map: dict[str, dict[str, float]] = {}
@@ -1727,6 +1820,7 @@ def _comparison_period_totals(
         return income_total, expense_total, category_map
 
     tx_query = select(
+        ReadTxProjection.ledger_id,
         ReadTxProjection.tx_type,
         ReadTxProjection.amount,
         ReadTxProjection.native_amount,
@@ -1743,46 +1837,25 @@ def _comparison_period_totals(
     if end_at is not None:
         tx_query = tx_query.where(ReadTxProjection.happened_at < end_at)
 
-    for (tx_type_val, raw_amount, native_amount_val, cat_name,
-         refund_of_id, has_splits, splits_json) in db.execute(tx_query).all():
-        raw_amt = float(raw_amount or 0.0)
-        coalesced_amt = float(native_amount_val) if native_amount_val is not None else raw_amt
-
-        legs: list[tuple[str, float]] = []
-        if has_splits and splits_json:
-            try:
-                raw_splits = json.loads(splits_json)
-            except (TypeError, json.JSONDecodeError):
-                raw_splits = None
-            if isinstance(raw_splits, list) and raw_splits:
-                scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
-                for entry in raw_splits:
-                    if not isinstance(entry, dict):
-                        continue
-                    leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
-                    leg_amt = float(entry.get("amount") or 0.0) * scale
-                    legs.append((leg_cat, leg_amt))
-        if not legs:
-            legs = [((cat_name or "").strip() or "Uncategorized", coalesced_amt)]
-
-        is_income_refund = tx_type_val == "income" and refund_of_id is not None
-        is_expense_refund = tx_type_val == "expense" and refund_of_id is not None
-        for leg_cat, leg_amt in legs:
+    rows = db.execute(tx_query).all()
+    targets = _load_refund_targets(
+        db, ledger_ids=ledger_internal_ids, refund_ids={r[5] for r in rows if r[5]},
+    )
+    for (lg_id, tx_type_val, raw_amount, native_amount_val, cat_name,
+         refund_of_id, has_splits, splits_json) in rows:
+        for flow, leg_cat, _sid, amt in _stat_legs(
+            tx_type=tx_type_val, raw_amount=raw_amount, native_amount=native_amount_val,
+            category_name=cat_name, category_sync_id=None, refund_of_sync_id=refund_of_id,
+            has_splits=has_splits, splits_json=splits_json,
+            refund_target=targets.get((lg_id, refund_of_id)) if refund_of_id else None,
+        ):
             category_slot = category_map.setdefault(leg_cat, {"income": 0.0, "expense": 0.0})
-            if is_income_refund:
-                expense_total -= leg_amt
-                category_slot["expense"] -= leg_amt
-                continue
-            if is_expense_refund:
-                income_total -= leg_amt
-                category_slot["income"] -= leg_amt
-                continue
-            if tx_type_val == "income":
-                income_total += leg_amt
-                category_slot["income"] += leg_amt
-            elif tx_type_val == "expense":
-                expense_total += leg_amt
-                category_slot["expense"] += leg_amt
+            if flow == "income":
+                income_total += amt
+                category_slot["income"] += amt
+            elif flow == "expense":
+                expense_total += amt
+                category_slot["expense"] += amt
     return income_total, expense_total, category_map
 
 
@@ -1891,6 +1964,417 @@ def comparison_report(
         expense=_comparison_metric(cur_expense, prev_expense),
         balance=_comparison_metric(cur_income - cur_expense, prev_income - prev_expense),
         category_breakdown=breakdown,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 比較矩陣(對齊 doc.moze.app/analysis/comparison-report):列 = 月份、欄 =
+# 比較項目(記錄類型 / 支出類別 / 收入類別 / 子類別 / 專案 / 帳戶分組),
+# 右側每月合計與月增率、底部各欄合計與平均。口徑同 `/workspace/comparison`
+# (共用 `_stat_legs`:本位幣、拆帳展開、退款 netting、exclude_from_stats)。
+# ---------------------------------------------------------------------------
+
+ComparisonMatrixDimension = Literal[
+    "record_type",
+    "expense_category",
+    "income_category",
+    "expense_subcategory",
+    "income_subcategory",
+    "project",
+    "account_group",
+]
+
+_MATRIX_NONE_KEY = "__none__"
+_MATRIX_MAX_MONTHS = 120
+
+
+class ComparisonMatrixColumnOut(BaseModel):
+    key: str
+    label: str
+    # 子類別維度時是一級分類名稱,其餘為 None
+    parent_label: str | None = None
+
+
+class ComparisonMatrixRowOut(BaseModel):
+    month: str
+    start: datetime
+    end: datetime
+    values: dict[str, float]
+    total: float
+    # 相對上一列(上一個月)的增減百分比;上一列為 0 或第一列時為 None
+    mom_pct: float | None = None
+
+
+class ComparisonMatrixOut(BaseModel):
+    dimension: str
+    kind: str
+    columns: list[ComparisonMatrixColumnOut]
+    rows: list[ComparisonMatrixRowOut]
+    column_totals: dict[str, float]
+    column_averages: dict[str, float]
+    grand_total: float
+
+
+class ComparisonMatrixCellTxOut(BaseModel):
+    sync_id: str
+    ledger_id: str
+    happened_at: datetime
+    tx_type: str
+    # 這筆交易落在該格的金額(拆帳時只算對應明細;退款為負值)
+    amount: float
+    category_name: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+    merchant: str | None = None
+    is_refund: bool = False
+
+
+class ComparisonMatrixCellOut(BaseModel):
+    month: str
+    column_key: str
+    total: float
+    items: list[ComparisonMatrixCellTxOut]
+
+
+def _matrix_month_labels(start: str, end: str) -> list[str]:
+    def parse(label: str) -> int:
+        try:
+            y, m = label.split("-", 1)
+            yi, mi = int(y), int(m)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Invalid month label") from exc
+        if not 1 <= mi <= 12:
+            raise HTTPException(status_code=400, detail="Invalid month label")
+        return yi * 12 + mi - 1
+
+    a, b = parse(start), parse(end)
+    if b < a:
+        a, b = b, a
+    if b - a + 1 > _MATRIX_MAX_MONTHS:
+        raise HTTPException(status_code=400, detail=f"At most {_MATRIX_MAX_MONTHS} months")
+    return [f"{i // 12:04d}-{i % 12 + 1:02d}" for i in range(a, b + 1)]
+
+
+def _matrix_legs(
+    db: Session,
+    *,
+    ledgers: list,
+    months: list[str],
+    dimension: str,
+    kind: str,
+    tz_offset_minutes: int,
+    month_start_day: int,
+):
+    """產生矩陣用的 legs:`(month_label, column_key, column_label, parent_label,
+    amount, tx_row, leg_category_name)`。矩陣端點與格子下鑽端點共用,確保
+    兩邊分組規則一致。"""
+    start_at, _, _ = _analytics_range(
+        scope="month", period=months[0], tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
+    )
+    _, end_at, _ = _analytics_range(
+        scope="month", period=months[-1], tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
+    )
+    ledger_ids = [lg.id for lg in ledgers]
+    owner_ids = {lg.user_id for lg in ledgers}
+    ext_by_internal = {lg.id: lg.external_id for lg in ledgers}
+
+    rows = db.execute(
+        select(
+            ReadTxProjection.sync_id,
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.user_id,
+            ReadTxProjection.tx_type,
+            ReadTxProjection.amount,
+            ReadTxProjection.native_amount,
+            ReadTxProjection.happened_at,
+            ReadTxProjection.category_name,
+            ReadTxProjection.category_sync_id,
+            ReadTxProjection.refund_of_sync_id,
+            ReadTxProjection.has_splits,
+            ReadTxProjection.splits_json,
+            ReadTxProjection.project_sync_id,
+            ReadTxProjection.account_sync_id,
+            ReadTxProjection.account_name,
+            ReadTxProjection.note,
+            ReadTxProjection.merchant,
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_ids),
+            ReadTxProjection.exclude_from_stats == sa_false(),
+            ReadTxProjection.happened_at >= start_at,
+            ReadTxProjection.happened_at < end_at,
+        )
+    ).all()
+
+    # ---- 分類階層(user-global,依帳本擁有者) ----
+    cats = db.scalars(
+        select(UserCategoryProjection).where(UserCategoryProjection.user_id.in_(owner_ids))
+    ).all() if dimension.endswith("category") or dimension.endswith("subcategory") else []
+    cat_by_sid = {(c.user_id, c.sync_id): c for c in cats}
+    cat_by_name: dict[tuple[str, str, str], UserCategoryProjection] = {}
+    for c in cats:
+        if c.name:
+            cat_by_name.setdefault((c.user_id, c.kind or "", c.name), c)
+
+    def top_and_child(user_id: str, flow: str, name: str, sid: str | None) -> tuple[str, str | None]:
+        c = (cat_by_sid.get((user_id, sid)) if sid else None) or cat_by_name.get((user_id, flow, name))
+        if c is None:
+            return name, None
+        if (c.level or 1) >= 2 and (c.parent_sync_id or c.parent_name):
+            parent = cat_by_sid.get((user_id, c.parent_sync_id)) if c.parent_sync_id else None
+            pname = (parent.name if parent is not None else None) or c.parent_name or name
+            return pname, c.name or name
+        return c.name or name, None
+
+    # ---- 專案 / 帳戶分組 ----
+    project_names: dict[tuple[str, str], str] = {}
+    if dimension == "project":
+        for p in db.scalars(
+            select(ReadProjectProjection).where(ReadProjectProjection.ledger_id.in_(ledger_ids))
+        ).all():
+            project_names[(p.ledger_id, p.sync_id)] = p.name or ""
+    accounts: dict[tuple[str, str], UserAccountProjection] = {}
+    if dimension == "account_group":
+        for a in db.scalars(
+            select(UserAccountProjection).where(UserAccountProjection.user_id.in_(owner_ids))
+        ).all():
+            accounts[(a.user_id, a.sync_id)] = a
+
+    targets = _load_refund_targets(
+        db, ledger_ids=ledger_ids, refund_ids={r.refund_of_sync_id for r in rows if r.refund_of_sync_id},
+    )
+    for row in rows:
+        (sync_id, ledger_id, user_id, tx_type, amount, native, happened_at, cat_name,
+         cat_sid, refund_of, has_splits, splits_json, project_sid, account_sid,
+         _account_name, _note, _merchant) = row
+        target = targets.get((ledger_id, refund_of)) if refund_of else None
+        if target is not None and not project_sid:
+            # 退款單沒掛專案就沿用原交易的(同 App 統計報表)
+            project_sid = target.project_sync_id
+        month = _bucket_key("year", happened_at, tz_offset_minutes, month_start_day)
+        for flow, leg_cat, leg_sid, amt in _stat_legs(
+            tx_type=tx_type, raw_amount=amount, native_amount=native,
+            category_name=cat_name, category_sync_id=cat_sid, refund_of_sync_id=refund_of,
+            has_splits=has_splits, splits_json=splits_json, refund_target=target,
+        ):
+            if flow is None:
+                continue
+            if dimension == "record_type":
+                yield month, flow, flow, None, amt, row, leg_cat, ext_by_internal[ledger_id]
+                continue
+            if dimension in ("expense_category", "income_category",
+                             "expense_subcategory", "income_subcategory"):
+                want = "expense" if dimension.startswith("expense") else "income"
+                if flow != want:
+                    continue
+                top, child = top_and_child(user_id, want, leg_cat, leg_sid)
+                if dimension.endswith("subcategory") and child is not None:
+                    yield (month, f"{top}›{child}", child, top, amt, row, leg_cat,
+                           ext_by_internal[ledger_id])
+                else:
+                    yield month, top, top, None, amt, row, leg_cat, ext_by_internal[ledger_id]
+                continue
+            if flow != kind:
+                continue
+            if dimension == "project":
+                if project_sid:
+                    label = project_names.get((ledger_id, project_sid), "")
+                    yield month, project_sid, label, None, amt, row, leg_cat, ext_by_internal[ledger_id]
+                else:
+                    yield month, _MATRIX_NONE_KEY, "", None, amt, row, leg_cat, ext_by_internal[ledger_id]
+                continue
+            if dimension == "account_group":
+                acc = accounts.get((user_id, account_sid)) if account_sid else None
+                group_sid: str | None = None
+                if acc is not None:
+                    if acc.parent_account_id:
+                        group_sid = acc.parent_account_id
+                    elif acc.account_type == "account_group":
+                        group_sid = acc.sync_id
+                if group_sid is None:
+                    yield month, _MATRIX_NONE_KEY, "", None, amt, row, leg_cat, ext_by_internal[ledger_id]
+                else:
+                    g = accounts.get((user_id, group_sid))
+                    yield (month, group_sid, (g.name if g is not None else "") or "", None, amt, row,
+                           leg_cat, ext_by_internal[ledger_id])
+
+
+def _matrix_context(
+    db: Session, *, current_user: User, ledger_id: str | None, user_id: str | None,
+    natural_month: bool,
+):
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
+    month_start_day = (
+        1
+        if natural_month
+        else ((ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1)
+    )
+    return ledgers, month_start_day
+
+
+@router.get("/workspace/comparison-matrix", response_model=ComparisonMatrixOut)
+def comparison_matrix(
+    dimension: ComparisonMatrixDimension = Query(default="expense_category"),
+    kind: Literal["expense", "income"] = Query(
+        default="expense", description="專案/帳戶分組維度要看支出還是收入;類別維度由 dimension 決定"),
+    start: str = Query(..., description="起始週期標籤 YYYY-MM(含)"),
+    end: str = Query(..., description="結束週期標籤 YYYY-MM(含)"),
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    natural_month: bool = Query(default=False),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ComparisonMatrixOut:
+    """比較報表矩陣(Web 大螢幕用)。`record_type` 維度的欄位固定是
+    expense / income / balance,每月 `total` = 結餘;其餘維度 `total` = 該月
+    各欄加總。欄位依期間合計金額降序,「(無)」(`__none__`)固定排最後。"""
+    months = _matrix_month_labels(start, end)
+    ledgers, month_start_day = _matrix_context(
+        db, current_user=current_user, ledger_id=ledger_id, user_id=user_id,
+        natural_month=natural_month,
+    )
+    effective_kind = (
+        "income" if dimension.startswith("income") else
+        "expense" if dimension.startswith("expense") else kind
+    )
+
+    cells: dict[str, dict[str, float]] = {m: {} for m in months}
+    col_meta: dict[str, tuple[str, str | None]] = {}
+    if ledgers:
+        for month, key, label, parent, amt, _row, _cat, _ext in _matrix_legs(
+            db, ledgers=ledgers, months=months, dimension=dimension, kind=kind,
+            tz_offset_minutes=tz_offset_minutes, month_start_day=month_start_day,
+        ):
+            if month not in cells:
+                continue
+            cells[month][key] = cells[month].get(key, 0.0) + amt
+            if key not in col_meta or (not col_meta[key][0] and label):
+                col_meta[key] = (label, parent)
+
+    if dimension == "record_type":
+        col_meta = {"expense": ("expense", None), "income": ("income", None), "balance": ("balance", None)}
+        for m in months:
+            c = cells[m]
+            c["balance"] = c.get("income", 0.0) - c.get("expense", 0.0)
+
+    column_totals = {k: 0.0 for k in col_meta}
+    for m in months:
+        for k, v in cells[m].items():
+            column_totals[k] = column_totals.get(k, 0.0) + v
+
+    def sort_key(k: str) -> tuple[int, float]:
+        return (1 if k == _MATRIX_NONE_KEY else 0, -abs(column_totals.get(k, 0.0)))
+
+    ordered = (
+        ["expense", "income", "balance"] if dimension == "record_type"
+        else sorted(col_meta, key=sort_key)
+    )
+    columns = [
+        ComparisonMatrixColumnOut(key=k, label=col_meta[k][0], parent_label=col_meta[k][1])
+        for k in ordered
+    ]
+
+    out_rows: list[ComparisonMatrixRowOut] = []
+    prev_total: float | None = None
+    for m in months:
+        r_start, r_end, _ = _analytics_range(
+            scope="month", period=m, tz_offset_minutes=tz_offset_minutes,
+            month_start_day=month_start_day,
+        )
+        values = {k: round(cells[m].get(k, 0.0), 2) for k in ordered}
+        total = (
+            values.get("balance", 0.0) if dimension == "record_type"
+            else round(sum(cells[m].values()), 2)
+        )
+        mom = (
+            round((total - prev_total) / abs(prev_total) * 100, 2)
+            if prev_total not in (None, 0) else None
+        )
+        out_rows.append(ComparisonMatrixRowOut(
+            month=m, start=r_start, end=r_end, values=values, total=total, mom_pct=mom,
+        ))
+        prev_total = total
+
+    n = len(months) or 1
+    grand_total = (
+        round(column_totals.get("balance", 0.0), 2) if dimension == "record_type"
+        else round(sum(column_totals.values()), 2)
+    )
+    return ComparisonMatrixOut(
+        dimension=dimension,
+        kind=effective_kind,
+        columns=columns,
+        rows=out_rows,
+        column_totals={k: round(column_totals.get(k, 0.0), 2) for k in ordered},
+        column_averages={k: round(column_totals.get(k, 0.0) / n, 2) for k in ordered},
+        grand_total=grand_total,
+    )
+
+
+@router.get("/workspace/comparison-matrix/cell", response_model=ComparisonMatrixCellOut)
+def comparison_matrix_cell(
+    dimension: ComparisonMatrixDimension = Query(default="expense_category"),
+    kind: Literal["expense", "income"] = Query(default="expense"),
+    month: str = Query(..., description="週期標籤 YYYY-MM"),
+    column_key: str = Query(..., description="矩陣欄位 key(同 comparison-matrix 回傳的 columns[].key)"),
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    natural_month: bool = Query(default=False),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ComparisonMatrixCellOut:
+    """比較矩陣單一格子的交易明細(點格子下鑽)。分組規則跟矩陣端點共用
+    `_matrix_legs`;`record_type` 維度的 `balance` 欄回傳該月全部收支交易。"""
+    months = _matrix_month_labels(month, month)
+    ledgers, month_start_day = _matrix_context(
+        db, current_user=current_user, ledger_id=ledger_id, user_id=user_id,
+        natural_month=natural_month,
+    )
+    by_tx: dict[str, ComparisonMatrixCellTxOut] = {}
+    total = 0.0
+    if ledgers:
+        for m, key, _label, _parent, amt, row, leg_cat, ext in _matrix_legs(
+            db, ledgers=ledgers, months=months, dimension=dimension, kind=kind,
+            tz_offset_minutes=tz_offset_minutes, month_start_day=month_start_day,
+        ):
+            if m != months[0]:
+                continue
+            if dimension == "record_type" and column_key == "balance":
+                signed = amt if key == "income" else -amt
+            elif key == column_key:
+                signed = amt
+            else:
+                continue
+            total += signed
+            sync_id = row.sync_id
+            item = by_tx.get(sync_id)
+            if item is None:
+                by_tx[sync_id] = ComparisonMatrixCellTxOut(
+                    sync_id=sync_id,
+                    ledger_id=ext,
+                    happened_at=row.happened_at,
+                    tx_type=row.tx_type,
+                    amount=round(signed, 2),
+                    category_name=leg_cat,
+                    account_name=row.account_name,
+                    note=row.note,
+                    merchant=row.merchant,
+                    is_refund=row.refund_of_sync_id is not None,
+                )
+            else:
+                item.amount = round(item.amount + signed, 2)
+    items = sorted(by_tx.values(), key=lambda i: _to_utc(i.happened_at), reverse=True)
+    return ComparisonMatrixCellOut(
+        month=months[0], column_key=column_key, total=round(total, 2), items=items,
     )
 
 

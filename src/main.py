@@ -445,3 +445,30 @@ async def _log_sync_changes_size() -> None:  # noqa: B008
         logging.getLogger(__name__).warning(
             "sync_changes size probe failed", exc_info=True,
         )
+
+
+# ============================================================================
+# 回饋金沖銷交易補退款關聯(2026-09-25)—— 舊版產生的沖銷交易沒有
+# refundOfId,統計會把它當一般支出。冪等,補過的不會再選到;失敗不阻塞啟動。
+# 見 services/card_reward_payout.py::backfill_reward_reversal_refund_links。
+# ============================================================================
+
+
+@app.on_event("startup")
+async def _backfill_reward_reversal_refund_links() -> None:  # noqa: B008
+    from datetime import datetime, timezone
+
+    from .services.card_reward_payout import backfill_reward_reversal_refund_links
+
+    try:
+        with SessionLocal() as db:
+            n = backfill_reward_reversal_refund_links(db, now=datetime.now(timezone.utc))
+            db.commit()
+            if n:
+                logging.getLogger(__name__).info(
+                    "reward reversal backfill: linked %d reversal tx(s) to their payout", n,
+                )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "reward reversal refund-link backfill failed", exc_info=True,
+        )

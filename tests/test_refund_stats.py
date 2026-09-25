@@ -356,10 +356,9 @@ def test_workspace_analytics_nets_refund_against_expense():
 
 
 def test_workspace_analytics_nets_refund_of_split_transaction():
-    """2026-07-31 起,拆帳(§2.4)交易也能整笔退款 —— 退款只冲抵全局 expense
-    净额,不会拆回原交易「餐饮/交通」两个分类明细各自的金额(跟普通退款
-    "不追溯回被退那笔交易原本的分类"是同一套简化口径,见 workspace.py
-    is_income_refund 那段注释)。"""
+    """2026-07-31 起,拆帳(§2.4)交易也能整笔退款。2026-09-25 起退款扣回
+    原交易的分類(見 workspace.py `_stat_legs`):原交易拆帳就按明細比例分攤,
+    所以「餐饮/交通」各自被扣掉退款的 150/200、50/200。"""
     client, _TS = _make_client()
     try:
         owner = _register(client, "ref9@example.com")
@@ -434,11 +433,10 @@ def test_workspace_analytics_nets_refund_of_split_transaction():
         assert summary["expense_total"] == 120.0
 
         ranks = {r["category_name"]: r["total"] for r in res.json()["category_ranks"]}
-        # 拆帳明细金额本身不受退款影响 —— 退款净额只冲抵全局 expense_total,
-        # 不会按比例拆回「餐饮」「交通」两个分类各自扣减。
-        assert ranks.get("餐饮") == 150.0
-        assert ranks.get("交通") == 50.0
-        # 退款自己那个分类("退款")因为是净负值,不会出现在 expense 排行里。
+        # 退款 80 按原交易明細比例拆回:餐饮 150 - 60、交通 50 - 20。
+        assert ranks.get("餐饮") == 90.0
+        assert ranks.get("交通") == 30.0
+        # 退款扣回原分類,退款單自己的「退款」分類不再出現。
         assert "退款" not in ranks
     finally:
         app.dependency_overrides.clear()

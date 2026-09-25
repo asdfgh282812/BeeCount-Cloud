@@ -1384,3 +1384,127 @@ def test_patch_newly_marking_tx_as_refund_reverses_reward_once():
         assert len(expenses2) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# 2026-09-25 退款沖銷口徑:App 同步的退款也沖銷回饋、沖銷交易掛 refundOfId   #
+# --------------------------------------------------------------------------- #
+
+
+def _paid_reward_scenario(client, TS, ledger_id, email):
+    hdr_app, hdr_web = _login_and_seed(client, ledger_id, email)
+    rule_id = _create_rule(
+        client, hdr_web, ledger_id,
+        settlement_type="immediate_after_tx", settlement_days=0, reward_account_id="acc-wallet",
+    )
+    tx_day = datetime.now(timezone.utc) - timedelta(days=1)
+    _push(client, hdr_app, ledger_id, "transaction", "tx-1",
+          {"syncId": "tx-1", "type": "expense", "amount": 100.0, "happenedAt": _iso(tx_day),
+           "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+          device_id="d-app")
+    with TS() as db:
+        card_reward_payout.materialize_due_card_reward_payouts(db)
+        db.commit()
+    payout_tx = _income_tx_to(TS, "acc-wallet")
+    assert [t.amount for t in payout_tx] == [10.0]
+    return hdr_app, hdr_web, rule_id, payout_tx[0].sync_id
+
+
+def test_mobile_push_refund_after_payout_reverses_reward_once():
+    """App 建的退款走 /sync/push 上來,也要跟 web 建退款一樣沖銷已入帳的回饋金;
+    沖銷交易掛 refundOfId 指回回饋入帳交易。重推同一筆退款不重複沖銷。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-push-ref@t.com"
+        hdr_app, _hdr_web, _rule, payout_sid = _paid_reward_scenario(client, TS, "lgpush1", email)
+
+        refund = {"syncId": "tx-r", "type": "income", "amount": 100.0, "happenedAt": _iso(),
+                  "accountId": "acc-card", "accountName": "信用卡", "refundOfId": "tx-1"}
+        r = client.post("/api/v1/sync/push", headers=hdr_app, json={"device_id": "d-app", "changes": [{
+            "ledger_id": "lgpush1", "entity_type": "transaction", "entity_sync_id": "tx-r",
+            "action": "upsert", "updated_at": _iso(), "payload": refund,
+        }]})
+        assert r.status_code == 200, r.text
+        server_cursor = r.json()["server_cursor"]
+
+        reversals = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]
+        assert len(reversals) == 1
+        assert reversals[0].amount == 10.0
+        assert reversals[0].refund_of_sync_id == payout_sid
+        assert reversals[0].reward_source_tx_sync_id == "tx-1"
+        # 沖銷交易的 change 要在回傳的 cursor 之後,推送端下次 pull 才拉得到。
+        assert reversals[0].source_change_id > server_cursor
+
+        # 重推(例如 App 改了備註)不再沖銷一次
+        _push(client, hdr_app, "lgpush1", "transaction", "tx-r",
+              {**refund, "note": "改備註"}, device_id="d-app")
+        assert len([t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"]) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_analytics_nets_refund_and_reward_reversal():
+    """消費 100 → 回饋 10 入帳 → 全額退款:統計上支出、收入都歸零(退款扣回
+    支出、回饋沖銷扣回收入),不是「收入 110、支出 110」。"""
+    client, TS = _make_client()
+    try:
+        email = "crp-net@t.com"
+        hdr_app, hdr_web, _rule, _payout = _paid_reward_scenario(client, TS, "lgnet1", email)
+        base = _latest_change_id(client, hdr_web, "lgnet1")
+        r = client.post(
+            "/api/v1/write/ledgers/lgnet1/transactions", headers=hdr_web,
+            json={"base_change_id": base, "tx_type": "income", "amount": 100.0,
+                  "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1"},
+        )
+        assert r.status_code == 200, r.text
+
+        res = client.get("/api/v1/read/workspace/analytics", headers=hdr_web,
+                         params={"scope": "month", "metric": "expense"})
+        assert res.status_code == 200, res.text
+        summary = res.json()["summary"]
+        assert summary["expense_total"] == 0.0
+        assert summary["income_total"] == 0.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_backfill_links_legacy_reward_reversal_to_payout():
+    """2026-09-25 以前的沖銷交易沒有 refundOfId:啟動補資料要替它補上,並寫
+    一條 upsert SyncChange 讓 App 拉到;冪等,第二次不再動。"""
+    from src.models import SyncChange
+
+    client, TS = _make_client()
+    try:
+        email = "crp-backfill@t.com"
+        _hdr_app, hdr_web, _rule, payout_sid = _paid_reward_scenario(client, TS, "lgbf1", email)
+        base = _latest_change_id(client, hdr_web, "lgbf1")
+        r = client.post(
+            "/api/v1/write/ledgers/lgbf1/transactions", headers=hdr_web,
+            json={"base_change_id": base, "tx_type": "income", "amount": 100.0,
+                  "happened_at": _iso(), "account_id": "acc-card", "refund_of_id": "tx-1"},
+        )
+        assert r.status_code == 200, r.text
+        rev = [t for t in _all_tx_in(TS, "acc-wallet") if t.tx_type == "expense"][0]
+        with TS() as db:  # 模擬舊資料:沒有 refundOfId
+            row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == rev.sync_id))
+            row.refund_of_sync_id = None
+            db.commit()
+
+        now = datetime.now(timezone.utc)
+        with TS() as db:
+            assert card_reward_payout.backfill_reward_reversal_refund_links(db, now=now) == 1
+            db.commit()
+        with TS() as db:
+            row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == rev.sync_id))
+            assert row.refund_of_sync_id == payout_sid
+            assert row.amount == 10.0
+            assert row.reward_source_tx_sync_id == "tx-1"
+            change = db.scalar(
+                select(SyncChange).where(SyncChange.entity_sync_id == rev.sync_id)
+                .order_by(SyncChange.change_id.desc()).limit(1)
+            )
+            assert change.payload_json["refundOfId"] == payout_sid
+            assert change.payload_json["amount"] == 10.0
+            assert card_reward_payout.backfill_reward_reversal_refund_links(db, now=now) == 0
+    finally:
+        app.dependency_overrides.clear()

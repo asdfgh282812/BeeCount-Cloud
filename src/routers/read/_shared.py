@@ -536,13 +536,31 @@ def _projection_totals(
       - tx_type='expense'(退一笔收入,§2.12.3 income 也能退款后新增):不计入
         expense_ex,冲抵 income_ex
     balance_all 不用改:退款方向已经保证跟原支出/收入相反的符号入账,净效果
-    (income - expense)天然正确,只是 income/expense 两个分项口径变了。"""
+    (income - expense)天然正确,只是 income/expense 两个分项口径变了。
+
+    2026-09-25:原交易本身 exclude_from_stats=True 时,退款也不冲抵(不然会
+    凭空多出一笔负数),跟 workspace.py `_stat_legs`、App `refund_netting.dart`
+    同口径。"""
     from sqlalchemy import and_
     from sqlalchemy import case as sa_case
     from sqlalchemy import false as sa_false
 
+    from sqlalchemy.orm import aliased
+
     _native = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
     _counted = ReadTxProjection.exclude_from_stats == sa_false()
+    _orig = aliased(ReadTxProjection)
+    _target_excluded = (
+        select(_orig.exclude_from_stats)
+        .where(
+            _orig.ledger_id == ReadTxProjection.ledger_id,
+            _orig.sync_id == ReadTxProjection.refund_of_sync_id,
+        )
+        .limit(1)
+        .correlate(ReadTxProjection)
+        .scalar_subquery()
+    )
+    _refund_counted = _counted & (func.coalesce(_target_excluded, sa_false()) == sa_false())
     _is_income_refund = and_(
         ReadTxProjection.tx_type == "income",
         ReadTxProjection.refund_of_sync_id.isnot(None),
@@ -557,14 +575,14 @@ def _projection_totals(
             func.coalesce(func.sum(
                 sa_case(
                     ((ReadTxProjection.tx_type == "income") & _counted & ~_is_income_refund, _native),
-                    (_is_expense_refund & _counted, -_native),
+                    (_is_expense_refund & _refund_counted, -_native),
                     else_=0.0,
                 )
             ), 0.0),
             func.coalesce(func.sum(
                 sa_case(
                     ((ReadTxProjection.tx_type == "expense") & _counted & ~_is_expense_refund, _native),
-                    (_is_income_refund & _counted, -_native),
+                    (_is_income_refund & _refund_counted, -_native),
                     else_=0.0,
                 )
             ), 0.0),

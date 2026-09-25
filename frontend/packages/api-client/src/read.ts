@@ -7,6 +7,9 @@ import type {
   AccountStatement,
   AnalyticsMetric,
   AnalyticsScope,
+  ComparisonMatrix,
+  ComparisonMatrixCell,
+  ComparisonMatrixDimension,
   ComparisonReport,
   NetWorthHistory,
   ReadAccount,
@@ -625,6 +628,50 @@ export async function fetchComparisonReport(
   if (typeof params.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${params.tzOffsetMinutes}`)
   if (params.naturalMonth) query.set('natural_month', 'true')
   return authedGet<ComparisonReport>(`/read/workspace/comparison?${query.toString()}`, token)
+}
+
+type ComparisonMatrixCommon = {
+  dimension: ComparisonMatrixDimension
+  /** 專案/帳戶分組維度看支出或收入;類別維度由 dimension 決定 */
+  kind?: 'expense' | 'income'
+  ledgerId?: string | null
+  userId?: string | null
+  tzOffsetMinutes?: number
+  naturalMonth?: boolean
+}
+
+function comparisonMatrixQuery(params: ComparisonMatrixCommon): URLSearchParams {
+  const query = new URLSearchParams()
+  query.set('dimension', params.dimension)
+  if (params.kind) query.set('kind', params.kind)
+  if (params.ledgerId) query.set('ledger_id', params.ledgerId)
+  if (params.userId) query.set('user_id', params.userId)
+  if (typeof params.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${params.tzOffsetMinutes}`)
+  if (params.naturalMonth) query.set('natural_month', 'true')
+  return query
+}
+
+/** MOZE 比較報表矩陣:列 = 月份(`start`~`end`,YYYY-MM 含兩端,最多 120 個月)、
+ *  欄 = 比較項目。 */
+export async function fetchComparisonMatrix(
+  token: string,
+  params: ComparisonMatrixCommon & { start: string; end: string }
+): Promise<ComparisonMatrix> {
+  const query = comparisonMatrixQuery(params)
+  query.set('start', params.start)
+  query.set('end', params.end)
+  return authedGet<ComparisonMatrix>(`/read/workspace/comparison-matrix?${query.toString()}`, token)
+}
+
+/** 比較矩陣單一格子的交易明細(點格子下鑽)。 */
+export async function fetchComparisonMatrixCell(
+  token: string,
+  params: ComparisonMatrixCommon & { month: string; columnKey: string }
+): Promise<ComparisonMatrixCell> {
+  const query = comparisonMatrixQuery(params)
+  query.set('month', params.month)
+  query.set('column_key', params.columnKey)
+  return authedGet<ComparisonMatrixCell>(`/read/workspace/comparison-matrix/cell?${query.toString()}`, token)
 }
 
 export async function fetchNetWorthHistory(

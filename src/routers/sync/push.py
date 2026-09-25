@@ -45,6 +45,13 @@ async def push_changes(
     # 通道的 sync_change(让其他设备拉这一份)。
     touched_user_global = False
 
+    # 信用卡回饋沖銷(2026-09-25):App 同步上來「新變成退款」的交易,跟 web
+    # 建退款(routers/write/_shared.py)一樣要沖銷原消費已入帳的回饋金。收集
+    # `(ledger_id, owner_id, refunded_tx_id)`,整批 apply 完才處理——沖銷交易
+    # 的 change_id 因此一定大於本次回傳的 server_cursor,推送端下一次 pull
+    # 就會拉到,不會被 cursor 跳過。
+    pending_reward_reversals: list[tuple[str, str, str]] = []
+
     for change in req.changes:
         is_user_global = change.entity_type in USER_GLOBAL_ENTITY_TYPES
 
@@ -297,6 +304,23 @@ async def push_changes(
                 updated_by_device_id=req.device_id,
                 updated_by_user_id=current_user.id,
             )
+            newly_refunded: str | None = None
+            if (
+                change.entity_type == "transaction"
+                and change.action == "upsert"
+                and isinstance(change.payload, dict)
+                and change.payload.get("refundOfId")
+            ):
+                # 只在這次 push 才把它變成退款時處理(新建、或舊交易剛補上
+                # refundOfId);已經是退款的交易重推/編輯不重複沖銷。
+                prev_refund_of = db.scalar(
+                    select(ReadTxProjection.refund_of_sync_id).where(
+                        ReadTxProjection.ledger_id == ledger.id,
+                        ReadTxProjection.sync_id == change.entity_sync_id,
+                    )
+                )
+                if not prev_refund_of:
+                    newly_refunded = str(change.payload["refundOfId"])
             db.add(row_change)
             db.flush()
             # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
@@ -324,6 +348,8 @@ async def push_changes(
                         change.payload,
                     )
                     raise
+                if newly_refunded:
+                    pending_reward_reversals.append((ledger.id, ledger.user_id, newly_refunded))
             touched_ledgers[ledger.external_id] = ledger.id
 
         accepted += 1
@@ -342,6 +368,14 @@ async def push_changes(
     if max_cursor == 0:
         accessible = list_accessible_ledgers(db, user_id=current_user.id)
         max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
+
+    if pending_reward_reversals:
+        from ...services.card_reward_payout import reverse_card_reward_payouts_for_refund
+        for rev_ledger_id, rev_owner_id, refunded_tx_id in pending_reward_reversals:
+            reverse_card_reward_payouts_for_refund(
+                db, ledger_id=rev_ledger_id, user_id=rev_owner_id,
+                refunded_tx_id=refunded_tx_id, now=now,
+            )
 
     db.commit()
 

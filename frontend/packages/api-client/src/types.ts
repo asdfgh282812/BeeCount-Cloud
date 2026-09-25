@@ -1022,6 +1022,70 @@ export type ComparisonReport = {
   category_breakdown: ComparisonCategoryBreakdownItem[]
 }
 
+// ────────── 比較矩陣 (MOZE comparison report,`/read/workspace/comparison-matrix`)──────────
+
+export type ComparisonMatrixDimension =
+  | 'record_type'
+  | 'expense_category'
+  | 'income_category'
+  | 'expense_subcategory'
+  | 'income_subcategory'
+  | 'project'
+  | 'account_group'
+
+/** `__none__` = 「(無)」/「未分組」;`record_type` 維度固定 expense/income/balance。 */
+export const COMPARISON_MATRIX_NONE_KEY = '__none__'
+
+export type ComparisonMatrixColumn = {
+  key: string
+  label: string
+  /** 子類別維度時是一級分類名稱 */
+  parent_label: string | null
+}
+
+export type ComparisonMatrixRow = {
+  /** 週期標籤 YYYY-MM(依帳本月起始日) */
+  month: string
+  start: string
+  end: string
+  values: Record<string, number>
+  /** record_type 維度 = 結餘,其餘 = 各欄加總 */
+  total: number
+  /** 相對上一列的增減百分比;上一列為 0 或第一列時為 null */
+  mom_pct: number | null
+}
+
+export type ComparisonMatrix = {
+  dimension: ComparisonMatrixDimension
+  kind: 'expense' | 'income'
+  columns: ComparisonMatrixColumn[]
+  rows: ComparisonMatrixRow[]
+  column_totals: Record<string, number>
+  column_averages: Record<string, number>
+  grand_total: number
+}
+
+export type ComparisonMatrixCellTx = {
+  sync_id: string
+  ledger_id: string
+  happened_at: string
+  tx_type: string
+  /** 落在該格的金額(拆帳只算對應明細;退款為負值) */
+  amount: number
+  category_name: string | null
+  account_name: string | null
+  note: string | null
+  merchant: string | null
+  is_refund: boolean
+}
+
+export type ComparisonMatrixCell = {
+  month: string
+  column_key: string
+  total: number
+  items: ComparisonMatrixCellTx[]
+}
+
 // ────────── 信用卡紅利回饋 (Card Rewards，MOZE_FEATURE_GAP_SD.md §2.9.5 Phase 4.5）──────────
 
 export type CardRewardRateType = 'percentage' | 'fixed_amount'

@@ -249,6 +249,13 @@ def reverse_card_reward_payouts_for_refund(
     (`payout.payout_tx_sync_id`),分類用自建的「退款」分類
     (`ensure_refund_category`,expense kind)。回傳新建的沖銷交易 sync_id
     列表(通常 0~規則勾選數量那麼多筆)。
+
+    2026-09-25:沖銷交易帶 `refundOfId = 回饋入帳交易`,語意上就是「那筆
+    回饋收入的退款單」——統計端(workspace.py `_stat_legs`、App
+    `refund_netting.dart`)因此把它當成收入的負值、扣回「回饋」分類,而不是
+    多算一筆支出;App/web 的交易詳情也會把回饋交易顯示成已退款。呼叫點除了
+    web 建退款(`routers/write/_shared.py`),也包含 App 同步上來的退款
+    (`routers/sync/push.py`)。
     """
     refunded_tx = db.scalar(
         select(ReadTxProjection).where(
@@ -329,6 +336,7 @@ def reverse_card_reward_payouts_for_refund(
             "categoryName": card_rewards.REFUND_CATEGORY_NAME,
             "categoryKind": "expense",
             "rewardSourceTxId": refunded_tx_id,
+            "refundOfId": payout.payout_tx_sync_id,
             "createdByUserId": user_id,
             "updatedByUserId": user_id,
         }
@@ -630,3 +638,101 @@ def materialize_due_card_reward_payouts(db: Session, *, now: datetime | None = N
     if tx_payouts or period_payouts:
         logger.info("card reward payouts: tx=%d period=%d", tx_payouts, period_payouts)
     return {"tx_payouts": tx_payouts, "period_payouts": period_payouts}
+
+
+_REVERSAL_NOTE_PREFIX = "退款沖銷回饋金："
+
+
+def backfill_reward_reversal_refund_links(db: Session, *, now: datetime) -> int:
+    """一次性補資料(2026-09-25):2026-09-25 以前產生的回饋金沖銷交易沒有
+    `refundOfId`,統計會把它當成一般支出。這裡替它們補上指回回饋入帳交易
+    的 `refundOfId`,並寫一條 upsert SyncChange 讓 App 拉到(App 本地沒有
+    `rewardSourceTxId` 欄位,只能靠 `refundOfId` 辨識)。
+
+    辨識方式:`tx_type == "expense"`、`reward_source_tx_sync_id` 非空、
+    `refund_of_sync_id` 為空(回饋入帳交易本身是 income,不會誤中)。對應的
+    回饋入帳交易從 `CardRewardPayout(dedup_key == reward_source)` 找,限定
+    同帳本、同帳戶;同一筆消費勾了多條規則時,再用備註裡的規則名稱比對。
+    找不到唯一對應、或那筆回饋交易已經被別的交易退款過,就跳過不動。
+
+    冪等:補過的交易 `refund_of_sync_id` 已非空,下次不會再被選到。由
+    `main.py` 啟動時呼叫;回傳補了幾筆。
+    """
+    from ..routers.write._shared import _projection_row_to_tx_dict
+
+    legacy = db.scalars(
+        select(ReadTxProjection).where(
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.reward_source_tx_sync_id.isnot(None),
+            ReadTxProjection.refund_of_sync_id.is_(None),
+        )
+    ).all()
+    fixed = 0
+    for rev in legacy:
+        payouts = db.scalars(
+            select(CardRewardPayout).where(
+                CardRewardPayout.dedup_key == rev.reward_source_tx_sync_id,
+                CardRewardPayout.payout_tx_sync_id.isnot(None),
+            )
+        ).all()
+        candidates: list[tuple[CardRewardPayout, ReadTxProjection]] = []
+        for payout in payouts:
+            reward_tx = db.scalar(
+                select(ReadTxProjection).where(
+                    ReadTxProjection.ledger_id == rev.ledger_id,
+                    ReadTxProjection.sync_id == payout.payout_tx_sync_id,
+                    ReadTxProjection.tx_type == "income",
+                )
+            )
+            if reward_tx is None or reward_tx.account_sync_id != rev.account_sync_id:
+                continue
+            candidates.append((payout, reward_tx))
+        if len(candidates) > 1:
+            label = (rev.note or "").removeprefix(_REVERSAL_NOTE_PREFIX).strip()
+            by_label = []
+            for payout, reward_tx in candidates:
+                rule = db.scalar(
+                    select(ReadCardRewardRuleProjection).where(
+                        ReadCardRewardRuleProjection.user_id == payout.user_id,
+                        ReadCardRewardRuleProjection.sync_id == payout.rule_sync_id,
+                    )
+                )
+                rule_label = rule.label if rule is not None else payout.rule_sync_id
+                if rule_label == label:
+                    by_label.append((payout, reward_tx))
+            candidates = by_label
+        if len(candidates) != 1:
+            continue
+        reward_tx = candidates[0][1]
+        already = db.scalar(
+            select(ReadTxProjection.sync_id).where(
+                ReadTxProjection.ledger_id == rev.ledger_id,
+                ReadTxProjection.refund_of_sync_id == reward_tx.sync_id,
+            ).limit(1)
+        )
+        if already is not None:
+            continue
+
+        item = _projection_row_to_tx_dict(rev)
+        item["refundOfId"] = reward_tx.sync_id
+        item["updatedByUserId"] = rev.created_by_user_id or rev.user_id
+        change_row = SyncChange(
+            user_id=rev.user_id,
+            ledger_id=rev.ledger_id,
+            scope="ledger",
+            entity_type="transaction",
+            entity_sync_id=rev.sync_id,
+            action="upsert",
+            payload_json=item,
+            updated_at=now,
+            updated_by_device_id=_REWARD_PAYOUT_EDIT_DEVICE_ID,
+            updated_by_user_id=rev.user_id,
+        )
+        db.add(change_row)
+        db.flush()
+        projection.upsert_tx(
+            db, ledger_id=rev.ledger_id, user_id=rev.user_id,
+            source_change_id=change_row.change_id, payload=item,
+        )
+        fixed += 1
+    return fixed

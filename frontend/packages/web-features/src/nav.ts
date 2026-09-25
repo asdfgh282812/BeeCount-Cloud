@@ -6,6 +6,7 @@ export type AppSection =
   | 'categories'
   | 'tags'
   | 'projects'
+  | 'comparison-report'
   | 'budgets'
   | 'recurring-rules'
   | 'installment-plans'
@@ -51,7 +52,10 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'tags', labelKey: 'nav.tags' },
       // 专案(Phase 13)跟标签平级放在顶部导航,紧邻标签右侧 —— 用户明确
       // 要求从「标签分页底下的子分页」改成独立入口,不嵌在标签页面里。
-      { key: 'projects', labelKey: 'nav.projects' }
+      { key: 'projects', labelKey: 'nav.projects' },
+      // 比較報表(MOZE comparison report):矩陣需要大螢幕,只在 Web 提供,
+      // App 端對應的是「報表」分頁的統計報表。
+      { key: 'comparison-report', labelKey: 'nav.comparisonReport' }
       // 预算从顶部 bookkeeping 组移出,改放头像下拉的"工具"里 —— 用户
       // 场景下预算访问频率低于 tx/account/category,顶部 nav 保持瘦。
     ]

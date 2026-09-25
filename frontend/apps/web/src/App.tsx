@@ -80,6 +80,9 @@ const TagsPage = lazy(() =>
 const ProjectsPage = lazy(() =>
   import('./pages/sections/ProjectsPage').then((m) => ({ default: m.ProjectsPage })),
 )
+const ComparisonReportPage = lazy(() =>
+  import('./pages/sections/ComparisonReportPage').then((m) => ({ default: m.ComparisonReportPage })),
+)
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
@@ -362,6 +365,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <ProjectsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="comparison-report"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ComparisonReportPage />
             </Suspense>
           }
         />
