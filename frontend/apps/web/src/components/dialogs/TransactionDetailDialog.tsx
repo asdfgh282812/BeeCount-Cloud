@@ -203,7 +203,7 @@ export function TransactionDetailDialog({
               </span>
               <span className={`text-4xl font-bold tabular-nums ${tone}`}>
                 {sign}
-                {tx.amount.toLocaleString('zh-CN', {
+                {(tx.tx_type === 'transfer' ? Number((tx.amount + (tx.fee_amount ?? 0)).toFixed(2)) : tx.amount).toLocaleString('zh-CN', {
                   minimumFractionDigits: 0,
                   maximumFractionDigits: 2,
                 })}
@@ -393,6 +393,19 @@ export function TransactionDetailDialog({
               {/* 手續費/折扣(2026-08 使用者需求,比照 Moze record/introduction):
                   只在有值時顯示一行,不常用不占版面。base_amount 存在才代表
                   這筆交易用過這個功能。 */}
+              {tx.base_amount == null && tx.tx_type === 'transfer' && (tx.fee_amount ?? 0) > 0 ? (
+                <DetailRow
+                  icon={<Receipt className="h-4 w-4" />}
+                  label={t('detail.transaction.feeDiscount')}
+                  value={
+                    <span>
+                      {t('transactions.table.amount')} {tx.amount}
+                      {` · ${tx.fee_label || t('transactions.field.fee')} ${tx.fee_amount}`}
+                      {` · ${t('transactions.field.total')} ${Number(((tx.amount || 0) + (tx.fee_amount || 0)).toFixed(2))}`}
+                    </span>
+                  }
+                />
+              ) : null}
               {tx.base_amount != null ? (
                 <DetailRow
                   icon={<Receipt className="h-4 w-4" />}

@@ -322,7 +322,8 @@ export function TransactionRow({
               : transferFromIsForeign
                 ? currencySymbol(transferFromCurrency as string)
                 : ''}
-            {row.amount.toLocaleString('zh-CN', {
+            {/* 轉帳的轉出端實際扣款 = amount + fee_amount(手續費在轉出端多扣) */}
+            {(row.tx_type === 'transfer' ? Number((row.amount + (row.fee_amount ?? 0)).toFixed(2)) : row.amount).toLocaleString('zh-CN', {
               minimumFractionDigits: 0,
               maximumFractionDigits: 2
             })}
@@ -375,6 +376,19 @@ export function TransactionRow({
         <div className="mt-1 flex shrink-0 items-center justify-end gap-2 self-end">
           {showCreator ? (
             <CreatorEditorChip row={row} currentUserId={currentUserId} t={t} />
+          ) : null}
+          {row.tx_type === 'transfer' && (row.fee_amount ?? 0) > 0 ? (
+            <span
+              className={`font-mono tabular-nums text-muted-foreground ${
+                isCompact ? 'text-[11px]' : 'text-xs'
+              }`}
+            >
+              {t('transactions.field.fee')}{' '}
+              {(row.fee_amount as number).toLocaleString('zh-CN', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 2
+              })}
+            </span>
           ) : null}
           {isForeignCurrency ? (
             <span
