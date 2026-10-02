@@ -209,6 +209,7 @@ export function SettingsProfileAppearanceSection() {
   const showTransactionTime = appearance.show_transaction_time ?? false
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
   const cuteIcons = appearance.category_icon_style === 'cute'
+  const stockUpIsRed = appearance.stock_up_is_red ?? true
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
   const saveAppearance = async (
@@ -462,6 +463,41 @@ export function SettingsProfileAppearanceSection() {
               {incomeIsRed
                 ? t('profile.sync.incomeScheme.red')
                 : t('profile.sync.incomeScheme.green')}
+            </Button>
+          </div>
+
+          {/* 股票漲跌色:獨立於收支配色(台股習慣紅漲綠跌),存 appearance.stock_up_is_red,
+              App 端讀同一個 key。 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
+                  style={{ background: 'rgb(var(--stock-up-rgb))' }}
+                  aria-label={t('profile.sync.stockScheme.up')}
+                />
+                <span className="text-sm">{t('profile.sync.stockScheme.up')}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
+                  style={{ background: 'rgb(var(--stock-down-rgb))' }}
+                  aria-label={t('profile.sync.stockScheme.down')}
+                />
+                <span className="text-sm">{t('profile.sync.stockScheme.down')}</span>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => void saveAppearance({ stock_up_is_red: !stockUpIsRed })}
+              disabled={appearanceSaving}
+            >
+              {appearanceSaving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+              {stockUpIsRed
+                ? t('profile.sync.stockScheme.red')
+                : t('profile.sync.stockScheme.green')}
             </Button>
           </div>
 

@@ -47,7 +47,10 @@ const config: Config = {
         // 收支语义色：跟 mobile `incomeExpenseColorSchemeProvider` 同步，
         // 通过 <html data-income-color="red|green"> 切换底层 CSS var。
         income: 'rgb(var(--income-rgb) / <alpha-value>)',
-        expense: 'rgb(var(--expense-rgb) / <alpha-value>)'
+        expense: 'rgb(var(--expense-rgb) / <alpha-value>)',
+        // 股票漲跌語義色:獨立於收支,透過 <html data-stock-color> 切換。
+        'stock-up': 'rgb(var(--stock-up-rgb) / <alpha-value>)',
+        'stock-down': 'rgb(var(--stock-down-rgb) / <alpha-value>)'
       },
       borderRadius: {
         lg: 'var(--radius)',

@@ -117,6 +117,7 @@ export function AppShell({ token, onLogout }: Props) {
     const row = await fetchProfileMe(token)
     setProfileMe(row)
     applyIncomeColorScheme(row.income_is_red ?? true)
+    applyStockColorScheme(row.appearance?.stock_up_is_red ?? true)
     applyServerPrimaryColor(row.theme_primary_color)
   }, [token, applyServerPrimaryColor])
 
@@ -251,6 +252,11 @@ export function AppShell({ token, onLogout }: Props) {
       </CategoryIconStyleProvider>
     </AuthProvider>
   )
+}
+
+function applyStockColorScheme(stockUpIsRed: boolean) {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.stockColor = stockUpIsRed ? 'red' : 'green'
 }
 
 function applyIncomeColorScheme(incomeIsRed: boolean) {

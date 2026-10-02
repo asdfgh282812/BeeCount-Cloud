@@ -50,6 +50,9 @@ export type ProfileAppearance = {
   /** 分类图示画风:'material'(默认,Material Symbols) | 'cute'(手绘可爱线稿,
    *  跟 mobile `CategoryIconStyle` 对齐,详见 mobile 侧 `theme_providers.dart`)。 */
   category_icon_style?: 'material' | 'cute'
+  /** 股票漲跌色:true(預設/未設)= 紅漲綠跌(台股習慣),false = 綠漲紅跌。
+   *  獨立於 income_is_red,App 與 Web 共用同一個 key 同步。 */
+  stock_up_is_red?: boolean
 }
 
 /**

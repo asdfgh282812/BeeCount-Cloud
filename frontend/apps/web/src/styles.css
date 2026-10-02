@@ -69,6 +69,19 @@
     --expense-rgb: 239 68 68;
   }
 
+  /* 股票漲跌色:獨立於收支配色(台股習慣紅漲綠跌,但收支是紅支出綠收入)。
+     對應 appearance.stock_up_is_red,AppShell 設 <html data-stock-color="red|green">。
+     預設(未設定)= 紅漲綠跌。 */
+  :root,
+  html[data-stock-color="red"] {
+    --stock-up-rgb: 239 68 68;
+    --stock-down-rgb: 16 185 129;
+  }
+  html[data-stock-color="green"] {
+    --stock-up-rgb: 16 185 129;
+    --stock-down-rgb: 239 68 68;
+  }
+
   * {
     @apply border-border;
   }

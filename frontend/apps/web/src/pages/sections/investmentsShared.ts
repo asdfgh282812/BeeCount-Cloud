@@ -2,7 +2,7 @@
 
 export function pnlClass(value: number | null | undefined): string {
   if (value === null || value === undefined || Math.abs(value) < 1e-9) return 'text-muted-foreground'
-  return value > 0 ? 'text-income' : 'text-expense'
+  return value > 0 ? 'text-stock-up' : 'text-stock-down'
 }
 
 export function formatQuoteTime(iso: string | null | undefined): string {

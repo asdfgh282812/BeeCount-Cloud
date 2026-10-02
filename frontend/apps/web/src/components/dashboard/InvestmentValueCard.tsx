@@ -73,7 +73,7 @@ export function InvestmentValueCard({ summary: externalSummary, pendingCount: ex
           <div className="text-2xl font-semibold tabular-nums">
             {base ? formatStockMoney(summary.total_market_value, base) : '—'}
           </div>
-          <div className={`text-sm tabular-nums ${pnl > 0 ? 'text-income' : pnl < 0 ? 'text-expense' : 'text-muted-foreground'}`}>
+          <div className={`text-sm tabular-nums ${pnl > 0 ? 'text-stock-up' : pnl < 0 ? 'text-stock-down' : 'text-muted-foreground'}`}>
             {t('investments.unrealized')} {base ? formatStockMoney(pnl, base, { signed: true }) : '—'}
             {pct !== null ? ` (${formatPercent(pct)})` : ''}
           </div>
