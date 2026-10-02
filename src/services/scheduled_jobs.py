@@ -54,8 +54,8 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "card_reward_payout": (5 * 60, False),
     "swipesmart_usage_backfill": (15 * 60, False),
     "check_latest_app_version": (30 * 60, False),
-    # 股票持股(2026-09-28):每 5 分鐘檢查一次,各市場收盤後才真的打上游,
-    # 見 services/securities/quotes.py::refresh_close_quotes。
+    # 股票持股(2026-09-28):預設每 5 分鐘一次;盤中每次都抓盤中報價、收盤後
+    # 抓一次收盤價(2026-10-03),頻率想放長就到後台調間隔。見 services/securities/quotes.py::refresh_close_quotes。
     "security_quote_close": (5 * 60, False),
     # 股利(Phase 2):除權息事件每 6 小時同步一次(官方預告表每天更新);
     # 待確認股利每小時偵測一次(除息日當天早上就能收到通知)。
@@ -205,8 +205,8 @@ def _run_check_latest_app_version(db: Session) -> dict:
 
 
 def _run_security_quote_close(db: Session) -> dict:
-    """股票持股(docs/STOCK_HOLDINGS_SD.md):各市場收盤後抓一次持有標的的收盤
-    價。還沒到收盤門檻/週末/全部已抓過時直接回 {markets: 0}。"""
+    """股票持股(docs/STOCK_HOLDINGS_SD.md):盤中(開盤~收盤)每次執行抓持有標的的盤中
+    報價,收盤後抓一次收盤價。休市/週末/收盤價已抓過時直接回 {markets: 0}。"""
     from .securities import quotes
 
     return quotes.refresh_close_quotes(db)

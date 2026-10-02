@@ -241,8 +241,11 @@ def _close_done(view: QuoteView, market: markets.Market, threshold: datetime, no
     return now >= threshold + CLOSE_RETRY_WINDOW
 
 
-async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], now: datetime) -> int:
-    """收盤價抓取:Yahoo 優先(收盤後很快就有今天的價),台股/櫃買 Yahoo 失敗的
+async def _fetch_close(
+    db: Session, market: markets.Market, symbols: set[str], now: datetime, *, session_label: str = "close"
+) -> int:
+    """收盤價抓取(`session_label="intraday"` 時為盤中/開盤抓取,只打 Yahoo,
+    不走官方收盤資料備援):Yahoo 優先(收盤後很快就有今天的價),台股/櫃買 Yahoo 失敗的
     標的再用證交所/櫃買官方資料補。
 
     順序原因(2026-10-02):證交所 openapi 常到晚上才更新當日資料,先抓它會
@@ -265,7 +268,9 @@ async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], n
         store.ensure_security(
             db, market=q.market, symbol=q.symbol, name=q.name, currency=q.currency or market.currency,
         )
-    count = store.upsert_quotes(db, fetched, session="close", now=now)
+    count = store.upsert_quotes(db, fetched, session=session_label, now=now)
+    if session_label != "close":
+        return count
 
     missing = symbols - {q.symbol for q in fetched}
     if missing and market.code in ("TW", "TWO"):
@@ -290,7 +295,8 @@ async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], n
 
 
 def refresh_close_quotes(db: Session, *, now: datetime | None = None) -> dict:
-    """`security_quote_close` job 本體。同步介面(排程在 worker thread 裡
+    """`security_quote_close` job 本體:盤中(開盤~收盤)每次執行都抓盤中報價,
+    收盤後抓一次收盤價。同步介面(排程在 worker thread 裡
     呼叫),內部用 asyncio.run 跑上游請求。"""
     now = now or datetime.now(timezone.utc)
     held = held_keys(db)
@@ -299,6 +305,13 @@ def refresh_close_quotes(db: Session, *, now: datetime | None = None) -> dict:
     for code, symbols in held.items():
         market = markets.get_market(code)
         if market is None:
+            continue
+        # 開盤 ~ 收盤之間:每次排程都抓一次盤中報價(含開盤後第一次)。頻率完全
+        # 由 job 的執行間隔決定(後台 /admin/scheduled-jobs 可調),這裡不另外節流。
+        if markets.is_market_open(market, now):
+            touched_markets += 1
+            quotes += asyncio.run(_fetch_close(db, market, set(symbols), now, session_label="intraday"))
+            db.commit()
             continue
         threshold = markets.close_fetch_threshold(market, now)
         if threshold is None:

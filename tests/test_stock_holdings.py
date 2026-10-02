@@ -863,10 +863,10 @@ def test_refresh_close_quotes_only_after_close_and_only_held(monkeypatch):
 
         monkeypatch.setattr(twse, "fetch_twse", _twse)
         monkeypatch.setattr(yahoo, "fetch_quote", _yahoo_down)  # Yahoo 失敗 → 官方備援
-        before_close = datetime(2026, 9, 24, 5, 0, tzinfo=timezone.utc)  # 台北 13:00
+        before_open = datetime(2026, 9, 24, 0, 30, tzinfo=timezone.utc)  # 台北 08:30
         after_close = datetime(2026, 9, 24, 7, 30, tzinfo=timezone.utc)  # 台北 15:30
         with TS() as db:
-            assert quotes.refresh_close_quotes(db, now=before_close) == {"markets": 0, "quotes": 0}
+            assert quotes.refresh_close_quotes(db, now=before_open) == {"markets": 0, "quotes": 0}
             assert calls["twse"] == 0
             result = quotes.refresh_close_quotes(db, now=after_close)
             assert result["markets"] == 1 and calls["twse"] == 1
@@ -875,6 +875,28 @@ def test_refresh_close_quotes_only_after_close_and_only_held(monkeypatch):
             # 同一天再跑:資料日期就是今天 → 已完成,不再打上游
             assert quotes.refresh_close_quotes(db, now=after_close)["markets"] == 0
             assert calls["twse"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refresh_quotes_fetches_intraday_while_market_open(monkeypatch):
+    """2026-10-03:盤中(開盤~收盤)每次排程都抓盤中報價,不走官方收盤備援。"""
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-j3@t.com")
+        _buy(client, hdr_web)
+        monkeypatch.setattr(yahoo, "fetch_quote", _fake_quote(2400.0, prev=2390.0))
+        open_time = datetime(2026, 9, 24, 1, 5, tzinfo=timezone.utc)  # 台北 09:05
+        mid_day = datetime(2026, 9, 24, 3, 0, tzinfo=timezone.utc)  # 台北 11:00
+        with TS() as db:
+            assert quotes.refresh_close_quotes(db, now=open_time)["quotes"] == 1
+            row = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
+            assert row.price == 2400.0 and row.session == "intraday"
+            monkeypatch.setattr(yahoo, "fetch_quote", _fake_quote(2410.0, prev=2390.0))
+            assert quotes.refresh_close_quotes(db, now=mid_day)["quotes"] == 1
+            db.expire_all()
+            row = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
+            assert row.price == 2410.0
     finally:
         app.dependency_overrides.clear()
 
