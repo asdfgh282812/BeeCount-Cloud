@@ -10,6 +10,9 @@ App `lib/models/investment_settings.dart` + `lib/services/investment/markets.dar
   小數 6 位,避免 1000 × 600.1 = 600099.99999… 被捨成 600,099。
 - 台股證交稅依標的類型:普通股 0.3%、ETF 0.1%、債券 ETF 停徵(0%)。類型只看
   代號(`00` 開頭 = ETF,其中結尾 `B` = 債券 ETF),不查資料庫。
+- 台股整股(1,000 股的倍數)跟零股是兩張不同的委託單,券商最低手續費也不同
+  (永豐:整股 20 元、零股 1 元,2026-10-03 使用者拿對帳單比對)。有給股數時,
+  手續費/交易稅依「整股部分 + 零股部分」各自計算再相加([order_parts])。
 
 這支模組只用標準函式庫,`snapshot_mutator` 會 import 它。
 """
@@ -31,12 +34,15 @@ _TW_ETF_SYMBOL = re.compile(r"^00\d{2,4}[A-Z]?$")
 
 # 各市場預設費率,同 App `InvestmentSettings.defaultsFor`。
 _TRADE_DEFAULTS: dict[str, dict[str, float]] = {
-    "TW": {"feeRate": 0.001425, "feeDiscount": 1, "feeMin": 20, "sellTaxRate": 0.003,
+    "TW": {"feeRate": 0.001425, "feeDiscount": 1, "feeMin": 20, "oddLotFeeMin": 1, "sellTaxRate": 0.003,
            "etfSellTaxRate": 0.001, "bondEtfSellTaxRate": 0},
     "US": {"feeRate": 0.0025, "feeDiscount": 1, "feeMin": 0, "sellTaxRate": 0},
 }
 _TRADE_DEFAULTS["TWO"] = _TRADE_DEFAULTS["TW"]
 _OTHER_DEFAULTS = {"feeRate": 0, "feeDiscount": 1, "feeMin": 0, "sellTaxRate": 0}
+
+# 台股一張 = 1,000 股。
+TW_BOARD_LOT = 1000
 
 
 def security_kind(market: str | None, symbol: str | None) -> str:
@@ -71,7 +77,7 @@ def _num(settings: dict[str, Any] | None, key: str) -> float | None:
 
 def resolve_trade_settings(market: str | None, settings: dict[str, Any] | None) -> dict[str, float]:
     base = dict(_TRADE_DEFAULTS.get((market or "").upper(), _OTHER_DEFAULTS))
-    for key in ("feeRate", "feeDiscount", "feeMin", "sellTaxRate", "etfSellTaxRate", "bondEtfSellTaxRate"):
+    for key in ("feeRate", "feeDiscount", "feeMin", "oddLotFeeMin", "sellTaxRate", "etfSellTaxRate", "bondEtfSellTaxRate"):
         value = _num(settings, key)
         if value is not None:
             base[key] = value
@@ -94,19 +100,50 @@ def sell_tax_rate_for(market: str | None, symbol: str | None, settings: dict[str
     return r.get("sellTaxRate", 0.0)
 
 
-def suggest_fee(gross: float, market: str | None, currency: str | None, settings: dict[str, Any] | None) -> float:
+def order_parts(
+    gross: float, shares: float | None, market: str | None, currency: str | None,
+) -> list[tuple[float, bool]]:
+    """把一筆成交拆成券商實際的委託單:`[(成交價金, 是否零股), ...]`。
+
+    只有台股、且有給股數時才拆:1,050 股 = 1,000 股整股 + 50 股零股。其它情況
+    回單一筆(不是零股)。整股部分的價金依比例從 `gross` 切出來再取整,兩段
+    加總仍等於 `gross`。"""
+    if shares is None or shares <= 0 or (market or "").upper() not in _TW_MARKETS:
+        return [(gross, False)]
+    lots = math.floor(round(shares, 6) / TW_BOARD_LOT) * TW_BOARD_LOT
+    if lots <= 0:
+        return [(gross, True)]
+    if lots >= shares - 1e-9:
+        return [(gross, False)]
+    lot_gross = round_money(gross * lots / shares, currency)
+    return [(lot_gross, False), (gross - lot_gross, True)]
+
+
+def suggest_fee(
+    gross: float, market: str | None, currency: str | None, settings: dict[str, Any] | None,
+    shares: float | None = None,
+) -> float:
+    """建議手續費 = max(⌊價金 × 費率 × 折扣⌋, 最低手續費)。給了 `shares` 時台股整股
+    用 `feeMin`、零股用 `oddLotFeeMin`,各自計算再相加。"""
     if gross <= 0:
         return 0.0
     r = resolve_trade_settings(market, settings)
-    return max(round_money(gross * r["feeRate"] * r["feeDiscount"], currency), r["feeMin"])
+    odd_min = r.get("oddLotFeeMin", r["feeMin"])
+    total = 0.0
+    for part, odd in order_parts(gross, shares, market, currency):
+        if part > 0:
+            total += max(round_money(part * r["feeRate"] * r["feeDiscount"], currency), odd_min if odd else r["feeMin"])
+    return total
 
 
 def suggest_sell_tax(
     gross: float, market: str | None, symbol: str | None, currency: str | None, settings: dict[str, Any] | None,
+    shares: float | None = None,
 ) -> float:
     if gross <= 0:
         return 0.0
-    return round_money(gross * sell_tax_rate_for(market, symbol, settings), currency)
+    rate = sell_tax_rate_for(market, symbol, settings)
+    return sum(round_money(part * rate, currency) for part, _ in order_parts(gross, shares, market, currency))
 
 
 @dataclass
@@ -130,8 +167,8 @@ def estimate_sell(
         return SellEstimate(0.0, 0.0, 0.0)
     return SellEstimate(
         gross=gross,
-        fee=suggest_fee(gross, market, currency, settings),
-        tax=suggest_sell_tax(gross, market, symbol, currency, settings),
+        fee=suggest_fee(gross, market, currency, settings, shares),
+        tax=suggest_sell_tax(gross, market, symbol, currency, settings, shares),
     )
 
 

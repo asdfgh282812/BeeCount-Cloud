@@ -199,6 +199,24 @@ App 端對應文件:`docs/changes/2026-09-28-stock-dividends.md`。
 - 三端共用測試數字:`tests/test_trade_fees.py`、Web `investmentFees.test.ts`、App
   `investment_settings_test.dart`「台股費用對帳」。
 
+### 8.1 零股最低手續費 + 報價卡在前一交易日(2026-10-03)
+
+App 端完整說明:App repo `docs/changes/2026-10-03-stock-odd-lot-fee-stale-quote.md`。
+
+- **`trade_fees.order_parts`**:台股有給股數時,把成交拆成整股(1,000 的倍數)和
+  零股兩張單。`suggest_fee` / `suggest_sell_tax` 多了選填的 `shares`,兩段各自取整
+  再相加;整股用 `feeMin`,零股用新的 `oddLotFeeMin`(TW/TWO 預設 1,沒設時退回
+  `feeMin`)。`estimate_sell` 會傳股數。0050 50 股 @112.8 → 手續費 8、稅 5、淨值
+  5,627,對上永豐庫存。定期定額(`recurring_materializer`)不變。
+- **`normalize_investment_settings`**:接受 `oddLotFeeMin`(float)。
+- **報價**:`needs_refresh` 以前只看 `fetched_at`。證交所 openapi 晚更新時,收盤後
+  抓到的是前一交易日資料,但因為 fetched_at 很新,12 小時內都不會補抓。新增
+  `markets.latest_session_date`;報價日期比它舊、且距上次抓超過 30 分鐘
+  (`BEHIND_RETRY_TTL`)就重抓。`_close_done` 在 3 小時重試窗口過後,資料還是舊的
+  也改成每 30 分鐘再試一次到當天結束,不再直接算完成。
+- Web:`lib/investment.ts::orderParts`,`suggestFee` / `suggestSellTax` 多了 `shares`;
+  費用設定在台股多了「零股最低手續費」,原本的最低手續費改名為「整股最低手續費」。
+
 ## 9. 轉帳選到投資理財帳戶時導向買進/賣出(2026-09-28)
 
 App 端完整說明:App repo `docs/changes/2026-09-28-transfer-stock-account-redirect.md`。

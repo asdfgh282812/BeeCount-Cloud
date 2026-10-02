@@ -2735,6 +2735,8 @@ const zhTW = {
   "investments.securityKind.etf": "ETF",
   "investments.securityKind.bond_etf": "債券 ETF",
   "investments.settings.sellTaxRateStock": "普通股交易稅率（%）",
+  "investments.settings.feeMinBoardLot": "整股最低手續費",
+  "investments.settings.oddLotFeeMin": "零股最低手續費",
   "investments.settings.etfSellTaxRate": "ETF 交易稅率（%）",
   "investments.settings.bondEtfSellTaxRate": "債券 ETF 交易稅率（%）",
   "investments.settings.sellTaxKindHint": "賣出時依代號自動套用：00 開頭是 ETF，結尾是 B 的是債券 ETF，其它是普通股。",

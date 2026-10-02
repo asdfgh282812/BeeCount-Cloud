@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   estimateSell,
+  orderParts,
   openingTotalCost,
   openingTradeFromCost,
   parseOpeningHoldingsText,
@@ -16,6 +17,7 @@ import {
   stockDcaWholeShares,
   stockGross,
   stockTradeAmount,
+  suggestFee,
   suggestSellTax,
 } from '@beecount/web-features'
 
@@ -57,6 +59,28 @@ describe('台股費用對帳(三端共用案例)', () => {
       settings: { feeDiscount: 0.6, feeMin: 1 },
     })
     expect(e).toEqual({ gross: 5620, fee: 4, tax: 5, net: 5611 })
+  })
+
+  it('零股用零股最低手續費:對上永豐庫存 0050 50 股 @112.8 → 現值 5,627、損益 749', () => {
+    const e = estimateSell({ shares: 50, price: 112.8, market: 'TW', symbol: '0050', currency: 'TWD', settings: {} })
+    expect(e).toEqual({ gross: 5640, fee: 8, tax: 5, net: 5627 })
+    expect(e.net - 4878).toBe(749)
+    expect(estimateSell({ shares: 50, price: 112.8, market: 'TW', symbol: '0050', currency: 'TWD', settings: { feeMin: 20 } }).fee).toBe(8)
+    expect(estimateSell({ shares: 50, price: 112.8, market: 'TW', symbol: '0050', currency: 'TWD', settings: { oddLotFeeMin: 20 } }).fee).toBe(20)
+  })
+
+  it('整股 + 零股拆成兩張單各自計算', () => {
+    expect(orderParts(118440, 1050, 'TW', 'TWD')).toEqual([
+      { gross: 112800, oddLot: false },
+      { gross: 5640, oddLot: true },
+    ])
+    const e = estimateSell({ shares: 1050, price: 112.8, market: 'TW', symbol: '2330', currency: 'TWD', settings: {} })
+    expect(e.fee).toBe(160 + 8)
+    expect(e.tax).toBe(338 + 16)
+    expect(suggestFee(10000, {}, 'TW', 'TWD', 1000)).toBe(20)
+    expect(suggestFee(100, {}, 'TW', 'TWD', 10)).toBe(1)
+    expect(suggestFee(5640, {}, 'TW', 'TWD')).toBe(20)
+    expect(orderParts(5640, 50, 'US', 'USD')).toEqual([{ gross: 5640, oddLot: false }])
   })
 })
 

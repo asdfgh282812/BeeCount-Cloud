@@ -50,15 +50,15 @@ export function securityKind(market: string | null | undefined, symbol: string |
 }
 
 export type ResolvedInvestmentSettings = Required<
-  Omit<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate'>
-> & Pick<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate'>
+  Omit<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin'>
+> & Pick<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin'>
 
 export function investmentDefaults(market: string | null | undefined): ResolvedInvestmentSettings {
   switch ((market || '').toUpperCase()) {
     case 'TW':
     case 'TWO':
       return {
-        feeRate: 0.001425, feeDiscount: 1, feeMin: 20, sellTaxRate: 0.003,
+        feeRate: 0.001425, feeDiscount: 1, feeMin: 20, oddLotFeeMin: 1, sellTaxRate: 0.003,
         etfSellTaxRate: 0.001, bondEtfSellTaxRate: 0,
         dividendFeeFixed: 10, dividendFeeRate: 0, dividendWithholdingRate: 0,
         nhiSupplementRate: 0.0211, nhiThreshold: 20000, reinvestDividends: false, pnlAfterSellCosts: true,
@@ -89,6 +89,7 @@ export function resolveInvestmentSettings(
     feeRate: s.feeRate ?? d.feeRate,
     feeDiscount: s.feeDiscount ?? d.feeDiscount,
     feeMin: s.feeMin ?? d.feeMin,
+    oddLotFeeMin: s.oddLotFeeMin ?? d.oddLotFeeMin,
     sellTaxRate: s.sellTaxRate ?? d.sellTaxRate,
     etfSellTaxRate: s.etfSellTaxRate ?? d.etfSellTaxRate,
     bondEtfSellTaxRate: s.bondEtfSellTaxRate ?? d.bondEtfSellTaxRate,
@@ -129,15 +130,53 @@ export function stockGross(shares: number, price: number, currency: string | nul
 
 const roundFee = roundMoney
 
+/** 台股一張 = 1,000 股。 */
+export const TW_BOARD_LOT = 1000
+
+/**
+ * 把一筆成交拆成券商實際的委託單 `[{ gross, oddLot }]`(同 server
+ * `trade_fees.order_parts`、App `InvestmentSettings.orderParts`):台股整股跟零股
+ * 是兩張單,最低手續費不同(永豐:整股 20、零股 1)。只有台股且有給股數時才拆:
+ * 1,050 股 = 1,000 股整股 + 50 股零股。
+ */
+export function orderParts(
+  gross: number,
+  shares: number | null | undefined,
+  market: string,
+  currency: string,
+): { gross: number; oddLot: boolean }[] {
+  const m = market.toUpperCase()
+  if (shares === null || shares === undefined || !(shares > 0) || (m !== 'TW' && m !== 'TWO')) {
+    return [{ gross, oddLot: false }]
+  }
+  const lots = Math.floor(Number(shares.toFixed(6)) / TW_BOARD_LOT) * TW_BOARD_LOT
+  if (lots <= 0) return [{ gross, oddLot: true }]
+  if (lots >= shares - 1e-9) return [{ gross, oddLot: false }]
+  const lotGross = roundMoney((gross * lots) / shares, currency)
+  return [
+    { gross: lotGross, oddLot: false },
+    { gross: gross - lotGross, oddLot: true },
+  ]
+}
+
+/** 建議手續費 = max(⌊價金 × 費率 × 折扣⌋, 最低手續費);給了 shares 時台股整股/零股各自計算。 */
 export function suggestFee(
   gross: number,
   settings: InvestmentSettings | null | undefined,
   market: string,
   currency: string,
+  shares?: number | null,
 ): number {
   if (!(gross > 0)) return 0
   const r = resolveInvestmentSettings(settings, market)
-  return Math.max(roundFee(gross * r.feeRate * r.feeDiscount, currency), r.feeMin)
+  const oddMin = r.oddLotFeeMin ?? r.feeMin
+  return orderParts(gross, shares, market, currency).reduce(
+    (sum, p) =>
+      p.gross > 0
+        ? sum + Math.max(roundFee(p.gross * r.feeRate * r.feeDiscount, currency), p.oddLot ? oddMin : r.feeMin)
+        : sum,
+    0,
+  )
 }
 
 /** 這檔標的的賣出交易稅率:台股依 [securityKind] 分普通股 / ETF / 債券 ETF。 */
@@ -163,9 +202,11 @@ export function suggestSellTax(
   market: string,
   currency: string,
   symbol?: string | null,
+  shares?: number | null,
 ): number {
   if (!(gross > 0)) return 0
-  return roundFee(gross * sellTaxRateFor(settings, market, symbol), currency)
+  const rate = sellTaxRateFor(settings, market, symbol)
+  return orderParts(gross, shares, market, currency).reduce((sum, p) => sum + roundFee(p.gross * rate, currency), 0)
 }
 
 export type SellEstimate = { gross: number; fee: number; tax: number; net: number }
@@ -181,8 +222,8 @@ export function estimateSell(params: {
 }): SellEstimate {
   const gross = stockGross(params.shares, params.price, params.currency)
   if (!(gross > 0)) return { gross: 0, fee: 0, tax: 0, net: 0 }
-  const fee = suggestFee(gross, params.settings, params.market, params.currency)
-  const tax = suggestSellTax(gross, params.settings, params.market, params.currency, params.symbol)
+  const fee = suggestFee(gross, params.settings, params.market, params.currency, params.shares)
+  const tax = suggestSellTax(gross, params.settings, params.market, params.currency, params.symbol, params.shares)
   return { gross, fee, tax, net: Math.max(gross - fee - tax, 0) }
 }
 

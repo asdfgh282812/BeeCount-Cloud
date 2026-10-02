@@ -2777,6 +2777,8 @@ const zhCN = {
   "investments.securityKind.etf": "ETF",
   "investments.securityKind.bond_etf": "债券 ETF",
   "investments.settings.sellTaxRateStock": "普通股交易税率（%）",
+  "investments.settings.feeMinBoardLot": "整股最低手续费",
+  "investments.settings.oddLotFeeMin": "零股最低手续费",
   "investments.settings.etfSellTaxRate": "ETF 交易税率（%）",
   "investments.settings.bondEtfSellTaxRate": "债券 ETF 交易税率（%）",
   "investments.settings.sellTaxKindHint": "卖出时依代码自动套用：00 开头是 ETF，结尾是 B 的是债券 ETF，其它是普通股。",

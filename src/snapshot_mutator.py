@@ -225,7 +225,7 @@ def _apply_account_optional_fields(account: dict, payload: dict) -> None:
 # App lib/models/investment_settings.dart;未知 key 丟棄,避免前端塞任意資料
 # 進 sync payload。
 _INVESTMENT_SETTING_FLOAT_KEYS = (
-    "feeRate", "feeDiscount", "feeMin", "sellTaxRate", "etfSellTaxRate", "bondEtfSellTaxRate",
+    "feeRate", "feeDiscount", "feeMin", "oddLotFeeMin", "sellTaxRate", "etfSellTaxRate", "bondEtfSellTaxRate",
     "dividendFeeFixed", "dividendFeeRate", "dividendWithholdingRate",
     "nhiSupplementRate", "nhiThreshold",
 )

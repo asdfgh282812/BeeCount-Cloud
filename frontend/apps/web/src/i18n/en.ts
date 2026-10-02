@@ -2747,6 +2747,8 @@ const en = {
   "investments.securityKind.etf": "ETF",
   "investments.securityKind.bond_etf": "bond ETF",
   "investments.settings.sellTaxRateStock": "Tax on sales: stocks (%)",
+  "investments.settings.feeMinBoardLot": "Minimum commission: board lots",
+  "investments.settings.oddLotFeeMin": "Minimum commission: odd lots",
   "investments.settings.etfSellTaxRate": "Tax on sales: ETFs (%)",
   "investments.settings.bondEtfSellTaxRate": "Tax on sales: bond ETFs (%)",
   "investments.settings.sellTaxKindHint": "The rate is picked from the symbol: codes starting with 00 are ETFs, and ones ending in B are bond ETFs.",

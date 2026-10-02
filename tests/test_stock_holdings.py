@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -937,6 +937,64 @@ def test_refresh_close_quotes_prefers_yahoo_and_ignores_stale_official(monkeypat
             quotes.refresh_close_quotes(db, now=after_close)
             row = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
             assert calls["twse"] == 1 and row.price == 2500.0 and row.source == "yahoo"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_quote_behind_latest_session_is_refreshed_even_if_recently_fetched():
+    """2026-10-03 使用者回報:週六凌晨還是 10/1 收盤價。10/2 收盤後抓到的是證交所
+    尚未更新的 10/1 資料,fetched_at 很新,舊判斷(只看 fetched_at)就不再補抓。"""
+    m = markets.get_market("TW")
+    view = quotes.QuoteView(
+        market="TW", symbol="0050", name=None, currency="TWD", price=112.9, prev_close=112.05,
+        quote_time=datetime(2026, 10, 1, 5, 30, tzinfo=timezone.utc),  # 台北 10/1 13:30
+        session="close", source="twse",
+        fetched_at=datetime(2026, 10, 2, 9, 59, tzinfo=timezone.utc),  # 台北 10/2 17:59
+        stale=False,
+    )
+    sat = datetime(2026, 10, 2, 20, 34, tzinfo=timezone.utc)  # 台北 10/3(六)04:34
+    assert markets.latest_session_date(m, sat).isoformat() == "2026-10-02"
+    assert quotes.needs_refresh(view, sat) is True
+    # 剛試過(30 分鐘內)就先不打
+    view.fetched_at = datetime(2026, 10, 2, 20, 20, tzinfo=timezone.utc)
+    assert quotes.needs_refresh(view, sat) is False
+    # 已經是 10/2 的收盤價:週末不需要再抓
+    view.quote_time = datetime(2026, 10, 2, 5, 30, tzinfo=timezone.utc)
+    view.fetched_at = datetime(2026, 10, 2, 9, 59, tzinfo=timezone.utc)
+    assert quotes.needs_refresh(view, sat) is False
+    # 交易日開盤前:最新交易日是前一天
+    mon_pre_open = datetime(2026, 10, 4, 23, 30, tzinfo=timezone.utc)  # 台北 10/5(一)07:30
+    assert markets.latest_session_date(m, mon_pre_open).isoformat() == "2026-10-02"
+
+
+def test_close_job_keeps_retrying_hourly_after_window_when_still_behind(monkeypatch):
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-j4@t.com")
+        _buy(client, hdr_web)
+        calls = {"n": 0}
+
+        async def _old(m, s, client=None):
+            calls["n"] += 1
+            return provider_base.QuoteData(
+                market="TW", symbol="2330", price=2475.0, prev_close=2450.0,
+                quote_time=datetime(2026, 9, 23, 5, 30, tzinfo=timezone.utc), currency="TWD",
+                name="台積電", source="yahoo",
+            )
+
+        async def _twse_old(client=None):
+            return twse.parse_twse([])
+
+        monkeypatch.setattr(yahoo, "fetch_quote", _old)
+        monkeypatch.setattr(twse, "fetch_twse", _twse_old)
+        late = datetime(2026, 9, 24, 10, 30, tzinfo=timezone.utc)  # 台北 18:30,重試窗口已過
+        with TS() as db:
+            quotes.refresh_close_quotes(db, now=late)
+            assert calls["n"] == 1
+            quotes.refresh_close_quotes(db, now=late + timedelta(minutes=5))
+            assert calls["n"] == 1  # 30 分鐘內不重打
+            quotes.refresh_close_quotes(db, now=late + timedelta(minutes=31))
+            assert calls["n"] == 2
     finally:
         app.dependency_overrides.clear()
 

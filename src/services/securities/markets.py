@@ -92,6 +92,21 @@ def is_market_open(market: Market, now: datetime | None = None) -> bool:
     return market.open_time <= local.time() <= market.close_time
 
 
+def latest_session_date(market: Market, now: datetime | None = None) -> date:
+    """現在「應該」看得到的最新交易日:交易日開盤後是今天,開盤前或週末是前
+    一個交易日。報價日期比它舊 = 快取落後(例:證交所晚更新、server 在收盤
+    重試窗口之後才部署),要再抓。國定假日沒有日曆,會被當成交易日,只是多
+    重試幾次,抓到的仍是前一交易日收盤。"""
+    local = local_now(market, now)
+    day = local.date()
+    if is_trading_day(market, day) and local.time() >= market.open_time:
+        return day
+    day -= timedelta(days=1)
+    while not is_trading_day(market, day):
+        day -= timedelta(days=1)
+    return day
+
+
 def close_fetch_threshold(market: Market, now: datetime | None = None) -> datetime | None:
     """今天(市場當地日期)的「可以抓收盤價」時間點(UTC)。非交易日或還沒
     到時間回 None。"""

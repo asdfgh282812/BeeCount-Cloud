@@ -850,15 +850,15 @@ export function StockTradeDialog({
     }
     // 期初持股填的是券商庫存的平均成本,通常已含手續費,不再另外估。
     if (!feeEdited) {
-      const suggested = tradeType === 'opening' ? 0 : suggestFee(gross, settings, market, currency)
+      const suggested = tradeType === 'opening' ? 0 : suggestFee(gross, settings, market, currency, sharesNum)
       setFee(gross > 0 && suggested > 0 ? numText(suggested) : '')
     }
     if (!taxEdited) {
-      const suggested = tradeType === 'sell' ? suggestSellTax(gross, settings, market, currency, symbol) : 0
+      const suggested = tradeType === 'sell' ? suggestSellTax(gross, settings, market, currency, symbol, sharesNum) : 0
       setTax(gross > 0 && suggested > 0 ? numText(suggested) : '')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gross, tradeType, market, currency, symbol])
+  }, [gross, sharesNum, tradeType, market, currency, symbol])
 
   // 帶入目前報價(新增時、價格還沒自己改過)。代號停止輸入 0.6 秒後才抓。
   useEffect(() => {
@@ -1480,6 +1480,7 @@ const SETTINGS_FIELDS: {
   { key: 'feeRate', labelKey: 'investments.settings.feeRate', percent: true },
   { key: 'feeDiscount', labelKey: 'investments.settings.feeDiscount', percent: true },
   { key: 'feeMin', labelKey: 'investments.settings.feeMin', percent: false },
+  { key: 'oddLotFeeMin', labelKey: 'investments.settings.oddLotFeeMin', percent: false, twOnly: true },
   { key: 'sellTaxRate', labelKey: 'investments.settings.sellTaxRate', percent: true },
   { key: 'etfSellTaxRate', labelKey: 'investments.settings.etfSellTaxRate', percent: true, twOnly: true },
   { key: 'bondEtfSellTaxRate', labelKey: 'investments.settings.bondEtfSellTaxRate', percent: true, twOnly: true },
@@ -1595,7 +1596,12 @@ export function InvestmentSettingsDialog({
             {visibleFields.map((f) => {
               const d = defaults[f.key as keyof typeof defaults] as number
               const defaultText = f.percent ? `${rateToPercentText(d)}%` : String(d)
-              const labelKey = isTw && f.key === 'sellTaxRate' ? 'investments.settings.sellTaxRateStock' : f.labelKey
+              const labelKey =
+                isTw && f.key === 'sellTaxRate'
+                  ? 'investments.settings.sellTaxRateStock'
+                  : isTw && f.key === 'feeMin'
+                    ? 'investments.settings.feeMinBoardLot'
+                    : f.labelKey
               return (
                 <div key={f.key} className="space-y-1">
                   <Label>{t(labelKey)}</Label>

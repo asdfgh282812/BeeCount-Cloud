@@ -6,7 +6,8 @@
    只抓「有人持有」的標的。台股一次抓證交所/櫃買全市場(2 個請求),其它
    市場逐檔打 Yahoo。
 2. **盤中補抓** `get_quotes`:App/Web 打開持股畫面時呼叫;盤中且快取超過
-   15 分鐘、或完全沒有快取、或快取超過 12 小時,就向 Yahoo 補抓延遲報價。
+   15 分鐘、或完全沒有快取、或快取超過 12 小時、或報價日期落後最新交易日
+   (`BEHIND_RETRY_TTL` 節流),就向 Yahoo 補抓延遲報價。
 
 上游失敗一律回傳舊快取並標記 `stale`,不讓使用者畫面整個空掉。
 """
@@ -32,6 +33,10 @@ STALE_TTL = timedelta(hours=12)
 # 台股收盤資料偶爾晚發布:收盤門檻之後若抓到的還不是今天的資料,這段時間內
 # 每次排程都再試一次,超過就放棄(假日也會走到這裡,抓到的是前一交易日收盤)。
 CLOSE_RETRY_WINDOW = timedelta(hours=3)
+# 報價日期落後最新交易日時,多久再試一次(2026-10-03 使用者回報:10/2 收盤後
+# 快取還是 10/1 的證交所收盤價,因為「多久沒抓」只看 fetched_at,剛抓過的
+# 舊資料被當成新鮮的)。收盤排程在重試窗口之後也用同一個間隔,直到當天結束。
+BEHIND_RETRY_TTL = timedelta(minutes=30)
 _CONCURRENCY = 4
 
 # 同一檔同時只放一個上游請求(僅 API 路徑用;排程在自己的 event loop 跑,
@@ -130,7 +135,16 @@ def needs_refresh(view: QuoteView, now: datetime) -> bool:
     age = now - view.fetched_at
     if markets.is_market_open(m, now) and age > INTRADAY_TTL:
         return True
+    if age > BEHIND_RETRY_TTL and is_behind(view, m, now):
+        return True
     return age > STALE_TTL
+
+
+def is_behind(view: QuoteView, market: markets.Market, now: datetime) -> bool:
+    """報價日期比最新交易日舊(沒有報價時間的不算,無從判斷)。"""
+    if view.quote_time is None:
+        return False
+    return markets.local_now(market, view.quote_time).date() < markets.latest_session_date(market, now)
 
 
 def _write_quotes(bind, quotes: list[QuoteData], *, session_label: str, now: datetime) -> None:
@@ -238,7 +252,11 @@ def _close_done(view: QuoteView, market: markets.Market, threshold: datetime, no
         return False
     if view.quote_time is not None and markets.local_now(market, view.quote_time).date() == markets.local_now(market, now).date():
         return True
-    return now >= threshold + CLOSE_RETRY_WINDOW
+    if now < threshold + CLOSE_RETRY_WINDOW:
+        return False
+    # 重試窗口過了還是舊資料(假日;或窗口內上游都沒更新、server 窗口過後才
+    # 部署):不再每 5 分鐘打,改成每 BEHIND_RETRY_TTL 試一次到當天結束。
+    return now - view.fetched_at < BEHIND_RETRY_TTL
 
 
 async def _fetch_close(

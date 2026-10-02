@@ -2159,7 +2159,10 @@ export type InvestmentSettings = {
   market?: string
   feeRate?: number
   feeDiscount?: number
+  /** 台股是「整股」的最低手續費;零股看 oddLotFeeMin。 */
   feeMin?: number
+  /** 台股零股(不足 1,000 股)的最低手續費,預設 1。 */
+  oddLotFeeMin?: number
   /** 台股是「普通股」的稅率;ETF / 債券 ETF 看下面兩個(依代號判斷)。 */
   sellTaxRate?: number
   etfSellTaxRate?: number
