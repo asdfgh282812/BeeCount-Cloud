@@ -121,6 +121,9 @@ class UserProfile(Base):
     # 結構 `{"version":1,"cards":[{"id":"...","visible":true},...]}`,
     # 由 `GET/PUT /profile/dashboard-layout` 讀寫;NULL = 使用預設版面。
     dashboard_layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 通知設定 JSON blob(記帳提醒 / 信用卡提醒的開關與時間),綁帳號跨裝置同步。
+    # key 為 snake_case,由 mobile 定義,server 不解析內容;整體替換語意同 ai_config。
+    notification_settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

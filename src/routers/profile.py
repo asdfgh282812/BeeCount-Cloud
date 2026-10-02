@@ -149,6 +149,9 @@ def get_my_profile(
     theme_primary_color = profile.theme_primary_color if profile is not None else None
     appearance = _parse_appearance_json(profile.appearance_json) if profile is not None else None
     ai_config = _parse_appearance_json(profile.ai_config_json) if profile is not None else None
+    notification_settings = (
+        _parse_appearance_json(profile.notification_settings_json) if profile is not None else None
+    )
     primary_currency = profile.primary_currency if profile is not None else None
     return UserProfileOut(
         user_id=current_user.id,
@@ -162,6 +165,7 @@ def get_my_profile(
         theme_primary_color=theme_primary_color,
         appearance=appearance,
         ai_config=ai_config,
+        notification_settings=notification_settings,
         primary_currency=primary_currency,
     )
 
@@ -184,6 +188,7 @@ async def patch_my_profile(
             theme_primary_color=req.theme_primary_color,
             appearance_json=_dump_appearance_json(req.appearance),
             ai_config_json=_dump_appearance_json(req.ai_config),
+            notification_settings_json=_dump_appearance_json(req.notification_settings),
             primary_currency=(req.primary_currency.upper() if req.primary_currency is not None else None),
             updated_at=now,
         )
@@ -203,6 +208,8 @@ async def patch_my_profile(
             profile.appearance_json = _dump_appearance_json(req.appearance)
         if req.ai_config is not None:
             profile.ai_config_json = _dump_appearance_json(req.ai_config)
+        if req.notification_settings is not None:
+            profile.notification_settings_json = _dump_appearance_json(req.notification_settings)
         if req.primary_currency is not None:
             profile.primary_currency = req.primary_currency.upper()
         profile.updated_at = now
@@ -221,6 +228,7 @@ async def patch_my_profile(
     )
     appearance = _parse_appearance_json(profile.appearance_json)
     ai_config = _parse_appearance_json(profile.ai_config_json)
+    notification_settings = _parse_appearance_json(profile.notification_settings_json)
     await _broadcast_profile_change(
         request,
         user_id=current_user.id,
@@ -250,6 +258,7 @@ async def patch_my_profile(
         theme_primary_color=profile.theme_primary_color,
         appearance=appearance,
         ai_config=ai_config,
+        notification_settings=notification_settings,
         primary_currency=profile.primary_currency,
     )
 
