@@ -1004,3 +1004,24 @@ def test_scheduled_job_registered():
 
     assert "security_quote_close" in scheduled_jobs.JOB_REGISTRY
     assert "security_quote_close" in scheduled_jobs._DEFAULT_JOB_CONFIGS
+
+
+def test_workspace_stock_annual_endpoint():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-annual@t.com")
+        empty = client.get("/api/v1/read/workspace/stock-annual", headers=hdr_web, params={"year": 2026})
+        assert empty.status_code == 200, empty.text
+        assert empty.json() == {"year": 2026, "has_activity": False, "currencies": []}
+        assert _buy(client, hdr_web, shares=100, price=100, fee=0,
+                    trade_date="2026-01-01T02:00:00+00:00").status_code == 200
+        assert _buy(client, hdr_web, trade_type="sell", shares=100, price=130, fee=0,
+                    trade_date="2026-03-01T02:00:00+00:00").status_code == 200
+        body = client.get("/api/v1/read/workspace/stock-annual", headers=hdr_web, params={"year": 2026}).json()
+        assert body["has_activity"] is True
+        [c] = body["currencies"]
+        assert c["currency"] == "TWD" and c["realized_pnl"] == pytest.approx(3000)
+        assert c["win_rate"] == pytest.approx(100) and c["best_sell"]["symbol"] == "2330"
+        assert client.get("/api/v1/read/workspace/stock-annual", headers=hdr_web).status_code == 422
+    finally:
+        app.dependency_overrides.clear()

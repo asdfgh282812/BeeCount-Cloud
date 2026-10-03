@@ -635,3 +635,18 @@ App 端對應文件:App repo `docs/changes/2026-10-02-stock-phase3.md`。
   今日漲跌 +11,200)。
 - 無法在這個瀏覽器工具完整驗證的:鍵盤拖曳(空白鍵拾起/方向鍵)與工具內建的 drag 動作(沒有中間 pointermove,
   dnd-kit 不啟動),拖曳排序改用合成 pointer 事件序列驗證。
+
+## 年度記帳報告(2026-10-03)
+
+年度報告(Web `features/annual-report`、App `lib/pages/report/annual_report_page.dart`)加入股票頁,入口:頭像選單 →
+年度報告 → 選年份;App 在首頁年度報告提醒 / 我的 → 年度報告。
+
+- **API**:`GET /read/workspace/stock-annual?year=`(`services/securities/annual.py::build_stock_annual`,純函式)。
+  各幣別分開、依活躍度排序;含買賣筆數/金額、手續費稅、股利、已實現損益(用「全部歷史」算成本再過濾年度)、
+  勝率、最賺/最賠一筆、領息王、最常交易標的、每月已實現損益/股利、市場分佈、`style_tag`。
+  期初持股/配股/分割不算當年活動;當年無買賣/股利時 `has_activity=false`。
+- **風格標籤優先序**:`active_trader`(買+賣 ≥ 40)→ `dividend_hunter`(股利 ≥ |已實現| 且 ≥ 2 筆)→
+  `long_term_holder`(沒賣或 買 ≥ 3×賣)→ `beginner`(買+賣 < 5)→ `swing_trader`。App 端同一份規則。
+- **Web 動態頁面**:帳戶頁(有帳戶資料)、標籤頁(有標籤)、股票總覽/亮點(有股票活動)才出現;「年度稱號」頁
+  (`data/persona.ts`,規則有優先序 + 最多 3 條理由)與成就牆(新增 5 個股票成就)依資料決定內容。
+  股票讀取失敗只會少了股票頁,不會讓整份報告失敗。漲跌色沿用 `<html data-stock-color>`(股票漲跌色設定)。

@@ -33,6 +33,11 @@ export function PageAchievements({ data }: { data: AnnualReportData }) {
     'frugal-progress': '🌱',
     'more-attentive': '✍️',
     'income-growth': '📈',
+    'stock-explorer': '🧭',
+    'stock-profit': '💹',
+    'stock-sharpshooter': '🎯',
+    'stock-dividend': '🍯',
+    'stock-active': '⚡',
   }
 
   return (

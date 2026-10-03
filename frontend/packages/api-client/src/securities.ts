@@ -339,6 +339,74 @@ export async function fetchDividendEvents(token: string, market: string, symbol:
 
 
 // ---------------------------------------------------------------------------
+// 年度記帳報告的股票摘要:`/read/workspace/stock-annual`,各幣別分開、不跨幣別加總。
+// ---------------------------------------------------------------------------
+
+export type StockAnnualSell = {
+  market: string
+  symbol: string
+  security_name: string | null
+  date: string | null
+  pnl: number
+  proceeds: number
+  cost_basis: number
+  return_percent: number | null
+}
+
+export type StockAnnualSymbol = {
+  market: string
+  symbol: string
+  security_name: string | null
+  count: number | null
+  amount: number | null
+}
+
+export type StockAnnualStyleTag =
+  | 'active_trader'
+  | 'dividend_hunter'
+  | 'long_term_holder'
+  | 'swing_trader'
+  | 'beginner'
+
+export type StockAnnualCurrency = {
+  currency: string
+  buy_count: number
+  sell_count: number
+  dividend_count: number
+  symbol_count: number
+  buy_amount: number
+  sell_amount: number
+  fees: number
+  taxes: number
+  dividends: number
+  realized_pnl: number
+  win_count: number
+  loss_count: number
+  /** 0-100;沒有任何賺賠賣出時 null。 */
+  win_rate: number | null
+  best_sell: StockAnnualSell | null
+  worst_sell: StockAnnualSell | null
+  top_symbol_by_trades: StockAnnualSymbol | null
+  top_dividend_symbol: StockAnnualSymbol | null
+  monthly_realized_pnl: number[]
+  monthly_dividends: number[]
+  market_breakdown: Record<string, number>
+  style_tag: StockAnnualStyleTag
+}
+
+export type StockAnnualReport = {
+  year: number
+  /** 當年沒有任何買賣/股利時 false。 */
+  has_activity: boolean
+  /** 依活躍度由大到小。 */
+  currencies: StockAnnualCurrency[]
+}
+
+export async function fetchStockAnnual(token: string, year: number): Promise<StockAnnualReport> {
+  return authedGet<StockAnnualReport>(`/read/workspace/stock-annual?year=${encodeURIComponent(String(year))}`, token)
+}
+
+// ---------------------------------------------------------------------------
 // 已實現損益報表(Phase 3):`/read/workspace/realized-pnl`,各幣別分開、不跨幣別加總。
 // ---------------------------------------------------------------------------
 

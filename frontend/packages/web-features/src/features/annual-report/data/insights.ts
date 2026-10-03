@@ -5,8 +5,9 @@
  * 每个 insight 函数返回 { textKey, args },UI 用 i18n.t(textKey, args) 渲染。
  * args 是字典,方便 i18n placeholder 注入。
  */
-import type { AnnualReportData } from './types'
+import type { AnnualReportData, StockCurrencySummary } from './types'
 import { TKEY } from '../i18n'
+import { currencySymbol } from '../../../lib/currencies'
 
 export type Insight = {
   textKey: string
@@ -229,4 +230,32 @@ export function outroInsight(d: AnnualReportData): Insight {
     textKey: TKEY.insightOutro,
     args: { records: d.totalRecords },
   }
+}
+
+/** 帳戶頁 */
+export function accountsInsight(d: AnnualReportData): Insight {
+  const top = d.topAccounts[0]
+  return {
+    textKey: TKEY.insightAccounts,
+    args: { name: top?.name ?? '', count: top?.count ?? 0 },
+  }
+}
+
+/** 股票總覽頁(依這一年實際發生的事挑句子;金額帶幣別符號與千分位) */
+export function stockOverviewInsight(s: StockCurrencySummary): Insight {
+  const money = (v: number) => `${currencySymbol(s.currency)}${Math.round(v).toLocaleString()}`
+  const trades = s.buyCount + s.sellCount
+  if (trades === 0) {
+    return { textKey: TKEY.insightStockDividendOnly, args: { amount: money(s.dividends), count: s.dividendCount } }
+  }
+  if (s.sellCount === 0) {
+    return { textKey: TKEY.insightStockBuyOnly, args: { amount: money(s.buyAmount), symbols: s.symbolCount } }
+  }
+  if (s.realizedPnl > 0) {
+    return { textKey: TKEY.insightStockProfit, args: { amount: money(s.realizedPnl) } }
+  }
+  if (s.realizedPnl < 0) {
+    return { textKey: TKEY.insightStockLoss, args: { amount: money(Math.abs(s.realizedPnl)) } }
+  }
+  return { textKey: TKEY.insightStockFlat }
 }

@@ -15,5 +15,7 @@ export {
   tagsInsight,
   achievementsInsight,
   outroInsight,
+  accountsInsight,
+  stockOverviewInsight,
   type Insight,
 } from './insights'

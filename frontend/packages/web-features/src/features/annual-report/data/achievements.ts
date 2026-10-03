@@ -7,7 +7,7 @@
 import type { Achievement, AnnualReportData } from './types'
 import { TKEY } from '../i18n'
 
-type DataWithoutAchievements = Omit<AnnualReportData, 'achievements'>
+type DataWithoutAchievements = Omit<AnnualReportData, 'achievements' | 'persona'>
 
 export function computeAchievements(d: DataWithoutAchievements): Achievement[] {
   const achievements: Achievement[] = []
@@ -115,6 +115,47 @@ export function computeAchievements(d: DataWithoutAchievements): Achievement[] {
       titleKey: TKEY.ach.incomeGrowth.title,
       descKey: TKEY.ach.incomeGrowth.desc,
     })
+  }
+
+  // ===== 股票成就(只看活躍度最高的幣別,沒有股票活動就不出現)=====
+  const stock = d.stock?.currencies[0]
+  if (stock) {
+    const trades = stock.buyCount + stock.sellCount
+    achievements.push({
+      id: 'stock-explorer',
+      titleKey: TKEY.ach.stockExplorer.title,
+      descKey: TKEY.ach.stockExplorer.desc,
+    })
+    if (stock.realizedPnl > 0) {
+      achievements.push({
+        id: 'stock-profit',
+        titleKey: TKEY.ach.stockProfit.title,
+        descKey: TKEY.ach.stockProfit.desc,
+      })
+    }
+    if (stock.winRate !== null && stock.winRate >= 60 && stock.winCount + stock.lossCount >= 5) {
+      achievements.push({
+        id: 'stock-sharpshooter',
+        titleKey: TKEY.ach.stockSharpshooter.title,
+        descKey: TKEY.ach.stockSharpshooter.desc,
+        rare: true,
+      })
+    }
+    if (stock.dividendCount >= 3) {
+      achievements.push({
+        id: 'stock-dividend',
+        titleKey: TKEY.ach.stockDividend.title,
+        descKey: TKEY.ach.stockDividend.desc,
+      })
+    }
+    if (trades >= 40) {
+      achievements.push({
+        id: 'stock-active',
+        titleKey: TKEY.ach.stockActive.title,
+        descKey: TKEY.ach.stockActive.desc,
+        rare: true,
+      })
+    }
   }
 
   return achievements

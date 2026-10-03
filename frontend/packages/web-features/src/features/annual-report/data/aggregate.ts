@@ -6,15 +6,18 @@
  * (本期不做)。
  */
 import type {
+  AccountStat,
   AnnualReportData,
   CategoryStat,
   DayStat,
   HourBucket,
   MonthBucket,
+  StockAnnual,
   TagStat,
   TransactionLite,
 } from './types'
 import { computeAchievements } from './achievements'
+import { computePersona } from './persona'
 
 /**
  * 笔数 >= MIN_RECORDS 才生成报告,否则显示「数据太少」兜底。
@@ -27,10 +30,12 @@ export type AggregateInput = {
   prevYearTxs: TransactionLite[]
   year: number
   ledger: { id: string; name: string; currency: string }
+  /** 股票年度摘要;沒有股票活動 / 讀取失敗時 null */
+  stock?: StockAnnual | null
 }
 
 export function aggregate(input: AggregateInput): AnnualReportData {
-  const { thisYearTxs, prevYearTxs, year, ledger } = input
+  const { thisYearTxs, prevYearTxs, year, ledger, stock = null } = input
 
   // 排除 transfer(转账不算收入也不算支出,只是账户间挪)
   const txs = thisYearTxs.filter((t) => t.txType !== 'transfer')
@@ -194,8 +199,11 @@ export function aggregate(input: AggregateInput): AnnualReportData {
   // ===== 标签 =====
   const topTags = computeTopTags(txs, 6)
 
+  // ===== 帳戶 =====
+  const topAccounts = computeTopAccounts(txs, 4)
+
   // ===== 成就 =====
-  const tempData: Omit<AnnualReportData, 'achievements'> = {
+  const tempData: Omit<AnnualReportData, 'achievements' | 'persona'> = {
     year,
     ledgerId: ledger.id,
     ledgerName: ledger.name,
@@ -235,10 +243,13 @@ export function aggregate(input: AggregateInput): AnnualReportData {
     avgDailyExpense,
     recordsPerWeekAvg,
     topTags,
+    topAccounts,
+    stock,
   }
   const achievements = computeAchievements(tempData)
+  const persona = computePersona(tempData)
 
-  return { ...tempData, achievements }
+  return { ...tempData, achievements, persona }
 }
 
 // ============================================================================
@@ -292,6 +303,21 @@ function computeTopTags(txs: TransactionLite[], limit: number): TagStat[] {
       cur.total += t.amount
       map.set(tag, cur)
     }
+  }
+  return Array.from(map.entries())
+    .map(([name, v]) => ({ name, count: v.count, total: v.total }))
+    .sort((a, b) => b.count - a.count || b.total - a.total)
+    .slice(0, limit)
+}
+
+function computeTopAccounts(txs: TransactionLite[], limit: number): AccountStat[] {
+  const map = new Map<string, { count: number; total: number }>()
+  for (const t of txs) {
+    if (t.txType !== 'expense' || !t.accountName) continue
+    const cur = map.get(t.accountName) ?? { count: 0, total: 0 }
+    cur.count++
+    cur.total += t.amount
+    map.set(t.accountName, cur)
   }
   return Array.from(map.entries())
     .map(([name, v]) => ({ name, count: v.count, total: v.total }))

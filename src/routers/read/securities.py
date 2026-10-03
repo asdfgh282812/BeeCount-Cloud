@@ -34,6 +34,7 @@ from ...models import (
     UserProfile,
 )
 from ...services.exchange_rate import fetcher as exchange_rate_fetcher
+from ...services.securities import annual as annual_service
 from ...services.securities import dividends as dividend_service
 from ...services.securities import holdings as holdings_service
 from ...services.securities import markets, trade_fees
@@ -548,6 +549,85 @@ def workspace_realized_pnl(
         year=year,
         symbol=symbol,
     )
+
+
+class StockAnnualSellOut(BaseModel):
+    market: str
+    symbol: str
+    security_name: str | None = None
+    date: str | None = None
+    pnl: float
+    proceeds: float
+    cost_basis: float
+    return_percent: float | None = None
+
+
+class StockAnnualSymbolOut(BaseModel):
+    market: str
+    symbol: str
+    security_name: str | None = None
+    count: int | None = None
+    amount: float | None = None
+
+
+class StockAnnualCurrencyOut(BaseModel):
+    currency: str
+    buy_count: int
+    sell_count: int
+    dividend_count: int
+    symbol_count: int
+    buy_amount: float
+    sell_amount: float
+    fees: float
+    taxes: float
+    dividends: float
+    realized_pnl: float
+    win_count: int
+    loss_count: int
+    win_rate: float | None = None
+    best_sell: StockAnnualSellOut | None = None
+    worst_sell: StockAnnualSellOut | None = None
+    top_symbol_by_trades: StockAnnualSymbolOut | None = None
+    top_dividend_symbol: StockAnnualSymbolOut | None = None
+    monthly_realized_pnl: list[float]
+    monthly_dividends: list[float]
+    market_breakdown: dict[str, int]
+    # active_trader / dividend_hunter / long_term_holder / swing_trader / beginner
+    style_tag: str
+
+
+class StockAnnualOut(BaseModel):
+    year: int
+    # 當年沒有任何買賣/股利時為 false(年度報告據此不顯示股票頁)。
+    has_activity: bool
+    # 各幣別分開、依活躍度由大到小;不跨幣別加總。
+    currencies: list[StockAnnualCurrencyOut]
+
+
+@router.get("/workspace/stock-annual", response_model=StockAnnualOut)
+def workspace_stock_annual(
+    year: int = Query(ge=1990, le=2200),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StockAnnualOut:
+    """年度記帳報告的股票摘要(買賣筆數/金額、已實現損益、勝率、股利、亮點)。"""
+    accounts = {
+        a.sync_id: a
+        for a in db.scalars(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == current_user.id,
+                UserAccountProjection.account_type == "investment",
+            )
+        ).all()
+    }
+    result = annual_service.build_stock_annual(
+        _load_user_trade_rows(db, current_user.id),
+        year,
+        account_ids=set(accounts),
+        account_currency={sid: (a.currency or "").upper() or None for sid, a in accounts.items()},
+    )
+    return StockAnnualOut(**result)
 
 
 class InvestmentFlowCurrencyOut(BaseModel):

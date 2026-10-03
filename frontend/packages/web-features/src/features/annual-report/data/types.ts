@@ -67,6 +67,94 @@ export type DayStat = {
   count: number
 }
 
+/** 帳戶使用統計(依支出筆數) */
+export type AccountStat = {
+  name: string
+  count: number
+  /** 該帳戶的支出總額(絕對值) */
+  total: number
+}
+
+/** 股票風格(對應 server `style_tag`) */
+export type StockStyle =
+  | 'activeTrader'
+  | 'dividendHunter'
+  | 'longTermHolder'
+  | 'swingTrader'
+  | 'beginner'
+
+export type StockSellHighlight = {
+  market: string
+  symbol: string
+  name: string
+  date: string | null
+  pnl: number
+  proceeds: number
+  costBasis: number
+  returnPercent: number | null
+}
+
+export type StockSymbolHighlight = {
+  market: string
+  symbol: string
+  name: string
+  count: number
+  amount: number
+}
+
+/** 單一幣別的股票年度摘要(各幣別分開,不跨幣別加總) */
+export type StockCurrencySummary = {
+  currency: string
+  buyCount: number
+  sellCount: number
+  dividendCount: number
+  symbolCount: number
+  buyAmount: number
+  sellAmount: number
+  fees: number
+  taxes: number
+  dividends: number
+  realizedPnl: number
+  winCount: number
+  lossCount: number
+  /** 0-100;沒有賺賠賣出時 null */
+  winRate: number | null
+  bestSell: StockSellHighlight | null
+  worstSell: StockSellHighlight | null
+  topSymbolByTrades: StockSymbolHighlight | null
+  topDividendSymbol: StockSymbolHighlight | null
+  monthlyRealizedPnl: number[] // 12
+  monthlyDividends: number[] // 12
+  marketBreakdown: { market: string; count: number }[]
+  style: StockStyle
+}
+
+export type StockAnnual = {
+  /** 依活躍度由大到小,長度 >= 1(沒有活動時整個 stock 為 null) */
+  currencies: StockCurrencySummary[]
+}
+
+/** 年度稱號 */
+export type PersonaId =
+  | 'streakKing'
+  | 'investor'
+  | 'saver'
+  | 'nightOwl'
+  | 'weekendSpender'
+  | 'focused'
+  | 'frugal'
+  | 'steady'
+
+export type PersonaReason = {
+  textKey: string
+  args?: Record<string, string | number>
+}
+
+export type Persona = {
+  id: PersonaId
+  reasons: PersonaReason[]
+}
+
 /** 成就 */
 export type Achievement = {
   id: string
@@ -149,6 +237,15 @@ export type AnnualReportData = {
 
   // ===== 商家 / 标签 =====
   topTags: TagStat[] // 前 6
+
+  // ===== 帳戶 =====
+  topAccounts: AccountStat[] // 前 4
+
+  // ===== 股票(當年沒有任何買賣/股利或讀取失敗時 null)=====
+  stock: StockAnnual | null
+
+  // ===== 年度稱號 =====
+  persona: Persona
 
   // ===== 成就 =====
   achievements: Achievement[]

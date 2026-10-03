@@ -15,10 +15,15 @@ import { PageHabits } from './pages/PageHabits'
 import { PageTags } from './pages/PageTags'
 import { PageAchievements } from './pages/PageAchievements'
 import { PageOutro } from './pages/PageOutro'
+import { PageAccounts } from './pages/PageAccounts'
+import { PageStockOverview } from './pages/PageStockOverview'
+import { PageStockHighlights } from './pages/PageStockHighlights'
+import { PagePersona } from './pages/PagePersona'
 import { PosterDialog } from './widgets/PosterDialog'
 
 /**
- * 年度报告主容器 — 全屏沉浸式 carousel,12 屏故事性回顾。
+ * 年度报告主容器 — 全屏沉浸式 carousel,故事性回顾(基礎 9 屏 + 依資料出現的
+ * 帳戶 / 標籤 / 股票 / 年度稱號,沒有對應資料的頁就不出現)。
  *
  * 翻页方式:
  * - 鼠标点击右下「下一页」/ 左下「上一页」浮动按钮
@@ -49,18 +54,52 @@ export function AnnualReportPage({ data, onClose, onShare }: AnnualReportPagePro
     else setPosterOpen(true)
   }, [onShare])
 
-  const pages = useMemo(
-    () => [
+  // 股票頁的幣別切換(總覽 / 亮點共用同一個選擇)
+  const [stockCurrencyIndex, setStockCurrencyIndex] = useState(0)
+
+  // 頁面清單依實際資料動態組成:沒有帳戶 / 標籤 / 股票活動就不出現對應頁。
+  const pages = useMemo(() => {
+    const list: { key: string; node: React.ReactNode }[] = [
       { key: 'welcome', node: <PageWelcome data={data} /> },
       { key: 'overview', node: <PageOverview data={data} /> },
       { key: 'yoy', node: <PageYoY data={data} /> },
       { key: 'monthly', node: <PageMonthlyTrend data={data} /> },
       { key: 'categories', node: <PageCategories data={data} /> },
+    ]
+    if (data.topAccounts.length > 0) list.push({ key: 'accounts', node: <PageAccounts data={data} /> })
+    list.push(
       { key: 'hours', node: <PageHours data={data} /> },
       { key: 'weekday', node: <PageWeekday data={data} /> },
       { key: 'extremes', node: <PageExtremes data={data} /> },
       { key: 'habits', node: <PageHabits data={data} /> },
-      { key: 'tags', node: <PageTags data={data} /> },
+    )
+    if (data.topTags.length > 0) list.push({ key: 'tags', node: <PageTags data={data} /> })
+    if (data.stock) {
+      list.push(
+        {
+          key: 'stock-overview',
+          node: (
+            <PageStockOverview
+              data={data}
+              currencyIndex={stockCurrencyIndex}
+              onCurrencyChange={setStockCurrencyIndex}
+            />
+          ),
+        },
+        {
+          key: 'stock-highlights',
+          node: (
+            <PageStockHighlights
+              data={data}
+              currencyIndex={stockCurrencyIndex}
+              onCurrencyChange={setStockCurrencyIndex}
+            />
+          ),
+        },
+      )
+    }
+    list.push(
+      { key: 'persona', node: <PagePersona data={data} /> },
       { key: 'achievements', node: <PageAchievements data={data} /> },
       {
         key: 'outro',
@@ -68,9 +107,9 @@ export function AnnualReportPage({ data, onClose, onShare }: AnnualReportPagePro
           <PageOutro data={data} onShare={handleShare} onRestart={() => setPage(0)} onClose={onClose} />
         ),
       },
-    ],
-    [data, handleShare, onClose],
-  )
+    )
+    return list
+  }, [data, handleShare, onClose, stockCurrencyIndex])
 
   const total = pages.length
   const goNext = useCallback(() => {

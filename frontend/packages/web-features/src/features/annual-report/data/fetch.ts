@@ -5,10 +5,26 @@
  * 默认 limit 200),全部读完再聚合。读取失败不返 null,而是 throw,UI 层
  * try / catch 给出错提示。
  */
-import { fetchWorkspaceTransactions, type WorkspaceTransaction } from '@beecount/api-client'
+import {
+  fetchStockAnnual,
+  fetchWorkspaceTransactions,
+  type StockAnnualCurrency,
+  type StockAnnualReport,
+  type StockAnnualSell,
+  type StockAnnualSymbol,
+  type WorkspaceTransaction,
+} from '@beecount/api-client'
 
 import { aggregate } from './aggregate'
-import type { AnnualReportData, TransactionLite } from './types'
+import type {
+  AnnualReportData,
+  StockAnnual,
+  StockCurrencySummary,
+  StockStyle,
+  StockSellHighlight,
+  StockSymbolHighlight,
+  TransactionLite,
+} from './types'
 
 const PAGE_SIZE = 500
 
@@ -23,9 +39,11 @@ export async function fetchAnnualReportData(
   const prevYearFrom = `${year - 1}-01-01T00:00:00.000Z`
   const prevYearTo = `${year}-01-01T00:00:00.000Z`
 
-  const [thisYear, prevYear] = await Promise.all([
+  const [thisYear, prevYear, stock] = await Promise.all([
     fetchAllPaged(token, ledger.id, thisYearFrom, thisYearTo),
     fetchAllPaged(token, ledger.id, prevYearFrom, prevYearTo),
+    // 股票是加分項:讀取失敗不能讓整份年度報告失敗,視為沒有股票頁。
+    fetchStockAnnual(token, year).then(toStockAnnual).catch(() => null),
   ])
 
   // §2.10 Phase 5:tx_type 新增 'adjustment'(餘額調整,語意化端點產生,不是
@@ -37,6 +55,7 @@ export async function fetchAnnualReportData(
     prevYearTxs: prevYear.filter(isReportableTx).map(toLite),
     year,
     ledger,
+    stock,
   })
 }
 
@@ -82,5 +101,68 @@ function toLite(t: WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'tra
     categoryKind: t.category_kind,
     accountName: t.account_name,
     tagsList: t.tags_list ?? [],
+  }
+}
+
+const STYLE_MAP: Record<StockAnnualCurrency['style_tag'], StockStyle> = {
+  active_trader: 'activeTrader',
+  dividend_hunter: 'dividendHunter',
+  long_term_holder: 'longTermHolder',
+  swing_trader: 'swingTrader',
+  beginner: 'beginner',
+}
+
+function toStockAnnual(r: StockAnnualReport): StockAnnual | null {
+  if (!r.has_activity || r.currencies.length === 0) return null
+  return { currencies: r.currencies.map(toStockCurrency) }
+}
+
+function symbolName(s: { security_name: string | null; symbol: string }): string {
+  return s.security_name || s.symbol
+}
+
+function toSell(s: StockAnnualSell | null): StockSellHighlight | null {
+  if (!s) return null
+  return {
+    market: s.market,
+    symbol: s.symbol,
+    name: symbolName(s),
+    date: s.date,
+    pnl: s.pnl,
+    proceeds: s.proceeds,
+    costBasis: s.cost_basis,
+    returnPercent: s.return_percent,
+  }
+}
+
+function toSymbol(s: StockAnnualSymbol | null): StockSymbolHighlight | null {
+  if (!s) return null
+  return { market: s.market, symbol: s.symbol, name: symbolName(s), count: s.count ?? 0, amount: s.amount ?? 0 }
+}
+
+function toStockCurrency(c: StockAnnualCurrency): StockCurrencySummary {
+  return {
+    currency: c.currency,
+    buyCount: c.buy_count,
+    sellCount: c.sell_count,
+    dividendCount: c.dividend_count,
+    symbolCount: c.symbol_count,
+    buyAmount: c.buy_amount,
+    sellAmount: c.sell_amount,
+    fees: c.fees,
+    taxes: c.taxes,
+    dividends: c.dividends,
+    realizedPnl: c.realized_pnl,
+    winCount: c.win_count,
+    lossCount: c.loss_count,
+    winRate: c.win_rate,
+    bestSell: toSell(c.best_sell),
+    worstSell: toSell(c.worst_sell),
+    topSymbolByTrades: toSymbol(c.top_symbol_by_trades),
+    topDividendSymbol: toSymbol(c.top_dividend_symbol),
+    monthlyRealizedPnl: c.monthly_realized_pnl,
+    monthlyDividends: c.monthly_dividends,
+    marketBreakdown: Object.entries(c.market_breakdown).map(([market, count]) => ({ market, count })),
+    style: STYLE_MAP[c.style_tag] ?? 'swingTrader',
   }
 }

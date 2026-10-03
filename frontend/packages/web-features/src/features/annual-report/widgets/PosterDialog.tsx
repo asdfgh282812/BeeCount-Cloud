@@ -7,6 +7,7 @@ import { useT } from '@beecount/ui'
 import type { AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
 import { currencySymbol } from '../../../lib/currencies'
+import { fmtSignedMoney, stockTone } from './stock'
 
 export type PosterDialogProps = {
   data: AnnualReportData
@@ -61,6 +62,8 @@ export function PosterDialog({ data, open, onClose, url }: PosterDialogProps) {
   // 取一个分类作为海报亮点
   const topCat = data.topExpenseCategories[0]
   const topCatPct = topCat ? topCat.percent.toFixed(0) : '0'
+  const stock = data.stock?.currencies[0] ?? null
+  const tone = stockTone()
 
   return (
     <AnimatePresence>
@@ -165,6 +168,42 @@ export function PosterDialog({ data, open, onClose, url }: PosterDialogProps) {
                         {topCat.name}
                       </span>
                       <span className="text-xs text-white/60">{topCatPct}%</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 年度稱號 */}
+                <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2.5">
+                  <div className="text-[10px] uppercase tracking-widest text-amber-300/70">
+                    {t(TKEY.personaTitle)}
+                  </div>
+                  <div className="mt-0.5 text-sm font-bold text-white">
+                    {t(TKEY.persona[data.persona.id].title)}
+                  </div>
+                </div>
+
+                {/* 股票(有股票活動才出現) */}
+                {stock && (
+                  <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2.5">
+                    <div className="text-[10px] uppercase tracking-widest text-amber-300/70">
+                      {t(TKEY.stockOverviewTitle)}
+                    </div>
+                    <div className="mt-0.5 flex items-baseline justify-between">
+                      <span className="text-sm font-bold text-white">
+                        {t(TKEY.stockStyle[stock.style].title)}
+                      </span>
+                      {stock.sellCount > 0 ? (
+                        <span
+                          className="text-sm font-bold tabular-nums"
+                          style={{ color: tone.pick(stock.realizedPnl) }}
+                        >
+                          {fmtSignedMoney(stock.realizedPnl, stock.currency)}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-white/60">
+                          {stock.buyCount + stock.sellCount} {t(TKEY.stockTimesSuffix)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
