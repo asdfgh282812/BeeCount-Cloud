@@ -30,6 +30,45 @@ export type RepaymentPayload = {
   note: string | null
 }
 
+/** 列表篩選:`recent` 為預設(未還款一律顯示,已完成的只顯示近 7 天內完成者),
+ *  其餘三種是明確下條件。跟 mobile `DebtListFilter` 同語意。 */
+type DebtFilter = 'recent' | 'unpaid' | 'completed' | 'all'
+const DEBT_FILTERS: readonly DebtFilter[] = ['recent', 'unpaid', 'completed', 'all']
+const RECENT_COMPLETED_DAYS = 7
+
+const isDebtCompleted = (d: ReadDebt) => d.status === 'settled' || d.status === 'closed'
+
+/** 完成時間:結案取 closed_at,結清取最後一筆還款時間;沒有可用時間 = null。 */
+function debtCompletedAtMs(d: ReadDebt): number | null {
+  if (d.status === 'closed') {
+    return d.closed_at ? new Date(d.closed_at).getTime() : null
+  }
+  if (d.status === 'settled') {
+    const times = d.repayments.map((r) => new Date(r.happened_at).getTime())
+    return times.length ? Math.max(...times) : null
+  }
+  return null
+}
+
+function filterDebts(debts: readonly ReadDebt[], filter: DebtFilter, nowMs: number): ReadDebt[] {
+  switch (filter) {
+    case 'all':
+      return [...debts]
+    case 'unpaid':
+      return debts.filter((d) => !isDebtCompleted(d))
+    case 'completed':
+      return debts.filter(isDebtCompleted)
+    default: {
+      const cutoff = nowMs - RECENT_COMPLETED_DAYS * 24 * 60 * 60 * 1000
+      return debts.filter((d) => {
+        if (!isDebtCompleted(d)) return true
+        const done = debtCompletedAtMs(d)
+        return done !== null && done >= cutoff
+      })
+    }
+  }
+}
+
 type DebtsPanelProps = {
   debts: readonly ReadDebt[]
   accounts: readonly ReadAccount[]
@@ -76,6 +115,7 @@ export function DebtsPanel({
   canManage,
 }: DebtsPanelProps) {
   const t = useT()
+  const [filter, setFilter] = useState<DebtFilter>('recent')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReadDebt | null>(null)
@@ -177,6 +217,8 @@ export function DebtsPanel({
     }
   }
 
+  const visibleDebts = filterDebts(debts, filter, Date.now())
+
   const canSubmit =
     Boolean(form.counterparty_name.trim()) &&
     Boolean(form.principal_amount.trim()) &&
@@ -190,6 +232,26 @@ export function DebtsPanel({
           {t('debts.button.create')}
         </Button>
       </div>
+
+      {debts.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {DEBT_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={[
+                'rounded-full border px-3 py-1 text-xs transition-colors',
+                filter === f
+                  ? 'border-primary/60 bg-primary/10 text-primary'
+                  : 'border-border/60 text-muted-foreground hover:bg-accent/40',
+              ].join(' ')}
+            >
+              {t(`debts.filter.${f}`)}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {debts.length === 0 ? (
         <EmptyState
@@ -210,9 +272,11 @@ export function DebtsPanel({
           title={t('debts.empty')}
           description={t('debts.emptyDesc')}
         />
+      ) : visibleDebts.length === 0 ? (
+        <EmptyState title={t('debts.filter.empty')} />
       ) : (
         <div className="space-y-3">
-          {debts.map((debt) => (
+          {visibleDebts.map((debt) => (
             <DebtCard
               key={debt.id}
               debt={debt}
