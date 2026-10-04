@@ -134,6 +134,30 @@ export type StockAnnual = {
   currencies: StockCurrencySummary[]
 }
 
+/** 節日(依使用者節日設定去重後;見 data/holidays.ts) */
+export type HolidayLite = {
+  date: string // 'YYYY-MM-DD'
+  country: string
+  key: string
+  kind: string // 'public' | 'observance' | 'day_off'
+  nameZhTw: string
+  nameEn: string
+  nameLocal: string
+  emoji: string
+  color: string
+  priority: number
+}
+
+/** 節日當天花最多的那天 */
+export type HolidaySpend = {
+  date: string // 'YYYY-MM-DD'
+  /** 當天的代表節日 */
+  holiday: HolidayLite
+  total: number
+  /** 年度內「有支出的節日」天數 */
+  holidayDays: number
+}
+
 /** 年度稱號 */
 export type PersonaId =
   | 'streakKing'
@@ -243,6 +267,13 @@ export type AnnualReportData = {
 
   // ===== 股票(當年沒有任何買賣/股利或讀取失敗時 null)=====
   stock: StockAnnual | null
+
+  // ===== 節日(節日總開關關閉 / 讀取失敗時為空 / null)=====
+  /** dayKey → 當天節日(第一個是代表節日),只含該年度 */
+  holidays: Record<string, HolidayLite[]>
+  /** 主要國家(非主要國家的節日標籤後面加國旗);沒有節日資料時為 null */
+  holidayPrimary: string | null
+  holidaySpend: HolidaySpend | null
 
   // ===== 年度稱號 =====
   persona: Persona

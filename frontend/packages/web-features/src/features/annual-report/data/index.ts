@@ -4,6 +4,16 @@ export * from './types'
 export { aggregate, MIN_RECORDS_FOR_REPORT } from './aggregate'
 export { fetchAnnualReportData } from './fetch'
 export {
+  HOLIDAY_FLAGS,
+  holidayLabel,
+  holidayName,
+  holidayOfDay,
+  holidaySettingsFromAppearance,
+  localDayKey,
+  resolveHolidays,
+  topHolidaySpend,
+} from './holidays'
+export {
   overviewInsight,
   yoyInsight,
   monthlyInsight,

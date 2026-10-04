@@ -1,10 +1,16 @@
 import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
-import { useT } from '@beecount/ui'
+import { useLocale, useT } from '@beecount/ui'
 
 import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
-import { extremesInsight, type AnnualReportData } from '../data'
+import {
+  extremesInsight,
+  holidayLabel,
+  holidayOfDay,
+  localDayKey,
+  type AnnualReportData,
+} from '../data'
 import { TKEY } from '../i18n'
 import { currencySymbol } from '../../../lib/currencies'
 
@@ -16,11 +22,13 @@ const formatDate = (iso: string) => {
 }
 
 /**
- * 极端时刻:故事卡片堆叠 — 最大支出 / 第一笔 / 最贵的一天。
+ * 极端时刻:故事卡片堆叠 — 最大支出 / 第一笔 / 最贵的一天 / 節日花最多。
  * 每张卡左侧时间戳竖排,右侧内容,垂直 stagger 入场,带 timeline 竖线。
+ * 那天剛好是節日時,標題旁加小標籤「🥮 中秋節」(跟 App 年度報告一致)。
  */
 export function PageExtremes({ data }: { data: AnnualReportData }) {
   const t = useT()
+  const { locale } = useLocale()
   const ref = useRef<HTMLDivElement>(null)
   const inView = useInView(ref, { once: true, margin: '-15%' })
   const insight = extremesInsight(data)
@@ -33,6 +41,7 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
     primary: string
     secondary: string
     accent: string
+    holidayDay?: string
   }> = []
 
   if (data.largestExpense) {
@@ -47,6 +56,7 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
         data.largestExpense.accountName ||
         '—',
       accent: '#F87171',
+      holidayDay: localDayKey(data.largestExpense.happenedAt),
     })
   }
 
@@ -61,6 +71,7 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
         '—',
       secondary: `${sym}${Math.round(data.firstRecord.amount).toLocaleString()}`,
       accent: '#FBBF24',
+      holidayDay: localDayKey(data.firstRecord.happenedAt),
     })
   }
 
@@ -72,6 +83,20 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
       primary: `${sym}${Math.round(data.mostExpensiveDay.total).toLocaleString()}`,
       secondary: `${data.mostExpensiveDay.count} 笔`,
       accent: '#A78BFA',
+      holidayDay: data.mostExpensiveDay.date,
+    })
+  }
+
+  // 節日花最多:跟「最貴的一天」同一天時,那張卡已經有節日標籤,不重複。
+  if (data.holidaySpend && data.holidaySpend.date !== data.mostExpensiveDay?.date) {
+    const hs = data.holidaySpend
+    cards.push({
+      key: 'holidayTop',
+      labelKey: TKEY.page8HolidayTop,
+      date: formatDate(hs.date),
+      primary: `${sym}${Math.round(hs.total).toLocaleString()}`,
+      secondary: `${holidayLabel(hs.holiday, locale, data.holidayPrimary)} · ${t(TKEY.page8HolidayDays, { days: hs.holidayDays })}`,
+      accent: hs.holiday.color,
     })
   }
 
@@ -103,8 +128,22 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
                   style={{ background: c.accent }}
                 />
                 <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur-sm">
-                  <div className="text-xs uppercase tracking-widest text-white/50">
-                    {t(c.labelKey)}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs uppercase tracking-widest text-white/50">
+                      {t(c.labelKey)}
+                    </span>
+                    {(() => {
+                      const h = c.holidayDay ? holidayOfDay(data.holidays, c.holidayDay) : null
+                      if (!h) return null
+                      return (
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[11px] font-medium text-white/90"
+                          style={{ background: `${h.color}40` }}
+                        >
+                          {holidayLabel(h, locale, data.holidayPrimary)}
+                        </span>
+                      )
+                    })()}
                   </div>
                   <div className="mt-1 text-xl font-semibold text-white sm:text-2xl">
                     {c.primary}

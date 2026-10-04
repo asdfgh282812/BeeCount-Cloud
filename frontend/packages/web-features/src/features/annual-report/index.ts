@@ -17,5 +17,12 @@ export {
   type DayStat,
   type Achievement,
   type Insight,
+  type HolidayLite,
+  type HolidaySpend,
+  holidayLabel,
+  holidaySettingsFromAppearance,
+  resolveHolidays,
+  topHolidaySpend,
+  localDayKey,
 } from './data'
 export { TKEY as ANNUAL_REPORT_TKEY } from './i18n'

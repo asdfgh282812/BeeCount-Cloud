@@ -10,6 +10,7 @@ import type {
   AnnualReportData,
   CategoryStat,
   DayStat,
+  HolidayLite,
   HourBucket,
   MonthBucket,
   StockAnnual,
@@ -18,6 +19,7 @@ import type {
 } from './types'
 import { computeAchievements } from './achievements'
 import { computePersona } from './persona'
+import { topHolidaySpend } from './holidays'
 
 /**
  * 笔数 >= MIN_RECORDS 才生成报告,否则显示「数据太少」兜底。
@@ -32,10 +34,13 @@ export type AggregateInput = {
   ledger: { id: string; name: string; currency: string }
   /** 股票年度摘要;沒有股票活動 / 讀取失敗時 null */
   stock?: StockAnnual | null
+  /** 去重後的節日(dayKey → 當天節日);沒有 / 讀取失敗時省略 */
+  holidays?: Record<string, HolidayLite[]>
+  holidayPrimary?: string | null
 }
 
 export function aggregate(input: AggregateInput): AnnualReportData {
-  const { thisYearTxs, prevYearTxs, year, ledger, stock = null } = input
+  const { thisYearTxs, prevYearTxs, year, ledger, stock = null, holidays = {}, holidayPrimary = null } = input
 
   // 排除 transfer(转账不算收入也不算支出,只是账户间挪)
   const txs = thisYearTxs.filter((t) => t.txType !== 'transfer')
@@ -202,6 +207,14 @@ export function aggregate(input: AggregateInput): AnnualReportData {
   // ===== 帳戶 =====
   const topAccounts = computeTopAccounts(txs, 4)
 
+  // ===== 節日 =====
+  const yearPrefix = `${year}-`
+  const yearHolidays: Record<string, HolidayLite[]> = {}
+  for (const [day, list] of Object.entries(holidays)) {
+    if (day.startsWith(yearPrefix)) yearHolidays[day] = list
+  }
+  const holidaySpend = topHolidaySpend(txs, yearHolidays)
+
   // ===== 成就 =====
   const tempData: Omit<AnnualReportData, 'achievements' | 'persona'> = {
     year,
@@ -245,6 +258,9 @@ export function aggregate(input: AggregateInput): AnnualReportData {
     topTags,
     topAccounts,
     stock,
+    holidays: yearHolidays,
+    holidayPrimary,
+    holidaySpend,
   }
   const achievements = computeAchievements(tempData)
   const persona = computePersona(tempData)

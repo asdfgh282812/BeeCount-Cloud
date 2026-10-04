@@ -7,7 +7,7 @@ import {
   type AnnualReportData,
   ANNUAL_REPORT_TKEY as TKEY,
 } from '@beecount/web-features'
-import { useT } from '@beecount/ui'
+import { useLocale, useT } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -30,6 +30,7 @@ export type AnnualReportLauncherProps = {
  */
 export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProps) {
   const t = useT()
+  const { locale } = useLocale()
   const { token } = useAuth()
   const { activeLedgerId, currentLedger, currency } = useLedgers()
 
@@ -85,7 +86,7 @@ export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProp
           name: currentLedger?.ledger_name || '',
           currency: currency || 'CNY',
         }
-        const d = await fetchAnnualReportData(token, ledger, year)
+        const d = await fetchAnnualReportData(token, ledger, year, locale)
         if (!d.hasSufficientData) {
           setError(`${t(TKEY.insufficientDataTitle)} — ${t(TKEY.insufficientDataBody)}`)
           setPhase('picker')
@@ -99,7 +100,7 @@ export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProp
         setPhase('picker')
       }
     },
-    [token, activeLedgerId, currentLedger?.ledger_name, currency, t],
+    [token, activeLedgerId, currentLedger?.ledger_name, currency, t, locale],
   )
 
   if (!open) return null

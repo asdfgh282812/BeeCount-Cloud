@@ -58,9 +58,24 @@ App 明細日曆的節日標記與應景台詞、App 和 Web 的年度報告，�
 2. 主要國家那天沒有，才顯示其他已勾選國家的節日，並依 key 去重。
 3. 其他國家的 `day_off` 不顯示。
 
-App 的實作在 `lib/services/holidays/holiday_resolver.dart`。Web（P2）要照同一套規則。
+App 的實作在 `lib/services/holidays/holiday_resolver.dart`，Web 在 `frontend/packages/web-features/src/features/annual-report/data/holidays.ts`（`resolveHolidays`）。兩邊規則要一起改。
 
-使用者的國家設定存在 profile appearance 裡（`holiday_enabled`、`holiday_regions`、`holiday_primary`、`holiday_theme_enabled`），由 App 推上來。Cloud 不需要改 schema。
+使用者的國家設定存在 profile appearance 裡（`holiday_enabled`、`holiday_regions`、`holiday_primary`、`holiday_theme_enabled`），由 App 推上來。Cloud 不需要改 schema。Web 的 `ProfileAppearance` 型別也補了這四個欄位；Web 設定頁 patch appearance 時會帶上整份 dict，不會清掉它們。
+
+## Web 年度報告（P2，2026-10-05）
+
+入口：Web 頭像選單 → 年度報告 → 選年份 →「難忘的時刻」那一頁。
+
+- `data/fetch.ts::fetchReportHolidays`：
+  - 先讀 `fetchProfileMe` 的 appearance 拿節日設定。App 沒推過時，依 Web 語系推主要國家（zh-TW→TW、zh-CN→CN、其他→US），跟 App 的預設一致。
+  - 再呼叫 `fetchHolidays(countries, years=[該年])` 並去重。
+  - 跟股票摘要一樣是加分項：任何失敗（舊版 server 404 等）都當作沒有節日，不影響報告。
+- `data/aggregate.ts`：只留該年度的節日，用 `topHolidaySpend` 算「節日當天花最多的那天」（`holidaySpend`）。
+- `pages/PageExtremes.tsx`：
+  - 最大單筆、第一筆、最貴的一天這三張卡，那天剛好是節日時，標題旁加「🥮 中秋節」標籤。非主要國家的節日後面加國旗（`holidayLabel`，跟 App 一致）。
+  - 多一張「節日花最多」卡（金額、節日名、今年有幾個節日有花費）。跟「最貴的一天」同一天時不顯示這張，因為那張卡已經有節日標籤。
+- **日期用使用者本地時區**（`localDayKey`）。年度報告其它統計沿用 `happenedAt.slice(0, 10)`（UTC 日期），但節日是當地日期：台灣早上 7 點的消費在 UTC 是前一天，用 slice 會對錯節日。
+- `apps/web/src/annualReportHolidays.test.ts`：去重規則（對照 App 的 resolver 測試）、設定 fallback、節日支出、只留該年度。
 
 ## App 內建備援
 

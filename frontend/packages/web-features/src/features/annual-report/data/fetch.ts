@@ -6,6 +6,8 @@
  * try / catch 给出错提示。
  */
 import {
+  fetchHolidays,
+  fetchProfileMe,
   fetchStockAnnual,
   fetchWorkspaceTransactions,
   type StockAnnualCurrency,
@@ -16,8 +18,10 @@ import {
 } from '@beecount/api-client'
 
 import { aggregate } from './aggregate'
+import { holidaySettingsFromAppearance, resolveHolidays, toHolidayLite } from './holidays'
 import type {
   AnnualReportData,
+  HolidayLite,
   StockAnnual,
   StockCurrencySummary,
   StockStyle,
@@ -32,6 +36,8 @@ export async function fetchAnnualReportData(
   token: string,
   ledger: { id: string; name: string; currency: string },
   year: number,
+  /** Web 介面語系(節日設定沒推過時用來推主要國家) */
+  locale = 'zh-TW',
 ): Promise<AnnualReportData> {
   // 时间窗口:本年 + 去年(用于 YoY 对比),取年初到年末(独占下界)
   const thisYearFrom = `${year}-01-01T00:00:00.000Z`
@@ -39,11 +45,13 @@ export async function fetchAnnualReportData(
   const prevYearFrom = `${year - 1}-01-01T00:00:00.000Z`
   const prevYearTo = `${year}-01-01T00:00:00.000Z`
 
-  const [thisYear, prevYear, stock] = await Promise.all([
+  const [thisYear, prevYear, stock, holidays] = await Promise.all([
     fetchAllPaged(token, ledger.id, thisYearFrom, thisYearTo),
     fetchAllPaged(token, ledger.id, prevYearFrom, prevYearTo),
     // 股票是加分項:讀取失敗不能讓整份年度報告失敗,視為沒有股票頁。
     fetchStockAnnual(token, year).then(toStockAnnual).catch(() => null),
+    // 節日同理:失敗(舊版 server 404 等)就當沒有節日。
+    fetchReportHolidays(token, year, locale).catch(() => ({ holidays: {}, primary: null })),
   ])
 
   // §2.10 Phase 5:tx_type 新增 'adjustment'(餘額調整,語意化端點產生,不是
@@ -56,7 +64,25 @@ export async function fetchAnnualReportData(
     year,
     ledger,
     stock,
+    holidays: holidays.holidays,
+    holidayPrimary: holidays.primary,
   })
+}
+
+/** 依 profile appearance 的節日設定(App 同步上來的)抓該年度節日並去重。 */
+async function fetchReportHolidays(
+  token: string,
+  year: number,
+  locale: string,
+): Promise<{ holidays: Record<string, HolidayLite[]>; primary: string | null }> {
+  const profile = await fetchProfileMe(token).catch(() => null)
+  const settings = holidaySettingsFromAppearance(profile?.appearance, locale)
+  if (!settings.enabled) return { holidays: {}, primary: null }
+  const res = await fetchHolidays(token, { countries: settings.regions, years: [year] })
+  return {
+    holidays: resolveHolidays(res.entries.map(toHolidayLite), settings.regions, settings.primary),
+    primary: settings.primary,
+  }
 }
 
 function isReportableTx(

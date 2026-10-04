@@ -2272,6 +2272,8 @@ const en = {
   'annualReport.page8.title': 'Moments to remember',
   'annualReport.page8.largest': 'Largest expense',
   'annualReport.page8.first': 'First entry',
+  'annualReport.page8.holidayTop': 'Biggest holiday spend',
+  'annualReport.page8.holidayDays': '{days} holidays with spending',
   'annualReport.page8.mostExpensiveDay': 'Most expensive day',
 
   'annualReport.page9.title': 'Your tracking habits',

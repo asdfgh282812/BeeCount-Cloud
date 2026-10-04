@@ -2266,6 +2266,8 @@ const zhTW = {
   'annualReport.page8.title': '難忘的時刻',
   'annualReport.page8.largest': '最大單筆支出',
   'annualReport.page8.first': '第一筆記帳',
+  'annualReport.page8.holidayTop': '節日花最多',
+  'annualReport.page8.holidayDays': '今年 {days} 個節日有花費',
   'annualReport.page8.mostExpensiveDay': '最貴的一天',
 
   'annualReport.page9.title': '你的記帳畫像',

@@ -2308,6 +2308,8 @@ const zhCN = {
   'annualReport.page8.title': '难忘的时刻',
   'annualReport.page8.largest': '最大单笔支出',
   'annualReport.page8.first': '第一笔记账',
+  'annualReport.page8.holidayTop': '节日花最多',
+  'annualReport.page8.holidayDays': '今年 {days} 个节日有花费',
   'annualReport.page8.mostExpensiveDay': '最贵的一天',
 
   'annualReport.page9.title': '你的记账画像',

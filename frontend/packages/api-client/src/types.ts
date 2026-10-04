@@ -53,6 +53,14 @@ export type ProfileAppearance = {
   /** 股票漲跌色:true(預設/未設)= 紅漲綠跌(台股習慣),false = 綠漲紅跌。
    *  獨立於 income_is_red,App 與 Web 共用同一個 key 同步。 */
   stock_up_is_red?: boolean
+  /** 節日設定(App 我的 → 個性化設定 → 節日),Web 年度報告用。 */
+  holiday_enabled?: boolean
+  /** 勾選的國家(TW / CN / HK / JP / KR / US),一定包含 holiday_primary */
+  holiday_regions?: string[]
+  /** 主要國家:同一天多國都有節日時只顯示它的 */
+  holiday_primary?: string
+  /** 節日當天自動套用節日主題(P3) */
+  holiday_theme_enabled?: boolean
 }
 
 /**
