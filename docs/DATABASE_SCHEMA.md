@@ -25,6 +25,7 @@
 10. [背景排程管理](#10-背景排程管理)
 11. [授權金鑰](#11-授權金鑰)
 12. [股票持股（3.7.0）](#12-股票持股370)
+13. [節日資料](#13-節日資料)
 
 ---
 
@@ -981,3 +982,33 @@ A：不是資料表，是 `sync_changes.entity_type = 'ledger_snapshot'` 的一�
 
 **Q：為什麼有些表（如借還款、分期、專案）沒有「餘額」「已繳期數」「花費總額」這類統計欄位？**
 A：這是本專案刻意的設計取捨：這類彙總數字若落庫，會需要在「行動端推送」與「Web 端寫入」兩條獨立路徑上都維護一段「改交易時聯動重算」的邏輯，容易產生資料漂移的 bug。因此一律改成讀取時從相關交易即時反查加總，詳見 [`CLAUDE.md`](../CLAUDE.md) 與各表在 `src/models.py` 中的 docstring。
+
+---
+
+## 13. 節日資料
+
+> 全域市場資料（不分使用者、不進 sync），跟 `exchange_rate_cache` 同款。由 `holiday_dataset_refresh` 排程用 `services/holidays/generator.py`（python `holidays` 套件 + 自訂節慶目錄）產生，整年整批替換。詳見 [`HOLIDAYS_SD.md`](./HOLIDAYS_SD.md)。
+
+### `holiday_entries` — 節日表（HolidayEntryRow）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| year | Integer | PK | 年份（整年替換的單位） |
+| country | String(2) | PK | 國家代碼：TW / CN / HK / JP / KR / US |
+| date | Date | PK | 日期（ORM 屬性名為 `day`，避免遮蔽 `date` 型別） |
+| key | String(64) | PK | 穩定節慶識別碼（`mid_autumn`、`christmas`…，補假一律 `day_off`），App/Web 共用契約 |
+| kind | String(16) | not null | `public` 放假 / `observance` 不放假的節慶 / `day_off` 補假、連假非正日 |
+| name_zh_tw / name_en / name_local | String(128) | not null | 繁中名 / 英文名 / 在地語言名 |
+| emoji | String(16) | not null | 日曆標記用 emoji |
+| color | String(7) | not null | 主題色 hex |
+| priority | Integer | not null | 同日多個節日的排序（越小越前；補假 999） |
+
+### `holiday_dataset_meta` — 節日資料集版本（HolidayDatasetMeta）
+單例 `id=1`。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK | 固定 1 |
+| version | Integer | not null | 資料集版本，內容有變就 +1；客戶端帶 `known_version` 比對 |
+| year_hashes | JSON | not null | `{"2026": sha256, ...}`，判斷重新產生後各年內容是否變動 |
+| updated_at | DateTime | | 最後一次版本變動時間 |

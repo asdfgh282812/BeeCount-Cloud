@@ -40,6 +40,11 @@ numpy>=1.26.0
 # 国内网络若拉不到包(`No matching distribution found`),换 PyPI 镜像即可:
 #   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple openpyxl
 openpyxl>=3.0
+# holidays / lunardate: 節日資料(docs/HOLIDAYS_SD.md)。holidays 算各國國定假日 +
+# 補假(政府公告的調整隨套件升級進來,升級後 holiday_dataset_refresh 會偵測到
+# 內容變動自動 bump version);lunardate 換算七夕/元宵等農曆節慶。皆為純 Python。
+holidays>=0.60
+lunardate>=0.3.0
 ruff>=0.5.5
 mypy>=1.11.1
 types-PyYAML>=6.0.12.20240311

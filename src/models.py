@@ -884,6 +884,45 @@ class ExchangeRateCache(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class HolidayEntryRow(Base):
+    """節日資料(2026-10-05,docs/HOLIDAYS_SD.md)。全域市場資料,不分 user、不進
+    sync,跟 `ExchangeRateCache`/`Security` 同款。由 `holiday_dataset_refresh`
+    排程用 `services/holidays/generator.py` 產生,整年整批替換。
+
+    `key` 是 App/Web 共用的穩定節慶識別碼(`services/holidays/catalog.py`);
+    `kind` ∈ public / observance / day_off。"""
+
+    __tablename__ = "holiday_entries"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    country: Mapped[str] = mapped_column(String(2), primary_key=True)
+    # 屬性名不能叫 `date`(類別內會遮蔽 `Mapped[date]` 的型別),欄位名仍是 date。
+    day: Mapped[date] = mapped_column("date", Date, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    name_zh_tw: Mapped[str] = mapped_column(String(128), nullable=False)
+    name_en: Mapped[str] = mapped_column(String(128), nullable=False)
+    name_local: Mapped[str] = mapped_column(String(128), nullable=False)
+    emoji: Mapped[str] = mapped_column(String(16), nullable=False)
+    color: Mapped[str] = mapped_column(String(7), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class HolidayDatasetMeta(Base):
+    """節日資料集版本(單例 `id=1`)。內容有任何變動就 `version` +1,客戶端帶
+    `known_version` 來問,相同就不重抓。`year_hashes` = {"2026": sha256, ...},
+    用來判斷重新產生後某年內容有沒有變(`holidays` 套件升級帶進補假修正時)。"""
+
+    __tablename__ = "holiday_dataset_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    year_hashes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class Security(Base):
     """證券清單(股票持股 2026-09-28,docs/STOCK_HOLDINGS_SD.md)。全域、不分
     user、不進 sync —— 跟 `ExchangeRateCache` 同款「server 自己抓來的市場

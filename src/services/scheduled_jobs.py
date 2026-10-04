@@ -61,6 +61,9 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     # 待確認股利每小時偵測一次(除息日當天早上就能收到通知)。
     "security_dividend_sync": (6 * 3600, False),
     "security_dividend_detector": (3600, False),
+    # 節日資料(2026-10-05):每天檢查一次;11 月起會預先產生明年,內容有變才
+    # 讓 dataset version +1。見 services/holidays/dataset.py。
+    "holiday_dataset_refresh": (24 * 3600, False),
 }
 
 
@@ -227,6 +230,14 @@ def _run_security_dividend_detector(db: Session) -> dict:
     return dividends.detect_pending_dividends(db)
 
 
+def _run_holiday_dataset_refresh(db: Session) -> dict:
+    """節日資料(docs/HOLIDAYS_SD.md):產生去年/今年(11 月起含明年)各國節日,
+    內容有變才整年替換並讓 dataset version +1。"""
+    from .holidays import dataset
+
+    return dataset.refresh_dataset(db)
+
+
 # job_key -> (db) -> dict 摘要。`ensure_default_configs` 在每次啟動時自動補齊
 # 這裡新登記、但舊部署 DB 裡還沒有的 job_key 列(見該函式 docstring),所以
 # 新增 job 不需要另外寫 migration seed。
@@ -246,6 +257,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "security_quote_close": _run_security_quote_close,
     "security_dividend_sync": _run_security_dividend_sync,
     "security_dividend_detector": _run_security_dividend_detector,
+    "holiday_dataset_refresh": _run_holiday_dataset_refresh,
 }
 
 

@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 15
+            assert len(rows) == 16
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 15
+            assert len(rows2) == 16
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 15
+        assert len(rows) == 16
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -417,6 +417,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "security_quote_close",
             "security_dividend_sync",
             "security_dividend_detector",
+            "holiday_dataset_refresh",
         }
 
         assert _TEST_SESSION is not None
@@ -469,6 +470,10 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.securities.dividends.detect_pending_dividends",
                     return_value={"created": 0, "updated": 0, "removed": 0, "reopened": 0},
                 ) as mock_dividend_detect,
+                patch(
+                    "src.services.holidays.dataset.refresh_dataset",
+                    return_value={"version": 1, "changed_years": "-", "entries": 0},
+                ) as mock_holiday_refresh,
             ):
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
@@ -482,6 +487,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "security_quote_close")
                 scheduled_jobs.run_job(db, "security_dividend_sync")
                 scheduled_jobs.run_job(db, "security_dividend_detector")
+                scheduled_jobs.run_job(db, "holiday_dataset_refresh")
 
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
@@ -495,6 +501,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             mock_security_close.assert_called_once()
             mock_dividend_sync.assert_called_once()
             mock_dividend_detect.assert_called_once()
+            mock_holiday_refresh.assert_called_once()
         finally:
             db.close()
     finally:

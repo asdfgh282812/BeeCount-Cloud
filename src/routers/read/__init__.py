@@ -8,12 +8,13 @@ main.py 的 `from .routers import read` + `app.include_router(read.router, ...)`
   - ledgers    账本维度读
   - workspace  跨账本聚合读
   - summary    单独小端点
+  - holidays   節日資料(全域市場資料,唯讀)
 
 改某条具体端点 → 对应子模块;改共享查询 helper / 字段映射 → _shared.py。
 """
 from ._shared import router  # noqa: F401
 
 # 导入子模块触发 @router 装饰器注册。
-from . import ledgers, rates, securities, summary, workspace  # noqa: E402,F401
+from . import holidays, ledgers, rates, securities, summary, workspace  # noqa: E402,F401
 
 __all__ = ['router']
