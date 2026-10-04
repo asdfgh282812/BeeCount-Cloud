@@ -77,6 +77,39 @@ App 的實作在 `lib/services/holidays/holiday_resolver.dart`，Web 在 `fronte
 - **日期用使用者本地時區**（`localDayKey`）。年度報告其它統計沿用 `happenedAt.slice(0, 10)`（UTC 日期），但節日是當地日期：台灣早上 7 點的消費在 UTC 是前一天，用 slice 會對錯節日。
 - `apps/web/src/annualReportHolidays.test.ts`：去重規則（對照 App 的 resolver 測試）、設定 fallback、節日支出、只留該年度。
 
+## 節日主題（P3，2026-10-05）
+
+主要國家的節日當天，App 和 Web 暫時換成節日色；App 另外換節日頁首。開關在 App「我的 → 個性化設定 → 節日 → 節日主題」，預設開，隨 appearance 的 `holiday_theme_enabled` 同步到 Web。Web 沒有自己的開關。
+
+**哪些節日會換**：白名單，App `lib/services/holidays/holiday_theme.dart::kFestivalThemeSkins` 和 Web `web-features/src/features/holidays/festival.ts::FESTIVAL_THEME_KEYS` 要一起改。
+- 會換：春節、除夕、元宵、中秋、聖誕、平安夜、萬聖節、元旦、跨年、情人節、七夕、母親節、父親節、端午、兒童節、感恩節、國慶日等。
+- 不換：
+  - 莊重的日子，例如和平紀念日、清明、中元、顯忠日、陣亡將士紀念日。
+  - 一般國定假日和購物節。
+  - 補假，以及 `<country>_<slug>` 自動 key。
+- 只看主要國家；同一天有多個節日時，取 catalog 順序（priority）最前面的那個。
+- 主題色用 catalog 的 `color`。
+
+**Web 實作**：
+- `apps/web/src/app/useFestivalTheme.ts`：
+  - 從 profile 拿節日設定，呼叫 `fetchHolidays(countries=[主要國家], years=[今年])`，用 `festivalThemeFor` 判斷今天。
+  - 跨午夜（計時器）和分頁切回前景時重新判斷。
+  - 抓不到資料就當沒節日。
+- `@beecount/ui` `PrimaryColorProvider` 新增 `festivalColor` / `setFestivalColor`，套用時走 `applyFestivalOverride`：
+  - 只改 CSS 變數，不寫 localStorage `beecount.primary-color`。
+  - 節日當天 server 推色或使用者在 picker 改色時，只更新 `color`，畫面維持節日色；節日結束後換回 `color`。
+- `AppHeader`：logo 旁邊顯示節日徽章（emoji + 名稱，小螢幕只顯示 emoji），滑鼠移上去說明關閉方式。
+- 年度報告維持固定的深色風格，不受影響。
+- 開發用：dev build 中，localStorage `beecount.debug-holiday-today = YYYY-MM-DD` 會把「今天」當成那一天，正式版不讀。
+- 測試：`apps/web/src/festivalTheme.test.ts`。
+- 瀏覽器驗證（2026-10-05，本機測試帳號，debug 日期設成 10/31）：
+  - 頁首出現「🎃 萬聖節」，`--primary` 變成 `26 100% 50%`（#FF6F00）。
+  - localStorage `beecount.primary-color` 仍是空的。
+  - 改成 11/2 重新整理後，換回預設色、徽章消失。
+  - 注意：dev server 也會被舊的 Service Worker 擋住，第一次看到的是舊版。要先解除 SW、清快取再重新整理。
+
+App 端細節見 BeeCount-main `docs/changes/2026-10-05-holidays-p3.md`。
+
 ## App 內建備援
 
 `scripts/export_holidays_bundle.py` 用同一個產生器輸出「去年、今年、明年」六國資料，寫到 `BeeCount-main/assets/holidays/holidays_bundle.json`，格式同 API 回應，`version` 固定為 0。

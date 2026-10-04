@@ -12,6 +12,7 @@ export {
   localDayKey,
   resolveHolidays,
   topHolidaySpend,
+  toHolidayLite,
 } from './holidays'
 export {
   overviewInsight,

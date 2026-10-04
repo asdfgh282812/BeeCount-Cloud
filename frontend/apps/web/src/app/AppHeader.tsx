@@ -14,9 +14,10 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useLocale,
   useT,
 } from '@beecount/ui'
-import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
+import { holidayName, NAV_GROUPS, type AppSection, type HolidayLite } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
 import { NotificationBell } from '../components/NotificationBell'
@@ -36,6 +37,8 @@ import { useLedgers } from '../context/LedgersContext'
 import { parseRoute, routePath } from '../state/router'
 
 interface Props {
+  /** 今天套用中的節日主題(節日 P3),null = 沒有。 */
+  festival?: HolidayLite | null
   onOpenLogs: () => void
   onOpenAbout: () => void
 }
@@ -51,8 +54,9 @@ interface Props {
  * 导航通过 react-router `useNavigate`,当前高亮依据 `useLocation().pathname`
  * 反解析到 AppSection。
  */
-export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
+export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
   const t = useT()
+  const { locale } = useLocale()
   const navigate = useNavigate()
   const location = useLocation()
   const { profileMe, isAdmin, logout } = useAuth()
@@ -130,6 +134,15 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 </span>
               </div>
             </button>
+            {festival ? (
+              <span
+                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-foreground"
+                title={t('shell.festivalThemeHint')}
+              >
+                <span aria-hidden>{festival.emoji}</span>
+                <span className="hidden sm:inline">{holidayName(festival, locale)}</span>
+              </span>
+            ) : null}
             {ledgers.length > 0 ? (
               <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
                 <SelectTrigger className="ml-1 hidden h-8 w-[180px] border-border/50 bg-background/60 text-xs md:flex">

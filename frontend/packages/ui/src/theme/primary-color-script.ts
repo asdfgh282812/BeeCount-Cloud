@@ -83,6 +83,15 @@ export function applyPrimaryColor(hex: string): void {
   root.style.setProperty('--accent-dark', accentValue)
 }
 
+/**
+ * 節日主題(節日 P3):有節日色就套節日色,沒有(null)就換回使用者的顏色。
+ * 只設 CSS 變數,**不寫 localStorage** —— 節日色是當天暫時的,刷新頁面、
+ * 隔天打開都要回到使用者自己的顏色。呼叫端是 PrimaryColorProvider。
+ */
+export function applyFestivalOverride(festivalHex: string | null, userHex: string): void {
+  applyPrimaryColor(festivalHex ?? userHex)
+}
+
 /** 初次加载时从 localStorage 读；没有则用默认色。不写 style.setProperty
  *  —— 调用方负责触发 applyPrimaryColor（通常放 provider 里）。 */
 export function initialPrimaryColor(): string {

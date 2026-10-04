@@ -714,6 +714,7 @@ const en = {
   'nav.group.tools': 'Tools',
   'shell.appName': 'BeeCount',
   'shell.goHome': 'Back to home',
+  'shell.festivalThemeHint': 'Holiday theme for today. Turn it off in the mobile app: Mine → Personalization → Holidays.',
   'shell.docTitle': 'BeeCount · Web',
   'shell.userDefault': 'BeeCount User',
   'shell.selectLedgerFirst': 'Please select a ledger from the top first.',

@@ -5,10 +5,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from 'react'
 
 import {
+  applyFestivalOverride,
   applyPrimaryColor,
   DEFAULT_PRIMARY_COLOR,
   initialPrimaryColor,
@@ -23,12 +25,20 @@ type PrimaryColorContextValue = {
    *  picker 只是临时切换，下一次 server 推 / loadProfile 会再覆盖。
    *  单向：mobile → server → web，反向不同步。 */
   applyServerColor: (hex: string | null | undefined) => void
+  /** 節日主題色(節日 P3):非 null 時畫面暫時用它,`color` 仍是使用者的顏色。 */
+  festivalColor: string | null
+  /** 設定 / 取消節日主題色。只改 CSS 變數,不寫 localStorage、不影響 `color`。 */
+  setFestivalColor: (hex: string | null) => void
 }
 
 const PrimaryColorContext = createContext<PrimaryColorContextValue | null>(null)
 
 export function PrimaryColorProvider({ children }: PropsWithChildren) {
   const [color, setColorState] = useState<string>(() => initialPrimaryColor())
+  const [festivalColor, setFestivalColorState] = useState<string | null>(null)
+  // setColor / applyServerColor 是穩定的 callback,用 ref 讀目前的節日色:
+  // 節日當天使用者改色或 server 推色,只更新 `color`,畫面仍維持節日色。
+  const festivalRef = useRef<string | null>(null)
 
   // 组件挂载时先把 localStorage 里的色应用一次，防止首帧用默认色闪烁。
   useEffect(() => {
@@ -41,7 +51,7 @@ export function PrimaryColorProvider({ children }: PropsWithChildren) {
     const cleaned = hex.trim()
     if (!/^#[0-9a-fA-F]{6}$/.test(cleaned)) return
     setColorState(cleaned)
-    applyPrimaryColor(cleaned)
+    if (!festivalRef.current) applyPrimaryColor(cleaned)
     // 本地持久化仅为了下次刷新前不闪回；下一次 server 推 / loadProfile
     // 会覆盖它。web 不会回推 mobile。
     persistPrimaryColor(cleaned)
@@ -62,15 +72,35 @@ export function PrimaryColorProvider({ children }: PropsWithChildren) {
     // Web 本地 setColor 是"临时切换"，下一次 mobile 推送依然覆盖。
     console.info('[theme] applyServerColor apply', cleaned)
     setColorState(cleaned)
-    applyPrimaryColor(cleaned)
+    if (!festivalRef.current) applyPrimaryColor(cleaned)
     // 同步写 localStorage：保证页面下次加载前（loadProfile 还没返回）
     // 也是 server 值，避免短暂闪回旧色。
     persistPrimaryColor(cleaned)
   }, [])
 
+  const setFestivalColor = useCallback((hex: string | null) => {
+    const cleaned = hex?.trim() ?? null
+    const next = cleaned && /^#[0-9a-fA-F]{6}$/.test(cleaned) ? cleaned : null
+    festivalRef.current = next
+    setFestivalColorState(next)
+  }, [])
+
+  // 節日色出現 / 消失時重新套用:有節日色用節日色,取消後換回使用者的顏色。
+  // 首次掛載(festivalColor = null)由上面那個 effect 處理,這裡跳過避免重複。
+  const festivalMounted = useRef(false)
+  useEffect(() => {
+    if (!festivalMounted.current) {
+      festivalMounted.current = true
+      return
+    }
+    applyFestivalOverride(festivalColor, color)
+    // 只在節日色變化時觸發;color 變化由 setColor / applyServerColor 自己處理
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [festivalColor])
+
   const value = useMemo(
-    () => ({ color, setColor, reset, applyServerColor }),
-    [color, setColor, reset, applyServerColor]
+    () => ({ color, setColor, reset, applyServerColor, festivalColor, setFestivalColor }),
+    [color, setColor, reset, applyServerColor, festivalColor, setFestivalColor]
   )
 
   return (

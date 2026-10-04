@@ -24,5 +24,7 @@ export {
   resolveHolidays,
   topHolidaySpend,
   localDayKey,
+  holidayName,
+  toHolidayLite,
 } from './data'
 export { TKEY as ANNUAL_REPORT_TKEY } from './i18n'

@@ -74,6 +74,7 @@ const zhCN = {
   'nav.group.admin': '管理',
   'shell.appName': '蜜蜂記帳',
   'shell.goHome': '回到首页',
+  'shell.festivalThemeHint': '今天套用节日主题。可在手机 App「我的 → 个性化设置 → 节日」关闭。',
   'shell.docTitle': '蜜蜂記帳 · Web',
   'shell.userDefault': '蜜蜂用户',
   'shell.selectLedgerFirst': '请先在顶部选一个账本。',

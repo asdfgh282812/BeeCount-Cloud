@@ -713,6 +713,7 @@ const zhTW = {
   'nav.group.tools': '工具',
   'shell.appName': '蜜蜂記帳',
   'shell.goHome': '回首頁',
+  'shell.festivalThemeHint': '今天套用節日主題。可在手機 App「我的 → 個性化設定 → 節日」關閉。',
   'shell.docTitle': '蜜蜂記帳 · Web',
   'shell.userDefault': '蜜蜂使用者',
   'shell.selectLedgerFirst': '請先在頂部選一個帳本。',

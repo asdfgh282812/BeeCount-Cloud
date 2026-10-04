@@ -10,7 +10,7 @@ import {
   type ProfileMe,
   type ReadLedger,
 } from '@beecount/api-client'
-import { usePrimaryColor } from '@beecount/ui'
+import { useLocale, usePrimaryColor } from '@beecount/ui'
 import { CategoryIconStyleProvider, type AppSection } from '@beecount/web-features'
 
 import { AboutDialog } from '../components/AboutDialog'
@@ -33,6 +33,7 @@ import { AppLayout } from '../layout/AppLayout'
 import { jwtUserId } from '../state/jwt'
 import { parseRoute, routePath } from '../state/router'
 import { AppHeader } from './AppHeader'
+import { useFestivalTheme } from './useFestivalTheme'
 
 interface Props {
   token: string
@@ -185,6 +186,10 @@ export function AppShell({ token, onLogout }: Props) {
   // profileMe,这里只是把值转给 web-features 的 context,不用另外订阅事件)。
   const categoryIconStyle = profileMe?.appearance?.category_icon_style === 'cute' ? 'cute' : 'material'
 
+  // 節日主題:主要國家的節日當天暫時換主題色 + 頁首徽章(見 useFestivalTheme)
+  const { locale } = useLocale()
+  const festival = useFestivalTheme(token, profileMe, locale)
+
   const handleSectionNavigate = useCallback(
     (section: AppSection) => {
       navigate(routePath({ kind: 'app', ledgerId: '', section }))
@@ -222,6 +227,7 @@ export function AppShell({ token, onLogout }: Props) {
           <AppLayout
             header={
               <AppHeader
+                festival={festival}
                 onOpenLogs={() => setLogsOpen(true)}
                 onOpenAbout={() => setAboutOpen(true)}
               />
