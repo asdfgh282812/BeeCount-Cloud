@@ -49,6 +49,42 @@ import {
   stockDcaWholeShares,
 } from '../lib/investment'
 
+/** 規則狀態篩選:`recent` 為預設(進行中一律顯示,已到期的只顯示近 7 天內到期者,
+ *  手動停用且未到期的隱藏),其餘三種是明確下條件。跟 mobile 同語意。 */
+type RuleStatusFilter = 'recent' | 'active' | 'ended' | 'all'
+const RULE_STATUS_FILTERS: readonly RuleStatusFilter[] = ['recent', 'active', 'ended', 'all']
+const RECENT_EXPIRED_DAYS = 7
+
+const isRuleExpired = (r: ReadRecurringRule, nowMs: number) =>
+  Boolean(r.end_at) && new Date(r.end_at as string).getTime() < nowMs
+
+/** 進行中 = 已啟用且尚未到期。 */
+const isRuleActive = (r: ReadRecurringRule, nowMs: number) =>
+  r.enabled && !isRuleExpired(r, nowMs)
+
+function filterRulesByStatus(
+  rules: readonly ReadRecurringRule[],
+  filter: RuleStatusFilter,
+  nowMs: number,
+): ReadRecurringRule[] {
+  switch (filter) {
+    case 'all':
+      return [...rules]
+    case 'active':
+      return rules.filter((r) => isRuleActive(r, nowMs))
+    case 'ended':
+      return rules.filter((r) => !isRuleActive(r, nowMs))
+    default: {
+      const cutoff = nowMs - RECENT_EXPIRED_DAYS * 24 * 60 * 60 * 1000
+      return rules.filter(
+        (r) =>
+          isRuleActive(r, nowMs) ||
+          (isRuleExpired(r, nowMs) && new Date(r.end_at as string).getTime() >= cutoff),
+      )
+    }
+  }
+}
+
 type RecurringRulesPanelProps = {
   rules: readonly ReadRecurringRule[]
   categories: readonly WorkspaceCategory[]
@@ -134,6 +170,7 @@ export function RecurringRulesPanel({
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
   // 股票定期定額(2026-09-28):分類篩選 tab,只是 UI 層篩選,不影響資料。
   const [kindFilter, setKindFilter] = useState<'all' | 'general' | 'stock_dca'>('all')
+  const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('recent')
 
   const isTransfer = form.tx_type === 'transfer'
   const isStockDca = form.kind === 'stock_dca'
@@ -144,13 +181,13 @@ export function RecurringRulesPanel({
     () => accounts.filter((a) => a.account_type === 'investment'),
     [accounts],
   )
-  const filteredRules = useMemo(
-    () =>
+  const filteredRules = useMemo(() => {
+    const byKind =
       kindFilter === 'all'
         ? rules
-        : rules.filter((r) => (kindFilter === 'stock_dca' ? r.kind === 'stock_dca' : r.kind !== 'stock_dca')),
-    [rules, kindFilter],
-  )
+        : rules.filter((r) => (kindFilter === 'stock_dca' ? r.kind === 'stock_dca' : r.kind !== 'stock_dca'))
+    return filterRulesByStatus(byKind, statusFilter, Date.now())
+  }, [rules, kindFilter, statusFilter])
 
   // 股票定期定額預設市場(2026-09-29):以前 form.market 預設是空字串,下拉
   // 選單只是「畫面上」顯示 TW(`value={form.market || 'TW'}`),使用者沒去
@@ -309,6 +346,23 @@ export function RecurringRulesPanel({
         ))}
       </div>
 
+      <div className="flex flex-wrap gap-1.5">
+        {RULE_STATUS_FILTERS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setStatusFilter(key)}
+            className={`rounded-full border px-2.5 py-1 text-xs ${
+              statusFilter === key
+                ? 'border-primary bg-primary/15 text-primary'
+                : 'border-input text-muted-foreground hover:bg-accent/40'
+            }`}
+          >
+            {t(`recurringRules.statusFilter.${key}`)}
+          </button>
+        ))}
+      </div>
+
       {filteredRules.length === 0 ? (
         <EmptyState
           icon={
@@ -326,8 +380,8 @@ export function RecurringRulesPanel({
               <path d="M21 3v6h-6" />
             </svg>
           }
-          title={t('recurringRules.empty')}
-          description={t('recurringRules.emptyDesc')}
+          title={rules.length === 0 ? t('recurringRules.empty') : t('recurringRules.statusFilter.empty')}
+          description={rules.length === 0 ? t('recurringRules.emptyDesc') : undefined}
         />
       ) : (
         <div className="space-y-3">
