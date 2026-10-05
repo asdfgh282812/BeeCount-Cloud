@@ -45,6 +45,11 @@ import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { tagTextColorOn } from '../lib/tagColorPalette'
 import { convertBetween, resolveEffectiveRate } from '../lib/currencies'
+import {
+  applyBasicRewardAutoFill,
+  isRuleWithinWindow,
+  stripAutoAppliedRewardIds
+} from '../lib/rewardBasic'
 import { computeTxTotalAmount, txSplitItemDefaults, type TxForm } from '../forms'
 
 /**
@@ -450,6 +455,57 @@ export function TransactionsPanel({
   useEffect(() => {
     formRef.current = form
   }, [form])
+  // 信用卡「基本回饋」自動帶入(is_basic):只在「新增」支出時,選了信用卡帳戶後
+  // 把該帳戶啟用中、日期有效的 is_basic 規則自動加進勾選。
+  //   - rewardTouchedRef:使用者手動點過任何回饋 chip 後為 true,之後不再自動
+  //     帶入/移除(不覆寫使用者的手動選擇);換帳戶時重置(舊帳戶的勾選本來就
+  //     會被清掉,新帳戶是新的一輪)。
+  //   - rewardAutoIdsRef:目前由自動帶入貢獻的規則 id,換帳戶時只移除這些,
+  //     使用者手動勾的保留。
+  //   - rewardAutoAccountRef:上一輪套用時的信用卡帳戶 id,用來偵測換帳戶。
+  // 編輯既有交易(form.editingId 非空)完全不動,不覆寫已存的勾選。
+  const rewardTouchedRef = useRef(false)
+  const rewardAutoIdsRef = useRef<string[]>([])
+  const rewardAutoAccountRef = useRef('')
+  useEffect(() => {
+    if (!open) {
+      rewardTouchedRef.current = false
+      rewardAutoIdsRef.current = []
+      rewardAutoAccountRef.current = ''
+    }
+  }, [open])
+  useEffect(() => {
+    if (!open || form.editingId || form.tx_type !== 'expense') return
+    const account = accounts.find(
+      (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
+    )
+    const accountKey = account?.account_type === 'credit_card' ? account.id : ''
+    let currentIds = formRef.current.reward_rule_ids
+    if (accountKey !== rewardAutoAccountRef.current) {
+      // 換帳戶(或離開信用卡帳戶):移除先前自動帶入的、保留手動勾的,重新開始。
+      const stripped = stripAutoAppliedRewardIds(currentIds, rewardAutoIdsRef.current)
+      rewardAutoAccountRef.current = accountKey
+      rewardAutoIdsRef.current = []
+      rewardTouchedRef.current = false
+      if (stripped.length !== currentIds.length) {
+        currentIds = stripped
+        onFormChange({ ...formRef.current, reward_rule_ids: stripped })
+      }
+    }
+    if (!accountKey || rewardTouchedRef.current) return
+    const result = applyBasicRewardAutoFill({
+      rules: rewardRules,
+      accountId: accountKey,
+      happenedAt: form.happened_at,
+      currentIds,
+      autoAppliedIds: rewardAutoIdsRef.current
+    })
+    rewardAutoIdsRef.current = result.autoAppliedIds
+    if (result.changed) {
+      onFormChange({ ...formRef.current, reward_rule_ids: result.ids })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, form.editingId, form.tx_type, form.account_name, form.happened_at, rewardRules, accounts])
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
@@ -1333,10 +1389,8 @@ export function TransactionsPanel({
                     .filter((rule) => {
                       if (form.reward_rule_ids.includes(rule.id)) return true
                       if (!rule.enabled) return false
-                      const txTime = forceUtcTimestamp(form.happened_at)
-                      if (rule.starts_at && forceUtcTimestamp(rule.starts_at) > txTime) return false
-                      if (rule.ends_at && forceUtcTimestamp(rule.ends_at) < txTime) return false
-                      return true
+                      // 起訖日(含當天)以日期比對,跟自動帶入基本回饋用同一個判斷。
+                      return isRuleWithinWindow(rule, form.happened_at)
                     })
                     .map((rule) => {
                     const checked = form.reward_rule_ids.includes(rule.id)
@@ -1344,14 +1398,16 @@ export function TransactionsPanel({
                       <button
                         key={rule.id}
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          // 手動改過勾選後,不再自動帶入/移除基本回饋。
+                          rewardTouchedRef.current = true
                           onFormChange({
                             ...form,
                             reward_rule_ids: checked
                               ? form.reward_rule_ids.filter((id) => id !== rule.id)
                               : [...form.reward_rule_ids, rule.id]
                           })
-                        }
+                        }}
                         className={`rounded-full border px-2.5 py-1 text-xs ${
                           checked
                             ? 'border-primary bg-primary/15 text-primary'
@@ -2138,14 +2194,4 @@ function datetimeLocalToIso(local: string, fallback: string): string {
   const d = new Date(local)
   if (Number.isNaN(d.getTime())) return fallback
   return d.toISOString()
-}
-
-/** 後端部分欄位(card_reward_rule.starts_at/ends_at)回傳的可能是不帶時區
- *  位移的 naive datetime 字串,缺位移標記時強制當 UTC 解析,不然 UTC+8
- *  使用者這裡會把生效窗判斷提早/延後 8 小時(跟 apps/web 那邊
- *  `CardRewardRulesSection.tsx` 的 `forceUtcTimestamp` 同一個理由)。 */
-function forceUtcTimestamp(iso: string): number {
-  if (!iso) return NaN
-  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
-  return new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso).getTime()
 }

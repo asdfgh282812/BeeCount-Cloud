@@ -635,6 +635,49 @@ fetch 失敗都誤顯示成「帳單日未設定」的前端 bug,以及 `CardRew
 Dialog` 的 `Promise.all` 共用 catch 導致單一 fetch 失敗會連帶清空已成功
 的帳戶清單的問題。詳見 `CLAUDE.md` 同一節後段。
 
+**✅ 2026-10-06 對齊 Moze 紅利回饋新增三項能力**(App/Cloud/Web 共用契約,wire
+payload camelCase、REST snake_case;migration `0065_card_reward_basic_and_project`):
+
+1. **指定活動區間 `interval == "custom_range"`**(第三種 interval)。**不新增日期欄位**,
+   直接沿用規則既有 `starts_at`/`ends_at`(wire `startsAt`/`endsAt`)當活動起訖日:
+   - 驗證:`custom_range` 時兩者**皆必填**、`ends_at` 不可早於 `starts_at`。REST 寫入
+     用「既有規則 + 本次 PATCH」合併後的最終狀態檢查,不合法回 **422**(只改 interval、
+     或只清掉 ends_at 都會被擋;沒動 interval/日期的 PATCH 不檢查)。`snapshot_mutator`
+     同一份純函式 `assert_card_reward_custom_range` 兜底(ValueError → 400)。sync push
+     (generic)刻意不驗證,資料殘缺時 `_resolve_period(s)` 降級成 `no_billing_schedule`
+     (`[]`/`None`),讀路徑不會炸。
+   - 計算:期間固定單一期 `(starts_at.date(), ends_at.date())`(起訖皆含),不需要
+     billing_day/帳單週期,**忽略 `period_offset`**(任何 offset 回同一期)。
+     `_qualifying_transactions` 沿用 `happened_at > date_to_utc_dt(period_start)`
+     (與 calendar_month 同款,未調整);規則生效窗逐筆檢查照舊。
+   - 入帳(`period_end`):活動**結束後**(`now.date() > ends_at`)且到入帳日才結算一次,
+     去重鍵 = `ends_at` iso 日期;活動最後一天當天不結算。`_materialize_period_end` 的
+     lookback 迴圈對 custom_range 每個 offset 都看到同一期,靠即時更新的
+     `already_paid`/`paid_amount_by_period` 擋重複(有 mutation 驗證過的測試);事後補綁
+     消費走既有「補發差額(`#N`)」。逐筆結算的 cap 期間 = 整個活動區間。
+   - 額外保護:custom_range 規則已有入帳紀錄(`CardRewardPayout`)後,REST 不可再改
+     `starts_at`/`ends_at`(422)——去重鍵是 ends_at,改了會被當成新一期重複入帳。
+     (`interval` 本來就在鎖定欄位內。)
+2. **基本回饋 `is_basic`**(wire `isBasic`,bool,預設 false):記帳時選到該帳戶就自動帶入
+   此規則——**自動帶入由 Web/App 前端實作**,Cloud 只存/同步/讀寫。同一張卡允許多條
+   `is_basic=true`(無唯一性限制)。**非鎖定欄位**,規則有歷史後仍可改。
+3. **回饋金歸屬專案 `reward_project_id`**(wire `rewardProjectId`,sync_id 或 null):
+   自動入帳產生的回饋交易 `projectId` 解析(`card_reward_payout._resolve_reward_project_id`):
+   規則有設 → 該專案;沒設 → 逐筆結算沿用**來源消費交易**的專案(Moze 預設「返還到
+   原支出所屬專案」)、整期彙總結算(無單一來源)不帶專案。指定專案已刪/不在入帳所在
+   ledger → 降級為不帶專案(不退回沿用來源專案,避免悄悄改掛),入帳不失敗。退款沖銷
+   交易(`reverse_card_reward_payouts_for_refund`)直接沿用被沖銷的回饋交易當下實際掛的
+   專案;`reverse_..._for_edit` 刪除重發時會重新解析。REST 寫入驗證專案必須是該 user
+   既有專案(任一 ledger,不存在 **422**);sync push 不驗證。**非鎖定欄位**。手動入帳
+   (`manual-payout`)不帶專案(未變更)。
+
+REST 欄位(snake_case):`ReadCardRewardRuleOut`/`WriteCardRewardRuleCreateRequest`/
+`WriteCardRewardRuleUpdateRequest` 新增 `is_basic`(bool)、`reward_project_id`(string|null),
+`interval` 多一個值 `custom_range`。sync wire:`isBasic`、`rewardProjectId`、`interval`
+(`custom_range`)、`startsAt`/`endsAt`(沿用)。`sync_applier._USER_MERGE_SPECS` 已登記兩個新
+鍵,舊版 App 的 partial push 不會把它們沖回預設。`snapshot_builder` 永遠輸出明確的
+`isBasic` bool、`rewardProjectId` 有值才輸出。測試見 `tests/test_card_reward_moze_extras.py`。
+
 Moze 分類：[credit-card/rewards](https://doc.moze.app/credit-card/rewards.md)。
 業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成
 Phase 4.5，排在 §2.9(Phase 4)核心流程之後再做。目標是做到「使用者設定

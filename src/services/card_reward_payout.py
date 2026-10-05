@@ -21,6 +21,15 @@ compute_account_balance` 也會正確算進餘額。回饋是系統依規則算�
   `min_spend_threshold` 跟跨卡共用上限)。
 - `manual`:不自動化,完全不進這個引擎的掃描範圍。
 
+2026-10 新增兩點(對齊 Moze 紅利回饋):
+- `interval == "custom_range"`(指定活動區間):整個活動只有一期
+  (`starts_at`~`ends_at`),`period_end` 結算要等活動結束(`now.date() > ends_at`)
+  且到入帳日才發,只發一次(去重鍵 = ends_at 的 iso 日期),事後補綁消費走既有
+  的補發差額邏輯。
+- 回饋金歸屬專案:`_resolve_reward_project_id`——規則的 `reward_project_id` 優先;
+  沒設時逐筆結算沿用來源消費的專案、整期彙總不帶專案;專案已刪則降級不帶專案。
+  退款沖銷交易跟被沖銷的回饋交易同專案。
+
 去重靠專用表 `CardRewardPayout`(不是 `Notification`)——理由見
 `models.CardRewardPayout` docstring:逐筆結算量級可能累積到上百筆,沿用
 `Notification` 的「查歷史 payload 比對」去重法會讓查詢隨時間無界成長,
@@ -53,6 +62,7 @@ from ..models import (
     CardRewardPayout,
     Ledger,
     ReadCardRewardRuleProjection,
+    ReadProjectProjection,
     ReadTxProjection,
     SyncChange,
     UserAccountProjection,
@@ -173,10 +183,36 @@ def _currency_fields_for_reward(
     return {"currencyCode": cc, "nativeAmount": native}
 
 
+def _resolve_reward_project_id(
+    db: Session, *, ledger_id: str, rule: ReadCardRewardRuleProjection,
+    source_tx: ReadTxProjection | None,
+) -> str | None:
+    """回饋交易歸屬哪個專案(2026-10,對齊 Moze「回饋金歸屬專案」):
+
+    - 規則有設 `reward_project_id` → 該專案。
+    - 沒設:逐筆結算(有單一來源消費)→ 沿用來源消費的 `project_sync_id`(Moze
+      預設「返還到原支出所屬專案」);整期彙總結算(`source_tx is None`,沒有單一
+      來源)→ 不帶專案。
+
+    專案是 ledger-scoped,所以用入帳所在 ledger 確認專案還在:指定的專案已被刪除
+    (或不在這本帳)時降級為不帶專案,**不讓入帳失敗**、也不退回去沿用來源專案
+    ——規則明確指定了專案卻失效,悄悄改掛別的專案比「不帶專案」更難察覺。"""
+    candidate = rule.reward_project_id or (source_tx.project_sync_id if source_tx is not None else None)
+    if not candidate:
+        return None
+    exists = db.scalar(
+        select(ReadProjectProjection.sync_id).where(
+            ReadProjectProjection.ledger_id == ledger_id,
+            ReadProjectProjection.sync_id == candidate,
+        ).limit(1)
+    )
+    return candidate if exists is not None else None
+
+
 def _emit_reward_tx(
     db: Session, *, ledger_id: str, user_id: str, now: datetime, happened_at: datetime,
     reward_account_id: str, amount: float, note: str,
-    source_tx_id: str | None = None,
+    source_tx_id: str | None = None, project_id: str | None = None,
 ) -> str:
     """§2.9.5.4 補強(2026-08-04 使用者反饋):①自動帶入固定的「回饋金」
     income 分類(`card_rewards.ensure_reward_category`,找不到就建一個,
@@ -209,6 +245,9 @@ def _emit_reward_tx(
     ))
     if source_tx_id is not None:
         item["rewardSourceTxId"] = source_tx_id
+    if project_id is not None:
+        # 2026-10:回饋金歸屬專案,由 `_resolve_reward_project_id` 決定(已確認專案存在)。
+        item["projectId"] = project_id
     return emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item)
 
 
@@ -340,6 +379,11 @@ def reverse_card_reward_payouts_for_refund(
             "createdByUserId": user_id,
             "updatedByUserId": user_id,
         }
+        if reward_tx.project_sync_id:
+            # 2026-10:沖銷交易跟被沖銷的那筆回饋交易同專案,專案統計才會互相抵銷。
+            # 直接取回饋交易當下實際掛的專案(而非重算規則設定),即使規則之後改過
+            # reward_project_id 或專案已刪,沖銷仍對得上當初入帳的那筆。
+            item["projectId"] = reward_tx.project_sync_id
         created.append(emit_tx(db, ledger_id=ledger_id, user_id=user_id, now=now, item=item))
     return created
 
@@ -493,6 +537,9 @@ def _materialize_per_tx(
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
                 note=f"信用卡回饋入帳：{rule.label}",
                 source_tx_id=tx.sync_id,
+                project_id=_resolve_reward_project_id(
+                    db, ledger_id=ledger_id, rule=rule, source_tx=tx,
+                ),
             )
         # 不管金額是否被 cap 夾到 0,都要記一筆去重,這筆交易才不會被重複評估。
         _record_payout(
@@ -538,6 +585,11 @@ def _materialize_period_end(
     lookback = (rule.settlement_month_offset or 0) + 1
     paid_any = False
 
+    # custom_range(2026-10)的 `_resolve_periods` 對任何 offset 都回同一期(活動
+    # 區間),所以這個 lookback 迴圈會對同一期重複走 `lookback` 次;不會重複入帳是
+    # 因為第一次結算後立刻把 period_key 加進 `already_paid`/`paid_amount_by_period`
+    # (下方),之後每輪都走 top-up 分支、差額為 0 而 continue。有測試證明
+    # (test_custom_range_*_pays_once),不要為了「優化」拿掉那段即時更新。
     for period_offset in range(-1, -lookback - 1, -1):
         results = card_rewards.compute_account_card_rewards(
             db, ledger_id=ledger_id, account=account, rules=group_rules, now=now,
@@ -558,6 +610,12 @@ def _materialize_period_end(
 
             period_end = this_result["period_end"]
             period_key = period_end.isoformat()
+            # custom_range(指定活動區間,2026-10):活動必須「已經結束」才結算——
+            # `period_end` 是最後一天(含),入帳日預設也是 period_end,不擋的話
+            # 活動最後一天當天就會提前結算、漏掉當天之後才記的消費。billing_cycle/
+            # calendar_month 的 offset<0 本來就是已結束的期間,不需要這個檢查。
+            if rule.interval == "custom_range" and now.date() <= period_end:
+                continue
             settlement_date = card_rewards.compute_settlement_date(rule, period_end=period_end)
             if settlement_date is None or now.date() < settlement_date:
                 continue  # 這期還沒到規則設定的入帳日,留到下次 tick 重試
@@ -591,6 +649,10 @@ def _materialize_period_end(
                 note=(
                     f"信用卡回饋{'補發' if is_top_up else '入帳'}：{rule.label}"
                     f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
+                ),
+                # 整期彙總結算沒有單一來源消費:只有規則明確指定專案才帶,否則不帶。
+                project_id=_resolve_reward_project_id(
+                    db, ledger_id=ledger_id, rule=rule, source_tx=None,
                 ),
             )
             _record_payout(

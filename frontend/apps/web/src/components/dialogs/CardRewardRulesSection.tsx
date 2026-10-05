@@ -8,7 +8,8 @@ import type {
   ReadAccount,
   ReadCardRewardRule,
   ReadCardRewardRuleTransactions,
-  ReadCardRewards
+  ReadCardRewards,
+  ReadProject
 } from '@beecount/api-client'
 import {
   createCardRewardRule,
@@ -18,6 +19,7 @@ import {
   fetchCardRewardRuleTransactions,
   fetchCardRewards,
   fetchReadAccounts,
+  fetchReadProjects,
   fetchWorkspaceAccounts,
   manualCardRewardPayout,
   updateCardRewardRule
@@ -39,7 +41,7 @@ import {
 } from '@beecount/ui'
 import { Copy, Gift, Pencil, Trash2 } from 'lucide-react'
 
-import { AccountPickerDialog, DatePicker } from '@beecount/web-features'
+import { AccountPickerDialog, DatePicker, ProjectPickerDialog } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -87,6 +89,24 @@ function periodMonthLabel(
   const end = isoToDateInput(period.period_end)
   const month = Number(start.slice(5, 7))
   return t('cardRewards.period.label', { month, start, end })
+}
+
+/** 規則期間標示:`custom_range`(指定活動區間)後端只回單一期間且不分月,
+ *  直接顯示起訖日;其餘沿用「N 月（起 ~ 迄）」。`showMonthLabel` 由呼叫端
+ *  決定(多期間時才需要月份標籤),custom_range 一律顯示區間標籤。 */
+function rulePeriodLabel(
+  rule: Pick<ReadCardRewardRule, 'interval'>,
+  period: { period_start: string; period_end: string },
+  t: (key: string, params?: Record<string, string | number>) => string,
+  showMonthLabel: boolean,
+): string | null {
+  if (rule.interval === 'custom_range') {
+    return t('cardRewards.period.customRange', {
+      start: isoToDateInput(period.period_start),
+      end: isoToDateInput(period.period_end),
+    })
+  }
+  return showMonthLabel ? periodMonthLabel(period, t) : null
 }
 
 function isExpired(rule: ReadCardRewardRule): boolean {
@@ -457,6 +477,16 @@ function SingleCardCardRewards({
                 {t('cardRewards.lockedBadge')}
               </span>
             ) : null}
+            {rule.is_basic ? (
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                {t('cardRewards.field.isBasic')}
+              </span>
+            ) : null}
+            {rule.interval === 'custom_range' ? (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {t('cardRewards.interval.custom_range')}
+              </span>
+            ) : null}
           </div>
         </button>
         <div className="mt-1 flex items-center justify-between gap-2">
@@ -520,9 +550,9 @@ function SingleCardCardRewards({
                 key={`${period.period_start}-${period.period_end}`}
                 className={idx > 0 ? 'border-t border-border/40 pt-1.5' : ''}
               >
-                {usage.periods.length > 1 ? (
+                {rulePeriodLabel(rule, period, t, usage.periods.length > 1) ? (
                   <div className="text-[10px] font-medium text-muted-foreground/80">
-                    {periodMonthLabel(period, t)}
+                    {rulePeriodLabel(rule, period, t, usage.periods.length > 1)}
                   </div>
                 ) : null}
                 {period.status === 'no_billing_schedule' ? (
@@ -701,7 +731,7 @@ function CardRewardRuleFormDialog({
   const source = rule ?? seed
 
   // Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄時,
-  // 計算相關欄位全部鎖定,只能調整名稱/備註/啟用狀態/起訖日期。
+  // 計算相關欄位全部鎖定,只能調整名稱/備註/啟用狀態/起訖日期/基本回饋/回饋金專案。
   const locked = isEdit && Boolean(rule?.locked)
 
   const [label, setLabel] = useState(source?.label || '')
@@ -742,6 +772,12 @@ function CardRewardRuleFormDialog({
   const [rewardAccountId, setRewardAccountId] = useState(source?.reward_account_id || accountId || '')
   const [note, setNote] = useState(source?.note || '')
   const [enabled, setEnabled] = useState(source?.enabled ?? true)
+  // 基本回饋:記帳選到此帳戶時自動帶入這條規則的勾選(非鎖定欄位)。
+  const [isBasic, setIsBasic] = useState(Boolean(source?.is_basic))
+  // 回饋金歸屬專案:'' = 跟隨原消費專案(預設);非鎖定欄位。
+  const [rewardProjectId, setRewardProjectId] = useState(source?.reward_project_id || '')
+  const [projects, setProjects] = useState<ReadProject[]>([])
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [rewardAccountPickerOpen, setRewardAccountPickerOpen] = useState(false)
 
@@ -759,6 +795,9 @@ function CardRewardRuleFormDialog({
     fetchWorkspaceAccounts(token, { limit: 500 })
       .then(setAccounts)
       .catch(() => setAccounts([]))
+    fetchReadProjects(token, ledgerId)
+      .then(setProjects)
+      .catch(() => setProjects([]))
     fetchAllCardRewardRules(token, ledgerId)
       .then((rules) => {
         setAllRules(rules)
@@ -787,9 +826,20 @@ function CardRewardRuleFormDialog({
   // 規則也要看到一堆不相關的群組勾選 UI(2026-08 使用者反饋)。
   const showCapGroup = capAmount.trim().length > 0
 
+  // 指定活動區間:起訖日皆必填,且結束日不可早於開始日(日期字串 yyyy-mm-dd
+  // 可直接字典序比較)。鎖定時 interval 不可改,但起訖日仍可編輯,所以同樣檢查。
+  const isCustomRange = intervalMode === 'custom_range'
+  const customRangeMissing = isCustomRange && (!startsAt || !endsAt)
+  const customRangeOrderBad = isCustomRange && Boolean(startsAt) && Boolean(endsAt) && endsAt < startsAt
+  const projectNameById = new Map(projects.map((p) => [p.id, p.name]))
+  // 沒有專案清單、也沒有已設定專案時整塊不顯示(使用者沒在用專案功能)。
+  const showRewardProject = projects.length > 0 || rewardProjectId !== ''
+
   const canSubmit =
     label.trim().length > 0 &&
     Number(rateValue) > 0 &&
+    !customRangeMissing &&
+    !customRangeOrderBad &&
     (!needsSettlementDays || settlementDays.trim().length > 0) &&
     (!needsRewardAccount || rewardAccountId.trim().length > 0)
 
@@ -851,6 +901,8 @@ function CardRewardRuleFormDialog({
             ? Number(settlementDayOfMonth)
             : null,
         reward_account_id: needsRewardAccount ? rewardAccountId : null,
+        is_basic: isBasic,
+        reward_project_id: rewardProjectId || null,
         note: note.trim() || null,
         enabled,
       }
@@ -865,6 +917,9 @@ function CardRewardRuleFormDialog({
               ends_at: fullPayload.ends_at,
               note: fullPayload.note,
               enabled: fullPayload.enabled,
+              // 基本回饋/回饋金專案不影響計算結果,規則鎖定後仍可調整。
+              is_basic: fullPayload.is_basic,
+              reward_project_id: fullPayload.reward_project_id,
             }
           : fullPayload
         await retryOnConflict(ledgerId, (base) =>
@@ -987,6 +1042,7 @@ function CardRewardRuleFormDialog({
                 <SelectContent>
                   <SelectItem value="billing_cycle">{t('cardRewards.interval.billing_cycle')}</SelectItem>
                   <SelectItem value="calendar_month">{t('cardRewards.interval.calendar_month')}</SelectItem>
+                  <SelectItem value="custom_range">{t('cardRewards.interval.custom_range')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1050,14 +1106,30 @@ function CardRewardRuleFormDialog({
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label>{t('cardRewards.field.startsAt')}</Label>
+              <Label>
+                {t('cardRewards.field.startsAt')}
+                {isCustomRange ? <span className="ml-0.5 text-destructive">*</span> : null}
+              </Label>
               <DatePicker value={startsAt} onChange={(next) => setStartsAt(next)} clearable />
             </div>
             <div className="space-y-1">
-              <Label>{t('cardRewards.field.endsAt')}</Label>
+              <Label>
+                {t('cardRewards.field.endsAt')}
+                {isCustomRange ? <span className="ml-0.5 text-destructive">*</span> : null}
+              </Label>
               <DatePicker value={endsAt} onChange={(next) => setEndsAt(next)} clearable />
             </div>
           </div>
+          {isCustomRange ? (
+            <div className="space-y-0.5 text-[11px]">
+              <div className="text-muted-foreground">{t('cardRewards.field.intervalCustomRangeHint')}</div>
+              {customRangeMissing ? (
+                <div className="text-destructive">{t('cardRewards.field.customRangeRequired')}</div>
+              ) : customRangeOrderBad ? (
+                <div className="text-destructive">{t('cardRewards.field.customRangeOrder')}</div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="space-y-1">
             <Label>{t('cardRewards.field.capAmount')}</Label>
             <Input
@@ -1214,9 +1286,34 @@ function CardRewardRuleFormDialog({
               </div>
             ) : null}
           </div>
+          {showRewardProject ? (
+            <div className="space-y-1">
+              <Label>{t('cardRewards.field.rewardProject')}</Label>
+              <button
+                type="button"
+                onClick={() => setProjectPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
+              >
+                <span className={`flex-1 truncate ${rewardProjectId ? '' : 'text-muted-foreground'}`}>
+                  {rewardProjectId
+                    ? projectNameById.get(rewardProjectId) || t('cardRewards.field.rewardProjectUnknown')
+                    : t('cardRewards.field.rewardProjectFollow')}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
+              <div className="text-[11px] text-muted-foreground">{t('cardRewards.field.rewardProjectHint')}</div>
+            </div>
+          ) : null}
           <div className="space-y-1">
             <Label>{t('cardRewards.field.note')}</Label>
             <Input value={note} onChange={(e) => setNote(e.target.value)} />
+          </div>
+          <div className="space-y-0.5">
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={isBasic} onChange={(e) => setIsBasic(e.target.checked)} />
+              {t('cardRewards.field.isBasic')}
+            </label>
+            <div className="pl-5 text-[11px] text-muted-foreground">{t('cardRewards.field.isBasicHint')}</div>
           </div>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -1245,6 +1342,16 @@ function CardRewardRuleFormDialog({
       accounts={accounts}
       value={accountNameById.get(rewardAccountId) || ''}
       onSelect={(row) => setRewardAccountId(row.id)}
+    />
+    <ProjectPickerDialog
+      open={projectPickerOpen}
+      onClose={() => setProjectPickerOpen(false)}
+      projects={projects}
+      selectedId={rewardProjectId || undefined}
+      title={t('cardRewards.field.rewardProject')}
+      clearLabel={t('cardRewards.field.rewardProjectFollow')}
+      onClear={() => setRewardProjectId('')}
+      onSelect={(project) => setRewardProjectId(project.id)}
     />
     </>
   )
@@ -1424,6 +1531,9 @@ function CardRewardRuleTransactionsDialog({
             )}
           </div>
         ) : null}
+        {rule.interval === 'custom_range' ? (
+          <div className="text-[11px] text-muted-foreground">{t('cardRewards.customRange.fixedPeriodHint')}</div>
+        ) : null}
         {loading ? (
           <div className="text-xs text-muted-foreground">{t('cardRewards.loading')}</div>
         ) : fetchError ? (
@@ -1446,8 +1556,10 @@ function CardRewardRuleTransactionsDialog({
                 key={`${period.period_start}-${period.period_end}`}
                 className={idx > 0 ? 'space-y-3 border-t border-border/60 pt-3' : 'space-y-3'}
               >
-                {detail.periods.length > 1 ? (
-                  <div className="text-xs font-semibold text-foreground">{periodMonthLabel(period, t)}</div>
+                {rulePeriodLabel(rule, period, t, detail.periods.length > 1) ? (
+                  <div className="text-xs font-semibold text-foreground">
+                    {rulePeriodLabel(rule, period, t, detail.periods.length > 1)}
+                  </div>
                 ) : null}
                 {period.status === 'expired' ? (
                   // 2026-08 使用者反饋:規則在這個週期未啟用/不在活動期間時,

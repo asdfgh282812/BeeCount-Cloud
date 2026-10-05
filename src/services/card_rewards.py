@@ -274,6 +274,26 @@ def resolve_billing_schedule(
     return None
 
 
+def _custom_range_period(rule: ReadCardRewardRuleProjection) -> tuple[date, date] | None:
+    """`interval == "custom_range"`(指定活動區間,2026-10)的計算期間:固定只有一期
+    `(starts_at.date(), ends_at.date())`(起訖皆含),沿用規則既有的 starts_at/
+    ends_at 當活動起訖日,不需要 billing_day/帳單週期,也不看 `now`/`period_offset`
+    (任何 offset 都回同一期)。
+
+    寫入端(REST)保證 custom_range 兩個日期皆必填,但 sync push 路徑不驗證——
+    任一缺漏(或 ends 早於 starts)時回傳 None,呼叫端據此降級成
+    `no_billing_schedule`(與 billing_cycle 沒設帳單日同款),不讓整批計算炸掉。
+
+    period_start 的用法與 calendar_month 一致:`_qualifying_transactions` 用
+    `happened_at > date_to_utc_dt(period_start)`,不需要為此調整。"""
+    if rule.starts_at is None or rule.ends_at is None:
+        return None
+    start, end = rule.starts_at.date(), rule.ends_at.date()
+    if end < start:
+        return None
+    return start, end
+
+
 def _resolve_period(
     db: Session,
     *,
@@ -289,7 +309,12 @@ def _resolve_period(
     用 `_calendar_month_containing(now)` 算出 `now` 落在的那個自然月,
     刻意不管 `resolve_billing_schedule`——這個值本來就跟 `_resolve_periods`
     拆分出來的自然月邊界一致(兩者都是同一個 `_calendar_month_containing`
-    的月份定義),不需要繞經帳單週期才能算對。"""
+    的月份定義),不需要繞經帳單週期才能算對。
+
+    `custom_range`(2026-10):固定回傳活動區間那一期,忽略 `now`/`period_offset`
+    (見 `_custom_range_period`);資料不完整時回 None。"""
+    if rule.interval == "custom_range":
+        return _custom_range_period(rule)
     if rule.interval == "billing_cycle":
         schedule = resolve_billing_schedule(db, account=account)
         if schedule is None:
@@ -343,7 +368,16 @@ def _resolve_periods(
     現況本來就不強制要求),fallback 回 `_resolve_period` 那種「直接用
     `period_offset` 位移自然月」的既有行為,向下相容既有規則(見
     `test_card_rewards_calendar_month_interval` 明確驗證這個 fallback)。
+
+    `custom_range`(指定活動區間,2026-10):固定單元素 `[(starts_at, ends_at)]`,
+    不管帳單週期、也忽略 `period_offset`——任何 offset 都回同一期。因此
+    `card_reward_payout._materialize_period_end` 的 lookback 迴圈每個 offset 都會
+    看到同一期,重複入帳靠它的 `already_paid` 即時更新集合擋掉(見該處註解)。
+    日期缺漏/顛倒回 `[]`,等同 billing_cycle 沒帳單日的 no_billing_schedule。
     """
+    if rule.interval == "custom_range":
+        period = _custom_range_period(rule)
+        return [period] if period is not None else []
     schedule = resolve_billing_schedule(db, account=account)
     if rule.interval == "billing_cycle":
         if schedule is None:

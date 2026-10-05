@@ -918,6 +918,8 @@ def _card_reward_rule_to_out(
         settlement_month_offset=row.settlement_month_offset,
         settlement_day_of_month=row.settlement_day_of_month,
         reward_account_id=row.reward_account_id,
+        is_basic=bool(row.is_basic),
+        reward_project_id=row.reward_project_id,
         note=row.note,
         enabled=row.enabled,
         locked=card_rewards.rule_has_history(db, user_id=row.user_id, rule_id=row.sync_id),

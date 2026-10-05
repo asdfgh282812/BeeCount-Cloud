@@ -2271,7 +2271,10 @@ _CARD_REWARD_RATE_TYPES = {"percentage", "fixed_amount"}
 # (total_rounding)共用同一組合法值。
 _CARD_REWARD_ROUNDINGS = {"floor", "round", "ceil", "keep"}
 _CARD_REWARD_CALC_BASES = {"transaction_date", "settlement_date"}
-_CARD_REWARD_INTERVALS = {"billing_cycle", "calendar_month"}
+# 2026-10:新增 "custom_range"(指定活動區間,對齊 Moze 紅利回饋)——不新增日期欄
+# 位,直接沿用規則既有的 starts_at/ends_at 當活動起訖日(兩者皆必填,見
+# `assert_card_reward_custom_range`),計算期間固定只有 (starts_at, ends_at) 一期。
+_CARD_REWARD_INTERVALS = {"billing_cycle", "calendar_month", "custom_range"}
 _CARD_REWARD_SETTLEMENT_TYPES = {
     "immediate_after_tx", "after_posting_date", "period_end", "manual",
 }
@@ -2305,6 +2308,52 @@ def _assert_valid_settlement_day_of_month(day: int | None) -> None:
         )
 
 
+def _parse_optional_datetime(raw: object) -> datetime | None:
+    """starts_at/ends_at 的寬鬆解析(datetime / ISO 字串 / None)。解析失敗回
+    None,呼叫端把它當成「沒填」處理(`custom_range` 規則因此會被判定缺日期)。"""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        value = raw.strip()
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def assert_card_reward_custom_range(
+    interval: str | None, starts_at: object, ends_at: object,
+) -> None:
+    """`interval == "custom_range"`(指定活動區間)時 starts_at 與 ends_at 兩者
+    皆必填,且 ends_at 不可早於 starts_at(2026-10)。其它 interval 不檢查——
+    billing_cycle / calendar_month 的 starts_at/ends_at 本來就是選填的規則生效窗。
+
+    這支是純函式,write router(`routers/write/card_reward_rules.py`,用合併後
+    的最終狀態驗證並轉成 422)與本檔 create/update(兜底,ValueError → 400)共用,
+    兩條寫入路徑規則一致。sync push 路徑(generic push)刻意不呼叫——跟其它欄位
+    一致不驗證,資料不完整時 `card_rewards._resolve_period(s)` 會降級成
+    no_billing_schedule,不會炸。"""
+    if interval != "custom_range":
+        return
+    start = _parse_optional_datetime(starts_at)
+    end = _parse_optional_datetime(ends_at)
+    if start is None or end is None:
+        raise ValueError(
+            "write validation failed: starts_at and ends_at are required when interval is custom_range"
+        )
+    if end < start:
+        raise ValueError("write validation failed: ends_at must not be earlier than starts_at")
+
+
 def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     rules = _ensure_list(target, "cardRewardRules")
@@ -2331,6 +2380,7 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
     interval = str(payload.get("interval") or "billing_cycle")
     if interval not in _CARD_REWARD_INTERVALS:
         raise ValueError("write validation failed: invalid interval")
+    assert_card_reward_custom_range(interval, payload.get("starts_at"), payload.get("ends_at"))
     settlement_type = str(payload.get("settlement_type") or "manual")
     if settlement_type not in _CARD_REWARD_SETTLEMENT_TYPES:
         raise ValueError("write validation failed: invalid settlement_type")
@@ -2372,7 +2422,14 @@ def create_card_reward_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "interval": interval,
         "settlementType": settlement_type,
         "enabled": bool(payload.get("enabled", True)),
+        # 2026-10:基本回饋旗標,永遠寫明確 bool(同一張卡允許多條 true,不做唯一性)。
+        "isBasic": bool(payload.get("is_basic", False)),
     }
+    reward_project_id = _to_optional_str(payload.get("reward_project_id"))
+    if reward_project_id:
+        # 專案是 ledger-scoped、規則是 user-global,存在性驗證在 write router
+        # (查 user 底下任一 ledger 的專案);這裡只落欄位。
+        rule["rewardProjectId"] = reward_project_id
     if settlement_days is not None:
         rule["settlementDays"] = settlement_days
     if settlement_month_offset is not None:
@@ -2447,6 +2504,15 @@ def update_card_reward_rule(snapshot: dict, rule_id: str, payload: dict) -> dict
         if value not in _CARD_REWARD_INTERVALS:
             raise ValueError("write validation failed: invalid interval")
         rule["interval"] = value
+    if "is_basic" in payload:
+        # None 視為 false;永遠寫明確 bool,true→false 才會產生顯式 false 的 diff。
+        rule["isBasic"] = bool(payload.get("is_basic"))
+    if "reward_project_id" in payload:
+        value = payload.get("reward_project_id")
+        if value is None or str(value).strip() == "":
+            rule.pop("rewardProjectId", None)
+        else:
+            rule["rewardProjectId"] = str(value)
     if "min_spend_threshold" in payload:
         value = payload.get("min_spend_threshold")
         if value is None:
@@ -2531,6 +2597,14 @@ def update_card_reward_rule(snapshot: dict, rule_id: str, payload: dict) -> dict
     # 結算欄位互相依賴,必須在套用完上面所有 partial-update 分支、拿到
     # 合併後的最終狀態才驗證一致性(比照 §2.4 拆帳 _validate_tx_splits 同
     # 一個「改一半欄位也要重新校驗完整狀態」的理由)。
+    # custom_range 的起訖日必填,同樣只能用合併後的最終狀態驗證(PATCH 只改
+    # interval、或只清掉 ends_at 都會讓最終狀態不合法)。
+    # 只在本次 PATCH 動到 interval/starts_at/ends_at 時才驗,避免 App push 上來的
+    # 殘缺舊規則連「停用/軟刪除」(只送 enabled)都被擋住。
+    if payload.keys() & {"interval", "starts_at", "ends_at"}:
+        assert_card_reward_custom_range(
+            str(rule.get("interval") or "billing_cycle"), rule.get("startsAt"), rule.get("endsAt"),
+        )
     final_settlement_type = str(rule.get("settlementType") or "manual")
     if final_settlement_type not in _CARD_REWARD_SETTLEMENT_TYPES:
         raise ValueError("write validation failed: invalid settlement_type")

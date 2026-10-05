@@ -1635,6 +1635,18 @@ class ReadCardRewardRuleProjection(Base):
     settlement_month_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)
     settlement_day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reward_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 基本回饋(2026-10,對齊 Moze「基本回饋」):記帳時選到這張卡,前端自動帶
+    # 入這條規則(自動帶入由 Web/App 實作,Cloud 只負責儲存/同步)。同一張卡
+    # 允許多條 is_basic=true(不做唯一性限制),非鎖定欄位——規則有歷史後仍可改。
+    is_basic: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    # 回饋金歸屬專案(2026-10):自動入帳產生的回饋交易 `projectId` 取這個值;
+    # None = 逐筆結算沿用來源消費的專案、整期彙總結算不帶專案(見
+    # services/card_reward_payout.py::_resolve_reward_project_id)。非鎖定欄位。
+    # 專案是 ledger-scoped、規則是 user-global,所以這裡只存 sync_id 字串、不
+    # 加 FK;專案被刪時入帳降級為不帶專案,不讓入帳失敗。
+    reward_project_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

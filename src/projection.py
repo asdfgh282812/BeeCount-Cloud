@@ -1103,6 +1103,9 @@ def upsert_card_reward_rule(
         "settlement_month_offset": _as_int_or_none(payload.get("settlementMonthOffset")),
         "settlement_day_of_month": _as_int_or_none(payload.get("settlementDayOfMonth")),
         "reward_account_id": _as_str(payload.get("rewardAccountId")),
+        # 2026-10:基本回饋旗標 / 回饋金歸屬專案(缺鍵 → false / NULL)。
+        "is_basic": _as_bool(payload.get("isBasic"), default=False),
+        "reward_project_id": _as_str(payload.get("rewardProjectId")),
         "note": _as_str(payload.get("note")),
         "enabled": _as_bool(payload.get("enabled"), default=True),
         "source_change_id": source_change_id,

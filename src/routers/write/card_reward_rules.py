@@ -15,8 +15,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
-from ...models import CardRewardPayout
+from ...models import CardRewardPayout, ReadProjectProjection
 from ...services import card_rewards
+from ...snapshot_mutator import assert_card_reward_custom_range
 from ...snapshot_mutator import create_transaction as _mutate_create_tx
 
 router = APIRouter()
@@ -56,7 +57,9 @@ def _assert_rule_belongs_to_account(db: Session, *, user_id: str, rule_id: str, 
 
 # Phase 8 #16(2026-08 使用者反饋):規則底下已經有交易掛著或已有自動入帳
 # 紀錄之後,核心計算欄位不該再默默被改掉(否則等於竄改「已經算過」的規則
-# 基礎)。名稱/備註/啟用狀態/起訖日期不影響計算,維持可編輯。
+# 基礎)。名稱/備註/啟用狀態/起訖日期不影響計算,維持可編輯;2026-10 新增的
+# `is_basic`(基本回饋旗標)與 `reward_project_id`(回饋金歸屬專案)也不鎖定。
+# (例外:custom_range 規則已有入帳紀錄後不可改起訖日,見 `_assert_update_custom_range`。)
 _CARD_REWARD_LOCKED_FIELDS = frozenset({
     "rate_type", "rate_value", "rounding", "total_rounding", "calc_basis", "interval",
     "category_ids", "min_spend_threshold", "min_tx_amount", "cap_amount", "cap_shared_key",
@@ -75,10 +78,83 @@ def _assert_card_reward_rule_editable(db: Session, *, user_id: str, rule_id: str
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=(
             "This card reward rule already has linked transactions or payouts; "
-            "only label/note/enabled/starts_at/ends_at can still be edited. "
+            "only label/note/enabled/is_basic/reward_project_id/starts_at/ends_at can still be edited. "
             "Delete it and create a new rule to change how it calculates."
         ),
     )
+
+
+def _assert_reward_project_exists(db: Session, *, user_id: str, project_id: str | None) -> None:
+    """`reward_project_id` 若有值,必須是該 user 既有的專案(比照 reward_account_id
+    的存在性驗證)。專案是 ledger-scoped、規則是 user-global,所以查 user 底下任一
+    ledger 的專案即可;實際入帳時再用入帳所在 ledger 確認一次(專案之後被刪或不在
+    該 ledger 會降級為不帶專案,不讓入帳失敗,見 card_reward_payout)。
+
+    只擋 REST 寫入路徑;sync push 的 generic 路徑不驗證(與其它欄位一致)。"""
+    if not project_id:
+        return
+    found = db.scalar(
+        select(ReadProjectProjection.sync_id).where(
+            ReadProjectProjection.user_id == user_id,
+            ReadProjectProjection.sync_id == project_id,
+        ).limit(1)
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="reward_project_id not found",
+        )
+
+
+def _assert_custom_range_422(interval: str | None, starts_at: object, ends_at: object) -> None:
+    """`custom_range` 起訖日驗證(共用純函式在 snapshot_mutator),router 層轉成 422。"""
+    try:
+        assert_card_reward_custom_range(interval, starts_at, ends_at)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc).removeprefix("write validation failed: "),
+        ) from exc
+
+
+def _assert_update_custom_range(db: Session, *, user_id: str, rule_id: str, payload: dict) -> None:
+    """PATCH 的 custom_range 驗證:用「既有規則 + 本次 payload」合併後的最終狀態
+    檢查(只改 interval、或只清掉 ends_at 都可能讓最終狀態不合法),且只在本次
+    PATCH 動到 interval/starts_at/ends_at 時才檢查(停用/軟刪除等不受影響)。
+
+    額外保護(2026-10):custom_range 規則一旦已經有自動入帳紀錄(`CardRewardPayout`),
+    不能再改 starts_at/ends_at——入帳去重鍵是期末日(ends_at),改日期會讓同一批
+    消費被當成新的一期重複入帳。(其它 interval 的 starts_at/ends_at 仍可編輯。)"""
+    touched = {"interval", "starts_at", "ends_at"}.intersection(payload.keys())
+    if not touched:
+        return
+    rule = db.scalar(
+        select(ReadCardRewardRuleProjection).where(
+            ReadCardRewardRuleProjection.user_id == user_id,
+            ReadCardRewardRuleProjection.sync_id == rule_id,
+        )
+    )
+    if rule is None:
+        return  # _assert_rule_belongs_to_account 已先擋 404
+    interval = payload["interval"] if "interval" in payload else rule.interval
+    starts_at = payload["starts_at"] if "starts_at" in payload else rule.starts_at
+    ends_at = payload["ends_at"] if "ends_at" in payload else rule.ends_at
+    _assert_custom_range_422(interval, starts_at, ends_at)
+    if interval == "custom_range" and {"starts_at", "ends_at"}.intersection(touched):
+        has_payout = db.scalar(
+            select(CardRewardPayout.id).where(
+                CardRewardPayout.user_id == user_id,
+                CardRewardPayout.rule_sync_id == rule_id,
+            ).limit(1)
+        )
+        if has_payout is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "This custom_range card reward rule already has payouts; "
+                    "starts_at/ends_at can no longer be changed"
+                ),
+            )
 
 
 @router.post(
@@ -113,6 +189,8 @@ async def create_card_reward_rule_api(
     if replay:
         return replay
     _assert_account_is_credit_card(db, user_id=current_user.id, account_id=account_id)
+    _assert_custom_range_422(req.interval, req.starts_at, req.ends_at)
+    _assert_reward_project_exists(db, user_id=current_user.id, project_id=req.reward_project_id)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
@@ -161,6 +239,11 @@ async def update_card_reward_rule_api(
         return replay
     _assert_rule_belongs_to_account(db, user_id=current_user.id, rule_id=rule_id, account_id=account_id)
     _assert_card_reward_rule_editable(db, user_id=current_user.id, rule_id=rule_id, payload=payload)
+    _assert_update_custom_range(db, user_id=current_user.id, rule_id=rule_id, payload=payload)
+    if "reward_project_id" in payload:
+        _assert_reward_project_exists(
+            db, user_id=current_user.id, project_id=payload.get("reward_project_id"),
+        )
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,

@@ -851,7 +851,9 @@ CardRewardRounding = Literal["floor", "round", "ceil", "keep"]
 # (deferred_posting_at)还没实作,见 services/card_rewards.py 的
 # _attribution_date docstring。
 CardRewardCalcBasis = Literal["transaction_date", "settlement_date"]
-CardRewardInterval = Literal["billing_cycle", "calendar_month"]
+# 2026-10:新增 "custom_range"(指定活動區間)——沿用規則既有的 starts_at/ends_at
+# 當活動起訖日(此時兩者皆必填),計算期間固定只有該區間一期,不需要帳單週期。
+CardRewardInterval = Literal["billing_cycle", "calendar_month", "custom_range"]
 CardRewardRuleStatus = Literal["ok", "no_billing_schedule", "expired"]
 # 自動入帳(§2.9.5.4):manual = 純顯示不自動化;immediate_after_tx/
 # after_posting_date 逐筆結算;period_end 整期結束後一次結算。見
@@ -884,6 +886,11 @@ class ReadCardRewardRuleOut(BaseModel):
     settlement_month_offset: int | None = None
     settlement_day_of_month: int | None = None
     reward_account_id: str | None = None
+    # 2026-10:基本回饋旗標(記帳時選到該帳戶就自動帶入這條規則,帶入行為由
+    # Web/App 實作)與回饋金歸屬專案(None = 逐筆結算沿用來源消費的專案、整期
+    # 彙總結算不帶專案)。兩者皆非鎖定欄位。
+    is_basic: bool = False
+    reward_project_id: str | None = None
     note: str | None = None
     enabled: bool = True
     # Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄
@@ -2253,6 +2260,8 @@ class WriteCardRewardRuleCreateRequest(WriteBaseRequest):
     settlement_month_offset: int | None = Field(default=None, ge=0, le=11)
     settlement_day_of_month: int | None = Field(default=None, ge=1, le=28)
     reward_account_id: str | None = None
+    is_basic: bool = False
+    reward_project_id: str | None = None
     note: str | None = None
     enabled: bool = True
 
@@ -2278,6 +2287,8 @@ class WriteCardRewardRuleUpdateRequest(WriteBaseRequest):
     settlement_month_offset: int | None = Field(default=None, ge=0, le=11)
     settlement_day_of_month: int | None = Field(default=None, ge=1, le=28)
     reward_account_id: str | None = None
+    is_basic: bool | None = None
+    reward_project_id: str | None = None
     note: str | None = None
     enabled: bool | None = None
 

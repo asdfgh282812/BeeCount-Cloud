@@ -1154,7 +1154,10 @@ export type CardRewardRateType = 'percentage' | 'fixed_amount'
  *  兩者共用同一組合法值。 */
 export type CardRewardRounding = 'floor' | 'round' | 'ceil' | 'keep'
 export type CardRewardCalcBasis = 'transaction_date' | 'settlement_date'
-export type CardRewardInterval = 'billing_cycle' | 'calendar_month'
+/** `custom_range` = 指定活動區間:只計算 `starts_at`~`ends_at` 內的消費,
+ *  上限與門檻以整個區間累計;後端只回單一期間(忽略 period_offset),
+ *  此時 `starts_at`/`ends_at` 兩者皆必填。 */
+export type CardRewardInterval = 'billing_cycle' | 'calendar_month' | 'custom_range'
 export type CardRewardRuleStatus = 'ok' | 'no_billing_schedule' | 'expired'
 /** 自動入帳(§2.9.5.4):manual = 純顯示不自動化;immediate_after_tx/
  *  after_posting_date 逐筆結算;period_end 整期結束後一次結算。 */
@@ -1189,6 +1192,10 @@ export type ReadCardRewardRule = {
   settlement_month_offset?: number | null
   settlement_day_of_month?: number | null
   reward_account_id?: string | null
+  /** 基本回饋:true 時,記帳選到此帳戶會自動帶入這個回饋標籤。 */
+  is_basic?: boolean
+  /** 回饋金歸屬專案;null = 跟隨原消費專案(整期彙總入帳則不歸專案)。 */
+  reward_project_id?: string | null
   note?: string | null
   enabled: boolean
   /** Phase 8 #16:規則已有交易掛著或已有自動入帳紀錄時 true——計算相關
@@ -1217,6 +1224,8 @@ export type CardRewardRuleCreatePayload = {
   settlement_month_offset?: number | null
   settlement_day_of_month?: number | null
   reward_account_id?: string | null
+  is_basic?: boolean
+  reward_project_id?: string | null
   note?: string | null
   enabled?: boolean
 }
@@ -1242,6 +1251,8 @@ export type CardRewardRuleUpdatePayload = {
   settlement_month_offset?: number | null
   settlement_day_of_month?: number | null
   reward_account_id?: string | null
+  is_basic?: boolean
+  reward_project_id?: string | null
   note?: string | null
   enabled?: boolean
 }

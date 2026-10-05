@@ -220,6 +220,10 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("settlementMonthOffset", "settlement_month_offset"),
         ("settlementDayOfMonth", "settlement_day_of_month"),
         ("rewardAccountId", "reward_account_id"),
+        # 2026-10:基本回饋旗標 + 回饋金歸屬專案。漏登記的話,舊版 App 的 partial
+        # push(沒帶這兩個鍵)會讓 upsert_card_reward_rule 把它們沖回預設值。
+        ("isBasic", "is_basic"),
+        ("rewardProjectId", "reward_project_id"),
         ("note", "note"),
         ("enabled", "enabled"),
     ]),

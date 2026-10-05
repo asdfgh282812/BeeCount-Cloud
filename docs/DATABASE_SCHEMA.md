@@ -596,13 +596,13 @@
 | rounding | String(8) | default "round" | 單筆金額取整方式：round/floor/ceil/keep（不取整） |
 | total_rounding | String(8) | default "round" | 總額取整方式 |
 | calc_basis | String(24) | default "transaction_date" | 計算基準：交易日期或結算日期 |
-| interval | String(16) | default "billing_cycle" | 計算週期 |
+| interval | String(16) | default "billing_cycle" | 計算週期：billing_cycle（帳單週期）/calendar_month（自然月）/custom_range（指定活動區間，2026-10；沿用 starts_at/ends_at 當活動起訖日，兩者皆必填，期間固定單一期） |
 | min_spend_threshold | Float | nullable | 最低消費門檻（達標才給回饋） |
 | min_tx_amount | Float | nullable | 單筆最低消費金額門檻 |
 | cap_amount | Float | nullable | 回饋上限金額 |
 | cap_shared_key | String(64) | nullable | 共用回饋上限的分組鍵 |
-| starts_at | DateTime | nullable | 規則生效起始時間 |
-| ends_at | DateTime | nullable | 規則失效時間 |
+| starts_at | DateTime | nullable | 規則生效起始時間；interval=custom_range 時同時是活動起日（必填） |
+| ends_at | DateTime | nullable | 規則失效時間；interval=custom_range 時同時是活動迄日（必填、含當天） |
 | note | Text | nullable | 備註 |
 | enabled | Boolean | default True | 是否啟用 |
 | settlement_type | String(24) | default "manual" | 自動入帳方式：manual（純顯示不自動化）/immediate_after_tx（逐筆消費後即時入帳）/after_posting_date（入帳日後）/period_end（週期結束時） |
@@ -610,6 +610,8 @@
 | settlement_month_offset | Integer | nullable | period_end 結算：入帳月份偏移 |
 | settlement_day_of_month | Integer | nullable | period_end 結算：入帳日 |
 | reward_account_id | String(255) | nullable | 自動入帳的目的帳戶（非 manual 時必填） |
+| is_basic | Boolean | NOT NULL, default False, server_default 0 | 基本回饋旗標（alembic 0065）：記帳時選到該帳戶，前端自動帶入此規則；同卡允許多條 true；非鎖定欄位 |
+| reward_project_id | String(255) | nullable | 回饋金歸屬專案 sync_id（alembic 0065）：自動入帳的回饋交易 projectId；null=逐筆結算沿用來源消費專案、整期彙總不帶專案；專案已刪則降級不帶專案；無 FK（專案是 ledger-scoped）；非鎖定欄位 |
 | source_change_id | BigInteger | default 0 | 診斷用：來源同步事件 ID |
 
 索引：`ix_read_card_reward_rule_account(user_id, account_sync_id)`

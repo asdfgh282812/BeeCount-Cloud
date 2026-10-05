@@ -920,6 +920,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadCardRewardRuleProjection.settlement_month_offset,
         ReadCardRewardRuleProjection.settlement_day_of_month,
         ReadCardRewardRuleProjection.reward_account_id,
+        ReadCardRewardRuleProjection.is_basic,
+        ReadCardRewardRuleProjection.reward_project_id,
         ReadCardRewardRuleProjection.note,
         ReadCardRewardRuleProjection.enabled,
     ).where(ReadCardRewardRuleProjection.user_id == user_id)
@@ -928,7 +930,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         total_rounding, calc_basis, interval, min_spend_threshold, min_tx_amount, cap_amount,
         cap_shared_key, starts_at, ends_at, settlement_type, settlement_days,
         settlement_month_offset, settlement_day_of_month,
-        reward_account_id, note, enabled,
+        reward_account_id, is_basic, reward_project_id, note, enabled,
     ) in db.execute(crr_stmt).all():
         rule: dict[str, Any] = {
             "syncId": sid,
@@ -951,6 +953,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             rule["settlementDayOfMonth"] = settlement_day_of_month
         if reward_account_id:
             rule["rewardAccountId"] = reward_account_id
+        # 2026-10:基本回饋 / 回饋金歸屬專案。isBasic 永遠輸出明確的 bool(true→
+        # false 的 diff 要能產出顯式 false,避免下游 merge 把缺鍵誤當成沿用舊值);
+        # rewardProjectId 跟 rewardAccountId 一樣「有值才輸出」。
+        rule["isBasic"] = bool(is_basic)
+        if reward_project_id:
+            rule["rewardProjectId"] = reward_project_id
         if category_ids_json:
             try:
                 category_ids = json.loads(category_ids_json)
