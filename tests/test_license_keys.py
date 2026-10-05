@@ -218,6 +218,29 @@ def test_key_can_only_be_redeemed_once(client):
     assert client.get("/api/v1/sync/ledgers", headers=_h(tb)).status_code == 402
 
 
+def test_expired_key_stays_burned_even_if_redeemer_row_is_nulled(client):
+    """帳號被刪除(FK SET NULL)後 redeemed_by_user_id 會變 NULL,過期金鑰仍不可重複啟用。"""
+    admin = _admin_token(client)
+    key = _create_keys(client, admin)[0]["key"]
+    _register(client, "a@t.com")
+    _register(client, "b@t.com")
+    ta, tb = _login(client, "a@t.com"), _login(client, "b@t.com")
+    assert client.post("/api/v1/license/activate", headers=_h(ta), json={"key": key}).status_code == 200
+
+    assert _TEST_SESSION is not None
+    with _TEST_SESSION() as db:
+        row = db.query(LicenseKey).filter(LicenseKey.key == key).one()
+        row.expires_at = datetime.now(timezone.utc) - timedelta(days=3)
+        row.redeemed_by_user_id = None  # 模擬兌換者帳號被刪除
+        db.commit()
+
+    res = client.post("/api/v1/license/activate", headers=_h(tb), json={"key": key})
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "LICENSE_KEY_ALREADY_REDEEMED"
+    listed = client.get("/api/v1/admin/licenses", headers=_h(admin)).json()["items"]
+    assert [i["status"] for i in listed if i["key"] == key] == ["expired"]
+
+
 def test_invalid_and_unknown_keys(client):
     _register(client, "u@t.com")
     token = _login(client, "u@t.com")

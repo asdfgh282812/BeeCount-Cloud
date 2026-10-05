@@ -41,7 +41,7 @@ def _as_utc(dt: datetime | None) -> datetime | None:
 def _status_of(row: LicenseKey, now: datetime) -> str:
     if row.revoked_at is not None:
         return "revoked"
-    if row.redeemed_by_user_id is None:
+    if row.redeemed_at is None and row.redeemed_by_user_id is None:
         return "unused"
     expires = _as_utc(row.expires_at)
     if expires is not None and expires > now:
@@ -177,7 +177,7 @@ def delete_unused_license_key(
     row = db.get(LicenseKey, license_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License key not found")
-    if row.redeemed_by_user_id is not None:
+    if row.redeemed_at is not None or row.redeemed_by_user_id is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="License key already redeemed; revoke it instead",

@@ -162,7 +162,7 @@ def reset_activate_rate_limit() -> None:
 def redeem_key(db: Session, user: User, raw_key: str) -> LicenseKey:
     """把金鑰綁到 `user`,回傳更新後的 row(呼叫方負責 commit)。
 
-    用條件式 UPDATE(`WHERE redeemed_by_user_id IS NULL AND revoked_at IS NULL`)
+    用條件式 UPDATE(`WHERE redeemed_by_user_id IS NULL AND redeemed_at IS NULL AND revoked_at IS NULL`)
     + 檢查 rowcount 做原子搶佔,兩個帳號同時送同一把金鑰只有一個會成功,
     SQLite / Postgres 行為一致,不依賴 SELECT ... FOR UPDATE。
     """
@@ -174,7 +174,10 @@ def redeem_key(db: Session, user: User, raw_key: str) -> LicenseKey:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License key not found")
     if row.revoked_at is not None:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="License key revoked")
-    if row.redeemed_by_user_id is not None:
+    # 以 redeemed_at 判斷是否用過:redeemed_by_user_id 會在帳號被刪除時
+    # (FK ondelete=SET NULL)變回 NULL,不能拿來當「用過」的唯一依據,
+    # 否則刪帳號重註冊就能把過期金鑰洗回可用。
+    if row.redeemed_at is not None or row.redeemed_by_user_id is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="License key already redeemed")
 
     now = datetime.now(timezone.utc)
@@ -187,6 +190,7 @@ def redeem_key(db: Session, user: User, raw_key: str) -> LicenseKey:
         .where(
             LicenseKey.id == row.id,
             LicenseKey.redeemed_by_user_id.is_(None),
+            LicenseKey.redeemed_at.is_(None),
             LicenseKey.revoked_at.is_(None),
         )
         .values(redeemed_by_user_id=user.id, redeemed_at=now, expires_at=expires_at)
