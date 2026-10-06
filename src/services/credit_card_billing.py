@@ -56,6 +56,10 @@ _NATIVE_AMOUNT = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.
 # 兩者都不受影響(仍視為正常「還款/預繳」項目,對齊 Phase 6 的既有語意)。
 CARD_PAYMENT_NOTE_PREFIX = "信用卡繳款(帳單 "
 AUTOPAY_NOTE_PREFIX = "自動扣繳(帳單 "
+# 判斷「這是繳款」用的前綴比產生用的短:早期(以及使用者自己記的)繳款備註只
+# 寫「信用卡繳款」,沒有後面的「(帳單 …)」。2026-10-06 使用者實際資料:2024-12
+# 起歷史繳款的備註全都是這個樣子,只認完整前綴會讓它們全被當成手動轉入。
+CARD_PAYMENT_NOTE_MATCH_PREFIX = "信用卡繳款"
 
 
 # 舊版 App 單卡繳款(`_formatCycleLabel`)寫的備註是純日期區間,沒有前綴:
@@ -74,7 +78,7 @@ def is_card_settlement_note(note: str | None) -> bool:
     if not note:
         return False
     return (
-        note.startswith(CARD_PAYMENT_NOTE_PREFIX)
+        note.startswith(CARD_PAYMENT_NOTE_MATCH_PREFIX)
         or note.startswith(AUTOPAY_NOTE_PREFIX)
         or _LEGACY_PAYMENT_NOTE_RE.match(note) is not None
     )
@@ -88,7 +92,7 @@ def is_card_settlement_note(note: str | None) -> bool:
 # 歸屬日落在哪一期就減那一期(跟 income 同口徑)。兩邊的 SQL 條件集中在這裡,
 # 避免各處各寫一份。
 _IS_SETTLEMENT_NOTE = or_(
-    ReadTxProjection.note.startswith(CARD_PAYMENT_NOTE_PREFIX, autoescape=True),
+    ReadTxProjection.note.startswith(CARD_PAYMENT_NOTE_MATCH_PREFIX, autoescape=True),
     ReadTxProjection.note.startswith(AUTOPAY_NOTE_PREFIX, autoescape=True),
     *(ReadTxProjection.note.like(p) for p in LEGACY_PAYMENT_NOTE_LIKE_PATTERNS),
 )

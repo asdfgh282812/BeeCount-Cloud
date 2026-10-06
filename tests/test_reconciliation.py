@@ -938,10 +938,22 @@ def test_manual_transfer_in_is_income_not_payment_and_legacy_note_is_payment():
         )
         assert r.status_code == 200, r.text
 
+        # 早期/使用者自己記的繳款備註只有「信用卡繳款」(沒有「(帳單 …)」)一樣算繳款。
+        r = client.post(
+            "/api/v1/write/ledgers/st20/transactions", headers=hdr_web,
+            json={
+                "base_change_id": 0, "tx_type": "transfer", "amount": 50.0,
+                "happened_at": _dt(cycle_start + timedelta(days=3)),
+                "from_account_id": "cash20", "to_account_id": "card20",
+                "note": "信用卡繳款",
+            },
+        )
+        assert r.status_code == 200, r.text
+
         after = summary()
         assert after["period_new_spend"] == 800.0
-        assert after["period_paid_in_cycle"] == 400.0
-        assert after["period_remaining_due"] == 400.0
+        assert after["period_paid_in_cycle"] == 450.0
+        assert after["period_remaining_due"] == 350.0
         statement = _get_statement(client, hdr_web, "st20", "card20", cycle_offset=0).json()
         assert statement["statement_count"] == 2  # 1000 消費 + 200 手動轉入
     finally:
