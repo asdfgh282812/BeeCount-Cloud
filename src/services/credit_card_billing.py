@@ -767,8 +767,8 @@ def compute_card_payment_allocations(
     1. `amount` >= 全部子帳戶應繳總和:每個子帳戶各自拿到「完整付清」的
        金額,剩下的溢繳另外記一筆在 `group_sync_id` 自己身上(結轉到未來
        各期的信用額度)。
-    2. `amount` < 應繳總和:按各子帳戶應繳金額比例分攤,最後一個子帳戶用
-       減法拿餘數,避免四捨五入加總對不上輸入金額,不製造「群組溢繳」假象。
+    2. `amount` < 應繳總和:欠款最少的子帳戶先繳滿,剩下的全給欠款最多的
+       子帳戶(減法拿餘數,加總等於輸入金額,不製造「群組溢繳」假象)。
     回傳 `{target_sync_id: amount}`,金額 <= 0 或本來就不欠錱的子帳戶不會
     出現在結果裡。獨立信用卡場景(`group_sync_id` 本身就是唯一子帳戶)下,
     分攤 key 可能跟溢繳結轉 key 相撞,這裡用累加而不是覆蓋,不會把應繳金額
@@ -787,35 +787,21 @@ def compute_card_payment_allocations(
         if leftover > 0:
             allocations[group_sync_id] = allocations.get(group_sync_id, 0.0) + leftover
         return allocations
-    due_children = [(cid, due) for cid, due in remaining_due_by_child.items() if due > 0]
-    # 金額跟各卡應繳都是整數時,分攤也取整數(群組裡某張卡溢繳會讓淨應繳 <
-    # 正值應繳總和而走到這個分支,不取整會把整數交易切成 1737.88 / 84.12)。
-    def _is_whole(v: float) -> bool:
-        return abs(v - round(v)) < 1e-9
-
-    if _is_whole(amount) and all(_is_whole(due) for _, due in due_children):
-        whole: dict[str, float] = {}
-        sum_so_far = 0.0
-        ok = True
-        for i, (child_id, due) in enumerate(due_children):
-            if i == len(due_children) - 1:
-                share = amount - sum_so_far
-            else:
-                share = float(round(amount * (due / total_children_due)))
-            # 取整後餘數超過該卡應繳或變負數 → 放棄取整,退回到分的做法
-            if share < 0 or share > due:
-                ok = False
-                break
-            whole[child_id] = share
-            sum_so_far += share
-        if ok:
-            return whole
-    allocated_so_far = 0.0
+    # 金額不足:欠款最少的卡先繳滿,剩下的全給欠款最多的那張(最後一張用減法
+    # 拿餘數,加總一定等於 amount)。不按比例切——群組內某張卡溢繳時淨應繳
+    # 會小於各卡正值應繳總和,按比例會把整數交易切成 1737.88 / 84.12 且每張
+    # 卡都剩尾數;銀行看群組整體,尾數集中在一張卡即可。
+    due_children = sorted(
+        ((cid, due) for cid, due in remaining_due_by_child.items() if due > 0),
+        key=lambda x: x[1],
+    )
+    remaining = amount
     for i, (child_id, due) in enumerate(due_children):
         if i == len(due_children) - 1:
-            share = round(amount - allocated_so_far, 2)
+            share = round(remaining, 2)
         else:
-            share = round(amount * (due / total_children_due), 2)
-        allocations[child_id] = share
-        allocated_so_far += share
+            share = round(min(remaining, due), 2)
+        if share > 0:
+            allocations[child_id] = share
+        remaining = round(remaining - share, 2)
     return allocations

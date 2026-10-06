@@ -1318,7 +1318,7 @@ def test_card_payment_overpayment_leftover_goes_to_group():
         app.dependency_overrides.clear()
 
 
-def test_card_payment_partial_amount_splits_proportionally():
+def test_card_payment_partial_amount_pays_smallest_due_first():
     client, TS = _make_client()
     try:
         app_tok = _login(client, "ccp3@t.com", device_id="d-app", client_type="app")
@@ -1336,7 +1336,7 @@ def test_card_payment_partial_amount_splits_proportionally():
 
         now = datetime.now(timezone.utc)
         cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), 5)
-        # 卡A欠 300,卡B欠 100,共 400。只付 200(一半),应按 3:1 比例分攤。
+        # 卡A欠 300,卡B欠 100,共 400。只付 200:欠款少的卡B先繳滿(100),剩下 100 給卡A。
         _push(client, hdr_app, "lgp3", "transaction", "tx-a",
               {"syncId": "tx-a", "type": "expense", "amount": 300.0,
                "happenedAt": _dt(cycle_start + timedelta(days=1)),
@@ -1372,8 +1372,8 @@ def test_card_payment_partial_amount_splits_proportionally():
                     ReadTxProjection.tx_type == "transfer",
                 )
             )
-        assert row_a is not None and row_a.amount == 150.0  # 300/400 * 200
-        assert row_b is not None and row_b.amount == 50.0  # 100/400 * 200
+        assert row_a is not None and row_a.amount == 100.0  # 200 - 100(卡B 先繳滿)
+        assert row_b is not None and row_b.amount == 100.0  # 卡B 欠 100,繳滿
         assert row_group is None
         assert row_a.amount + row_b.amount == 200.0
     finally:
@@ -1870,14 +1870,14 @@ def test_billing_summary_late_payment_settles_older_cycle_not_current():
         app.dependency_overrides.clear()
 
 
-def test_card_payment_allocations_whole_amounts_stay_whole() -> None:
+def test_card_payment_allocations_smallest_due_paid_first() -> None:
     from src.services.credit_card_billing import compute_card_payment_allocations
 
     # 群組有張卡溢繳(-19)→ 淨應繳 1822 < 正值應繳總和 1841,走不足額分攤;
-    # 整數金額不可被切成 1737.88 / 84.12。
+    # 欠款少的 GREEN 先繳滿,餘數給 Sport,整數金額不可被切成 1737.88 / 84.12。
     result = compute_card_payment_allocations(
         group_sync_id="grp",
         remaining_due_by_child={"sport": 1756.0, "green": 85.0},
         amount=1822.0,
     )
-    assert result == {"sport": 1738.0, "green": 84.0}
+    assert result == {"green": 85.0, "sport": 1737.0}
