@@ -948,6 +948,7 @@ const zhTW = {
   'cardRewards.settlementType.after_posting_date': '入帳後幾天(逐筆)',
   'cardRewards.settlementType.period_end': '週期結束後一次結算',
   'cardRewards.field.settlementDays': '天數',
+  'cardRewards.field.settlementDaysRange': '天數必須是 0 到 365 之間的整數。',
   'cardRewards.field.settlementDate': '回饋入帳日',
   'cardRewards.settlementDate.defaultOption': '月份',
   'cardRewards.settlementDate.dayPlaceholder': '日期',

@@ -25,13 +25,30 @@ function datePart(value: string | null | undefined): string {
   return (value || '').slice(0, 10)
 }
 
+/** 交易時間 → 使用者看到的「本地日期」(yyyy-mm-dd)。表單內部的 happened_at 是
+ *  帶時區的 ISO 瞬間(例如 UTC+8 的 10/06 02:04 存成 `2026-10-05T18:04:00Z`),
+ *  直接切前 10 碼會拿到 UTC 日期,凌晨的交易就被當成前一天。沒帶時區的
+ *  (datetime-local 格式)已經是本地時間,維持切前 10 碼。 */
+function localDatePart(value: string | null | undefined): string {
+  const raw = value || ''
+  if (!raw) return ''
+  if (/(Z|[+-]\d{2}:?\d{2})$/i.test(raw) && raw.includes('T')) {
+    const d = new Date(raw)
+    if (!Number.isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    }
+  }
+  return raw.slice(0, 10)
+}
+
 /** 規則在交易日期當天是否仍在 starts_at~ends_at 有效範圍內(起訖日皆含)。
  *  不看 enabled;交易日期為空字串時視為不限(不排除)。 */
 export function isRuleWithinWindow(
   rule: Pick<BasicRewardRuleLike, 'starts_at' | 'ends_at'>,
   happenedAt: string,
 ): boolean {
-  const txDate = datePart(happenedAt)
+  const txDate = localDatePart(happenedAt)
   if (!txDate) return true
   const start = datePart(rule.starts_at)
   const end = datePart(rule.ends_at)

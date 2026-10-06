@@ -316,6 +316,7 @@ const zhCN = {
   'cardRewards.settlementType.after_posting_date': '入账后几天(逐笔)',
   'cardRewards.settlementType.period_end': '周期结束后一次结算',
   'cardRewards.field.settlementDays': '天数',
+  'cardRewards.field.settlementDaysRange': '天数必须是 0 到 365 之间的整数。',
   'cardRewards.field.settlementDate': '回馈入账日',
   'cardRewards.settlementDate.defaultOption': '月份',
   'cardRewards.settlementDate.dayPlaceholder': '日期',

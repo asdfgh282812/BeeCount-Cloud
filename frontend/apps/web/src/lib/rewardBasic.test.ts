@@ -25,6 +25,14 @@ describe('isRuleWithinWindow', () => {
     expect(isRuleWithinWindow(r, '2026-09-30T23:59')).toBe(false)
     expect(isRuleWithinWindow(r, '2026-11-01T00:00')).toBe(false)
   })
+  it('帶時區的 ISO 瞬間用「本地日期」比對(UTC+8 凌晨 02:04 屬於當天)', () => {
+    const r = { starts_at: '2026-10-06T00:00:00+00:00', ends_at: null }
+    // 本地 2026-10-06 02:04 在不同時區換成 UTC 的字串
+    const local = new Date(2026, 9, 6, 2, 4).toISOString()
+    expect(isRuleWithinWindow(r, local)).toBe(true)
+    const dayBefore = new Date(2026, 9, 5, 23, 59).toISOString()
+    expect(isRuleWithinWindow(r, dayBefore)).toBe(false)
+  })
   it('沒設起訖日 = 不限', () => {
     expect(isRuleWithinWindow({}, '2026-10-06T10:00')).toBe(true)
   })

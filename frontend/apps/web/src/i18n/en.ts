@@ -949,6 +949,7 @@ const en = {
   'cardRewards.settlementType.after_posting_date': 'N days after posting',
   'cardRewards.settlementType.period_end': 'Lump sum after period ends',
   'cardRewards.field.settlementDays': 'Days',
+  'cardRewards.field.settlementDaysRange': 'Days must be a whole number between 0 and 365.',
   'cardRewards.field.settlementDate': 'Payout date',
   'cardRewards.settlementDate.defaultOption': 'Month',
   'cardRewards.settlementDate.dayPlaceholder': 'Day',

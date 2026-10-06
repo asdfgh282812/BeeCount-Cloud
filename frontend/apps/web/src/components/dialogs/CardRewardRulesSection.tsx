@@ -835,12 +835,21 @@ function CardRewardRuleFormDialog({
   // 沒有專案清單、也沒有已設定專案時整塊不顯示(使用者沒在用專案功能)。
   const showRewardProject = projects.length > 0 || rewardProjectId !== ''
 
+  // 後端 settlement_days 限制 0~365 的整數,超出會回 422 而前端只顯示「操作失敗」,
+  // 在送出前先擋下並說明原因。
+  const settlementDaysNum = Number(settlementDays)
+  const settlementDaysInvalid =
+    needsSettlementDays &&
+    settlementDays.trim().length > 0 &&
+    (!Number.isInteger(settlementDaysNum) || settlementDaysNum < 0 || settlementDaysNum > 365)
+
   const canSubmit =
     label.trim().length > 0 &&
     Number(rateValue) > 0 &&
     !customRangeMissing &&
     !customRangeOrderBad &&
     (!needsSettlementDays || settlementDays.trim().length > 0) &&
+    !settlementDaysInvalid &&
     (!needsRewardAccount || rewardAccountId.trim().length > 0)
 
   const toggleCapGroupMember = (ruleId: string) => {
@@ -1200,10 +1209,15 @@ function CardRewardRuleFormDialog({
                 <Input
                   type="number"
                   inputMode="numeric"
+                  min={0}
+                  max={365}
                   value={settlementDays}
                   onChange={(e) => setSettlementDays(e.target.value)}
                   disabled={locked}
                 />
+                {settlementDaysInvalid ? (
+                  <div className="text-xs text-destructive">{t('cardRewards.field.settlementDaysRange')}</div>
+                ) : null}
               </div>
             ) : null}
             {needsSettlementDate ? (
