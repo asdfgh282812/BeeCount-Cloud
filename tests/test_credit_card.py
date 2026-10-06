@@ -627,7 +627,7 @@ def test_billing_summary_merges_children_and_computes_due_amount():
                "accountId": "acc-sub", "accountName": "子卡"}, device_id="d-app")
         # 帳單結束後的繳款,冲抵應繳金額(打到主卡本身)
         _push(client, hdr_app, "lgb1", "transaction", "tx-payment",
-              {"syncId": "tx-payment", "type": "transfer", "amount": 30.0,
+              {"syncId": "tx-payment", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 30.0,
                "happenedAt": now.isoformat(),
                "fromAccountId": "acc-cash", "fromAccountName": "現金",
                "toAccountId": "acc-main", "toAccountName": "主卡"}, device_id="d-app")
@@ -781,7 +781,7 @@ def test_billing_summary_converts_foreign_currency_child_payment_to_ledger_curre
         # 原幣 8030 日圓,折台幣本位幣快照 2030(這是本次要修的 bug 現場
         # 重現——`to_amount` 這裡不適用,聚合必須讀 `native_amount`)。
         _push(client, hdr_app, "lgfx2", "transaction", "tx-pay-jpy",
-              {"syncId": "tx-pay-jpy", "type": "transfer", "amount": 8030.0,
+              {"syncId": "tx-pay-jpy", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 8030.0,
                "currencyCode": "JPY", "nativeAmount": 2030.0,
                "happenedAt": _dt(cycle_start + timedelta(days=2)),
                "fromAccountId": "acc-jpy-cash", "fromAccountName": "日幣現金",
@@ -862,7 +862,7 @@ def test_billing_summary_settled_foreign_child_does_not_leak_fx_residual_into_re
         # 當下匯率已經跌到 nativeAmount=21100——同一筆錢,兩次獨立折算的
         # 帳本本位幣快照不會剛好相等,這就是匯差殘值的來源。
         _push(client, hdr_app, "lgfx3", "transaction", "tx-pay-jpy3",
-              {"syncId": "tx-pay-jpy3", "type": "transfer", "amount": 99387.0,
+              {"syncId": "tx-pay-jpy3", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 99387.0,
                "currencyCode": "JPY", "nativeAmount": 21100.0,
                "happenedAt": _dt(cycle_start + timedelta(days=2)),
                "fromAccountId": "acc-jpy3-cash", "fromAccountName": "日幣現金",
@@ -981,7 +981,7 @@ def test_billing_summary_overpayment_carries_forward_across_cycles():
                "happenedAt": _dt(cycle_start + timedelta(days=1)),
                "accountId": "acc-card2", "accountName": "卡"}, device_id="d-app")
         _push(client, hdr_app, "lgb2", "transaction", "tx-overpay",
-              {"syncId": "tx-overpay", "type": "transfer", "amount": 150.0,
+              {"syncId": "tx-overpay", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 150.0,
                "happenedAt": _dt(cycle_end, hour=23),
                "fromAccountId": "acc-cash2", "fromAccountName": "現金",
                "toAccountId": "acc-card2", "toAccountName": "卡"}, device_id="d-app")
@@ -1836,7 +1836,7 @@ def test_billing_summary_late_payment_settles_older_cycle_not_current():
         # 本期(cycle_start~cycle_end)還没有任何消费。now(繳款當下)已经进入
         # 本期窗口——繳款交易的 happened_at 会落在本期,但金額只夠付清上一期。
         _push(client, hdr_app, "lglate1", "transaction", "tx-latepay",
-              {"syncId": "tx-latepay", "type": "transfer", "amount": 1200.50,
+              {"syncId": "tx-latepay", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 1200.50,
                "happenedAt": now.isoformat(),
                "fromAccountId": "acc-cashl", "fromAccountName": "現金",
                "toAccountId": "acc-cardl", "toAccountName": "卡"}, device_id="d-app")

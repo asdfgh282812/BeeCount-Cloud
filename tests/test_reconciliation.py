@@ -336,8 +336,9 @@ def test_statement_includes_transfer_in_but_excludes_transfer_out():
         assert transfer_row["account_id"] == "card12"
 
         # "新增消費"(statement_total)比照 compute_cycle_period_billing.new_spend
-        # 的口徑,只算 expense/income,轉入的 40 元不能被算進去。
-        assert data["statement_total"] == 100.0
+        # 的口徑:手動轉入(沒有繳款備註)視為收入,100 - 40 = 60;轉出的 15 元
+        # 不算。
+        assert data["statement_total"] == 60.0
     finally:
         client.close()
 
@@ -867,5 +868,81 @@ def test_statement_sort_desc_reverses_transaction_order():
         desc = _get_statement(client, hdr_web, "st11", "card11", cycle_offset=0, sort_desc=True).json()
         assert [t["id"] for t in asc["transactions"]] == [tx_early, tx_late]
         assert [t["id"] for t in desc["transactions"]] == [tx_late, tx_early]
+    finally:
+        client.close()
+
+
+def test_manual_transfer_in_is_income_not_payment_and_legacy_note_is_payment():
+    """2026-10-06 使用者規則:轉入信用卡的轉帳只有「繳款」(備註為繳款/自動扣繳
+    前綴,或舊版純日期區間)才算已繳;手動轉入視為收入——對帳清單列出、減少
+    新增消費與剩餘帳款,但不計入已繳金額。"""
+    client, _TS = _make_client()
+    try:
+        app_tok = _login(client, "st20@t.com", device_id="d-app")
+        web_tok = _login(client, "st20@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+        _push(client, hdr_app, "st20", "ledger", "st20",
+              {"syncId": "st20", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "st20", "account", "cash20",
+              {"syncId": "cash20", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        _setup_card(client, hdr_app, "st20", "card20", billing_day=billing_day)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+
+        _create_tx(client, hdr_web, "st20", account_id="card20", amount=1000.0,
+                   happened_at=_dt(cycle_start + timedelta(days=1)))
+        manual_id = _create_transfer_tx(client, hdr_web, "st20", from_account_id="cash20",
+                                         to_account_id="card20", amount=200.0,
+                                         happened_at=_dt(cycle_start + timedelta(days=2)))
+
+        statement = _get_statement(client, hdr_web, "st20", "card20", cycle_offset=0).json()
+        assert manual_id in {t["id"] for t in statement["transactions"]}
+        assert statement["statement_total"] == 800.0  # 1000 - 200(手動轉入當收入)
+
+        def summary():
+            r = client.get(
+                "/api/v1/read/ledgers/st20/accounts/card20/billing-summary",
+                headers=hdr_web, params={"cycle_offset": 0},
+            )
+            assert r.status_code == 200, r.text
+            return r.json()
+
+        before = summary()
+        assert before["period_new_spend"] == 800.0
+        assert before["period_paid_in_cycle"] == 0.0  # 手動轉入不算已繳
+        assert before["period_remaining_due"] == 800.0
+
+        # 真正的繳款(新版備註前綴)才算已繳,而且不出現在對帳清單。
+        r = client.post(
+            "/api/v1/write/ledgers/st20/transactions", headers=hdr_web,
+            json={
+                "base_change_id": 0, "tx_type": "transfer", "amount": 300.0,
+                "happened_at": _dt(cycle_start + timedelta(days=3)),
+                "from_account_id": "cash20", "to_account_id": "card20",
+                "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)",
+            },
+        )
+        assert r.status_code == 200, r.text
+        # 舊版 App 單卡繳款的純日期備註也算繳款。
+        r = client.post(
+            "/api/v1/write/ledgers/st20/transactions", headers=hdr_web,
+            json={
+                "base_change_id": 0, "tx_type": "transfer", "amount": 100.0,
+                "happened_at": _dt(cycle_start + timedelta(days=3)),
+                "from_account_id": "cash20", "to_account_id": "card20",
+                "note": "2026/01/01 – 2026/01/31",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        after = summary()
+        assert after["period_new_spend"] == 800.0
+        assert after["period_paid_in_cycle"] == 400.0
+        assert after["period_remaining_due"] == 400.0
+        statement = _get_statement(client, hdr_web, "st20", "card20", cycle_offset=0).json()
+        assert statement["statement_count"] == 2  # 1000 消費 + 200 手動轉入
     finally:
         client.close()

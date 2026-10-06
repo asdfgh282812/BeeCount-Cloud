@@ -176,7 +176,7 @@ def test_no_reminder_when_already_paid():
         _push(client, hdr_app, "lgr3", "account", "acc-cash",
               {"syncId": "acc-cash", "name": "現金", "type": "cash", "currency": "CNY"}, device_id="d-app")
         _push(client, hdr_app, "lgr3", "transaction", "tx-pay",
-              {"syncId": "tx-pay", "type": "transfer", "amount": 100.0,
+              {"syncId": "tx-pay", "type": "transfer", "note": "信用卡繳款(帳單 2026-01-01~2026-01-31)", "amount": 100.0,
                "happenedAt": _iso(now),
                "fromAccountId": "acc-cash", "fromAccountName": "現金",
                "toAccountId": "acc-card", "toAccountName": "卡"}, device_id="d-app")

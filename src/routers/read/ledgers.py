@@ -2576,21 +2576,24 @@ def get_account_statement(
 
     transactions_out: list[StatementTransactionOut] = []
     account_totals: dict[str, dict[str, Any]] = {}
-    # "新增消費"(statement_total)刻意只算 expense/income,比照
-    # `credit_card_billing.compute_cycle_period_billing.new_spend` 的口徑
-    # ——轉入是還款/預繳,不是消費,不能被誤算進這格(SD 需求 #1)。
+    # "新增消費"(statement_total)比照
+    # `credit_card_billing.compute_cycle_period_billing.new_spend` 的口徑:
+    # expense 記正、income 記負,**手動轉入視為收入也記負**(2026-10-06 使用者
+    # 規則:手動轉帳像收入,會減少應繳,但不算「繳款」)。真正的繳款(備註
+    # 前綴)已在上面被排除、不在這個清單裡,不會被誤算進這格。
     statement_total = 0.0
     confirmed_count = 0
     confirmed_total = 0.0
     for row in flat_rows:
         is_transfer = row.tx_type == "transfer"
         if is_transfer:
-            # 轉入視為還款/預繳,比照 income 記為負值(減少應繳餘額);金額
+            # 手動轉入視為收入,比照 income 記為負值(減少應繳餘額);金額
             # 歸屬欄位改用 to_account_sync_id/to_account_name。跨幣別轉帳
             # (2026-08):這張卡看到的應該是轉入卡片自身幣別的金額,不是轉出
             # 端的 amount——同幣種轉帳 to_amount 是 NULL,回退 amount。
             transfer_amount = row.to_amount if row.to_amount is not None else row.amount
             signed = -transfer_amount
+            statement_total += signed
             bucket_account_id = row.to_account_sync_id
             bucket_account_name = row.to_account_name
         else:

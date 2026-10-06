@@ -13,12 +13,13 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from typing import TypedDict
 
 from sqlalchemy import case as sa_case
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -57,10 +58,88 @@ CARD_PAYMENT_NOTE_PREFIX = "信用卡繳款(帳單 "
 AUTOPAY_NOTE_PREFIX = "自動扣繳(帳單 "
 
 
+# 舊版 App 單卡繳款(`_formatCycleLabel`)寫的備註是純日期區間,沒有前綴:
+# `2026/08/01 – 2026/09/01`(en dash 前後空白)或更早的 `2026/08/01-2026/09/01`。
+# 這兩種格式整串精確符合才算繳款(2026-10-06 使用者決定),避免歷史上用舊版
+# 繳過的帳單,在「手動轉入當收入」新規則下突然變回未繳。LIKE 的 `_` 是單字元
+# 萬用字元,兩個 dialect(SQLite/Postgres)都支援。
+LEGACY_PAYMENT_NOTE_LIKE_PATTERNS = (
+    "____/__/__ \u2013 ____/__/__",
+    "____/__/__-____/__/__",
+)
+_LEGACY_PAYMENT_NOTE_RE = re.compile(r"^\d{4}/\d{2}/\d{2}( \u2013 |-)\d{4}/\d{2}/\d{2}$")
+
+
 def is_card_settlement_note(note: str | None) -> bool:
     if not note:
         return False
-    return note.startswith(CARD_PAYMENT_NOTE_PREFIX) or note.startswith(AUTOPAY_NOTE_PREFIX)
+    return (
+        note.startswith(CARD_PAYMENT_NOTE_PREFIX)
+        or note.startswith(AUTOPAY_NOTE_PREFIX)
+        or _LEGACY_PAYMENT_NOTE_RE.match(note) is not None
+    )
+
+
+# 「繳款」vs「手動轉帳」(2026-10-06 使用者規則):轉入信用卡的轉帳只有備註是
+# 繳款/自動扣繳前綴(或舊版純日期區間)的才叫「繳款」(算已繳金額、不列在對帳
+# 清單);使用者自己手動轉進來的視為**收入**——減少該期新增消費/應繳,但
+# **不算已繳**,也不是繳款記錄。所以這兩類在帳單公式裡走不同側:繳款走終身
+# watermark 的 paid 側(FIFO 沖最舊的欠款),手動轉帳走 charged 側、依入帳
+# 歸屬日落在哪一期就減那一期(跟 income 同口徑)。兩邊的 SQL 條件集中在這裡,
+# 避免各處各寫一份。
+_IS_SETTLEMENT_NOTE = or_(
+    ReadTxProjection.note.startswith(CARD_PAYMENT_NOTE_PREFIX, autoescape=True),
+    ReadTxProjection.note.startswith(AUTOPAY_NOTE_PREFIX, autoescape=True),
+    *(ReadTxProjection.note.like(p) for p in LEGACY_PAYMENT_NOTE_LIKE_PATTERNS),
+)
+# `NOT(NULL)` 是 NULL(會被 WHERE 濾掉),所以 NULL 備註要明確算手動轉帳。
+_IS_MANUAL_TRANSFER_NOTE = or_(
+    ReadTxProjection.note.is_(None),
+    ~_IS_SETTLEMENT_NOTE,
+)
+
+def _transfer_in_totals(
+    db: Session,
+    *,
+    ledger_id: str,
+    member_ids: Sequence[str],
+    manual: bool,
+    amount_expr,
+    upper_dt: datetime | None = None,
+    lower_dt: datetime | None = None,
+) -> dict[str, float]:
+    """轉入成員帳戶的轉帳加總(正值),key 是 `to_account_sync_id`。
+    `manual=False` 是「繳款」(備註為繳款/自動扣繳前綴,終身 watermark 的 paid
+    側,不帶日期界線);`manual=True` 是使用者手動轉入(視為收入,走 charged
+    側,依入帳歸屬日 `lower_dt < 歸屬日 <= upper_dt` 落在哪一期)。"""
+    if not member_ids:
+        return {}
+    conditions = [
+        ReadTxProjection.ledger_id == ledger_id,
+        ReadTxProjection.to_account_sync_id.in_(member_ids),
+        ReadTxProjection.tx_type == "transfer",
+        _IS_MANUAL_TRANSFER_NOTE if manual else _IS_SETTLEMENT_NOTE,
+    ]
+    if upper_dt is not None:
+        conditions.append(_ATTR_DATE <= upper_dt)
+    if lower_dt is not None:
+        conditions.append(_ATTR_DATE > lower_dt)
+    rows = db.execute(
+        select(
+            ReadTxProjection.to_account_sync_id,
+            func.coalesce(func.sum(amount_expr), 0.0),
+        ).where(*conditions).group_by(ReadTxProjection.to_account_sync_id)
+    ).all()
+    return {acc: float(amt) for acc, amt in rows}
+
+
+def _merge_minus(base: dict[str, float], deduct: dict[str, float]) -> dict[str, float]:
+    """`base[k] - deduct[k]`,key 取聯集(手動轉帳的 key 不一定在 expense/income
+    的結果裡,例如只收過轉帳的群組自己)。"""
+    out = dict(base)
+    for k, v in deduct.items():
+        out[k] = out.get(k, 0.0) - v
+    return out
 
 
 def compute_offset_totals(
@@ -245,6 +324,12 @@ def compute_group_billing(
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
         per_child_cycle_spend = {acc: float(amt) for acc, amt in spend_rows}
+        # 手動轉入(非繳款)視為收入,減少本期新增消費,見 `_IS_MANUAL_TRANSFER_NOTE`。
+        per_child_cycle_spend = _merge_minus(per_child_cycle_spend, _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=_NATIVE_AMOUNT,
+            upper_dt=cycle_end_query_dt, lower_dt=cycle_start_query_dt,
+        ))
 
         charged_rows = db.execute(
             select(
@@ -265,6 +350,17 @@ def compute_group_billing(
         # credit_used(2026-08-03 使用者反饋 #2)用轉分期前的原始終身消費,
         # 不扣沖銷 —— 轉成分期只是把「怎麼付」拆開,不代表額度立刻恢復。
         lifetime_charged_total_raw = sum(per_child_lifetime_charged.values())
+        # 手動轉入(非繳款)走 charged 側:依入帳歸屬日,截至本期結帳日為止的
+        # 部分當收入扣掉;`credit_used` 另外用「全部轉入(不限日期)」算,不受
+        # 這裡的日期界線影響(轉進來的錢不管哪天都會讓額度恢復)。
+        per_child_lifetime_charged = _merge_minus(per_child_lifetime_charged, _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=_NATIVE_AMOUNT, upper_dt=cycle_end_query_dt,
+        ))
+        lifetime_manual_in_total = sum(_transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=_NATIVE_AMOUNT,
+        ).values())
         # 帳單分期沖銷(§2.3,2026-08-02 第三輪):已轉成分期的金額從「終身
         # 消費」裡永久扣掉,見 compute_offset_totals docstring —— 只影響
         # `remaining_due`(當期應繳/防重複轉分期的判斷),不影響上面的
@@ -283,17 +379,10 @@ def compute_group_billing(
         # 快照,NULL 時代表轉出帳戶幣別本來就等於帳本本位幣,回退 `amount`
         # 行為不變)——不管轉入卡片自己的幣別是什麼,經濟價值上「這筆繳款
         # 值多少帳本本位幣」只看轉出方那一筆換算,才能跟 charged 側比較。
-        paid_rows = db.execute(
-            select(
-                ReadTxProjection.to_account_sync_id,
-                func.coalesce(func.sum(_NATIVE_AMOUNT), 0.0),
-            ).where(
-                ReadTxProjection.ledger_id == ledger_id,
-                ReadTxProjection.to_account_sync_id.in_(member_ids),
-                ReadTxProjection.tx_type == "transfer",
-            ).group_by(ReadTxProjection.to_account_sync_id)
-        ).all()
-        per_child_lifetime_paid = {acc: float(amt) for acc, amt in paid_rows}
+        per_child_lifetime_paid = _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=False,
+            amount_expr=_NATIVE_AMOUNT,
+        )
 
         # 合併帳單群組多幣別淨額換算修正(2026-09-07 使用者反饋,跟 App 端
         # `credit_card_billing_providers.dart::creditCardDueByChildAsOf` 同一個
@@ -321,29 +410,28 @@ def compute_group_billing(
                 _ATTR_DATE <= cycle_end_query_dt,
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
-        per_child_native_charged = {acc: float(amt) for acc, amt in native_charged_rows}
+        per_child_native_charged = _merge_minus(
+            {acc: float(amt) for acc, amt in native_charged_rows},
+            _transfer_in_totals(
+                db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+                amount_expr=func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount),
+                upper_dt=cycle_end_query_dt,
+            ),
+        )
 
-        native_paid_rows = db.execute(
-            select(
-                ReadTxProjection.to_account_sync_id,
-                func.coalesce(func.sum(func.coalesce(
-                    ReadTxProjection.to_amount, ReadTxProjection.amount,
-                )), 0.0),
-            ).where(
-                ReadTxProjection.ledger_id == ledger_id,
-                ReadTxProjection.to_account_sync_id.in_(member_ids),
-                ReadTxProjection.tx_type == "transfer",
-            ).group_by(ReadTxProjection.to_account_sync_id)
-        ).all()
-        per_child_native_paid = {acc: float(amt) for acc, amt in native_paid_rows}
+        per_child_native_paid = _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=False,
+            amount_expr=func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount),
+        )
     else:
         lifetime_charged_total_raw = 0.0
+        lifetime_manual_in_total = 0.0
         per_child_native_charged = {}
         per_child_native_paid = {}
 
     statement_amount = sum(per_child_cycle_spend.values())
     lifetime_paid_total = sum(per_child_lifetime_paid.values())
-    credit_used = lifetime_charged_total_raw - lifetime_paid_total
+    credit_used = lifetime_charged_total_raw - lifetime_paid_total - lifetime_manual_in_total
 
     per_child_remaining_due_signed: dict[str, float] = {}
     for cid in member_ids:
@@ -380,7 +468,11 @@ def compute_group_billing(
                 _ATTR_DATE <= now,
             )
         ).one()
-        open_cycle_spend = float(open_exp) - float(open_inc)
+        open_manual_in = sum(_transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=_NATIVE_AMOUNT, upper_dt=now, lower_dt=cycle_end_query_dt,
+        ).values())
+        open_cycle_spend = float(open_exp) - float(open_inc) - open_manual_in
     else:
         open_cycle_spend = 0.0
 
@@ -500,13 +592,22 @@ def compute_cycle_period_billing(
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
         per_member_new_spend = {acc: float(amt) for acc, amt in spend_rows}
+        # 手動轉入(非繳款)視為收入:減少這期新增消費,但不算「已繳」
+        # (`paid_in_cycle` = total_due - remaining_due,手動轉入在兩邊都被
+        # 當收入處理,自然不會出現在已繳金額裡)。
+        per_member_new_spend = _merge_minus(per_member_new_spend, _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=_NATIVE_AMOUNT, upper_dt=query_end_dt, lower_dt=cycle_start_dt,
+        ))
         new_spend = sum(per_member_new_spend.values())
 
     # 帳單分期沖銷(§2.3,2026-08-02 第三輪):見 compute_offset_totals
     # docstring —— 對所有 cutoff 一律扣掉同一個總額,不分時間視窗。
     offset_totals = compute_offset_totals(db, ledger_id=ledger_id, member_ids=member_ids)
 
-    def _grouped_charged(cutoff_dt: datetime, *, amount_expr) -> dict[str, float]:
+    def _grouped_charged(
+        cutoff_dt: datetime, *, amount_expr, transfer_amount_expr,
+    ) -> dict[str, float]:
         if not member_ids:
             return {}
         rows = db.execute(
@@ -524,22 +625,19 @@ def compute_cycle_period_billing(
                 _ATTR_DATE <= cutoff_dt,
             ).group_by(ReadTxProjection.account_sync_id)
         ).all()
-        return {acc: float(amt) for acc, amt in rows}
+        charged = {acc: float(amt) for acc, amt in rows}
+        # 手動轉入(非繳款)視為收入,依入帳歸屬日扣在 charged 側。
+        return _merge_minus(charged, _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=True,
+            amount_expr=transfer_amount_expr, upper_dt=cutoff_dt,
+        ))
 
     def _grouped_paid(*, amount_expr) -> dict[str, float]:
-        if not member_ids:
-            return {}
-        rows = db.execute(
-            select(
-                ReadTxProjection.to_account_sync_id,
-                func.coalesce(func.sum(amount_expr), 0.0),
-            ).where(
-                ReadTxProjection.ledger_id == ledger_id,
-                ReadTxProjection.to_account_sync_id.in_(member_ids),
-                ReadTxProjection.tx_type == "transfer",
-            ).group_by(ReadTxProjection.to_account_sync_id)
-        ).all()
-        return {acc: float(amt) for acc, amt in rows}
+        # 只收「繳款」(備註前綴),手動轉入已在 `_grouped_charged` 當收入處理。
+        return _transfer_in_totals(
+            db, ledger_id=ledger_id, member_ids=member_ids, manual=False,
+            amount_expr=amount_expr,
+        )
 
     # 跨幣別繳款(2026-09-06 使用者反饋)+ 合併帳單群組多幣別淨額換算修正
     # (2026-09-07 使用者反饋,跟 `compute_group_billing`/App 端
@@ -555,8 +653,15 @@ def compute_cycle_period_billing(
     converted_paid = _grouped_paid(amount_expr=_NATIVE_AMOUNT)
 
     def _member_due_as_of(cutoff_dt: datetime) -> float:
-        native_charged = _grouped_charged(cutoff_dt, amount_expr=ReadTxProjection.amount)
-        converted_charged = _grouped_charged(cutoff_dt, amount_expr=_NATIVE_AMOUNT)
+        # 消費側用轉出方原幣 `amount`;手動轉入對應成「轉入卡片自己的幣別」
+        # 的 `to_amount`(同幣別 NULL 回退 `amount`),跟 `native_paid` 同基準。
+        native_charged = _grouped_charged(
+            cutoff_dt, amount_expr=ReadTxProjection.amount,
+            transfer_amount_expr=func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount),
+        )
+        converted_charged = _grouped_charged(
+            cutoff_dt, amount_expr=_NATIVE_AMOUNT, transfer_amount_expr=_NATIVE_AMOUNT,
+        )
         total = 0.0
         for cid in member_ids:
             n_due = (
