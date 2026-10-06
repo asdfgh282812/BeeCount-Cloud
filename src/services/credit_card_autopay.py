@@ -180,6 +180,9 @@ def materialize_due_card_autopay(db: Session, *, now: datetime | None = None) ->
             amount=remaining_due,
         )
         note = f"{credit_card_billing.AUTOPAY_NOTE_PREFIX}{cycle_start.isoformat()}~{cycle_end_iso})"
+        offsets = credit_card_billing.payment_offsets_for_group(
+            billing=billing, group=group, children=children, amount=remaining_due,
+        )
         for target_id, amount in allocations.items():
             if amount <= 0:
                 continue
@@ -198,6 +201,27 @@ def materialize_due_card_autopay(db: Session, *, now: datetime | None = None) ->
                 "updatedByUserId": group.user_id,
             }
             emit_tx(db, ledger_id=ledger_id, user_id=group.user_id, now=now, item=item)
+
+        # 溢繳抵扣:跟手動繳款(write/accounts.py::card_payment_ep)同一套。
+        offset_at = credit_card_billing.card_payment_offset_happened_at(cycle_end)
+        for from_child, to_child, offset_amount in offsets:
+            for tx_type, acc_id, other_id, label in (
+                ("expense", from_child, to_child, "溢繳轉給"),
+                ("income", to_child, from_child, "溢繳來自"),
+            ):
+                emit_tx(db, ledger_id=ledger_id, user_id=group.user_id, now=now, item={
+                    "syncId": new_sync_id("tx"),
+                    "type": tx_type,
+                    "amount": offset_amount,
+                    "happenedAt": offset_at.isoformat(),
+                    "note": f"{credit_card_billing.PAYMENT_OFFSET_NOTE_PREFIX}({label} {child_by_id[other_id].name})",
+                    "accountId": acc_id,
+                    "accountName": child_by_id[acc_id].name,
+                    "excludeFromStats": True,
+                    "excludeFromBudget": True,
+                    "createdByUserId": group.user_id,
+                    "updatedByUserId": group.user_id,
+                })
 
         notification_service.create_notification(
             db,

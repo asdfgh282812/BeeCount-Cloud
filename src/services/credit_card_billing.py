@@ -59,6 +59,8 @@ AUTOPAY_NOTE_PREFIX = "自動扣繳(帳單 "
 # 判斷「這是繳款」用的前綴比產生用的短:早期(以及使用者自己記的)繳款備註只
 # 寫「信用卡繳款」,沒有後面的「(帳單 …)」。2026-10-06 使用者實際資料:2024-12
 # 起歷史繳款的備註全都是這個樣子,只認完整前綴會讓它們全被當成手動轉入。
+# 溢繳抵扣那對收支的備註前綴(App `paymentOffsetNotePrefix` 同一個字串)
+PAYMENT_OFFSET_NOTE_PREFIX = "信用卡繳款抵扣"
 CARD_PAYMENT_NOTE_MATCH_PREFIX = "信用卡繳款"
 
 
@@ -222,6 +224,8 @@ class GroupBilling(TypedDict):
     open_cycle_spend: float
     per_child_cycle_spend: dict[str, float]
     per_child_remaining_due: dict[str, float]
+    # 各子帳戶淨額(正=欠款,負=溢繳);溢繳抵扣(compute_card_payment_offsets)用
+    per_child_remaining_due_signed: dict[str, float]
 
 
 def is_billing_root(account: UserAccountProjection) -> bool:
@@ -494,6 +498,7 @@ def compute_group_billing(
         "open_cycle_spend": open_cycle_spend,
         "per_child_cycle_spend": per_child_cycle_spend,
         "per_child_remaining_due": per_child_remaining_due,
+        "per_child_remaining_due_signed": per_child_remaining_due_signed,
     }
 
 
@@ -759,6 +764,7 @@ def compute_installment_summary(
 
 def compute_card_payment_allocations(
     *, group_sync_id: str, remaining_due_by_child: dict[str, float], amount: float,
+    overflow_to: str | None = None,
 ) -> dict[str, float]:
     """把一次繳款總額 `amount` 分攤到各子帳戶身上,抽出來給
     `write/accounts.py::card_payment_ep`(使用者手動繳款)跟
@@ -773,11 +779,14 @@ def compute_card_payment_allocations(
     出現在結果裡。獨立信用卡場景(`group_sync_id` 本身就是唯一子帳戶)下,
     分攤 key 可能跟溢繳結轉 key 相撞,這裡用累加而不是覆蓋,不會把應繳金額
     洗掉。"""
+    # 溢繳預設記在群組本身;呼叫端可指定一張子卡(`overflow_to`)——群組帳戶下的
+    # 轉帳不屬於任何一張卡、App 繳款記錄裡也刪不掉(2026-10-06 使用者反饋)。
+    overflow_id = overflow_to or group_sync_id
     total_children_due = sum(remaining_due_by_child.values())
     allocations: dict[str, float] = {}
     if total_children_due <= 0:
         if amount > 0:
-            allocations[group_sync_id] = amount
+            allocations[overflow_id] = amount
         return allocations
     if amount >= total_children_due:
         for child_id, due in remaining_due_by_child.items():
@@ -785,7 +794,7 @@ def compute_card_payment_allocations(
                 allocations[child_id] = round(due, 2)
         leftover = round(amount - total_children_due, 2)
         if leftover > 0:
-            allocations[group_sync_id] = allocations.get(group_sync_id, 0.0) + leftover
+            allocations[overflow_id] = allocations.get(overflow_id, 0.0) + leftover
         return allocations
     # 金額不足:欠款最少的卡先繳滿,剩下的全給欠款最多的那張(最後一張用減法
     # 拿餘數,加總一定等於 amount)。不按比例切——群組內某張卡溢繳時淨應繳
@@ -805,3 +814,82 @@ def compute_card_payment_allocations(
             allocations[child_id] = share
         remaining = round(remaining - share, 2)
     return allocations
+
+
+def compute_card_payment_offsets(
+    *, signed_due_by_child: dict[str, float], amount: float,
+) -> list[tuple[str, str, float]]:
+    """溢繳抵扣:銀行把同銀行各卡的溢繳折抵在整張帳單上,繳完之後每張卡都該
+    是 0。繳款金額落在「淨應繳」(欠款總和 − 溢繳總和)到「欠款總和」之間時,
+    `compute_card_payment_allocations` 沒辦法讓每張欠款卡都繳滿,差額 S 會留在
+    最大那張欠款卡上、同時溢繳卡還留著 S——這裡算出該把溢繳卡的 S 挪給那張
+    欠款卡,回傳 `[(from_child, to_child, amount)]`。呼叫端只放同幣別的子卡。
+    金額 >= 欠款總和(多繳的溢繳另外結轉),或 < 淨應繳(使用者本來就沒打算
+    繳清)時回傳空。鏡射 App `allocateCardPaymentOffsets`。"""
+    debts = {cid: v for cid, v in signed_due_by_child.items() if v > 0.005}
+    credits = {cid: -v for cid, v in signed_due_by_child.items() if v < -0.005}
+    if not debts or not credits:
+        return []
+    total_debt = sum(debts.values())
+    total_credit = sum(credits.values())
+    if amount >= total_debt - 0.005 or amount < total_debt - total_credit - 0.005:
+        return []
+    allocations = compute_card_payment_allocations(
+        group_sync_id="__offset_group__", remaining_due_by_child=debts, amount=amount,
+    )
+    sources = sorted(credits.items(), key=lambda kv: kv[1], reverse=True)
+    sources = [[cid, v] for cid, v in sources]
+    result: list[tuple[str, str, float]] = []
+    for debt_id, due in debts.items():
+        shortfall = round(due - allocations.get(debt_id, 0.0), 2)
+        for src in sources:
+            if shortfall <= 0.005:
+                break
+            if src[1] <= 0.005:
+                continue
+            moved = min(shortfall, src[1])
+            result.append((src[0], debt_id, round(moved, 2)))
+            src[1] -= moved
+            shortfall = round(shortfall - moved, 2)
+    return result
+
+
+def card_payment_offset_happened_at(cycle_end: date) -> datetime:
+    """溢繳抵扣那對收支的時間:放在這期帳單結帳日當天中午(業務時區),
+    才會算在這期、讓兩張卡繳完都是 0(帳單查詢只算到結帳日當天結束)。"""
+    from datetime import timedelta
+    return business_date_start_utc(cycle_end) + timedelta(hours=12)
+
+
+def payment_offsets_for_group(
+    *, billing: dict, group: UserAccountProjection, children: Sequence[UserAccountProjection],
+    amount: float,
+) -> list[tuple[str, str, float]]:
+    """`compute_card_payment_offsets` 的呼叫端包裝:只讓跟群組同幣別的子帳戶
+    參與溢繳抵扣(抵扣是以群組幣別記的一對收支,不跨幣別)。"""
+    same_currency = {
+        c.sync_id for c in children
+        if not c.currency or not group.currency or c.currency == group.currency
+    }
+    signed = {
+        cid: v for cid, v in billing["per_child_remaining_due_signed"].items()
+        if cid in same_currency
+    }
+    return compute_card_payment_offsets(signed_due_by_child=signed, amount=amount)
+
+
+def pick_overflow_child(
+    *, group: UserAccountProjection, children: Sequence[UserAccountProjection],
+    remaining_due_by_child: dict[str, float],
+) -> str | None:
+    """溢繳(繳的比各卡欠款加總多)要記在哪張子卡:欠款最多的那張,其次第一張
+    同幣別子卡;沒有子卡(單卡自己當群組)回傳 None → 記在 `group_sync_id`。"""
+    if not children:
+        return None
+    best = max(remaining_due_by_child.items(), key=lambda kv: kv[1], default=None)
+    if best is not None and best[1] > 0:
+        return best[0]
+    for c in children:
+        if not c.currency or not group.currency or c.currency == group.currency:
+            return c.sync_id
+    return children[0].sync_id

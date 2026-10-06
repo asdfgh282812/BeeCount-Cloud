@@ -2534,6 +2534,11 @@ def get_account_statement(
     rows = [
         row for row in rows
         if not (row.tx_type == "transfer" and credit_card_billing.is_card_settlement_note(row.note))
+        # 溢繳抵扣那對收支不是銀行帳單上的交易,對帳清單不列(兩筆淨額為 0)
+        and not (
+            row.tx_type != "transfer"
+            and (row.note or "").startswith(credit_card_billing.PAYMENT_OFFSET_NOTE_PREFIX)
+        )
     ]
 
     # 2026-08 使用者反饋(需求 #7 改版):同一個回饋方案(rule)在這期帳單內

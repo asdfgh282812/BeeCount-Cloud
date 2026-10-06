@@ -252,9 +252,10 @@ async def card_payment_ep(
        transfer 記在群組自己身上,代表結轉到未來各期的信用額度(§2.9
        billing-summary 的終身餘額算法會自動把這筆「打到群組」的錢從未來
        `remaining_due` 裡扣掉)。
-    2b. 繳款總額 < 應繳總和:按各子帳戶應繳金額比例分攤(無法讓每張卡都
-        繳清時,不製造"群組溢繳"假象),最後一個子帳戶用減法拿餘數,避免
-        四捨五入加總對不上輸入金額。
+    2b. 繳款總額 < 應繳總和:欠款最少的子帳戶先繳滿,剩下的全給欠款最多的
+        子帳戶(不製造"群組溢繳"假象)。若群組裡有子帳戶溢繳、且繳款總額
+        >= 淨應繳,另外寫一對不計統計的收支把溢繳挪給短少的子帳戶,繳完
+        每張卡都是 0(`compute_card_payment_offsets`)。
     這筆交易的來源帳戶(`from_account_id`)不能是任何 account_group(群組
     沒有自己的資金,不能拿來當繳費來源),也不能是這個群組自己。走一般
     交易寫權限(`_TRANSACTION_WRITE_ROLES`),不是 owner-only —— 跟 §2.5
@@ -355,12 +356,24 @@ async def card_payment_ep(
     # 分攤金額:key 是子帳戶 sync_id,群組自己的溢繳結轉用 account_id 當 key。
     # 分攤規則抽到 credit_card_billing.compute_card_payment_allocations,跟
     # 自動扣繳(services.credit_card_autopay)共用同一份,不重複維護。
+    overflow_child = credit_card_billing.pick_overflow_child(
+        group=group, children=children, remaining_due_by_child=remaining_due_by_child,
+    )
     allocations = credit_card_billing.compute_card_payment_allocations(
         group_sync_id=account_id, remaining_due_by_child=remaining_due_by_child, amount=req.amount,
+        overflow_to=overflow_child,
     )
 
     if not allocations:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payment amount must be positive")
+
+    # 溢繳抵扣(2026-10-06):銀行把同銀行各卡的溢繳折抵在整張帳單上,繳完每張
+    # 卡都該是 0。金額落在「淨應繳 ~ 欠款總和」之間時,把溢繳卡的額度用一對
+    # 不計統計的收支挪給仍短少的欠款卡,日期放在這期帳單結帳日。
+    offsets = credit_card_billing.payment_offsets_for_group(
+        billing=billing, group=group, children=children, amount=req.amount,
+    )
+    offset_at = credit_card_billing.card_payment_offset_happened_at(billing["cycle_end"])
 
     child_by_id = {c.sync_id: c for c in children}
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
@@ -379,7 +392,12 @@ async def card_payment_ep(
                 tx_note = f"{note}(溢繳結轉)" if not req.note else note
             else:
                 to_name = child_by_id[target_id].name
-                tx_note = note
+                # 整筆都是溢繳(這張卡本來沒欠款)才加溢繳後綴
+                pure_overflow = (
+                    target_id == overflow_child
+                    and remaining_due_by_child.get(target_id, 0.0) <= 0
+                )
+                tx_note = f"{note}(溢繳結轉)" if pure_overflow and not req.note else note
             tx_payload = {
                 "tx_type": "transfer",
                 "amount": amount,
@@ -392,6 +410,23 @@ async def card_payment_ep(
                 **actor_fields,
             }
             next_snapshot, last_tx_id = _mutate_create_tx(next_snapshot, tx_payload)
+        for from_child, to_child, offset_amount in offsets:
+            for tx_type, acc_id, other_id, label in (
+                ("expense", from_child, to_child, "溢繳轉給"),
+                ("income", to_child, from_child, "溢繳來自"),
+            ):
+                offset_payload = {
+                    "tx_type": tx_type,
+                    "amount": offset_amount,
+                    "happened_at": offset_at,
+                    "note": f"{credit_card_billing.PAYMENT_OFFSET_NOTE_PREFIX}({label} {child_by_id[other_id].name})",
+                    "account_id": acc_id,
+                    "account_name": child_by_id[acc_id].name,
+                    "exclude_from_stats": True,
+                    "exclude_from_budget": True,
+                    **actor_fields,
+                }
+                next_snapshot, last_tx_id = _mutate_create_tx(next_snapshot, offset_payload)
         return next_snapshot, last_tx_id
 
     return await _commit_write(

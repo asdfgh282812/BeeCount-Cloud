@@ -25,8 +25,8 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import ReadTxProjection, User, UserAccountProjection
-from src.services import credit_card
+from src.models import Ledger, ReadTxProjection, User, UserAccountProjection
+from src.services import credit_card, credit_card_billing
 
 
 def _make_client():
@@ -1267,7 +1267,7 @@ def test_card_payment_full_amount_pays_children_and_no_leftover():
         app.dependency_overrides.clear()
 
 
-def test_card_payment_overpayment_leftover_goes_to_group():
+def test_card_payment_overpayment_leftover_goes_to_child_card():
     client, TS = _make_client()
     try:
         app_tok = _login(client, "ccp2@t.com", device_id="d-app", client_type="app")
@@ -1307,8 +1307,10 @@ def test_card_payment_overpayment_leftover_goes_to_group():
                     ReadTxProjection.tx_type == "transfer",
                 )
             )
-        assert row_card is not None and row_card.amount == 100.0
-        assert row_group is not None and row_group.amount == 50.0  # 溢繳結轉到群組
+        # 溢繳記在欠款最多的子卡上(不再另開一筆記在群組帳戶下:群組帳戶的轉帳
+        # 不屬於任何一張卡、App 繳款記錄裡刪不掉),同一張卡合併成一筆 150。
+        assert row_card is not None and row_card.amount == 150.0
+        assert row_group is None
 
         summary = client.get(
             "/api/v1/read/ledgers/lgp2/accounts/acc-group/billing-summary", headers=hdr_web,
@@ -1881,3 +1883,84 @@ def test_card_payment_allocations_smallest_due_paid_first() -> None:
         amount=1822.0,
     )
     assert result == {"green": 85.0, "sport": 1737.0}
+
+
+def test_card_payment_offsets_overpayment_so_every_card_ends_at_zero():
+    """群組有張卡溢繳(退款/回饋 > 消費):繳「淨應繳」時,溢繳挪給短少的欠款卡,
+    繳完每張卡的淨額都是 0(銀行把溢繳折抵在整張帳單上)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "ccp9@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "ccp9@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _setup_payment_ledger(client, hdr_app, "lgp9")
+        for sid, name in (("acc-card-a", "卡A"), ("acc-card-b", "卡B"), ("acc-card-c", "卡C")):
+            _push(client, hdr_app, "lgp9", "account", sid,
+                  {"syncId": sid, "name": name, "type": "credit_card", "currency": "CNY",
+                   "parentAccountId": "acc-group"}, device_id="d-app")
+
+        now = datetime.now(timezone.utc)
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), 5)
+        at = _dt(cycle_start + timedelta(days=1))
+        # A 欠 300、B 欠 100、C 溢繳 40(收入)→ 淨應繳 360。
+        _push(client, hdr_app, "lgp9", "transaction", "tx-a",
+              {"syncId": "tx-a", "type": "expense", "amount": 300.0, "happenedAt": at,
+               "accountId": "acc-card-a", "accountName": "卡A"}, device_id="d-app")
+        _push(client, hdr_app, "lgp9", "transaction", "tx-b",
+              {"syncId": "tx-b", "type": "expense", "amount": 100.0, "happenedAt": at,
+               "accountId": "acc-card-b", "accountName": "卡B"}, device_id="d-app")
+        _push(client, hdr_app, "lgp9", "transaction", "tx-c",
+              {"syncId": "tx-c", "type": "income", "amount": 40.0, "happenedAt": at,
+               "accountId": "acc-card-c", "accountName": "卡C"}, device_id="d-app")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgp9/accounts/acc-group/card-payment",
+            headers=hdr_web,
+            json={"base_change_id": 0, "amount": 360.0, "from_account_id": "acc-cash"},
+        )
+        assert r.status_code == 200, r.text
+
+        with TS() as db:
+            transfers = {
+                row.to_account_sync_id: row.amount
+                for row in db.scalars(
+                    select(ReadTxProjection).where(ReadTxProjection.tx_type == "transfer")
+                )
+            }
+            # 小的先繳滿(B 100),剩下 260 給 A(短 40,由 C 的溢繳抵扣)
+            assert transfers == {"acc-card-b": 100.0, "acc-card-a": 260.0}
+            offsets = db.scalars(
+                select(ReadTxProjection).where(
+                    ReadTxProjection.note.like("信用卡繳款抵扣%"),
+                )
+            ).all()
+            assert sorted((o.tx_type, o.account_sync_id, o.amount) for o in offsets) == [
+                ("expense", "acc-card-c", 40.0),
+                ("income", "acc-card-a", 40.0),
+            ]
+            assert all(o.exclude_from_stats for o in offsets)
+
+            ledger = db.scalar(select(Ledger).where(Ledger.external_id == "lgp9"))
+            group = db.scalar(
+                select(UserAccountProjection).where(UserAccountProjection.sync_id == "acc-group")
+            )
+            children = credit_card_billing.resolve_billing_children(db, account=group)
+            billing = credit_card_billing.compute_group_billing(
+                db, ledger_id=ledger.id, group=group, children=children, now=now,
+            )
+            signed = billing["per_child_remaining_due_signed"]
+            assert all(abs(v) < 0.005 for v in signed.values()), signed
+            assert billing["remaining_due"] == 0
+
+        # 對帳清單不列溢繳抵扣那對收支(不是銀行帳單上的交易)
+        stmt = client.get(
+            "/api/v1/read/ledgers/lgp9/accounts/acc-group/statement",
+            headers=hdr_web, params={"cycle_offset": 0},
+        )
+        assert stmt.status_code == 200, stmt.text
+        notes = [t.get("note") or "" for t in stmt.json()["transactions"]]
+        assert not any(n.startswith("信用卡繳款抵扣") for n in notes), notes
+    finally:
+        app.dependency_overrides.clear()
