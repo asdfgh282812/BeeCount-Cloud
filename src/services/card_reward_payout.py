@@ -23,7 +23,7 @@ compute_account_balance` 也會正確算進餘額。回饋是系統依規則算�
 
 2026-10 新增兩點(對齊 Moze 紅利回饋):
 - `interval == "custom_range"`(指定活動區間):整個活動只有一期
-  (`starts_at`~`ends_at`),`period_end` 結算要等活動結束(`now.date() > ends_at`)
+  (`starts_at`~`ends_at`),`period_end` 結算要等活動結束(`business_today(now) > ends_at`)
   且到入帳日才發,只發一次(去重鍵 = ends_at 的 iso 日期),事後補綁消費走既有
   的補發差額邏輯。
 - 回饋金歸屬專案:`_resolve_reward_project_id`——規則的 `reward_project_id` 優先;
@@ -70,6 +70,12 @@ from ..models import (
 )
 from . import card_rewards
 from . import notifications as notification_service
+from .business_time import (
+    business_date_end_utc,
+    business_date_start_utc,
+    business_today,
+    to_business_date,
+)
 from .recurring_materializer import emit_tx, new_sync_id
 
 logger = logging.getLogger(__name__)
@@ -462,8 +468,8 @@ def _paid_in_period(
     """這條規則在 [period_start, period_end] 這個帳單週期/自然月裡,已經
     透過逐筆結算入帳過的金額加總(不含這次呼叫還沒 commit 的——呼叫端用
     `period_cache` 在記憶體裡疊加,不依賴這裡重複查詢)。"""
-    start_dt = card_rewards._date_to_utc_dt(period_start)
-    end_dt = card_rewards._date_to_utc_dt(period_end, end_of_day=True)
+    start_dt = business_date_start_utc(period_start)
+    end_dt = business_date_end_utc(period_end)
     rows = db.execute(
         select(CardRewardPayout.amount)
         .join(ReadTxProjection, ReadTxProjection.sync_id == CardRewardPayout.dedup_key)
@@ -498,7 +504,7 @@ def _materialize_per_tx(
     for item in pending:
         tx = item["tx"]
         settlement_date = card_rewards.compute_settlement_date(rule, tx_happened_at=tx.happened_at)
-        if settlement_date is None or now.date() < settlement_date:
+        if settlement_date is None or business_today(now) < settlement_date:
             continue  # 還沒到入帳日,留到下次 tick 重試,不記去重
 
         # Phase 8 #4 補漏(2026-08 使用者反饋:選了「總額四捨五入」實際入帳
@@ -512,7 +518,7 @@ def _materialize_per_tx(
         )
         if rule.cap_amount is not None:
             period = card_rewards._resolve_period(
-                db, account=account, rule=rule, now=tx.happened_at.date(), period_offset=0,
+                db, account=account, rule=rule, now=to_business_date(tx.happened_at), period_offset=0,
             )
             if period is not None:
                 if period not in period_cache:
@@ -614,10 +620,10 @@ def _materialize_period_end(
             # `period_end` 是最後一天(含),入帳日預設也是 period_end,不擋的話
             # 活動最後一天當天就會提前結算、漏掉當天之後才記的消費。billing_cycle/
             # calendar_month 的 offset<0 本來就是已結束的期間,不需要這個檢查。
-            if rule.interval == "custom_range" and now.date() <= period_end:
+            if rule.interval == "custom_range" and business_today(now) <= period_end:
                 continue
             settlement_date = card_rewards.compute_settlement_date(rule, period_end=period_end)
-            if settlement_date is None or now.date() < settlement_date:
+            if settlement_date is None or business_today(now) < settlement_date:
                 continue  # 這期還沒到規則設定的入帳日,留到下次 tick 重試
 
             is_top_up = period_key in already_paid
@@ -644,7 +650,7 @@ def _materialize_period_end(
             assert rule.reward_account_id is not None
             payout_tx_sync_id = _emit_reward_tx(
                 db, ledger_id=ledger_id, user_id=rule.user_id, now=now,
-                happened_at=card_rewards._date_to_utc_dt(settlement_date),
+                happened_at=business_date_start_utc(settlement_date),
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
                 note=(
                     f"信用卡回饋{'補發' if is_top_up else '入帳'}：{rule.label}"

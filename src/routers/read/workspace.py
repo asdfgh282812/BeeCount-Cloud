@@ -14,6 +14,14 @@ from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 from ...models import ExchangeRateCache, UserExchangeRateProjection
+from datetime import date as _date_type
+
+from ...services.business_time import (
+    business_date_end_utc,
+    business_date_start_utc,
+    business_today,
+    to_business_date,
+)
 from ...services.exchange_rate import fetcher as _exchange_rate_fetcher
 
 # ---------------------------------------------------------------------------
@@ -46,6 +54,16 @@ def list_workspace_transactions(
     amount_max: float | None = Query(default=None, description="金额上限(含)"),
     date_from: datetime | None = Query(default=None, description="happened_at >= date_from"),
     date_to: datetime | None = Query(default=None, description="happened_at < date_to(独占,前端传当天 23:59:59 即可包含整天)"),
+    day_from: _date_type | None = Query(
+        default=None,
+        description="業務日期(LEDGER_TIMEZONE)起,含當天:happened_at >= 該日業務時區 00:00。"
+        "與 date_from 並存時兩個條件都套用。給「帳單週期」這類以日期定義的區間用——"
+        "前端不知道業務時區,傳 UTC 零點的 date_from 會讓凌晨的交易差一天。",
+    ),
+    day_to: _date_type | None = Query(
+        default=None,
+        description="業務日期(LEDGER_TIMEZONE)止,含當天:happened_at <= 該日業務時區 23:59:59.999999。",
+    ),
     limit: int = Query(default=20, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -140,6 +158,11 @@ def list_workspace_transactions(
         query = query.where(ReadTxProjection.happened_at >= date_from)
     if date_to is not None:
         query = query.where(ReadTxProjection.happened_at < date_to)
+    # 業務日期區間(含頭含尾),邊界由後端用 LEDGER_TIMEZONE 換算,見 day_from 說明。
+    if day_from is not None:
+        query = query.where(ReadTxProjection.happened_at >= business_date_start_utc(day_from))
+    if day_to is not None:
+        query = query.where(ReadTxProjection.happened_at <= business_date_end_utc(day_to))
 
     total = int(db.scalar(
         select(func.count()).select_from(query.subquery())
@@ -988,7 +1011,7 @@ async def list_workspace_accounts(
         # 隔天才顯示(2026-09-11 使用者反饋:結帳日 11 號當天就跳出來,應該
         # 12 號才對),不能結帳日當天就顯示,跟 credit_card_reminders.py 的
         # `statement_closed` 时机同一个判断。
-        if billing["remaining_due"] > 0.01 and now.date() > billing["cycle_end"]:
+        if billing["remaining_due"] > 0.01 and business_today(now) > billing["cycle_end"]:
             due = billing["due_date"]
             acc.billing_due_date = datetime(due.year, due.month, due.day, tzinfo=timezone.utc)
             acc.billing_remaining_due = round(billing["remaining_due"], 2)
@@ -1374,14 +1397,13 @@ def workspace_ledger_counts(
             .where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
         ).all():
             if ts:
-                day_set.add(_to_utc(ts).strftime("%Y-%m-%d"))
+                day_set.add(to_business_date(ts).isoformat())
 
     days_since_first_tx = 0
     if first_at is not None:
-        now_utc = datetime.now(timezone.utc)
-        first_day = first_at.astimezone(timezone.utc).date()
-        today_utc = now_utc.date()
-        days_since_first_tx = (today_utc - first_day).days + 1
+        # 「第幾天記帳」以業務時區的日期算(LEDGER_TIMEZONE),不用 UTC 日期。
+        first_day = to_business_date(first_at)
+        days_since_first_tx = (business_today() - first_day).days + 1
 
     return WorkspaceLedgerCountsOut(
         tx_count=tx_count,

@@ -10,6 +10,7 @@ docker compose up -d --build
 - **預設資料庫 URL：** `sqlite:////data/beecount.db`
 - **備份產物目錄：** `/data/backups` (`BACKUP_STORAGE_DIR`)
 - **App 協作讀寫權限範圍：** `ALLOW_APP_RW_SCOPES` 預設為 `true`（僅在明確希望限制 App 讀寫權限時才設為 `false`）
+- **業務時區：** `LEDGER_TIMEZONE` 預設 `Asia/Taipei`（見 [§9](#9-業務時區-ledger_timezone)）
 
 ## 2) 健康檢查 (Health checks)
 
@@ -77,3 +78,14 @@ SQLite 備份命令：
 - 建議之面向使用者的策略：
   - App 保留協作入口可見，並附帶 Beta 測試警告。
   - 共享成員的操作維護，仍以 Web / 管理端介面優先。
+
+## 9) 業務時區 `LEDGER_TIMEZONE` (Business timezone)
+
+交易時間 `happened_at` 以 UTC 儲存，但信用卡紅利回饋的活動起訖日、自然月、帳單週期／結帳日、回饋入帳日、到期提醒與自動扣繳的「今天」，都是**使用者所在時區的曆法日期**。`LEDGER_TIMEZONE` 決定後端用哪個時區把「瞬間」換算成「日期」（`src/services/business_time.py` 為唯一換算入口）。
+
+- **預設：** `Asia/Taipei`（本專案使用者在台灣）。其他地區請自行設定 IANA 時區名稱，例如 `LEDGER_TIMEZONE=America/New_York`、`LEDGER_TIMEZONE=UTC`。
+- **為什麼要設：** 若用 UTC 日期歸屬，台灣（UTC+8）00:00~08:00 的消費會被算到前一天——活動開始日凌晨的消費被判成活動前一天、每月 1 號凌晨的消費被算進上個月、結帳日邊界差一天。
+- **驗證：** 啟動載入設定時就會檢查；無效值（例如 `Taipei`、`UTC+8`）會直接報錯並指出 `LEDGER_TIMEZONE`，不會拖到排程執行時才出問題。空字串視為未設定（使用預設）。容器映像已內建 `tzdata`。
+- **改值不需要資料遷移：** 它只影響日期歸屬的「計算」，不會改動任何已儲存的資料。改值後，既有交易會依新時區重新歸屬到各期；已經入帳的回饋（`card_reward_payouts` 去重紀錄與回饋交易）不會被重算或重發。
+- **單一時區限制：** 整個部署共用一個時區，不支援每位使用者各自的時區。成員分散在不同時區的部署，請挑多數使用者所在的時區。
+- **不受影響的部分：** 規則的 `starts_at`/`ends_at` 是純日期（取其 UTC 年月日）；API 回傳的 `period_start`/`cycle_start`/`due_date` 等日期標籤維持原格式；週期性收支與統計報表各有自己的時區機制（如 `tz_offset_minutes`），不讀這個設定。

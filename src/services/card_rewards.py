@@ -50,6 +50,13 @@ from ..models import (
 )
 from ..sync_applier import apply_user_change_to_projection
 from . import credit_card
+from .business_time import (
+    business_date_end_utc,
+    business_date_start_utc,
+    business_datetime_with_time_of,
+    business_today,
+    to_business_date,
+)
 from .deferred_posting import attribution_date as _shared_attribution_date
 
 REWARD_CATEGORY_NAME = "回饋金"
@@ -216,9 +223,10 @@ def _attribution_date(tx: ReadTxProjection) -> datetime:
 
 
 def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
-    if end_of_day:
-        return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    """週期邊界 `date` → 查詢用 UTC 瞬間。2026-10 起改走業務時區
+    (`LEDGER_TIMEZONE`,見 `services/business_time.py`):以前是「UTC 當天零點」,
+    台灣使用者凌晨 00:00~08:00 的消費會被歸到前一天。"""
+    return business_date_end_utc(d) if end_of_day else business_date_start_utc(d)
 
 
 def combine_settlement_date_with_source_time(settlement_date: date, source_happened_at: datetime) -> datetime:
@@ -228,15 +236,13 @@ def combine_settlement_date_with_source_time(settlement_date: date, source_happe
     時:分:秒」,取代原本 `_date_to_utc_dt(settlement_date)` 固定補
     00:00:00 UTC(換算 UTC+8 顯示固定是 08:00 的根因)。週期結算
     (`period_end`)沒有單一來源交易可對齊,不呼叫這個函式,維持現況固定
-    時間。"""
-    happened = source_happened_at
-    if happened.tzinfo is None:
-        happened = happened.replace(tzinfo=timezone.utc)
-    return datetime(
-        settlement_date.year, settlement_date.month, settlement_date.day,
-        happened.hour, happened.minute, happened.second, happened.microsecond,
-        tzinfo=happened.tzinfo,
-    )
+    時間。
+
+    2026-10:「時:分:秒」改取來源交易在**業務時區**(`LEDGER_TIMEZONE`)的牆上
+    時間,再與業務時區的 `settlement_date` 組合後轉回 UTC——否則台灣 10/06
+    02:04 的消費(= 10/05 18:04Z)會以 UTC 時分秒 18:04 疊在結算日上,使用者
+    看到的回饋入帳時間變成隔天 02:04 以外的時刻、甚至跨日。"""
+    return business_datetime_with_time_of(settlement_date, source_happened_at)
 
 
 def _calendar_month_containing(as_of: date) -> tuple[date, date]:
@@ -278,7 +284,9 @@ def _custom_range_period(rule: ReadCardRewardRuleProjection) -> tuple[date, date
     """`interval == "custom_range"`(指定活動區間,2026-10)的計算期間:固定只有一期
     `(starts_at.date(), ends_at.date())`(起訖皆含),沿用規則既有的 starts_at/
     ends_at 當活動起訖日,不需要 billing_day/帳單週期,也不看 `now`/`period_offset`
-    (任何 offset 都回同一期)。
+    (任何 offset 都回同一期)。`starts_at`/`ends_at` 是「純日期」語意(Web/App 送
+    `YYYY-MM-DDT00:00:00Z`),維持取 UTC 年月日,**不做業務時區轉換**
+    (見 `services/business_time.py` 模組說明)。
 
     寫入端(REST)保證 custom_range 兩個日期皆必填,但 sync push 路徑不驗證——
     任一缺漏(或 ends 早於 starts)時回傳 None,呼叫端據此降級成
@@ -303,8 +311,8 @@ def _resolve_period(
     period_offset: int,
 ) -> tuple[date, date] | None:
     """單一期間版本,只給 `card_reward_payout._materialize_per_tx` 的逐筆
-    cap 追蹤用——那裡 `now` 是某筆交易自己的 `happened_at.date()`(單一
-    日期歸屬到哪個月/週期),跟 `_resolve_periods` 的「使用者目前瀏覽的
+    cap 追蹤用——那裡 `now` 是某筆交易自己的業務日期
+    (`to_business_date(happened_at)`,單一日期歸屬到哪個月/週期),跟 `_resolve_periods` 的「使用者目前瀏覽的
     帳單週期視窗」語意不同,不能互相取代。`calendar_month` 分支永遠直接
     用 `_calendar_month_containing(now)` 算出 `now` 落在的那個自然月,
     刻意不管 `resolve_billing_schedule`——這個值本來就跟 `_resolve_periods`
@@ -557,9 +565,12 @@ def _qualifying_transactions(
         # 還沒過期」。這裡補上單筆交易層級的邊界檢查,把落在規則生效窗之外
         # 的交易剔除,即使它們仍落在同一個帳單週期內。
         if enforce_active_window:
-            if rule.starts_at is not None and attributed.date() < rule.starts_at.date():
+            # 交易歸屬日用業務時區(台灣 10/06 02:04 = 10/05 18:04Z 要算 10/06);
+            # 規則 starts_at/ends_at 是純日期,維持取 UTC 年月日、不轉時區。
+            attributed_day = to_business_date(attributed)
+            if rule.starts_at is not None and attributed_day < rule.starts_at.date():
                 continue
-            if rule.ends_at is not None and attributed.date() > rule.ends_at.date():
+            if rule.ends_at is not None and attributed_day > rule.ends_at.date():
                 continue
         try:
             tagged_rule_ids = json.loads(tx.reward_rule_sync_ids_json or "[]")
@@ -637,7 +648,7 @@ def compute_settlement_date(
     period_end: date | None = None,
 ) -> date | None:
     """規則的「這筆錢什麼時候入帳」。`immediate_after_tx`/`after_posting_date`
-    是 `tx_happened_at.date() + settlement_days` 天(`after_posting_date`
+    是 `to_business_date(tx_happened_at) + settlement_days` 天(`after_posting_date`
     目前跟 `immediate_after_tx` 算法相同——沿用 `calc_basis`/
     `_attribution_date` 同款「§2.10 `deferred_posting_at` 落地前兩者行為
     一致」的誠實文檔化限制,之後只需要改這一個函式)。`period_end` 直接
@@ -649,10 +660,8 @@ def compute_settlement_date(
     if rule.settlement_type in ("immediate_after_tx", "after_posting_date"):
         if tx_happened_at is None:
             return None
-        happened = tx_happened_at
-        if happened.tzinfo is None:
-            happened = happened.replace(tzinfo=timezone.utc)
-        return happened.date() + timedelta(days=rule.settlement_days or 0)
+        # naive(SQLite 讀回)由 `to_business_date` 視為 UTC。
+        return to_business_date(tx_happened_at) + timedelta(days=rule.settlement_days or 0)
     if rule.settlement_type == "period_end":
         if period_end is None:
             return None
@@ -719,7 +728,7 @@ def compute_account_card_rewards(
     periods` 回傳的每個期間都會 append 一筆),不再是「一條規則固定一筆
     結果」——呼叫端 by rule_id 分組時要注意這點。"""
     results: list[RuleRewardResult] = []
-    as_of_date = now.date()
+    as_of_date = business_today(now)
 
     foreign_account_ids = {
         r.account_sync_id for r in rules
@@ -887,7 +896,7 @@ def list_rule_qualifying_transactions(
     `periods` 會有 1~2 筆,每個自然月各自獨立的明細(各自的交易清單/回饋
     金額/剩餘額度,`billing_cycle` 規則行為不變,`periods` 固定只有 1
     筆)——呼叫端不再假設「一條規則一期」。"""
-    as_of_date = now.date()
+    as_of_date = business_today(now)
     periods = _resolve_periods(db, account=account, rule=rule, now=as_of_date, period_offset=period_offset)
     if not periods:
         return {

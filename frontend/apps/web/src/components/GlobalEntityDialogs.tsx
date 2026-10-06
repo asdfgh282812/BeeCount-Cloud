@@ -222,11 +222,13 @@ export function GlobalEntityDialogs() {
           accountSyncId: accountId,
           ledgerId: scope === 'current' ? activeLedgerId || undefined : undefined,
           // 帳單週期日期区间过滤(2026-08-02 补强)。cycle_start 当天不算进这
-          // 期(帳單週期是 (cycle_start, cycle_end] 左开右闭),dateFrom 因此
-          // 要往后推一天;dateTo 同理往后推一天才能包住 cycle_end 当天整天
-          // (server 端 dateTo 是 exclusive `<`)。
-          dateFrom: accountPeriodRange ? addIsoDays(accountPeriodRange.start, 1) : undefined,
-          dateTo: accountPeriodRange ? addIsoDays(accountPeriodRange.end, 1) : undefined,
+          // 期(帳單週期是 (cycle_start, cycle_end] 左开右闭),所以起日是
+          // cycle_start 的隔天、止日是 cycle_end 当天(都含)。2026-10-06:改傳「業務
+          // 日期」(YYYY-MM-DD)由後端用 LEDGER_TIMEZONE 換算邊界,不再把日期轉成
+          // UTC 零點的 dateFrom/dateTo——那樣台灣凌晨 00:00~08:00 的交易會差一天,
+          // 跟 billing-summary 的金額對不上。
+          dayFrom: accountPeriodRange ? addIsoDays(accountPeriodRange.start, 1).slice(0, 10) : undefined,
+          dayTo: accountPeriodRange ? accountPeriodRange.end.slice(0, 10) : undefined,
           limit: DETAIL_PAGE_SIZE,
           offset,
         })

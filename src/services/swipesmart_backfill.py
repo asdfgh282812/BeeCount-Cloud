@@ -39,6 +39,7 @@ from ..models import (
     UserProfile,
 )
 from . import card_rewards, secret_crypto, swipesmart_client
+from .business_time import business_today
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ def _collect_cap_group_usages(
     )
     card_rewards.apply_caps(results)
 
-    as_of_date = now.date()
+    as_of_date = business_today(now)
     own_rule_ids = {r.sync_id for r in own_rules}
     bee_group_totals: dict[str, float] = {}
     bee_group_cap: dict[str, float] = {}

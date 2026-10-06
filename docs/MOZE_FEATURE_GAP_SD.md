@@ -650,7 +650,7 @@ payload camelCase、REST snake_case;migration `0065_card_reward_basic_and_projec
      billing_day/帳單週期,**忽略 `period_offset`**(任何 offset 回同一期)。
      `_qualifying_transactions` 沿用 `happened_at > date_to_utc_dt(period_start)`
      (與 calendar_month 同款,未調整);規則生效窗逐筆檢查照舊。
-   - 入帳(`period_end`):活動**結束後**(`now.date() > ends_at`)且到入帳日才結算一次,
+   - 入帳(`period_end`):活動**結束後**(`business_today(now) > ends_at`,業務時區)且到入帳日才結算一次,
      去重鍵 = `ends_at` iso 日期;活動最後一天當天不結算。`_materialize_period_end` 的
      lookback 迴圈對 custom_range 每個 offset 都看到同一期,靠即時更新的
      `already_paid`/`paid_amount_by_period` 擋重複(有 mutation 驗證過的測試);事後補綁
@@ -677,6 +677,22 @@ REST 欄位(snake_case):`ReadCardRewardRuleOut`/`WriteCardRewardRuleCreateReques
 (`custom_range`)、`startsAt`/`endsAt`(沿用)。`sync_applier._USER_MERGE_SPECS` 已登記兩個新
 鍵,舊版 App 的 partial push 不會把它們沖回預設。`snapshot_builder` 永遠輸出明確的
 `isBasic` bool、`rewardProjectId` 有值才輸出。測試見 `tests/test_card_reward_moze_extras.py`。
+
+**✅ 2026-10-06 日期歸屬使用 `LEDGER_TIMEZONE`(業務時區)**：交易 `happened_at` 是 UTC
+瞬間,但規則起訖日、自然月、帳單週期/結帳日、入帳日都是曆法日期;原本一律用 UTC 日期比對,
+台灣(UTC+8)00:00~08:00 的消費會被歸到前一天(活動開始日 10/06 凌晨 02:04 的消費被判成
+活動前一天、每月 1 號凌晨的消費算進上個月、結帳日邊界差一天)。現在所有「瞬間 ↔ 日期」轉換
+統一走 `src/services/business_time.py`(`to_business_date` / `business_today` /
+`business_date_start_utc` / `business_date_end_utc` / `business_datetime_with_time_of`),
+時區由環境變數 `LEDGER_TIMEZONE` 決定,**預設 `Asia/Taipei`**,啟動時驗證 IANA 名稱
+(見 `docs/DEPLOYMENT.md` §9)。範圍:回饋計算(`card_rewards`)、自動入帳(`card_reward_payout`,
+含回饋交易 `happened_at` = 入帳日 + 來源消費在業務時區的時分秒;期末結算為入帳日業務時區
+00:00)、帳單週期(`credit_card_billing`)、到期提醒/自動扣繳的「今天」、SwipeSmart 回填、
+`billing-summary`/`billing-periods`/`interest-free-suggestion`。**不轉時區**的部分:規則
+`starts_at`/`ends_at`(純日期,取 UTC 年月日)與 API 回傳的 `period_start`/`cycle_start`/
+`due_date`/`settlement_date` 日期標籤(維持 UTC 零點編碼,前端只取前 10 碼)。單一時區、
+改值不需遷移資料。測試見 `tests/test_business_timezone.py`(套件預設 `LEDGER_TIMEZONE=UTC`,
+見 `tests/conftest.py`)。
 
 Moze 分類：[credit-card/rewards](https://doc.moze.app/credit-card/rewards.md)。
 業務規則因發卡行而異，複雜度跟 §2.9 其它子功能不在同一量級，獨立成

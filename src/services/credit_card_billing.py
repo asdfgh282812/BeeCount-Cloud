@@ -28,6 +28,7 @@ from ..models import (
     UserAccountProjection,
 )
 from . import credit_card
+from .business_time import business_date_end_utc, business_date_start_utc, business_today
 from .deferred_posting import attribution_date_expr
 
 # 延後入帳(§2.10 Phase 5):信用卡帳單週期窗口按「入帳日」歸屬,不是單純
@@ -112,10 +113,12 @@ def date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
     """把週期邊界 `date` 轉成查詢用的 UTC datetime 邊界。公開(2026-08-09,
     §2.10 對帳模式改版)給 `read/ledgers.py::get_account_statement`/
     `write/accounts.py::clear_statement_confirmations_ep` 共用同一份邊界
-    計算,不重複實作。"""
-    if end_of_day:
-        return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    計算,不重複實作。
+
+    2026-10 起「當天」是業務時區(`LEDGER_TIMEZONE`)的當天,不再是 UTC 當天
+    (見 `services/business_time.py`):結帳日邊界才不會讓台灣使用者凌晨的
+    消費差一天。"""
+    return business_date_end_utc(d) if end_of_day else business_date_start_utc(d)
 
 
 class GroupBilling(TypedDict):
@@ -209,9 +212,10 @@ def compute_group_billing(
 
     member_ids = billing_member_ids(group, children)
 
-    cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+    today = business_today(now)
+    cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, billing_day)
     due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
-    open_start, open_end = credit_card.billing_cycle_containing(now.date(), billing_day)
+    open_start, open_end = credit_card.billing_cycle_containing(today, billing_day)
     open_due = credit_card.due_date_for_cycle_end(open_end, payment_due_day)
 
     # 下界用結帳日「當天結束」當排除點:結帳日整天都算進「已結束的上一期」,
@@ -454,10 +458,11 @@ def compute_cycle_period_billing(
     assert billing_day is not None and payment_due_day is not None
     member_ids = billing_member_ids(group, children)
 
-    base_start, base_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+    today = business_today(now)
+    base_start, base_end = credit_card.most_recently_closed_cycle(today, billing_day)
     cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, billing_day, cycle_offset)
     due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
-    _open_start, open_end = credit_card.billing_cycle_containing(now.date(), billing_day)
+    _open_start, open_end = credit_card.billing_cycle_containing(today, billing_day)
 
     cycle_start_dt = date_to_utc_dt(cycle_start, end_of_day=True)
     cycle_end_dt = date_to_utc_dt(cycle_end, end_of_day=True)

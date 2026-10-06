@@ -1,6 +1,7 @@
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,6 +67,17 @@ class Settings(BaseSettings):
     # 没装 tzdata 时 tzlocal 会静默 fallback UTC,"0 4 * * *" 就在 UTC 4 点
     # 跑(不是用户期望的本地 4 点)。
     scheduler_timezone: str = Field(default="", alias="SCHEDULER_TIMEZONE")
+
+    # ===== 業務時區(信用卡回饋 / 帳單週期的「日期歸屬」)=====
+    # 交易 `happened_at` 以 UTC 瞬間儲存,但「這筆消費算哪一天 / 哪個月 / 哪個
+    # 帳單週期」是使用者所在時區的曆法概念。台灣(UTC+8)使用者 00:00~08:00 的
+    # 消費,UTC 日期會落在前一天:活動起始日 10/06 凌晨 02:04 的消費被判成活動
+    # 前一天、每月 1 號凌晨的消費被算進上個月、結帳日邊界差一天。所以所有
+    # 「瞬間 ↔ 日期」轉換統一走 `services/business_time.py`,時區由這個設定決定。
+    # 預設 Asia/Taipei(本專案使用者在台灣),其他地區自行設 LEDGER_TIMEZONE。
+    # 只影響日期歸屬的「計算」,不改任何已儲存資料,改值不需要遷移。單一時區
+    # (整個部署共用一個),不支援每個使用者各自的時區。
+    ledger_timezone: str = Field(default="Asia/Taipei", alias="LEDGER_TIMEZONE")
     device_online_window_minutes: int = 10
     allow_app_rw_scopes: bool = True
 
@@ -153,6 +165,23 @@ class Settings(BaseSettings):
     # X-Forwarded-* header)。跨網域反代 / 自訂網域建議明確設定,避免推導
     # 出來的 host 跟 IdP 後台註冊的 redirect URI 對不上。
     oidc_redirect_uri: str = Field(default="", alias="OIDC_REDIRECT_URI")
+
+    @field_validator("ledger_timezone")
+    @classmethod
+    def _validate_ledger_timezone(cls, value: str) -> str:
+        # 載入設定時就驗證:無效值若拖到第一次算回饋才炸,會是半夜排程裡的
+        # 難查錯誤。留空視為未設定(docker-compose 常見的 `LEDGER_TIMEZONE: ""`)。
+        name = (value or "").strip()
+        if not name:
+            return "Asia/Taipei"
+        try:
+            ZoneInfo(name)
+        except Exception as exc:  # ZoneInfoNotFoundError / ValueError(格式不合法)
+            raise ValueError(
+                f"LEDGER_TIMEZONE={value!r} 不是有效的 IANA 時區名稱"
+                f"(例如 'Asia/Taipei'、'UTC'):{exc}"
+            ) from exc
+        return name
 
     @property
     def oidc_configured(self) -> bool:

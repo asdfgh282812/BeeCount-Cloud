@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 from ..models import Notification, ReadTxProjection, UserAccountProjection
 from . import credit_card, credit_card_billing
 from . import notifications as notification_service
+from .business_time import business_today
 from .recurring_materializer import compute_account_balance, emit_tx, new_sync_id
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,8 @@ def materialize_due_card_autopay(db: Session, *, now: datetime | None = None) ->
     不 commit —— 調用方決定事務邊界。返回 {"executed": N,
     "skipped_insufficient": M}。"""
     now = now or datetime.now(timezone.utc)
-    today = now.date()
+    # 「今天」用業務時區(LEDGER_TIMEZONE):台灣使用者的到期日是台灣曆法的那天。
+    today = business_today(now)
 
     candidates = db.scalars(
         select(UserAccountProjection).where(

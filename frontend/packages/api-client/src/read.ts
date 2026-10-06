@@ -442,6 +442,11 @@ export async function fetchWorkspaceTransactions(
     dateFrom?: string
     /** happened_at < dateTo (ISO 8601, 独占)。前端通常传"次日 00:00"包含整天。 */
     dateTo?: string
+    /** 業務日期(YYYY-MM-DD,後端 LEDGER_TIMEZONE)起,含當天。帳單週期這類「以日期定義」的
+     *  區間用這個,不要自己把日期轉成 UTC 零點的 dateFrom——凌晨的交易會差一天。 */
+    dayFrom?: string
+    /** 業務日期(YYYY-MM-DD)止,含當天。 */
+    dayTo?: string
     limit?: number
     offset?: number
   }
@@ -460,6 +465,8 @@ export async function fetchWorkspaceTransactions(
   if (typeof options?.amountMax === 'number') query.set('amount_max', `${options.amountMax}`)
   if (options?.dateFrom) query.set('date_from', options.dateFrom)
   if (options?.dateTo) query.set('date_to', options.dateTo)
+  if (options?.dayFrom) query.set('day_from', options.dayFrom)
+  if (options?.dayTo) query.set('day_to', options.dayTo)
   if (typeof options?.limit === 'number') query.set('limit', `${options.limit}`)
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''

@@ -10,12 +10,12 @@ kind,不是"這張卡有没有提醒过"而是"這一期的這種提醒发过没
 
 四種提醒時機(對齊使用者需求,2026-08-02 确认;`overdue` 為 2026-08-04
 補):
-- `statement_closed`:結帳日隔天(`now.date() == cycle_end + 1 天`),帳單
+- `statement_closed`:結帳日隔天(`business_today(now) == cycle_end + 1 天`),帳單
   金額剛结算出來(結帳日當天銀行才剛結帳,實際帳單要隔天才會出來,2026-09-11
   使用者反饋補上這個 1 天的落差)。
-- `due_soon`:到期前 7 天(`now.date() == due_date - 7 天`)。
-- `due_today`:到期當天(`now.date() == due_date`)。
-- `overdue`:已逾期(`now.date() > due_date` 且 `remaining_due > 0`)。原本
+- `due_soon`:到期前 7 天(`business_today(now) == due_date - 7 天`)。
+- `due_today`:到期當天(`business_today(now) == due_date`)。
+- `overdue`:已逾期(`business_today(now) > due_date` 且 `remaining_due > 0`)。原本
   三種時機都是精確比對某一天,如果使用者是在還款日已經過去之後才建立/
   補設定帳單日還款日(或伺服器在那一天精確 tick 之外的空窗完全沒跑),
   就會永遠錯過 `due_today` 這個精確匹配,之後再也不會有任何提醒——這
@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from ..models import Notification, ReadTxProjection, UserAccountProjection
 from . import credit_card, credit_card_billing
 from . import notifications as notification_service
+from .business_time import business_today
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,8 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
     发出的提醒数。不 commit —— 调用方决定事务边界(跟 debt_reminders 同款
     约定)。"""
     now = now or datetime.now(timezone.utc)
-    today = now.date()
+    # 「今天」用業務時區(LEDGER_TIMEZONE),提醒才會在台灣使用者的結帳日隔天/到期日當天發出。
+    today = business_today(now)
 
     # account_group,或没有掛靠任何群組的獨立信用卡(is_billing_root 的两种
     # 场景),都要各自检查到期提醒;已经掛靠某个群组的子卡跳过——它的帳單

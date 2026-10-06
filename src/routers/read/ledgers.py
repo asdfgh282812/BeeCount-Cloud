@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import false as sa_false
 
 from ...models import CardRewardPayout
+from ...services.business_time import business_today, to_business_date
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
 
@@ -598,6 +599,12 @@ async def get_card_recommendation(
 
 
 def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
+    """把「純日期標籤」(`cycle_start`/`period_start`/`due_date`/`settlement_date`
+    等)編碼成回應用的 datetime。**刻意維持 UTC 零點、不走業務時區**:這是對外
+    回傳的日期標籤而不是查詢邊界,前端只取 ISO 字串前 10 碼當日期顯示/回填
+    (例如 `next_cycle_start.slice(0, 10)`),換成業務時區零點(台灣 = 前一天
+    16:00Z)會讓畫面上的日期整個少一天。需要「查詢邊界瞬間」的地方請用
+    `services.business_time.business_date_start_utc/end_utc`。"""
     if end_of_day:
         return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
@@ -780,7 +787,7 @@ def list_account_billing_periods(
     member_ids = credit_card_billing.billing_member_ids(account, children)
 
     now = datetime.now(timezone.utc)
-    base_start, base_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+    base_start, base_end = credit_card.most_recently_closed_cycle(business_today(now), billing_day)
 
     earliest = db.scalar(
         select(func.min(ReadTxProjection.happened_at)).where(
@@ -790,7 +797,7 @@ def list_account_billing_periods(
     )
     if earliest is not None and earliest.tzinfo is None:
         earliest = earliest.replace(tzinfo=timezone.utc)
-    earliest_date = earliest.date() if earliest is not None else None
+    earliest_date = to_business_date(earliest) if earliest is not None else None
 
     # `+1`(目前還在累積中的那期)一律列出當作清單最新一列;往回一期一期看,
     # 只要「這一期的起點之後還有更早的資料」(跟 has_older 同一個判斷式)就
@@ -849,7 +856,7 @@ def get_account_interest_free_suggestion(
     billing_day, payment_due_day = _require_credit_card_schedule(account)
 
     now = datetime.now(timezone.utc)
-    suggestion = credit_card.interest_free_suggestion(now.date(), billing_day, payment_due_day)
+    suggestion = credit_card.interest_free_suggestion(business_today(now), billing_day, payment_due_day)
     return ReadInterestFreeSuggestionOut(
         account_id=account.sync_id,
         as_of=now,

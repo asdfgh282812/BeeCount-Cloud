@@ -33,6 +33,13 @@ services:
       # 可选:整体替换上游为自托管 Frankfurter(http://host:8080)
       # EXCHANGE_RATE_UPSTREAM: ""
 
+      # ===== 业务时区(信用卡回馈/账单周期的「日期归属」)=====
+      # 交易时间以 UTC 存储,但活动起讫日、自然月、结账日、回馈入账日是使用者
+      # 所在时区的日历日期。默认 Asia/Taipei;其他地区请改成自己的 IANA 时区。
+      # 只影响日期归属的计算,改值不需要迁移既有数据;整个部署共用一个时区
+      # (不支持每位使用者各自的时区)。详见 docs/DEPLOYMENT.md §9。
+      # LEDGER_TIMEZONE: "Asia/Taipei"
+
       # ===== 其它常用环境变量(详见 docs/DEPLOYMENT.md)=====
       # CORS_ORIGINS: "https://your-domain.com"
       # REGISTRATION_ENABLED: "false"
