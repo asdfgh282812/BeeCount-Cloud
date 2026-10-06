@@ -788,6 +788,28 @@ def compute_card_payment_allocations(
             allocations[group_sync_id] = allocations.get(group_sync_id, 0.0) + leftover
         return allocations
     due_children = [(cid, due) for cid, due in remaining_due_by_child.items() if due > 0]
+    # 金額跟各卡應繳都是整數時,分攤也取整數(群組裡某張卡溢繳會讓淨應繳 <
+    # 正值應繳總和而走到這個分支,不取整會把整數交易切成 1737.88 / 84.12)。
+    def _is_whole(v: float) -> bool:
+        return abs(v - round(v)) < 1e-9
+
+    if _is_whole(amount) and all(_is_whole(due) for _, due in due_children):
+        whole: dict[str, float] = {}
+        sum_so_far = 0.0
+        ok = True
+        for i, (child_id, due) in enumerate(due_children):
+            if i == len(due_children) - 1:
+                share = amount - sum_so_far
+            else:
+                share = float(round(amount * (due / total_children_due)))
+            # 取整後餘數超過該卡應繳或變負數 → 放棄取整,退回到分的做法
+            if share < 0 or share > due:
+                ok = False
+                break
+            whole[child_id] = share
+            sum_so_far += share
+        if ok:
+            return whole
     allocated_so_far = 0.0
     for i, (child_id, due) in enumerate(due_children):
         if i == len(due_children) - 1:

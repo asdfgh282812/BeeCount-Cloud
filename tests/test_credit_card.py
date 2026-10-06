@@ -1868,3 +1868,16 @@ def test_billing_summary_late_payment_settles_older_cycle_not_current():
         assert d_cur["period_remaining_due"] == 0.0
     finally:
         app.dependency_overrides.clear()
+
+
+def test_card_payment_allocations_whole_amounts_stay_whole() -> None:
+    from src.services.credit_card_billing import compute_card_payment_allocations
+
+    # 群組有張卡溢繳(-19)→ 淨應繳 1822 < 正值應繳總和 1841,走不足額分攤;
+    # 整數金額不可被切成 1737.88 / 84.12。
+    result = compute_card_payment_allocations(
+        group_sync_id="grp",
+        remaining_due_by_child={"sport": 1756.0, "green": 85.0},
+        amount=1822.0,
+    )
+    assert result == {"sport": 1738.0, "green": 84.0}
