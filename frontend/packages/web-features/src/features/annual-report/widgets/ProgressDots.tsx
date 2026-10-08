@@ -1,6 +1,8 @@
+import { motion } from 'framer-motion'
+
 /**
- * 顶部进度条 — 12 屏对应 12 个细条段。当前页满色填充,已过页半透明,未到页透明。
- * 点击任意段直跳到那一页。
+ * 頂部分段進度條(限動式):看過的滿格、目前這章從 0 填滿、還沒看的空著。
+ * 點任一段直跳到那一章。不自動翻頁——財務數字需要時間看,填滿只是節奏感。
  */
 export type ProgressDotsProps = {
   total: number
@@ -11,27 +13,31 @@ export type ProgressDotsProps = {
 
 export function ProgressDots({ total, current, onJump, className = '' }: ProgressDotsProps) {
   return (
-    <div className={`flex items-center gap-1.5 ${className}`}>
-      {Array.from({ length: total }).map((_, i) => {
-        const state = i < current ? 'past' : i === current ? 'active' : 'future'
-        return (
-          <button
-            key={i}
-            type="button"
-            onClick={() => onJump(i)}
-            className="group h-1.5 flex-1 cursor-pointer overflow-hidden rounded-full bg-white/15 transition"
-            aria-label={`Page ${i + 1}`}
-          >
-            <div
-              className="h-full origin-left rounded-full bg-white transition-all duration-500"
-              style={{
-                width: state === 'past' ? '100%' : state === 'active' ? '100%' : '0%',
-                opacity: state === 'past' ? 0.55 : state === 'active' ? 1 : 0,
-              }}
-            />
-          </button>
-        )
-      })}
+    <div className={`flex items-center gap-1 ${className}`}>
+      {Array.from({ length: total }).map((_, i) => (
+        <button
+          key={i}
+          type="button"
+          onClick={() => onJump(i)}
+          className="flex h-4 flex-1 cursor-pointer items-center"
+          aria-label={`Page ${i + 1}`}
+          aria-current={i === current ? 'step' : undefined}
+        >
+          <span className="block h-1 w-full overflow-hidden rounded-full bg-white/25">
+            {i < current ? (
+              <span className="block h-full w-full rounded-full bg-white" />
+            ) : i === current ? (
+              <motion.span
+                key={`fill-${current}`}
+                className="block h-full rounded-full bg-white"
+                initial={{ width: '0%' }}
+                animate={{ width: '100%' }}
+                transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+              />
+            ) : null}
+          </span>
+        </button>
+      ))}
     </div>
   )
 }

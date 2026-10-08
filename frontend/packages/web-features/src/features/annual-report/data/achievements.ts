@@ -158,5 +158,23 @@ export function computeAchievements(d: DataWithoutAchievements): Achievement[] {
     }
   }
 
+  // ===== 隱藏成就:只有解鎖了才會出現(清單裡沒有「未解鎖」的佔位)=====
+  if (d.recordedFirstAndLastDay) {
+    achievements.push({
+      id: 'first-last',
+      titleKey: TKEY.ach.firstLast.title,
+      descKey: TKEY.ach.firstLast.desc,
+      hidden: true,
+    })
+  }
+  if (d.lateNightExpenseCount >= 10) {
+    achievements.push({
+      id: 'night-owl',
+      titleKey: TKEY.ach.nightOwl.title,
+      descKey: TKEY.ach.nightOwl.desc,
+      hidden: true,
+    })
+  }
+
   return achievements
 }

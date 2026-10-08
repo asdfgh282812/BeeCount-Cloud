@@ -7,6 +7,7 @@
  */
 import type { AnnualReportData, StockCurrencySummary } from './types'
 import { TKEY } from '../i18n'
+import { localDayKey } from './holidays'
 import { currencySymbol } from '../../../lib/currencies'
 
 export type Insight = {
@@ -160,7 +161,7 @@ export function weekdayInsight(d: AnnualReportData): Insight {
 /** Page 8 极端时刻 */
 export function extremesInsight(d: AnnualReportData): Insight {
   if (!d.largestExpense) return { textKey: TKEY.insightExtremesEmpty }
-  const date = d.largestExpense.happenedAt.slice(0, 10)
+  const date = localDayKey(d.largestExpense.happenedAt)
   return {
     textKey: TKEY.insightExtremes,
     args: {

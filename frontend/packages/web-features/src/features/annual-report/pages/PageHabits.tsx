@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { habitsInsight, type AnnualReportData } from '../data'
@@ -25,8 +24,7 @@ export function PageHabits({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={120} />
-      <div className="relative z-10 mx-auto flex h-full max-w-5xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-5xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page9Title)}
         </h2>
@@ -42,14 +40,14 @@ export function PageHabits({ data }: { data: AnnualReportData }) {
               <BigNumber
                 value={data.maxConsecutiveDays}
                 size={48}
-                className="text-amber-300"
+                className="text-[color:var(--story-accent)]"
                 suffix={t(TKEY.page9DaysSuffix)}
               />
             </span>
           </div>
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/10">
             <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-red-400"
+              className="h-full rounded-full bg-[color:var(--story-accent)]"
               initial={{ width: 0 }}
               animate={inView ? { width: `${streakPct}%` } : {}}
               transition={{ duration: 1.4, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}

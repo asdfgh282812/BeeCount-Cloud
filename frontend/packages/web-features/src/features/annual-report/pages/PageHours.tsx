@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { hoursInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
@@ -29,12 +28,11 @@ export function PageHours({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={270} />
-      <div className="relative z-10 mx-auto flex h-full max-w-5xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-5xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page6Title)}
         </h2>
-        <div ref={ref} className="grid w-full grid-cols-4 gap-4 sm:gap-6">
+        <div ref={ref} className="grid w-full grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-6">
           {data.hourBuckets.map((b, i) => {
             const m = meta[b.bucket]
             const pct = total > 0 ? (b.count / total) * 100 : 0

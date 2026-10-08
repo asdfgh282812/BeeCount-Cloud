@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { CurrencyChips, MARKET_FLAG, fmtMoney, fmtSignedMoney, stockTone } from '../widgets/stock'
 import type { AnnualReportData, StockCurrencySummary, StockSellHighlight, StockStyle } from '../data'
@@ -40,10 +39,9 @@ export function PageStockHighlights({
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={s.realizedPnl >= 0 ? 20 : 160} />
       <div
         ref={ref}
-        className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center overflow-y-auto px-8 py-20 sm:px-12"
+        className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 py-20 sm:px-12"
       >
         <h2 className="mb-5 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.stockHighlightsTitle)}
@@ -56,11 +54,11 @@ export function PageStockHighlights({
           initial={{ opacity: 0, y: 14 }}
           animate={inView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          className="mb-6 flex w-full items-center gap-4 rounded-2xl border border-amber-300/30 bg-gradient-to-br from-amber-500/15 to-orange-500/5 p-4 sm:p-5"
+          className="mb-6 flex w-full items-center gap-4 rounded-2xl border border-white/20 bg-white/10 p-4 sm:p-5"
         >
           <span className="text-4xl sm:text-5xl">{STYLE_EMOJI[s.style]}</span>
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-amber-300/70">
+            <div className="text-[10px] uppercase tracking-widest text-[color:var(--story-accent)]">
               {t(TKEY.stockStyleLabel)}
             </div>
             <div className="text-xl font-bold text-white sm:text-2xl">{t(styleKeys.title)}</div>
@@ -130,7 +128,7 @@ function WinRing({ s, inView }: { s: StockCurrencySummary; inView: boolean }) {
           cy="56"
           r={R}
           fill="none"
-          stroke="#FBBF24"
+          stroke="var(--story-accent)"
           strokeWidth="10"
           strokeLinecap="round"
           strokeDasharray={C}
@@ -191,7 +189,7 @@ function Chip({ label, main, sub }: { label: string; main: string; sub: string }
     <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5">
       <div className="text-[10px] uppercase tracking-widest text-white/40">{label}</div>
       <div className="text-sm font-semibold text-white">
-        {main} <span className="ml-1 text-xs font-normal text-amber-300">{sub}</span>
+        {main} <span className="ml-1 text-xs font-normal text-[color:var(--story-accent)]">{sub}</span>
       </div>
     </div>
   )

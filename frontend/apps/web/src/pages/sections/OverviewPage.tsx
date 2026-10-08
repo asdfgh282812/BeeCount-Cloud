@@ -16,6 +16,7 @@ import {
 } from '@beecount/api-client'
 import { fetchBudgetsWithUsage, periodLabel, type BudgetUsage } from '@beecount/web-features'
 
+import { AnnualReviewReminderCard } from '../../components/dashboard/AnnualReviewReminderCard'
 import { useHomeStockData } from '../../components/dashboard/stock/useHomeStockData'
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
@@ -296,6 +297,8 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-4">
+      {/* 新年 1/1 起提醒去年的年度回顧,點開或按 ✕ 之前一直都在 */}
+      <AnnualReviewReminderCard />
       <OverviewSection
         accounts={accounts}
         tags={tags}

@@ -19,7 +19,8 @@ import type {
 } from './types'
 import { computeAchievements } from './achievements'
 import { computePersona } from './persona'
-import { topHolidaySpend } from './holidays'
+import { localDayKey, topHolidaySpend } from './holidays'
+import { collectFunFacts, hashSalt, pickFunFacts } from './funFacts'
 
 /**
  * 笔数 >= MIN_RECORDS 才生成报告,否则显示「数据太少」兜底。
@@ -28,6 +29,8 @@ import { topHolidaySpend } from './holidays'
 export const MIN_RECORDS_FOR_REPORT = 30
 
 export type AggregateInput = {
+  /** 「今天」(測試用;預設 new Date()),決定今年已經過了幾天 */
+  now?: Date
   thisYearTxs: TransactionLite[]
   prevYearTxs: TransactionLite[]
   year: number
@@ -40,7 +43,16 @@ export type AggregateInput = {
 }
 
 export function aggregate(input: AggregateInput): AnnualReportData {
-  const { thisYearTxs, prevYearTxs, year, ledger, stock = null, holidays = {}, holidayPrimary = null } = input
+  const {
+    thisYearTxs,
+    prevYearTxs,
+    year,
+    ledger,
+    stock = null,
+    holidays = {},
+    holidayPrimary = null,
+    now = new Date(),
+  } = input
 
   // 排除 transfer(转账不算收入也不算支出,只是账户间挪)
   const txs = thisYearTxs.filter((t) => t.txType !== 'transfer')
@@ -56,8 +68,9 @@ export function aggregate(input: AggregateInput): AnnualReportData {
   const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
   const totalDays = isLeap ? 366 : 365
 
-  // 记账天数(distinct YYYY-MM-DD)
-  const dayOfTx = (t: TransactionLite) => t.happenedAt.slice(0, 10)
+  // 记账天数(distinct YYYY-MM-DD)。用瀏覽器本地日期,不能切 ISO 字串
+  // (那是 UTC 日期,台灣凌晨 00:00~08:00 的交易會被算到前一天)。
+  const dayOfTx = (t: TransactionLite) => localDayKey(t.happenedAt)
   const recordingDaySet = new Set<string>()
   for (const t of txs) recordingDaySet.add(dayOfTx(t))
   const recordingDays = recordingDaySet.size
@@ -215,6 +228,19 @@ export function aggregate(input: AggregateInput): AnnualReportData {
   }
   const holidaySpend = topHolidaySpend(txs, yearHolidays)
 
+  // ===== 冷知識 =====
+  const funFacts = pickFunFacts(
+    collectFunFacts(txs, { totalExpense, currency: ledger.currency }),
+    year,
+    hashSalt(ledger.id),
+  )
+
+  // ===== 隱藏成就 / 全勤稱號 =====
+  const recordedFirstAndLastDay =
+    recordingDaySet.has(`${year}-01-01`) && recordingDaySet.has(`${year}-12-31`)
+  const lateNightExpenseCount = expenses.filter((t) => new Date(t.happenedAt).getHours() < 5).length
+  const elapsedDays = computeElapsedDays(year, totalDays, now)
+
   // ===== 成就 =====
   const tempData: Omit<AnnualReportData, 'achievements' | 'persona'> = {
     year,
@@ -261,6 +287,10 @@ export function aggregate(input: AggregateInput): AnnualReportData {
     holidays: yearHolidays,
     holidayPrimary,
     holidaySpend,
+    funFacts,
+    recordedFirstAndLastDay,
+    lateNightExpenseCount,
+    elapsedDays,
   }
   const achievements = computeAchievements(tempData)
   const persona = computePersona(tempData)
@@ -339,6 +369,15 @@ function computeTopAccounts(txs: TransactionLite[], limit: number): AccountStat[
     .map(([name, v]) => ({ name, count: v.count, total: v.total }))
     .sort((a, b) => b.count - a.count || b.total - a.total)
     .slice(0, limit)
+}
+
+/** 年度到 `now` 為止的天數(含今天);過去年份 = 全年,未來年份 = 0。 */
+function computeElapsedDays(year: number, totalDays: number, now: Date): number {
+  if (now.getFullYear() > year) return totalDays
+  if (now.getFullYear() < year) return 0
+  const start = new Date(year, 0, 1)
+  const today = new Date(year, now.getMonth(), now.getDate())
+  return Math.round((today.getTime() - start.getTime()) / 86400000) + 1
 }
 
 function computeMaxConsecutiveDays(sortedDays: string[]): number {

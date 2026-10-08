@@ -60,7 +60,8 @@ export function BigNumber({
     <motion.span
       ref={ref}
       className={`inline-block font-bold tabular-nums leading-none ${className}`}
-      style={{ fontSize: size }}
+      // 手機寬度時跟著螢幕縮(size 是桌機上的上限),不然 6~7 位數會撐破兩欄版面
+      style={{ fontSize: `min(${size}px, ${(size * 0.13).toFixed(2)}vw)` }}
       initial={{ opacity: 0, y: 12 }}
       animate={inView ? { opacity: 1, y: 0 } : {}}
       transition={{ duration: 0.4, ease: 'easeOut' }}

@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { weekdayInsight, type AnnualReportData } from '../data'
@@ -26,8 +25,7 @@ export function PageWeekday({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={170} />
-      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-3 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page7Title)}
         </h2>
@@ -47,7 +45,7 @@ export function PageWeekday({ data }: { data: AnnualReportData }) {
           <SideCard
             label={t(TKEY.page7Weekend)}
             emoji="🍷"
-            color="#FBBF24"
+            color="var(--story-accent)"
             value={data.weekendAvgExpense}
             sym={sym}
             pct={weekendPct}
@@ -69,7 +67,7 @@ export function PageWeekday({ data }: { data: AnnualReportData }) {
             <span className="text-base text-white/70 sm:text-lg">
               {data.weekendBoost >= 1 ? (
                 <>
-                  <span className="font-bold text-amber-300">×{data.weekendBoost.toFixed(1)}</span>
+                  <span className="font-bold text-[color:var(--story-accent)]">×{data.weekendBoost.toFixed(1)}</span>
                   <span className="ml-2 text-white/60">weekend / weekday</span>
                 </>
               ) : (

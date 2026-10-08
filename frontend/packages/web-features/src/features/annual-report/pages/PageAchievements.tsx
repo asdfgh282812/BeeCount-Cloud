@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { achievementsInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
@@ -38,12 +37,13 @@ export function PageAchievements({ data }: { data: AnnualReportData }) {
     'stock-sharpshooter': '🎯',
     'stock-dividend': '🍯',
     'stock-active': '⚡',
+    'first-last': '🏁',
+    'night-owl': '🌃',
   }
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={48} />
-      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-10 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page11Title)}
         </h2>
@@ -64,9 +64,11 @@ export function PageAchievements({ data }: { data: AnnualReportData }) {
                     ease: [0.16, 1, 0.3, 1],
                   }}
                   className={`relative flex flex-col gap-2 overflow-hidden rounded-2xl border p-4 backdrop-blur-sm sm:p-5 ${
-                    ach.rare
-                      ? 'border-amber-300/40 bg-gradient-to-br from-amber-500/15 to-orange-500/10'
-                      : 'border-white/10 bg-white/5'
+                    ach.hidden
+                      ? 'border-dashed border-[color:var(--story-accent)] bg-white/10'
+                      : ach.rare
+                        ? 'border-[color:var(--story-accent)] bg-white/15'
+                        : 'border-white/15 bg-white/10'
                   }`}
                 >
                   {ach.rare && (
@@ -74,7 +76,7 @@ export function PageAchievements({ data }: { data: AnnualReportData }) {
                       className="pointer-events-none absolute -inset-1 rounded-2xl"
                       style={{
                         background:
-                          'radial-gradient(circle at 30% 20%, rgba(251,191,36,0.18), transparent 60%)',
+                          'radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--story-accent) 25%, transparent), transparent 60%)',
                       }}
                       animate={{ opacity: [0.6, 1, 0.6] }}
                       transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
@@ -82,16 +84,20 @@ export function PageAchievements({ data }: { data: AnnualReportData }) {
                   )}
                   <div className="relative flex items-center gap-2">
                     <span className="text-3xl sm:text-4xl">{emoji}</span>
-                    {ach.rare && (
-                      <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-amber-300">
-                        Rare
+                    {ach.hidden ? (
+                      <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-[color:var(--story-accent)]">
+                        🔓 {t(TKEY.achHidden)}
                       </span>
-                    )}
+                    ) : ach.rare ? (
+                      <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-[color:var(--story-accent)]">
+                        {t(TKEY.achRare)}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="relative text-base font-semibold text-white sm:text-lg">
                     {t(ach.titleKey)}
                   </div>
-                  <div className="relative text-xs leading-relaxed text-white/60 sm:text-sm">
+                  <div className="relative text-xs leading-relaxed text-white/70 sm:text-sm">
                     {t(ach.descKey)}
                   </div>
                 </motion.div>

@@ -97,7 +97,11 @@ export const TKEY = {
     stockSharpshooter: { title: 'annualReport.ach.stockSharpshooter.title', desc: 'annualReport.ach.stockSharpshooter.desc' },
     stockDividend: { title: 'annualReport.ach.stockDividend.title', desc: 'annualReport.ach.stockDividend.desc' },
     stockActive: { title: 'annualReport.ach.stockActive.title', desc: 'annualReport.ach.stockActive.desc' },
+    firstLast: { title: 'annualReport.ach.firstLast.title', desc: 'annualReport.ach.firstLast.desc' },
+    nightOwl: { title: 'annualReport.ach.nightOwl.title', desc: 'annualReport.ach.nightOwl.desc' },
   },
+  achHidden: 'annualReport.ach.hidden',
+  achRare: 'annualReport.ach.rare',
 
   // 帳戶頁
   accountsTitle: 'annualReport.accounts.title',
@@ -144,7 +148,18 @@ export const TKEY = {
   // 年度稱號頁
   personaTitle: 'annualReport.persona.title',
   personaReasonsTitle: 'annualReport.persona.reasonsTitle',
+  personaRarityLabel: 'annualReport.persona.rarityLabel',
+  rarity: {
+    common: 'annualReport.rarity.common',
+    rare: 'annualReport.rarity.rare',
+    legendary: 'annualReport.rarity.legendary',
+  },
   persona: {
+    perfectAttendance: {
+      title: 'annualReport.persona.perfectAttendance.title',
+      desc: 'annualReport.persona.perfectAttendance.desc',
+    },
+    megaSaver: { title: 'annualReport.persona.megaSaver.title', desc: 'annualReport.persona.megaSaver.desc' },
     streakKing: { title: 'annualReport.persona.streakKing.title', desc: 'annualReport.persona.streakKing.desc' },
     investor: { title: 'annualReport.persona.investor.title', desc: 'annualReport.persona.investor.desc' },
     saver: { title: 'annualReport.persona.saver.title', desc: 'annualReport.persona.saver.desc' },
@@ -166,6 +181,49 @@ export const TKEY = {
     frugal: 'annualReport.persona.reason.frugal',
     records: 'annualReport.persona.reason.records',
   },
+
+  // 年度主題(生肖)
+  theme: {
+    rat: { name: 'annualReport.theme.rat.name', tagline: 'annualReport.theme.rat.tagline' },
+    ox: { name: 'annualReport.theme.ox.name', tagline: 'annualReport.theme.ox.tagline' },
+    tiger: { name: 'annualReport.theme.tiger.name', tagline: 'annualReport.theme.tiger.tagline' },
+    rabbit: { name: 'annualReport.theme.rabbit.name', tagline: 'annualReport.theme.rabbit.tagline' },
+    dragon: { name: 'annualReport.theme.dragon.name', tagline: 'annualReport.theme.dragon.tagline' },
+    snake: { name: 'annualReport.theme.snake.name', tagline: 'annualReport.theme.snake.tagline' },
+    horse: { name: 'annualReport.theme.horse.name', tagline: 'annualReport.theme.horse.tagline' },
+    goat: { name: 'annualReport.theme.goat.name', tagline: 'annualReport.theme.goat.tagline' },
+    monkey: { name: 'annualReport.theme.monkey.name', tagline: 'annualReport.theme.monkey.tagline' },
+    rooster: { name: 'annualReport.theme.rooster.name', tagline: 'annualReport.theme.rooster.tagline' },
+    dog: { name: 'annualReport.theme.dog.name', tagline: 'annualReport.theme.dog.tagline' },
+    pig: { name: 'annualReport.theme.pig.name', tagline: 'annualReport.theme.pig.tagline' },
+  },
+
+  // 冷知識
+  factsKicker: 'annualReport.facts.kicker',
+  factsTitle: 'annualReport.facts.title',
+  fact: {
+    lateNight: 'annualReport.facts.lateNight',
+    busiestDay: 'annualReport.facts.busiestDay',
+    topMerchant: 'annualReport.facts.topMerchant',
+    repeatAmount: 'annualReport.facts.repeatAmount',
+    smallest: 'annualReport.facts.smallest',
+    favoriteWeekday: 'annualReport.facts.favoriteWeekday',
+    bubbleTea: 'annualReport.facts.bubbleTea',
+  },
+
+  // 先猜再揭曉
+  quizKicker: 'annualReport.quiz.kicker',
+  quizMonth: 'annualReport.quiz.month',
+  quizCategory: 'annualReport.quiz.category',
+  quizRight: 'annualReport.quiz.right',
+  quizWrong: 'annualReport.quiz.wrong',
+  quizSkipHint: 'annualReport.quiz.skipHint',
+
+  // 首頁提醒卡
+  reminderTitle: 'annualReport.reminder.title',
+  reminderBody: 'annualReport.reminder.body',
+  reminderCta: 'annualReport.reminder.cta',
+  reminderDismiss: 'annualReport.reminder.dismiss',
 
   // page 12 — outro
   page12Title: 'annualReport.page12.title',

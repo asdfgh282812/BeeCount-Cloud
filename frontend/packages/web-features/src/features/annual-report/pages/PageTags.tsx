@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { tagsInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
@@ -20,12 +19,11 @@ export function PageTags({ data }: { data: AnnualReportData }) {
   const max = empty ? 1 : Math.max(...data.topTags.map((t) => t.count))
 
   // 蜂蜜 / 余晖系
-  const palette = ['#F4A82B', '#FDBA74', '#FBBF24', '#F97316', '#FACC15', '#FB923C']
+  const palette = ['var(--story-accent)', 'rgba(255,255,255,0.85)', 'rgba(255,255,255,0.7)', 'rgba(255,255,255,0.58)', 'rgba(255,255,255,0.46)', 'rgba(255,255,255,0.36)']
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={42} />
-      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page10Title)}
         </h2>
@@ -54,7 +52,7 @@ export function PageTags({ data }: { data: AnnualReportData }) {
                     fontSize: `${size}rem`,
                     color,
                     opacity,
-                    textShadow: ratio > 0.6 ? `0 0 32px ${color}66` : undefined,
+                    textShadow: ratio > 0.6 ? `0 0 32px color-mix(in srgb, ${color} 40%, transparent)` : undefined,
                     lineHeight: 1.05,
                   }}
                 >

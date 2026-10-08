@@ -22,6 +22,7 @@ import { holidayName, NAV_GROUPS, type AppSection, type HolidayLite } from '@bee
 import { AvatarDropdown } from '../components/AvatarDropdown'
 import { NotificationBell } from '../components/NotificationBell'
 import { useAuth } from '../context/AuthContext'
+import { OPEN_ANNUAL_REPORT_EVENT } from '../lib/annualReviewReminder'
 
 // CommandPalette + AnnualReportLauncher 都不在首屏关键路径,只在用户主动
 // 打开时才需要,懒加载省 ~150KB(framer-motion / cmdk / 年度报告整包)
@@ -62,6 +63,18 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
   const { profileMe, isAdmin, logout } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
   const [annualReportOpen, setAnnualReportOpen] = useState(false)
+  // 首頁提醒卡指定要看哪一年(跳過選年份);從選單打開時是 undefined
+  const [annualReportYear, setAnnualReportYear] = useState<number | undefined>(undefined)
+
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const year = (e as CustomEvent<{ year: number }>).detail?.year
+      setAnnualReportYear(typeof year === 'number' ? year : undefined)
+      setAnnualReportOpen(true)
+    }
+    window.addEventListener(OPEN_ANNUAL_REPORT_EVENT, onOpen)
+    return () => window.removeEventListener(OPEN_ANNUAL_REPORT_EVENT, onOpen)
+  }, [])
   const [paletteOpen, setPaletteOpen] = useState(false)
 
   // Cmd+K (Mac) / Ctrl+K (其他) 打开命令面板
@@ -371,7 +384,11 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
         <Suspense fallback={null}>
           <AnnualReportLauncher
             open={annualReportOpen}
-            onClose={() => setAnnualReportOpen(false)}
+            initialYear={annualReportYear}
+            onClose={() => {
+              setAnnualReportOpen(false)
+              setAnnualReportYear(undefined)
+            }}
           />
         </Suspense>
       ) : null}

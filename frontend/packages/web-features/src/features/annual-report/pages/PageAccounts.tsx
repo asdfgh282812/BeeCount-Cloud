@@ -1,6 +1,5 @@
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { AnimatedBars } from '../widgets/AnimatedBar'
 import { accountsInsight, type AnnualReportData } from '../data'
@@ -23,8 +22,7 @@ export function PageAccounts({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={165} />
-      <div className="relative z-10 mx-auto flex h-full max-w-3xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-3xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.accountsTitle)}
         </h2>

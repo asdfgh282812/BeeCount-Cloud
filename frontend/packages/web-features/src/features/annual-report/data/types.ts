@@ -6,6 +6,8 @@
  * 命名 + TS 类型)。
  */
 
+import type { FunFact } from './funFacts'
+
 /**
  * 简化的交易记录(年度报告只用很少字段,从 WorkspaceTransaction / ReadTransaction
  * 投影下来)。比直接用全量类型省内存,聚合后扔掉原始数组。
@@ -20,6 +22,8 @@ export type TransactionLite = {
   categoryKind: string | null
   accountName: string | null
   tagsList: string[]
+  /** 商家(選填;冷知識「最常光顧」用) */
+  merchant?: string | null
 }
 
 /** 分类聚合统计 */
@@ -160,7 +164,9 @@ export type HolidaySpend = {
 
 /** 年度稱號 */
 export type PersonaId =
+  | 'perfectAttendance'
   | 'streakKing'
+  | 'megaSaver'
   | 'investor'
   | 'saver'
   | 'nightOwl'
@@ -174,8 +180,12 @@ export type PersonaReason = {
   args?: Record<string, string | number>
 }
 
+/** 稱號稀有度:揭曉時的標籤與特效(稀有以上灑彩帶) */
+export type PersonaRarity = 'common' | 'rare' | 'legendary'
+
 export type Persona = {
   id: PersonaId
+  rarity: PersonaRarity
   reasons: PersonaReason[]
 }
 
@@ -188,6 +198,8 @@ export type Achievement = {
   descKey: string
   /** 解锁时是否爆炸特效(高级成就) */
   rare?: boolean
+  /** 隱藏成就:只有解鎖了才出現在清單,沒人知道它們存在 */
+  hidden?: boolean
 }
 
 /**
@@ -274,6 +286,17 @@ export type AnnualReportData = {
   /** 主要國家(非主要國家的節日標籤後面加國旗);沒有節日資料時為 null */
   holidayPrimary: string | null
   holidaySpend: HolidaySpend | null
+
+  // ===== 冷知識(已依年份 + 帳本洗牌挑好,最多 3 則)=====
+  funFacts: FunFact[]
+
+  // ===== 隱藏成就用 =====
+  /** 年度第一天與最後一天都有記帳 */
+  recordedFirstAndLastDay: boolean
+  /** 凌晨 0–5 點的支出筆數 */
+  lateNightExpenseCount: number
+  /** 年度到目前為止的天數(過去年份 = 全年;判斷全勤用) */
+  elapsedDays: number
 
   // ===== 年度稱號 =====
   persona: Persona

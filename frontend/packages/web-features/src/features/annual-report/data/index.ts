@@ -3,6 +3,19 @@
 export * from './types'
 export { aggregate, MIN_RECORDS_FOR_REPORT } from './aggregate'
 export { fetchAnnualReportData } from './fetch'
+export { yearTheme, ZODIACS, type YearTheme, type Zodiac } from './yearTheme'
+export {
+  BUBBLE_TEA_PRICE,
+  collectFunFacts,
+  hashSalt,
+  pickFunFacts,
+  seededShuffle,
+  type FunFact,
+  type FunFactKind,
+} from './funFacts'
+export { categoryQuiz, monthQuiz, type Quiz } from './quiz'
+export { computePersona, PERSONA_RARITY } from './persona'
+export { computeAchievements } from './achievements'
 export {
   HOLIDAY_FLAGS,
   holidayLabel,

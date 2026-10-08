@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { fetchWorkspaceLedgerCounts } from '@beecount/api-client'
 import {
@@ -11,10 +11,13 @@ import { useLocale, useT } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { markAnnualReviewSeen } from '../../lib/annualReviewReminder'
 
 export type AnnualReportLauncherProps = {
   open: boolean
   onClose: () => void
+  /** 直接打開這一年(首頁提醒卡),跳過選年份 */
+  initialYear?: number
 }
 
 /**
@@ -28,13 +31,14 @@ export type AnnualReportLauncherProps = {
  * 不在页面上常驻,只在 open 时挂载。Year picker 用 fixed overlay 形式,
  * 避免依赖父级布局。
  */
-export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProps) {
+export function AnnualReportLauncher({ open, onClose, initialYear }: AnnualReportLauncherProps) {
   const t = useT()
   const { locale } = useLocale()
   const { token } = useAuth()
   const { activeLedgerId, currentLedger, currency } = useLedgers()
 
-  const [phase, setPhase] = useState<'picker' | 'loading' | 'report'>('picker')
+  // 有指定年份就直接進 loading,不要先閃一下選年份的畫面
+  const [phase, setPhase] = useState<'picker' | 'loading' | 'report'>(initialYear !== undefined ? 'loading' : 'picker')
   const [data, setData] = useState<AnnualReportData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [yearOptions, setYearOptions] = useState<number[] | null>(null)
@@ -94,6 +98,8 @@ export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProp
         }
         setData(d)
         setPhase('report')
+        // 看過已經結束的那一年 → 首頁提醒卡收起來(今年的不算,見 markAnnualReviewSeen)
+        markAnnualReviewSeen(year)
       } catch (e) {
         console.error('[annual-report] fetch failed', e)
         setError(t(TKEY.entryBannerError))
@@ -102,6 +108,18 @@ export function AnnualReportLauncher({ open, onClose }: AnnualReportLauncherProp
     },
     [token, activeLedgerId, currentLedger?.ledger_name, currency, t, locale],
   )
+
+  // 首頁提醒卡指定了年份:打開就直接載入那一年
+  const autoPicked = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      autoPicked.current = false
+      return
+    }
+    if (initialYear === undefined || autoPicked.current || !token || !activeLedgerId) return
+    autoPicked.current = true
+    void handlePick(initialYear)
+  }, [open, initialYear, token, activeLedgerId, handlePick])
 
   if (!open) return null
 

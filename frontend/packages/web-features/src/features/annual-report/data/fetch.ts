@@ -39,11 +39,14 @@ export async function fetchAnnualReportData(
   /** Web 介面語系(節日設定沒推過時用來推主要國家) */
   locale = 'zh-TW',
 ): Promise<AnnualReportData> {
-  // 时间窗口:本年 + 去年(用于 YoY 对比),取年初到年末(独占下界)
-  const thisYearFrom = `${year}-01-01T00:00:00.000Z`
-  const thisYearTo = `${year + 1}-01-01T00:00:00.000Z`
-  const prevYearFrom = `${year - 1}-01-01T00:00:00.000Z`
-  const prevYearTo = `${year}-01-01T00:00:00.000Z`
+  // 时间窗口:本年 + 去年(用于 YoY 对比),取年初到年末(独占下界)。
+  // 邊界用瀏覽器本地的 1/1 00:00(不是 UTC 的 1/1),否則台灣 1/1 凌晨
+  // 的交易會被算進前一年、隔年 1/1 凌晨的交易反而算進今年。
+  const startOf = (y: number) => new Date(y, 0, 1).toISOString()
+  const thisYearFrom = startOf(year)
+  const thisYearTo = startOf(year + 1)
+  const prevYearFrom = startOf(year - 1)
+  const prevYearTo = startOf(year)
 
   const [thisYear, prevYear, stock, holidays] = await Promise.all([
     fetchAllPaged(token, ledger.id, thisYearFrom, thisYearTo),
@@ -127,6 +130,7 @@ function toLite(t: WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'tra
     categoryKind: t.category_kind,
     accountName: t.account_name,
     tagsList: t.tags_list ?? [],
+    merchant: t.merchant ?? null,
   }
 }
 

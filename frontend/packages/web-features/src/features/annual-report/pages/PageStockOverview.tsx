@@ -1,6 +1,5 @@
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { BigNumber } from '../widgets/BigNumber'
 import { InsightLine } from '../widgets/InsightLine'
 import { CurrencyChips, signedParts, stockTone } from '../widgets/stock'
@@ -33,8 +32,7 @@ export function PageStockOverview({
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={s.realizedPnl >= 0 ? 8 : 150} />
-      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center overflow-y-auto px-8 py-20 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 py-20 sm:px-12">
         <h2 className="mb-6 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.stockOverviewTitle)}
         </h2>
@@ -70,7 +68,7 @@ export function PageStockOverview({
           <Stat
             label={t(TKEY.stockDividendLabel)}
             sub={`${s.dividendCount} ${t(TKEY.stockTimesSuffix)}`}
-            value={<BigNumber key={`${s.currency}-d`} value={s.dividends} format="currency" prefix={sym} size={34} className="text-amber-300" />}
+            value={<BigNumber key={`${s.currency}-d`} value={s.dividends} format="currency" prefix={sym} size={34} className="text-[color:var(--story-accent)]" />}
           />
           <Stat
             label={t(TKEY.stockCostLabel)}

@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import { yoyInsight, type AnnualReportData } from '../data'
 import { TKEY } from '../i18n'
@@ -43,7 +42,7 @@ export function PageYoY({ data }: { data: AnnualReportData }) {
               )) *
             100
           : 0,
-      color: '#F4A82B',
+      color: 'var(--story-accent)',
     },
   ]
 
@@ -52,8 +51,7 @@ export function PageYoY({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={350} />
-      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-4xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page3Title)}
         </h2>

@@ -19,6 +19,15 @@ export {
   type Insight,
   type HolidayLite,
   type HolidaySpend,
+  type FunFact,
+  type YearTheme,
+  type PersonaRarity,
+  yearTheme,
+  collectFunFacts,
+  pickFunFacts,
+  categoryQuiz,
+  monthQuiz,
+  computePersona,
   holidayLabel,
   holidaySettingsFromAppearance,
   resolveHolidays,
@@ -28,3 +37,4 @@ export {
   toHolidayLite,
 } from './data'
 export { TKEY as ANNUAL_REPORT_TKEY } from './i18n'
+export { PALETTES, themedPalette, shiftPalette, rotateHue, type StoryPalette } from './widgets/storyKit'

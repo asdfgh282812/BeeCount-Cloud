@@ -2,7 +2,6 @@ import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { useLocale, useT } from '@beecount/ui'
 
-import { HoneyBg } from '../widgets/HoneyBg'
 import { InsightLine } from '../widgets/InsightLine'
 import {
   extremesInsight,
@@ -15,8 +14,9 @@ import { TKEY } from '../i18n'
 import { currencySymbol } from '../../../lib/currencies'
 
 const formatDate = (iso: string) => {
-  // ISO 'YYYY-MM-DD...' → 'M月D日'
-  const d = iso.slice(0, 10)
+  // 'YYYY-MM-DD'(已是本地日期)或 ISO 瞬間 → 'M.D'。瞬間要轉本地日期,
+  // 切 ISO 字串拿到的是 UTC 日期(台灣 1/1 凌晨會變成 12.31)。
+  const d = iso.length === 10 ? iso : localDayKey(iso)
   const [, m, day] = d.split('-')
   return `${parseInt(m, 10)}.${parseInt(day, 10)}`
 }
@@ -70,7 +70,7 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
         data.firstRecord.categoryName ||
         '—',
       secondary: `${sym}${Math.round(data.firstRecord.amount).toLocaleString()}`,
-      accent: '#FBBF24',
+      accent: 'var(--story-accent)',
       holidayDay: localDayKey(data.firstRecord.happenedAt),
     })
   }
@@ -102,8 +102,7 @@ export function PageExtremes({ data }: { data: AnnualReportData }) {
 
   return (
     <div className="relative h-full w-full">
-      <HoneyBg hue={350} />
-      <div className="relative z-10 mx-auto flex h-full max-w-3xl flex-col items-start justify-center px-8 sm:px-12">
+      <div className="relative z-10 mx-auto flex h-full max-w-3xl flex-col items-start [justify-content:safe_center] overflow-y-auto px-8 pb-10 pt-16 sm:px-12">
         <h2 className="mb-12 font-serif text-3xl font-bold text-white/90 sm:text-5xl">
           {t(TKEY.page8Title)}
         </h2>
