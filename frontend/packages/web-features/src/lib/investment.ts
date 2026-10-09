@@ -50,8 +50,15 @@ export function securityKind(market: string | null | undefined, symbol: string |
 }
 
 export type ResolvedInvestmentSettings = Required<
-  Omit<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin'>
-> & Pick<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin'>
+  Omit<
+    InvestmentSettings,
+    'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin' | 'reinvestBySymbol' | 'stockEnabled'
+  >
+> &
+  Pick<
+    InvestmentSettings,
+    'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate' | 'oddLotFeeMin' | 'reinvestBySymbol' | 'stockEnabled'
+  >
 
 export function investmentDefaults(market: string | null | undefined): ResolvedInvestmentSettings {
   switch ((market || '').toUpperCase()) {
@@ -102,6 +109,28 @@ export function resolveInvestmentSettings(
     reinvestDividends: s.reinvestDividends ?? false,
     settlementAccountId: s.settlementAccountId,
   }
+}
+
+/** 投資理財帳戶有沒有啟用持股功能:缺值 = 啟用(舊資料維持原行為),只有明確 false 才是
+ *  原始的投資理財帳戶(一般轉帳、可調整餘額)。同 App `InvestmentSettings.isStockAccount`。 */
+export function isStockAccount(
+  a: { account_type?: string | null; investment_settings?: InvestmentSettings | null } | null | undefined,
+): boolean {
+  return (a?.account_type || '') === 'investment' && a?.investment_settings?.stockEnabled !== false
+}
+
+/** `reinvestBySymbol` 的 key:大寫「市場:代號」,同 App `InvestmentSettings.reinvestKey`、Cloud `reinvest_default_for`。 */
+export function reinvestKey(market: string | null | undefined, symbol: string): string {
+  return `${(market || '').toUpperCase()}:${symbol.toUpperCase()}`
+}
+
+/** 這檔標的的股利預設要不要再投入:各檔設定優先,沒設才看舊的帳戶層級 reinvestDividends。 */
+export function reinvestFor(
+  settings: InvestmentSettings | null | undefined,
+  market: string | null | undefined,
+  symbol: string,
+): boolean {
+  return settings?.reinvestBySymbol?.[reinvestKey(market, symbol)] ?? settings?.reinvestDividends ?? false
 }
 
 /** TWD/JPY/KRW 沒有小數:成交價金/手續費/稅無條件捨去到整數(證交所與台灣券商慣例),其它四捨五入到分。 */

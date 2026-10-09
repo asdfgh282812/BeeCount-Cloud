@@ -122,7 +122,8 @@ import {
   matchCategoryByName,
   pickRandomTagColor,
   txDefaults,
-  type TxForm
+  type TxForm,
+  isStockAccount,
 } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
@@ -758,7 +759,7 @@ export function TransactionsPage() {
     // docs/STOCK_HOLDINGS_SD.md §9)。
     return source.filter((row) => {
       const type = row.account_type || ''
-      if (txForm.tx_type === 'transfer' && type === 'investment') return true
+      if (txForm.tx_type === 'transfer' && type === 'investment') return true // 原始投資理財帳戶也能選,只是不轉導(見下方 isStockAccount)
       return !VALUATION_ACCOUNT_TYPES.has(type)
     })
   }, [
@@ -810,8 +811,8 @@ export function TransactionsPage() {
       txDictionaryAccounts.find((a) => a.name.trim().toLowerCase() === name.trim().toLowerCase())
     const toAccount = byName(txForm.to_account_name)
     const fromAccount = byName(txForm.from_account_name)
-    const isBuy = toAccount?.account_type === 'investment'
-    const isSell = !isBuy && fromAccount?.account_type === 'investment'
+    const isBuy = isStockAccount(toAccount)
+    const isSell = !isBuy && isStockAccount(fromAccount)
     if (!isBuy && !isSell) return
     const account = isBuy ? toAccount! : fromAccount!
     const settlement = isBuy ? fromAccount : toAccount

@@ -230,7 +230,11 @@ _INVESTMENT_SETTING_FLOAT_KEYS = (
     "nhiSupplementRate", "nhiThreshold",
 )
 _INVESTMENT_SETTING_STR_KEYS = ("market", "settlementAccountId")
-_INVESTMENT_SETTING_BOOL_KEYS = ("reinvestDividends", "pnlAfterSellCosts")
+# stockEnabled:帳戶有沒有啟用「持股」功能(缺 = 啟用,舊資料維持原行為);
+# reinvestDividends 是舊的帳戶層級預設,現在以 reinvestBySymbol(各檔)為主。
+_INVESTMENT_SETTING_BOOL_KEYS = ("reinvestDividends", "pnlAfterSellCosts", "stockEnabled")
+# 各檔股利再投入:{"TW:0050": true};key 一律大寫「市場:代號」。
+_INVESTMENT_SETTING_BOOL_MAP_KEYS = ("reinvestBySymbol",)
 
 
 def normalize_investment_settings(raw: dict) -> dict:
@@ -250,6 +254,16 @@ def normalize_investment_settings(raw: dict) -> dict:
     for key in _INVESTMENT_SETTING_BOOL_KEYS:
         if key in raw and raw.get(key) is not None:
             out[key] = bool(raw.get(key))
+    for key in _INVESTMENT_SETTING_BOOL_MAP_KEYS:
+        value = raw.get(key)
+        if isinstance(value, dict):
+            cleaned = {
+                str(k).strip().upper(): bool(v)
+                for k, v in value.items()
+                if isinstance(k, str) and k.strip() and v is not None
+            }
+            if cleaned:
+                out[key] = cleaned
     return out
 
 

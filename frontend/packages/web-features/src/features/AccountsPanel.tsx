@@ -42,6 +42,7 @@ import {
 } from '../components/AccountListRow'
 import { AvatarCropDialog, type AvatarCropSource } from '../components/AvatarCropDialog'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
+import type { ConvertedRounding } from '../lib/convertedRounding'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
 import {
@@ -90,6 +91,7 @@ type MobileStyleAssetsProps = {
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  convertedRounding?: ConvertedRounding
   /** 帳戶清單拖曳排序(2026-09-05):true 時每個分組改用可拖曳的清單渲染,
    *  取代原本的靜態 AccountListRow(編輯/刪除/展開等互動暫時停用)。 */
   editingOrder?: boolean
@@ -124,6 +126,7 @@ function MobileStyleAssets({
   baseCurrency,
   fxRates,
   fxOverrides,
+  convertedRounding,
   editingOrder = false,
   onToggleEditingOrder,
   onReorderBlocks,
@@ -304,6 +307,7 @@ function MobileStyleAssets({
                           baseCurrency={baseCurrency}
                           fxRates={fxRates}
                           fxOverrides={fxOverrides}
+          convertedRounding={convertedRounding}
                           amountSize="lg"
                         />
                       ))}
@@ -985,6 +989,7 @@ type AccountsPanelProps = {
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  convertedRounding?: ConvertedRounding
   /** 外層拖曳:重排某個分類裡「頂層帳戶」彼此的順序。不傳則不渲染「編輯
    *  排序」切換按鈕(調用方尚未接線時零影響)。 */
   onReorderBlocks?: (type: string, orderedRows: ReadAccount[]) => void
@@ -1011,6 +1016,7 @@ export function AccountsPanel({
   baseCurrency,
   fxRates,
   fxOverrides,
+  convertedRounding,
   onReorderBlocks,
   onReorderChildren
 }: AccountsPanelProps) {
@@ -1118,6 +1124,7 @@ export function AccountsPanel({
           baseCurrency={baseCurrency}
           fxRates={fxRates}
           fxOverrides={fxOverrides}
+          convertedRounding={convertedRounding}
           editingOrder={editingOrder}
           onToggleEditingOrder={
             onReorderBlocks ? () => setEditingOrder((prev) => !prev) : undefined
@@ -1194,7 +1201,12 @@ export function AccountsPanel({
                     // 混進淨資產(對齊 App account_edit_page._selectType)。只影響
                     // 新建,編輯既有帳戶不動使用者原本的設定。
                     if (!form.editingId) {
-                      next.include_in_total = value !== 'investment'
+                      next.include_in_total = !(value === 'investment' && form.stock_enabled)
+                    }
+                    // 從別的類型改成投資理財:持股功能從關開始,由使用者自己開(同 App)。
+                    if (value === 'investment' && form.account_type !== 'investment') {
+                      next.stock_enabled = false
+                      if (!form.editingId) next.include_in_total = true
                     }
                     onFormChange(next)
                   }}
@@ -1522,6 +1534,43 @@ export function AccountsPanel({
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                       form.hidden ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null}
+
+            {/* 投資理財帳戶:持股功能開關。關 = 原始的投資理財帳戶(一般轉帳、可
+                調整餘額);開 = 買賣/報價/股利,轉帳導向買賣表單(對齊 App)。 */}
+            {form.account_type === 'investment' ? (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <div className="min-w-0 pr-3">
+                  <p className="text-sm font-medium">{t('accounts.stockFeature.toggleLabel')}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t('accounts.stockFeature.toggleHint')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.stock_enabled}
+                  aria-label={t('accounts.stockFeature.toggleLabel') as string}
+                  onClick={() => {
+                    const next = !form.stock_enabled
+                    // 新建帳戶:持股帳戶預設不納入總餘額(市值另外顯示),原始投資帳戶照舊納入。
+                    onFormChange({
+                      ...form,
+                      stock_enabled: next,
+                      ...(form.editingId ? {} : { include_in_total: !next }),
+                    })
+                  }}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                    form.stock_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      form.stock_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
                     }`}
                   />
                 </button>

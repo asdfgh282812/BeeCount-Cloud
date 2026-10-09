@@ -462,6 +462,18 @@ def detect_pending_dividends(db: Session, *, now: datetime | None = None) -> dic
 # ---------------------------------------------------------------------------
 
 
+def reinvest_default_for(settings: dict[str, Any], market: str | None, symbol: str) -> bool:
+    """這檔標的的股利預設要不要再投入:各檔設定(`reinvestBySymbol`,key 為大寫
+    「市場:代號」)優先,沒設才看舊的帳戶層級 `reinvestDividends`。同 App
+    `InvestmentSettings.reinvestFor`。"""
+    by_symbol = settings.get("reinvestBySymbol")
+    if isinstance(by_symbol, dict):
+        key = f"{(market or '').upper()}:{symbol.upper()}"
+        if key in by_symbol:
+            return bool(by_symbol[key])
+    return bool(settings.get("reinvestDividends"))
+
+
 def default_receiving_account(db: Session, *, user_id: str, account_id: str,
                               settings: dict[str, Any] | None = None) -> str | None:
     """股利入帳帳戶預設值:費用設定的交割帳戶 → 這個投資帳戶最近一筆買賣用的
@@ -517,7 +529,7 @@ def serialize_pending(
         "est_net": pending.est_net,
         "est_stock_shares": pending.est_stock_shares,
         "status": pending.status,
-        "reinvest_default": bool(settings.get("reinvestDividends")),
+        "reinvest_default": reinvest_default_for(settings, pending.market, pending.symbol),
         "settlement_account_id": receiving,
         "event_ref": event_ref(pending.market, pending.symbol, event.ex_date),
         "created_at": _aware(pending.created_at).isoformat() if pending.created_at else None,

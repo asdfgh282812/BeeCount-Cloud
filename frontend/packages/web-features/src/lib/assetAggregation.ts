@@ -1,5 +1,7 @@
 import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
+import { applyConvertedRounding, type ConvertedRounding } from './convertedRounding'
+
 /**
  * 资产页多币种聚合的纯逻辑核心。
  *
@@ -224,6 +226,7 @@ export function mergeGroupsToBase(
   base: string,
   auto: ExchangeRatesResponse | null,
   overrides: ExchangeRateOverride[],
+  rounding: ConvertedRounding = 'none',
 ): AssetGroup[] {
   // type → 累加器。保留首次出现的 label/color/isLiability 与出现顺序。
   const merged = new Map<string, AssetGroup>()
@@ -231,7 +234,8 @@ export function mergeGroupsToBase(
     const eff = effectiveRateToBase(bucket.currency.toUpperCase(), base, auto, overrides)
     if (!eff) continue // 缺失汇率:整币种剔除,绝不按 1 折入
     for (const group of bucket.groups) {
-      const sub = group.subtotals.reduce((s, x) => s + x.value, 0) * eff.rate
+      // 每個幣種 × 分組各自取整再累加(跟帳戶列「換算後」金額同一口徑,預設 'none' = 舊行為)。
+      const sub = applyConvertedRounding(group.subtotals.reduce((s, x) => s + x.value, 0) * eff.rate, rounding)
       const existing = merged.get(group.type)
       if (existing) {
         existing.subtotals[0].value += sub

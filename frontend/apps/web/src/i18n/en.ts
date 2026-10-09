@@ -1922,6 +1922,15 @@ const en = {
     "It won't be selectable for new records. History and balance are kept, and you can restore it anytime.",
   'accounts.hidden.badge': 'Hidden',
   'accounts.hidden.restore': 'Restore',
+  'accounts.stockFeature.toggleLabel': 'Stock holdings',
+  'accounts.stockFeature.toggleHint':
+    'On: track shares, quotes, dividends, and transfers open the buy/sell form. Off: a plain investment account that works like any other account.',
+  'accounts.convertedRounding.label': 'Rounding of converted amounts',
+  'accounts.convertedRounding.hint':
+    "How foreign amounts are rounded after converting to this ledger's currency. Applies to this ledger only and follows your cloud account.",
+  'accounts.convertedRounding.floor': 'Round down',
+  'accounts.convertedRounding.round': 'Round to nearest',
+  'accounts.convertedRounding.none': 'Keep decimals',
   'accounts.includeInTotal.toggleLabel': 'Include in total balance',
   'accounts.includeInTotal.toggleHint':
     "When off, this account's balance is excluded from the net worth / asset breakdown totals. The account itself, its own balance display, and the grouped list below are unaffected — you can still record transactions on it.",
@@ -2885,6 +2894,8 @@ const en = {
   "investments.settings.dividendWithholdingRate": "Dividend withholding tax (%)",
   "investments.settings.nhiSupplementRate": "NHI supplementary premium (%)",
   "investments.settings.nhiThreshold": "NHI premium threshold",
+  "investments.holding.reinvest": "Reinvest dividends",
+  "investments.holding.reinvestHint": "Applies to this stock only: its pending dividends start as reinvestment instead of cash.",
   "investments.settings.reinvestDividends": "Reinvest dividends by default",
   "investments.settings.marketDefault": "Market default: {value}",
   "investments.market.TW": "Taiwan (TWSE)",

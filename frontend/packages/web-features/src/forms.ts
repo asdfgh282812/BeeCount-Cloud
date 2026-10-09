@@ -210,6 +210,10 @@ export type AccountForm = {
    *  資產構成總額,但帳戶本身、個別餘額顯示、底部分組列表都不受影響。
    *  新建/未設置一律預設 true(納入)。 */
   include_in_total: boolean
+  /** 投資理財帳戶的「持股功能」開關(寫進 investment_settings.stockEnabled)。
+   *  新建預設關(原始的投資理財帳戶);編輯既有帳戶缺值 = 開(舊資料維持原行為)。
+   *  只有 account_type === 'investment' 時才會送出。 */
+  stock_enabled: boolean
 }
 
 export type CategoryForm = {
@@ -466,6 +470,7 @@ export const accountDefaults = (): AccountForm => ({
   avatar_cloud_file_id: '',
   avatar_cloud_sha256: '',
   include_in_total: true,
+  stock_enabled: false,
 })
 
 export const categoryDefaults = (): CategoryForm => ({

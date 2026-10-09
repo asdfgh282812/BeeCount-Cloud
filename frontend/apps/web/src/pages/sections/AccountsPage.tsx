@@ -40,7 +40,9 @@ import {
   AssetsCompositionMini,
   ConfirmDialog,
   CurrencyAssetCard,
+  CONVERTED_ROUNDING_MODES,
   accountDefaults,
+  applyConvertedRounding,
   computeCurrencySummary,
   computeTypeGroups,
   effectiveRateToBase,
@@ -55,6 +57,7 @@ import { InvestmentValueCard } from '../../components/dashboard/InvestmentValueC
 import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { routePath } from '../../state/router'
 import { dispatchOpenDetailAccount, onOpenEditAccount } from '../../lib/txDialogEvents'
+import { useConvertedRounding } from '../../app/useConvertedRounding'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -95,6 +98,8 @@ export function AccountsPage() {
   const { previewMap: avatarPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
   const base = profileMe?.primary_currency || ''
+  // 外幣折算成本位幣之後的取整方式(帳本設定,跟著雲端帳號同步,見 useConvertedRounding)。
+  const { mode: convertedRounding, setMode: setConvertedRounding, saving: roundingSaving } = useConvertedRounding()
 
   // 主要数据走 PageDataCache —— 切走再切回来立刻显示上次的值,不闪烁。
   // rows 用 WorkspaceAccount(包含 tx_count / balance 等聚合字段),删除前需要
@@ -267,6 +272,7 @@ export function AccountsPage() {
       avatar_cloud_file_id: row.avatar_cloud_file_id ?? '',
       avatar_cloud_sha256: row.avatar_cloud_sha256 ?? '',
       include_in_total: row.include_in_total !== false,
+      stock_enabled: row.investment_settings?.stockEnabled !== false,
     })
   }, [])
 
@@ -368,6 +374,16 @@ export function AccountsPage() {
         avatar_cloud_sha256: form.avatar_cloud_sha256.trim() || null,
         // 納入總餘額(Phase 18):新建默认 true;编辑时带当前切换状态。
         include_in_total: form.include_in_total,
+        // 投資理財帳戶的持股開關:整包取代語意,所以要把既有設定(費用/再投入…)
+        // 原樣帶回再蓋上 stockEnabled,不然會洗掉 App 寫的其它欄位。
+        ...(form.account_type === 'investment'
+          ? {
+              investment_settings: {
+                ...(rows.find((r) => r.id === form.editingId)?.investment_settings ?? {}),
+                stockEnabled: form.stock_enabled,
+              },
+            }
+          : {}),
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -524,9 +540,11 @@ export function AccountsPage() {
         missing.add(cur)
         continue
       }
-      netWorth += summary.netWorth * eff.rate
-      assetTotal += summary.assetTotal * eff.rate
-      liabilityTotal += summary.liabilityTotal * eff.rate
+      // 每個幣種各自取整再加總(單幣種 rate=1,取整不會改變原值的整數部分以外的顯示)。
+      const rnd = singleCurrency ? ('none' as const) : convertedRounding
+      netWorth += applyConvertedRounding(summary.netWorth * eff.rate, rnd)
+      assetTotal += applyConvertedRounding(summary.assetTotal * eff.rate, rnd)
+      liabilityTotal += applyConvertedRounding(summary.liabilityTotal * eff.rate, rnd)
     }
     // 欠款/應收:receivable(對方欠我)算資產、payable(我欠對方)算負債,跟
     // accounts 同口径缺汇率整币种剔除、绝不按 1 折入。此前這張卡完全沒查過
@@ -542,15 +560,22 @@ export function AccountsPage() {
         missing.add(cur)
         continue
       }
-      const receivableBase = debt.receivable_total * eff.rate
-      const payableBase = debt.payable_total * eff.rate
+      const rnd = singleCurrency ? ('none' as const) : convertedRounding
+      const receivableBase = applyConvertedRounding(debt.receivable_total * eff.rate, rnd)
+      const payableBase = applyConvertedRounding(debt.payable_total * eff.rate, rnd)
       netWorth += receivableBase - payableBase
       assetTotal += receivableBase
       liabilityTotal -= payableBase
     }
     // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除
     // (欠款不进 donut,见上方註解)。
-    const mergedGroups = mergeGroupsToBase(buckets, effectiveBase, rates, rateOverrides)
+    const mergedGroups = mergeGroupsToBase(
+      buckets,
+      effectiveBase,
+      rates,
+      rateOverrides,
+      singleCurrency ? 'none' : convertedRounding,
+    )
     return {
       needsBase: false as const,
       base: effectiveBase,
@@ -569,7 +594,7 @@ export function AccountsPage() {
       missing: [...missing].sort(),
       rateDate: singleCurrency ? undefined : rates?.rate_date,
     }
-  }, [base, totalIncludedRows, debtTotals, rates, rateOverrides, t])
+  }, [base, totalIncludedRows, debtTotals, rates, rateOverrides, convertedRounding, t])
 
   return (
     <>
@@ -698,6 +723,28 @@ export function AccountsPage() {
               ) : null}
             </div>
 
+            {/* 換算取整(以帳本為單位,跟著雲端帳號同步):只在多币种折算态出现。 */}
+            {converted.rateDate ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-muted-foreground" title={t('accounts.convertedRounding.hint') as string}>
+                  {t('accounts.convertedRounding.label')}
+                </span>
+                {CONVERTED_ROUNDING_MODES.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={roundingSaving}
+                    onClick={() => void setConvertedRounding(m)}
+                    className={`rounded-full px-2 py-0.5 text-[11px] ${
+                      convertedRounding === m ? 'bg-primary/15 text-primary' : 'text-muted-foreground'
+                    }`}
+                  >
+                    {t(`accounts.convertedRounding.${m}`)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
             {/* 脚注 + 详情:仅多币种折算态出现(单币种 rateDate 为空,
                 既无汇率脚注也无分币种明细可看)。 */}
             {converted.rateDate ? (
@@ -738,6 +785,7 @@ export function AccountsPage() {
         baseCurrency={base}
         fxRates={rates}
         fxOverrides={rateOverrides}
+        convertedRounding={convertedRounding}
         onUploadAvatar={async (file) => {
           try {
             const out = await uploadAccountAvatar(token, { file })

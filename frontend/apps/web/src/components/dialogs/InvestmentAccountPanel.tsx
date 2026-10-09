@@ -10,10 +10,11 @@ import {
   type AccountHoldings,
   type Holding,
   type ReadRecurringRule,
+  updateAccount,
   type WorkspaceAccount,
 } from '@beecount/api-client'
 import { Button, useT, useToast } from '@beecount/ui'
-import { ConfirmDialog, formatPercent, formatStockMoney } from '@beecount/web-features'
+import { ConfirmDialog, formatPercent, formatStockMoney, reinvestFor, reinvestKey } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAuth } from '../../context/AuthContext'
@@ -140,6 +141,24 @@ export function InvestmentAccountPanel({ accountId }: { accountId: string }) {
     void loadTrades(h.market, h.symbol)
   }
 
+  // 各檔股利再投入:寫回帳戶 investment_settings.reinvestBySymbol(整包取代,帶回既有設定)。
+  const setHoldingReinvest = async (h: Holding, value: boolean) => {
+    if (!account || !activeLedgerId) return
+    const cur = account.investment_settings ?? {}
+    const next = {
+      ...cur,
+      reinvestBySymbol: { ...(cur.reinvestBySymbol ?? {}), [reinvestKey(h.market, h.symbol)]: value },
+    }
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        updateAccount(token, activeLedgerId, account.id, base, { investment_settings: next }),
+      )
+      await reloadAll()
+    } catch (err) {
+      notifyError(err)
+    }
+  }
+
   const onDeleteConfirm = async () => {
     if (!pendingDelete) return
     setDeleting(true)
@@ -253,6 +272,10 @@ export function InvestmentAccountPanel({ accountId }: { accountId: string }) {
           onToggle={toggleHolding}
           onEditTrade={(ref) => account && setTradeDialog({ account, editing: ref })}
           onDeleteTrade={(ref) => setPendingDelete(ref)}
+          reinvest={{
+            isOn: (h) => reinvestFor(account?.investment_settings, h.market, h.symbol),
+            onChange: (h, v) => void setHoldingReinvest(h, v),
+          }}
           onQuickTrade={(h, type) =>
             account &&
             setTradeDialog(

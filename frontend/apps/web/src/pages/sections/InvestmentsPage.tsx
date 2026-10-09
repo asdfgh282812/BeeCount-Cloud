@@ -65,6 +65,9 @@ import {
   stockDcaWholeShares,
   suggestFee,
   suggestSellTax,
+  isStockAccount,
+  reinvestFor,
+  reinvestKey,
 } from '@beecount/web-features'
 
 import { useNavigate } from 'react-router-dom'
@@ -225,6 +228,24 @@ export function InvestmentsPage() {
 
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
+  // 各檔股利再投入:寫回帳戶的 investment_settings.reinvestBySymbol(整包取代,所以帶回既有設定)。
+  const setHoldingReinvest = async (account: WorkspaceAccount, h: Holding, value: boolean) => {
+    if (!activeLedgerId) return
+    const cur = account.investment_settings ?? {}
+    const next = {
+      ...cur,
+      reinvestBySymbol: { ...(cur.reinvestBySymbol ?? {}), [reinvestKey(h.market, h.symbol)]: value },
+    }
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        updateAccount(token, activeLedgerId, account.id, base, { investment_settings: next }),
+      )
+      await reloadAll()
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    }
+  }
+
   const reloadAll = useCallback(async () => {
     void loadDcaRules()
     await refresh(false)
@@ -240,7 +261,7 @@ export function InvestmentsPage() {
   })
 
   const investmentAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'investment'),
+    () => accounts.filter((a) => isStockAccount(a)),
     [accounts],
   )
   const holdingsByAccount = useMemo(() => {
@@ -414,6 +435,10 @@ export function InvestmentsPage() {
                   onToggle={(h) => toggleHolding(account.id, h)}
                   onEditTrade={(ref) => setTradeDialog({ account, editing: ref })}
                   onDeleteTrade={(ref) => setPendingDelete(ref)}
+                  reinvest={{
+                    isOn: (h) => reinvestFor(account.investment_settings, h.market, h.symbol),
+                    onChange: (h, v) => void setHoldingReinvest(account, h, v),
+                  }}
                   onQuickTrade={(h, type) =>
                     setTradeDialog(
                       type === 'dca'
@@ -515,6 +540,7 @@ export function HoldingsTable({
   onEditTrade,
   onDeleteTrade,
   onQuickTrade,
+  reinvest,
 }: {
   holdings: Holding[]
   accountId: string
@@ -525,6 +551,8 @@ export function HoldingsTable({
   onEditTrade: (ref: TradeRef) => void
   onDeleteTrade: (ref: TradeRef) => void
   onQuickTrade?: (h: Holding, type: CreatableType | 'dca') => void
+  /** 各檔股利再投入開關(展開列顯示);不傳就不顯示。 */
+  reinvest?: { isOn: (h: Holding) => boolean; onChange: (h: Holding, value: boolean) => void }
 }) {
   const t = useT()
   return (
@@ -563,6 +591,7 @@ export function HoldingsTable({
                 onEditTrade={onEditTrade}
                 onDeleteTrade={onDeleteTrade}
                 onQuickTrade={onQuickTrade ? (type) => onQuickTrade(h, type) : undefined}
+                reinvest={reinvest ? { on: reinvest.isOn(h), onChange: (v) => reinvest.onChange(h, v) } : undefined}
               />
             )
           })}
@@ -584,6 +613,7 @@ function HoldingRowGroup({
   onEditTrade,
   onDeleteTrade,
   onQuickTrade,
+  reinvest,
 }: {
   h: Holding
   ccy: string
@@ -596,6 +626,7 @@ function HoldingRowGroup({
   onEditTrade: (ref: TradeRef) => void
   onDeleteTrade: (ref: TradeRef) => void
   onQuickTrade?: (type: CreatableType | 'dca') => void
+  reinvest?: { on: boolean; onChange: (value: boolean) => void }
 }) {
   const t = useT()
   return (
@@ -659,6 +690,12 @@ function HoldingRowGroup({
                   {t('investments.estSellFee')} {formatStockMoney(h.est_sell_fee, ccy)} · {t('investments.estSellTax')}{' '}
                   {formatStockMoney(h.est_sell_tax ?? 0, ccy)}
                 </span>
+              )}
+              {reinvest && (
+                <label className="flex items-center gap-1.5" title={t('investments.holding.reinvestHint') as string}>
+                  <input type="checkbox" checked={reinvest.on} onChange={(e) => reinvest.onChange(e.target.checked)} />
+                  {t('investments.holding.reinvest')}
+                </label>
               )}
               {onQuickTrade && (
                 <span className="ml-auto flex gap-2">
@@ -1518,7 +1555,6 @@ export function InvestmentSettingsDialog({
     }
     return out
   })
-  const [reinvest, setReinvest] = useState(Boolean(initial.reinvestDividends))
   const [pnlAfterSellCosts, setPnlAfterSellCosts] = useState(initial.pnlAfterSellCosts !== false)
   const [settlementId, setSettlementId] = useState(initial.settlementAccountId || '')
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -1538,7 +1574,14 @@ export function InvestmentSettingsDialog({
         ;(next as Record<string, unknown>)[f.key] = parsed
       }
     }
-    if (reinvest) next.reinvestDividends = true
+    // 股利再投入已改成各檔設定(持股展開列的開關);舊的帳戶層級值原樣帶回當預設。
+    if (initial.reinvestDividends) next.reinvestDividends = true
+    // 這個視窗沒有編輯、但 App 會寫的欄位(持股開關、各檔再投入)要原樣帶回,
+    // 否則整包取代會把它們洗掉。
+    if (initial.stockEnabled !== undefined) next.stockEnabled = initial.stockEnabled
+    if (initial.reinvestBySymbol && Object.keys(initial.reinvestBySymbol).length > 0) {
+      next.reinvestBySymbol = initial.reinvestBySymbol
+    }
     // 預設就是開,關掉才存。
     if (!pnlAfterSellCosts) next.pnlAfterSellCosts = false
     if (settlementId) next.settlementAccountId = settlementId
@@ -1632,10 +1675,6 @@ export function InvestmentSettingsDialog({
                 {t('investments.settings.pnlAfterSellCostsDesc')}
               </span>
             </span>
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={reinvest} onChange={(e) => setReinvest(e.target.checked)} />
-            {t('investments.settings.reinvestDividends')}
           </label>
         </div>
         <DialogFooter>

@@ -47,6 +47,7 @@ import {
   rateToPercentText,
   resolveInvestmentSettings,
   stockDcaWholeShares,
+  isStockAccount,
 } from '../lib/investment'
 
 /** 規則狀態篩選:`recent` 為預設(進行中一律顯示,已到期的只顯示近 7 天內到期者,
@@ -178,7 +179,7 @@ export function RecurringRulesPanel({
   // 股票定期定額:投資理財帳戶只能是 account_type === 'investment'(同單筆
   // 買進的既有限制),交割帳戶沿用一般的帳戶清單(允許任何非群組帳戶)。
   const investmentAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'investment'),
+    () => accounts.filter((a) => isStockAccount(a)),
     [accounts],
   )
   const filteredRules = useMemo(() => {

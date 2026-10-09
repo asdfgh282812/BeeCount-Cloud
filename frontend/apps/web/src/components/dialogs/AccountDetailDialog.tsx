@@ -44,7 +44,8 @@ import {
   DatePicker,
   interestRateToPercentDisplay,
   percentDisplayToInterestRate,
-  TransactionList
+  TransactionList,
+  isStockAccount,
 } from '@beecount/web-features'
 import {
   Banknote,
@@ -276,7 +277,7 @@ export function AccountDetailDialog({
   const billing = useAccountBilling(account, token, activeLedgerId)
   // 投資理財(股票)帳戶:餘額是持股成本的帳面數,不能調整餘額;統計與明細
   // 改用 `InvestmentAccountPanel`(持股/市值/損益/買賣操作)。
-  const isInvestment = (account?.account_type || '') === 'investment'
+  const isInvestment = isStockAccount(account)
   // 「選擇區間」清單彈窗(2026-09-06,對齊 mobile app 同名功能 + 比照
   // `ProjectDetailDialog` 同款 UI):切換帳戶時關閉,不沿用上一張卡的展開
   // 狀態。

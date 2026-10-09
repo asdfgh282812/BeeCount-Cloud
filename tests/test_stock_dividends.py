@@ -552,6 +552,27 @@ def test_manual_cash_dividend_via_stock_trade_endpoint():
         app.dependency_overrides.clear()
 
 
+def test_reinvest_default_is_per_symbol_with_legacy_account_fallback():
+    settings = {"reinvestBySymbol": {"TW:0050": True, "TW:2330": False}, "reinvestDividends": True}
+    assert dividends.reinvest_default_for(settings, "tw", "0050") is True
+    # 各檔明確設成 false 時,蓋過舊的帳戶層級 true
+    assert dividends.reinvest_default_for(settings, "TW", "2330") is False
+    # 沒設的標的沿用舊帳戶層級值
+    assert dividends.reinvest_default_for(settings, "US", "AAPL") is True
+    assert dividends.reinvest_default_for({}, "US", "AAPL") is False
+
+
+def test_normalize_investment_settings_keeps_stock_enabled_and_per_symbol_reinvest():
+    from src.snapshot_mutator import normalize_investment_settings
+
+    out = normalize_investment_settings({
+        "stockEnabled": False,
+        "reinvestBySymbol": {"tw:0050": True, "": True, "US:AAPL": None, "x": "bad-but-truthy"},
+        "unknown": 1,
+    })
+    assert out == {"stockEnabled": False, "reinvestBySymbol": {"TW:0050": True, "X": True}}
+
+
 def test_dividend_jobs_registered():
     from src.services import scheduled_jobs
 

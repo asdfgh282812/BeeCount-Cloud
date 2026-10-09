@@ -9,7 +9,7 @@ import {
   type WorkspaceAccount,
 } from '@beecount/api-client'
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, useT } from '@beecount/ui'
-import { formatShares, formatStockMoney } from '@beecount/web-features'
+import { formatShares, formatStockMoney, isStockAccount } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
@@ -101,7 +101,7 @@ export function RealizedPnlPage() {
   })
 
   const investmentAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'investment'),
+    () => accounts.filter((a) => isStockAccount(a)),
     [accounts],
   )
 

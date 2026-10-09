@@ -5,6 +5,7 @@ import { useT } from '@beecount/ui'
 import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
 import { Amount, type AmountSize } from './Amount'
+import { applyConvertedRounding, type ConvertedRounding } from '../lib/convertedRounding'
 import {
   effectiveRateToBase,
   hasCreditBillingFields,
@@ -157,6 +158,7 @@ export function AccountListRow({
   baseCurrency,
   fxRates,
   fxOverrides,
+  convertedRounding = 'none',
   amountSize = 'sm'
 }: {
   row: ReadAccount & AccountStats
@@ -177,6 +179,8 @@ export function AccountListRow({
   baseCurrency?: string
   fxRates?: ExchangeRatesResponse | null
   fxOverrides?: ExchangeRateOverride[]
+  /** 換算成主幣種之後的取整方式(帳本設定,見 lib/convertedRounding);預設不取整。 */
+  convertedRounding?: ConvertedRounding
   /** 主要金額字號(2026-08-13 使用者回報資產頁列表金額太小):預設 `sm`(帳戶
    *  選擇彈窗等緊湊情境維持原樣),`AccountsPanel` 資產頁列表傳大一號的字級。
    *  子帳戶巢狀渲染時不繼續往下傳,保持子列比主列小一號的既有視覺層級。 */
@@ -257,7 +261,9 @@ export function AccountListRow({
   // 幣種金額時,標籤跟著換成「≈主幣種代碼」提示這是換算後的近似值,不是原始
   // 記帳金額。fxEff 是純函式算出來的匯率,永遠跟 baseCurrency/fxRates/
   // fxOverrides 同步,不需要額外 loading state。
-  const amountValue = showConvertedNow ? primaryValue * fxEff!.rate : primaryValue
+  const amountValue = showConvertedNow
+    ? applyConvertedRounding(primaryValue * fxEff!.rate, convertedRounding)
+    : primaryValue
   const amountCurrency = showConvertedNow ? upperBase : currency
   const currencyBadgeLabel = showConvertedNow ? `≈${upperBase}` : isForeign ? currency.toUpperCase() : null
 
@@ -425,6 +431,7 @@ export function AccountListRow({
               baseCurrency={baseCurrency}
               fxRates={fxRates}
               fxOverrides={fxOverrides}
+              convertedRounding={convertedRounding}
             />
           ))}
         </div>

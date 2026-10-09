@@ -61,6 +61,10 @@ export type ProfileAppearance = {
   holiday_primary?: string
   /** 節日當天自動套用節日主題(P3) */
   holiday_theme_enabled?: boolean
+  /** 外幣折算取整方式,以帳本 ledger_id 為 key(同 App ConvertedRounding);整份 last-write-wins。 */
+  converted_rounding?: Record<string, 'floor' | 'round' | 'none'>
+  /** converted_rounding 最後修改時間(毫秒),App/Web 以較新者為準。 */
+  converted_rounding_updated_at?: number
 }
 
 /**
@@ -2194,5 +2198,9 @@ export type InvestmentSettings = {
   nhiSupplementRate?: number
   nhiThreshold?: number
   reinvestDividends?: boolean
+  /** 各檔股利再投入(key 為大寫「市場:代號」,例 `TW:0050`);沒設的標的沿用 reinvestDividends。 */
+  reinvestBySymbol?: Record<string, boolean>
+  /** 帳戶有沒有啟用「持股」功能。缺 = 啟用(舊資料維持原行為);false = 原始的投資理財帳戶。 */
+  stockEnabled?: boolean
   settlementAccountId?: string
 }
