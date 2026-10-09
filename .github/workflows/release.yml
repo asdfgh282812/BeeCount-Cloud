@@ -99,7 +99,19 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # setup-buildx 要從 Docker Hub 拉 moby/buildkit,GitHub runner 偶爾會 timeout
+      # (context deadline exceeded,跟程式碼無關)。失敗就等一下再試一次,兩次都失敗才算失敗。
       - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+        continue-on-error: true
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
+        run: sleep 20
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
