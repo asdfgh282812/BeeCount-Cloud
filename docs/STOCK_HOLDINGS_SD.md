@@ -404,6 +404,30 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
 常見最低 1 元,帳戶預設最低 20 元是給單筆交易用的,要在規則打開「自訂手續費」
 自己改。
 
+### 10.2b 2026-10-11 遇休市日順延 / 略過
+
+**問題**:定期定額只看排程日期,排定日剛好是週末/休市日(農曆年、國定假日)也照買,
+成交日記在休市日、價格用的是前一個交易日的收盤價——跟券商實際扣款對不上。
+
+**規則**(`services/securities/trading_calendar.py`,App `trading_calendar.dart` 同一套):
+- 以該期的**業務日期**(Cloud = `LEDGER_TIMEZONE`、App = 手機本地)查市場日曆;週末 + `holidays.financial`
+  的交易所休市日(TWSE/NYSE/HKEX/JPX/SSE/SZSE/KRX/LSE,TW/TWO 共用證交所、KS/KQ 共用 KRX)。
+- 排定日是交易日 → 照舊。
+- 休市 + 月/年/每 N 週規則 → **順延到下一個交易日**(同一時刻);還沒到那天就先等(不通知、不推進進度)。
+- 休市 + 每日 / `weekly_days` 規則 → **略過這一期**(靜默推進進度)。這兩種相鄰兩期可能順延到同一天
+  (週五休市順延週一、週一又要買)造成重複扣款。
+- **進度與 syncId 仍以原本排定的時間為準**(`generated_until_at`、`stock_dca_occurrence_ids`),只有
+  `happenedAt` / `tradeDate` 換成順延後的成交時間;補期上限(7 天)也看成交時間。App 與 Cloud 因此仍
+  推導出同一組 syncId,不會雙生成。
+- `GET /read/ledgers/{id}/recurring-rules` 的 `upcoming_run_at` 對 stock_dca 回順延後的成交時間。
+
+**限制**:只涵蓋事先公告的休市日,颱風停市等臨時休市預測不到;App 內建靜態表
+(`lib/services/investment/trading_calendar_data.dart`,涵蓋 去年~今年+5),超出年份只剩週末判斷。
+每年發版前執行 `scripts/export_trading_calendar.py` 更新(然後 `dart format`)。已經在休市日生成的舊交易不回頭修。
+
+測試:`tests/test_recurring_stock_dca.py` 的 `real_calendar` 標記測試;其餘測試預設把交易日曆壓成「每天開市」
+(用真實時鐘排規則,不然週末跑會失敗)。
+
 ### 10.3 2026-09-30 App↔Web 定期定額顯示、代號自動帶入、批次期初持股
 
 使用者回報三件事:

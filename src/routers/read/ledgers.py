@@ -1649,15 +1649,22 @@ def list_recurring_rules(
 def _upcoming_run_at(row: ReadRecurringRuleProjection) -> datetime | None:
     if row.tx_type != "transfer" or not row.enabled or row.next_run_at is None:
         return None
-    from ...services.recurring_materializer import next_pending_occurrence
+    from ...services.recurring_materializer import (
+        next_pending_occurrence,
+        stock_dca_rule_trade_time,
+    )
 
-    nxt = next_pending_occurrence(row, _parse_advanced_rule_json(row.advanced_rule_json))
+    advanced_rule = _parse_advanced_rule_json(row.advanced_rule_json)
+    nxt = next_pending_occurrence(row, advanced_rule)
     if nxt is None:
         return None
     if row.end_at is not None:
         end_at = row.end_at if row.end_at.tzinfo else row.end_at.replace(tzinfo=timezone.utc)
         if nxt > end_at:
             return None
+    if row.kind == "stock_dca":
+        # 排定日遇休市會順延,顯示實際會成交的日子(不能順延的略過期維持原日期)。
+        return stock_dca_rule_trade_time(row, nxt, advanced_rule) or nxt
     return nxt
 
 

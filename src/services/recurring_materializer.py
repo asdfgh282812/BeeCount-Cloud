@@ -71,7 +71,8 @@ from ..models import (
 from ..snapshot_mutator import add_months, stock_trade_amount
 from . import notifications as notification_service
 from . import recurring_schedule
-from .securities import markets, trade_fees
+from .business_time import business_tz
+from .securities import markets, trade_fees, trading_calendar
 from .securities import store as securities_store
 
 logger = logging.getLogger(__name__)
@@ -739,6 +740,23 @@ def _decode_advanced_rule(raw: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def stock_dca_rule_trade_time(
+    rule: ReadRecurringRuleProjection,
+    occurrence: datetime,
+    advanced_rule: dict[str, Any] | None,
+) -> datetime | None:
+    """這一期定期定額實際該成交的時間:休市順延到下一個交易日、或不能順延
+    就回 None(略過這一期)。規則見 `trading_calendar.stock_dca_trade_time`;
+    App `stockDcaTradeTime` 必須同一套。"""
+    return trading_calendar.stock_dca_trade_time(
+        rule.market,
+        occurrence,
+        frequency=rule.frequency,
+        advanced_rule=advanced_rule,
+        tz=business_tz(),
+    )
+
+
 def emit_stock_trade(
     db: Session, *, ledger_id: str, user_id: str, now: datetime, payload: dict[str, Any],
 ) -> str:
@@ -824,9 +842,12 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
     for rule in db.scalars(stmt).all():
         if not rule.market or not rule.symbol:
             continue
-        nxt = next_pending_occurrence(rule, _decode_advanced_rule(rule.advanced_rule_json))
+        adv = _decode_advanced_rule(rule.advanced_rule_json)
+        nxt = next_pending_occurrence(rule, adv)
         if nxt is not None and nxt <= now:
-            due_keys.append((rule.market.upper(), rule.symbol.upper()))
+            trade_at = stock_dca_rule_trade_time(rule, nxt, adv)
+            if trade_at is not None and trade_at <= now:
+                due_keys.append((rule.market.upper(), rule.symbol.upper()))
     if due_keys:
         _refresh_quotes(db, list(dict.fromkeys(due_keys)), now=now)
     rules = db.scalars(stmt).all()
@@ -893,7 +914,21 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                 rule_changed = True
                 break
 
-            if next_occurrence < now - STOCK_DCA_MAX_CATCH_UP:
+            # 排定日遇到休市:順延到下一個交易日(還沒到就先等),或不能順延
+            # (每日/每週指定星期幾)直接略過這一期。進度、syncId 仍以原本排定
+            # 的時間為準,只有成交時間(trade_at)換日期。
+            trade_at = stock_dca_rule_trade_time(rule, next_occurrence, advanced_rule)
+            if trade_at is None:
+                rule.generated_until_at = next_occurrence
+                rule_changed = True
+                if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                    rule.enabled = False
+                    break
+                continue
+            if trade_at > now:
+                break
+
+            if trade_at < now - STOCK_DCA_MAX_CATCH_UP:
                 rule.generated_until_at = next_occurrence
                 rule_changed = True
                 stale_skipped.append(next_occurrence)
@@ -1014,7 +1049,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                 "syncId": tx_sync_id,
                 "type": "transfer",
                 "amount": gross,
-                "happenedAt": next_occurrence.isoformat(),
+                "happenedAt": trade_at.isoformat(),
                 "fromAccountId": rule.from_account_sync_id,
                 "toAccountId": rule.to_account_sync_id,
                 "note": note,
@@ -1037,7 +1072,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                 "fee": fee,
                 "tax": 0.0,
                 "amount": stock_trade_amount("buy", shares, price, fee, 0.0, security_currency),
-                "tradeDate": next_occurrence.isoformat(),
+                "tradeDate": trade_at.isoformat(),
                 "txId": tx_sync_id,
                 "createdByUserId": rule.user_id,
             }

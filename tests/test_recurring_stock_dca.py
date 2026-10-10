@@ -33,7 +33,18 @@ from src.models import (
     SecurityQuote,
 )
 from src.services import recurring_materializer
+from src.services.securities import trading_calendar
 from src.services.recurring_materializer import materialize_due_stock_rules, stock_dca_occurrence_ids
+
+
+@pytest.fixture(autouse=True)
+def _every_day_is_trading_day(monkeypatch, request):
+    """這個檔案的測試用真實時鐘(`now` - N 天)排規則,跑在週末/休市日會被
+    定期定額的休市順延擋下而失敗;預設把交易日曆壓成「每天都開市」,要測休市
+    行為的測試掛 `@pytest.mark.real_calendar` 並用固定的 `now`。"""
+    if request.node.get_closest_marker("real_calendar"):
+        return
+    monkeypatch.setattr(trading_calendar, "is_trading_day", lambda market, day: True)
 
 
 @pytest.fixture(autouse=True)
@@ -866,5 +877,117 @@ def test_tw_stock_dca_amount_too_small_skips_period_and_notifies():
             again = materialize_due_stock_rules(db)
             db.commit()
             assert again["skipped_too_small"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---- 休市日:順延 / 略過(2026-10-11)-------------------------------------
+
+@pytest.mark.real_calendar
+def test_trading_calendar_known_closures():
+    from datetime import date
+
+    cal = trading_calendar
+    assert not cal.is_trading_day("TW", date(2026, 2, 16))  # 農曆除夕
+    assert not cal.is_trading_day("TW", date(2026, 2, 14))  # 週六
+    assert cal.is_trading_day("TW", date(2026, 2, 23))
+    assert not cal.is_trading_day("US", date(2026, 7, 3))  # 獨立日補假
+    assert cal.is_trading_day("US", date(2026, 2, 16)) is False  # 華盛頓誕辰日
+    assert cal.is_trading_day("TW", date(2026, 7, 3))
+    assert cal.is_trading_day("XX", date(2026, 2, 16))  # 未知市場只看週末
+    assert cal.next_trading_day("TW", date(2026, 2, 14)) == date(2026, 2, 23)
+    assert cal.next_trading_day("TW", date(2026, 2, 23)) == date(2026, 2, 23)
+
+
+@pytest.mark.real_calendar
+def test_stock_dca_trade_time_defers_or_skips():
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Asia/Taipei")
+    sat = datetime(2026, 2, 14, 1, 0, tzinfo=timezone.utc)  # 台北週六 09:00
+    mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+    tue = datetime(2026, 2, 17, 1, 0, tzinfo=timezone.utc)
+    f = trading_calendar.stock_dca_trade_time
+    assert f("TW", mon, frequency="monthly", advanced_rule=None, tz=tz) == mon
+    assert f("TW", sat, frequency="monthly", advanced_rule=None, tz=tz) == mon
+    assert f("TW", sat, frequency="weekly", advanced_rule=None, tz=tz) == mon
+    assert f("TW", sat, frequency="monthly", advanced_rule={"type": "monthly_day", "day": 14}, tz=tz) == mon
+    assert f("TW", sat, frequency="daily", advanced_rule=None, tz=tz) is None
+    assert f("TW", sat, frequency="weekly", advanced_rule={"type": "weekly_days", "days": [5]}, tz=tz) is None
+    # 美股同一天(2/14 週六)不開、下個交易日是 2/17(2/16 華盛頓誕辰日)
+    assert f("US", sat, frequency="monthly", advanced_rule=None, tz=tz) == tue
+
+
+@pytest.mark.real_calendar
+def test_stock_dca_defers_to_next_trading_day_and_waits_until_then():
+    """排定日是休市日:成交日順延到下一個交易日,沒到之前不買也不推進進度。"""
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-cal1@example.com", "L_CAL1")
+        _insert_quote(TS, price=100.0)
+        sat = datetime(2026, 2, 14, 1, 0, tzinfo=timezone.utc)
+        res = _create_stock_dca_rule(
+            client, hdr, "L_CAL1", token,
+            overrides={"next_run_at": sat.isoformat(), "stock_fee_rate": 0, "stock_fee_min": 0},
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+
+        with TS() as db:
+            # 農曆新年連假期間:還沒到下一個交易日(2/23)。
+            result = materialize_due_stock_rules(db, now=datetime(2026, 2, 18, 3, 0, tzinfo=timezone.utc))
+            db.commit()
+            assert result["materialized"] == 0
+            assert result["skipped_no_quote"] == 0 and result["skipped_insufficient"] == 0
+            assert db.scalars(select(ReadStockTradeProjection)).all() == []
+            row = db.scalar(select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id))
+            assert row.generated_until_at is None
+
+        with TS() as db:
+            result = materialize_due_stock_rules(db, now=datetime(2026, 2, 23, 2, 0, tzinfo=timezone.utc))
+            db.commit()
+            assert result["materialized"] == 1
+            trade = db.scalars(select(ReadStockTradeProjection)).one()
+            td = trade.trade_date if trade.trade_date.tzinfo else trade.trade_date.replace(tzinfo=timezone.utc)
+            assert td == datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+            tx = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == trade.tx_sync_id))
+            tx_at = tx.happened_at if tx.happened_at.tzinfo else tx.happened_at.replace(tzinfo=timezone.utc)
+            assert tx_at == td
+            # syncId 仍以「原排定時間」推導,App/Cloud 兩邊才會對得上。
+            tx_id, trade_id = stock_dca_occurrence_ids(rule_id, sat)
+            assert trade.sync_id == trade_id and trade.tx_sync_id == tx_id
+            row = db.scalar(select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id))
+            gu = row.generated_until_at if row.generated_until_at.tzinfo else row.generated_until_at.replace(tzinfo=timezone.utc)
+            assert gu == sat
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.real_calendar
+def test_daily_stock_dca_skips_closed_days_instead_of_doubling_up():
+    """每日定期定額:週末那兩期直接略過,不能都順延到週一變成買三次。"""
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-cal2@example.com", "L_CAL2")
+        _insert_quote(TS, price=100.0)
+        fri = datetime(2026, 2, 6, 1, 0, tzinfo=timezone.utc)
+        res = _create_stock_dca_rule(
+            client, hdr, "L_CAL2", token,
+            overrides={"frequency": "daily", "next_run_at": fri.isoformat(), "stock_fee_rate": 0, "stock_fee_min": 0},
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+        with TS() as db:
+            result = materialize_due_stock_rules(db, now=datetime(2026, 2, 9, 5, 0, tzinfo=timezone.utc))
+            db.commit()
+            assert result["materialized"] == 2  # 週五、週一
+            days = sorted(
+                (t.trade_date if t.trade_date.tzinfo else t.trade_date.replace(tzinfo=timezone.utc)).date()
+                for t in db.scalars(select(ReadStockTradeProjection)).all()
+            )
+            assert [d.isoformat() for d in days] == ["2026-02-06", "2026-02-09"]
+            row = db.scalar(select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id))
+            gu = row.generated_until_at if row.generated_until_at.tzinfo else row.generated_until_at.replace(tzinfo=timezone.utc)
+            assert gu == datetime(2026, 2, 9, 1, 0, tzinfo=timezone.utc)
     finally:
         app.dependency_overrides.clear()
