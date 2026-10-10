@@ -2198,6 +2198,8 @@ const zhTW = {
   'enum.txType.expense': '支出',
   'enum.txType.income': '收入',
   'enum.txType.transfer': '轉帳',
+  'enum.txType.receivable': '應收',
+  'enum.txType.payable': '應付',
   'enum.role.owner': '擁有者',
   'enum.role.editor': '編輯者',
   'enum.role.viewer': '唯讀',

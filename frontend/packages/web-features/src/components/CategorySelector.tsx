@@ -12,10 +12,12 @@ import {
 import { categoryIconStyle, resolveCategoryColor } from '../lib/categoryColor'
 import { useCategoryIconStyle } from '../context/CategoryIconStyleContext'
 
-type CategorySelectorKind = 'expense' | 'income'
+/** transfer 是虚拟分类不参与选择;receivable / payable 是欠款分类(只在分类
+ *  管理选父分类时用到,交易表单仍只传 expense / income)。 */
+type CategorySelectorKind = 'expense' | 'income' | 'receivable' | 'payable'
 
 type CategorySelectorProps = {
-  /** 分类类型,只有 expense / income 让选(transfer 是虚拟分类不参与选择)。 */
+  /** 分类类型(只显示这个 kind 的分类)。 */
   kind: CategorySelectorKind
   /** 全量分类列表(workspace dedup 后),通常从 fetchWorkspaceCategories 拿。
    *  组件内部按 kind 过滤 + 按 parent_name 分组,父级展示在网格,点开后子级

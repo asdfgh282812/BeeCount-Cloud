@@ -2240,6 +2240,8 @@ const zhCN = {
   'enum.txType.expense': '支出',
   'enum.txType.income': '收入',
   'enum.txType.transfer': '转账',
+  'enum.txType.receivable': '应收',
+  'enum.txType.payable': '应付',
   'enum.role.owner': '所有者',
   'enum.role.editor': '编辑者',
   'enum.role.viewer': '只读',

@@ -363,10 +363,21 @@ export type ReadAccount = {
   investment_settings?: InvestmentSettings | null
 }
 
+/** 分類 kind。receivable / payable 是欠款分類(App 記帳頁「應收」「應付」分頁
+ *  的分類網格:借出/代付/報帳、借入/信貸/車貸/房貸)。欠款起點交易的 tx_type
+ *  仍是 expense / income,但分類 kind 是這兩個,所以不能假設
+ *  `category.kind === tx_type`。 */
+export type CategoryKind = 'expense' | 'income' | 'transfer' | 'receivable' | 'payable'
+
+/** 是否為欠款分類(應收/應付)。 */
+export function isDebtCategoryKind(kind: string | null | undefined): boolean {
+  return kind === 'receivable' || kind === 'payable'
+}
+
 export type ReadCategory = {
   id: string
   name: string
-  kind: 'expense' | 'income' | 'transfer'
+  kind: CategoryKind
   level: number | null
   sort_order: number | null
   icon: string | null
@@ -842,7 +853,7 @@ export type TxPayload = {
    *  create 不傳 = 未設定;update 不傳 = 不改,傳字串 = 設置,傳 null = 清空。 */
   merchant?: string | null
   category_name?: string | null
-  category_kind?: 'expense' | 'income' | 'transfer' | null
+  category_kind?: CategoryKind | null
   category_id?: string | null
   account_name?: string | null
   account_id?: string | null
@@ -1350,7 +1361,7 @@ export type ReadCardRewardRuleTransactions = {
 
 export type CategoryPayload = {
   name: string
-  kind: 'expense' | 'income' | 'transfer'
+  kind: CategoryKind
   level?: number | null
   sort_order?: number | null
   icon?: string | null

@@ -18,7 +18,7 @@ import {
   useT
 } from '@beecount/ui'
 
-import type { ReadCategory, WorkspaceCategory } from '@beecount/api-client'
+import type { CategoryKind, ReadCategory, WorkspaceCategory } from '@beecount/api-client'
 
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
@@ -28,14 +28,18 @@ import { useCategoryIconStyle } from '../context/CategoryIconStyleContext'
 import { TAG_COLOR_PALETTE, tagTextColorOn } from '../lib/tagColorPalette'
 import type { CategoryForm } from '../forms'
 
-type CategoryKind = 'expense' | 'income' | 'transfer'
-
 /** 用户能新建的分类类型。`transfer` 是虚拟分类(转账自动归类),系统种子,
- *  app 端也不允许用户手动创建,这里同步限制。 */
-const CREATABLE_KINDS: ReadonlyArray<Extract<CategoryKind, 'expense' | 'income'>> = [
+ *  app 端也不允许用户手动创建,这里同步限制。receivable / payable 是欠款分类
+ *  (App 记帐页「应收」「应付」分页的分类网格),跟 App 分类管理一样可以新建。 */
+const CREATABLE_KINDS: ReadonlyArray<CategoryKind> = [
   'expense',
   'income',
+  'receivable',
+  'payable',
 ]
+
+/** 分页顺序(transfer 放最后,跟以前一样)。 */
+const TAB_KINDS: ReadonlyArray<CategoryKind> = [...CREATABLE_KINDS, 'transfer']
 
 type CardBodyProps = {
   rows: WorkspaceCategory[]
@@ -254,14 +258,15 @@ function CategoriesCardBody({
   const grouped = useMemo(() => {
     // 用 WorkspaceCategory 而不是 ReadCategory — 保留 ledger_id / tx_count 等字段,
     // 行点击回调要把完整 WorkspaceCategory 传给详情弹窗。
-    const parentsByKind: Record<CategoryKind, WorkspaceCategory[]> = {
-      expense: [],
-      income: [],
-      transfer: []
-    }
+    const parentsByKind = Object.fromEntries(
+      TAB_KINDS.map((k) => [k, [] as WorkspaceCategory[]])
+    ) as Record<CategoryKind, WorkspaceCategory[]>
     const childrenByParent: Record<string, WorkspaceCategory[]> = {}
     for (const row of rows) {
-      const kind = (row.kind as CategoryKind) || 'expense'
+      // 不认得的 kind(更新的 App 推上来的新类型)归到支出,不能让整页崩掉。
+      const kind: CategoryKind = TAB_KINDS.includes(row.kind as CategoryKind)
+        ? (row.kind as CategoryKind)
+        : 'expense'
       const parent = (row.parent_name || '').trim()
       if (parent) {
         childrenByParent[`${kind}::${parent.toLowerCase()}`] =
@@ -284,11 +289,10 @@ function CategoriesCardBody({
     return { parentsByKind, childrenByParent }
   }, [rows])
   const kindCounts = useMemo(
-    () => ({
-      expense: rows.filter((r) => r.kind === 'expense').length,
-      income: rows.filter((r) => r.kind === 'income').length,
-      transfer: rows.filter((r) => r.kind === 'transfer').length
-    }),
+    () =>
+      Object.fromEntries(
+        TAB_KINDS.map((k) => [k, rows.filter((r) => r.kind === k).length])
+      ) as Record<CategoryKind, number>,
     [rows]
   )
 
@@ -297,7 +301,7 @@ function CategoriesCardBody({
   }
 
   const parents = grouped.parentsByKind[activeKind]
-  const kinds: CategoryKind[] = ['expense', 'income', 'transfer']
+  const kinds = TAB_KINDS
 
   const childrenOf = (parent: WorkspaceCategory) =>
     grouped.childrenByParent[`${activeKind}::${parent.name.toLowerCase()}`] || []
@@ -855,7 +859,7 @@ export function CategoriesPanel({
                 </div>
               ) : (
                 <Select
-                  value={CREATABLE_KINDS.includes(form.kind as 'expense' | 'income')
+                  value={CREATABLE_KINDS.includes(form.kind)
                     ? form.kind
                     : 'expense'}
                   onValueChange={(value) => {
@@ -1122,7 +1126,7 @@ export function CategoriesPanel({
       <CategoryPickerDialog
         open={parentPickerOpen}
         onClose={() => setParentPickerOpen(false)}
-        kind={form.kind === 'income' ? 'income' : 'expense'}
+        kind={form.kind === 'transfer' ? 'expense' : form.kind}
         rows={parentCandidateRows}
         iconPreviewUrlByFileId={iconPreviewUrlByFileId}
         selectedId={selectedParentRow?.id}

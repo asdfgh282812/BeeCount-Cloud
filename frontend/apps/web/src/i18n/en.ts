@@ -2204,6 +2204,8 @@ const en = {
   'enum.txType.expense': 'expense',
   'enum.txType.income': 'income',
   'enum.txType.transfer': 'transfer',
+  'enum.txType.receivable': 'receivable',
+  'enum.txType.payable': 'payable',
   'enum.role.owner': 'owner',
   'enum.role.editor': 'editor',
   'enum.role.viewer': 'viewer',

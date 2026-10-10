@@ -14,6 +14,7 @@ import {
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
+  isDebtCategoryKind,
   updateCategory,
   updateRecurringOccurrence,
   updateRecurringRuleFrom,
@@ -776,12 +777,18 @@ export function GlobalEditDialogs() {
             (a) => (a.name || '').trim().toLowerCase() === editTxForm.to_account_name.trim().toLowerCase(),
           )?.id || null
         : null
+    // 欠款起點交易掛的是應收/應付分類(kind ≠ tx_type),沿用表單載入時的
+    // kind,不然存檔會把分類洗成同名支出/收入分類或清空;使用者在選擇器重選
+    // 分類時 TransactionsPanel 會把 category_kind 改回 tx_type。
+    const editCategoryKind = isDebtCategoryKind(editTxForm.category_kind)
+      ? editTxForm.category_kind
+      : editTxForm.tx_type
     const resolvedCategoryId =
       editTxForm.tx_type === 'transfer'
         ? null
         : editTxCategories.find(
             (c) =>
-              c.kind === editTxForm.tx_type &&
+              c.kind === editCategoryKind &&
               (c.name || '').trim().toLowerCase() === editTxForm.category_name.trim().toLowerCase(),
           )?.id || null
 
@@ -826,7 +833,7 @@ export function GlobalEditDialogs() {
           ? null
           : editTxForm.category_name.trim() || null,
       category_kind:
-        editTxForm.tx_type === 'transfer' ? null : editTxForm.tx_type,
+        editTxForm.tx_type === 'transfer' ? null : editCategoryKind,
       account_name:
         editTxForm.tx_type === 'transfer'
           ? null

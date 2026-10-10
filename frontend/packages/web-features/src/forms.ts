@@ -1,5 +1,6 @@
 import type {
   AttachmentRef,
+  CategoryKind,
   InstallmentInterestPeriod,
   InstallmentPlanCreatePayload,
   InstallmentPlanStatus,
@@ -21,7 +22,7 @@ export type TxForm = {
   /** 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。 */
   merchant: string
   category_name: string
-  category_kind: 'expense' | 'income' | 'transfer'
+  category_kind: CategoryKind
   account_name: string
   from_account_name: string
   to_account_name: string
@@ -220,7 +221,7 @@ export type CategoryForm = {
   editingId: string | null
   editingOwnerUserId: string
   name: string
-  kind: 'expense' | 'income' | 'transfer'
+  kind: CategoryKind
   level: string
   sort_order: string
   icon: string

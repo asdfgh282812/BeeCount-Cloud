@@ -641,11 +641,12 @@ export function TransactionsPanel({
     return (
       (categories as WorkspaceCategory[]).find(
         (row) =>
-          row.kind === form.tx_type &&
+          // 欠款起點交易的分類是應收/應付分類(kind ≠ tx_type)。
+          row.kind === (form.category_kind || form.tx_type) &&
           (row.name || '').trim().toLowerCase() === name,
       ) ?? null
     )
-  }, [categories, form.category_name, form.tx_type])
+  }, [categories, form.category_name, form.category_kind, form.tx_type])
 
   const isTransfer = form.tx_type === 'transfer'
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；

@@ -491,7 +491,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
                   key={cat.id}
                   icon={<FolderTree className="h-4 w-4" />}
                   label={cat.name}
-                  hint={cat.kind === 'expense' ? t('enum.txType.expense') : cat.kind === 'income' ? t('enum.txType.income') : '—'}
+                  hint={cat.kind && cat.kind !== 'transfer' ? t(`enum.txType.${cat.kind}`) : '—'}
                   onSelect={() => handleSelectCategory(cat)}
                 />
               ))}

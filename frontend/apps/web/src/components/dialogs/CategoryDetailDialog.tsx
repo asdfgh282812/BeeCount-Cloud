@@ -141,13 +141,8 @@ export function CategoryDetailDialog({
     return agg
   }, [category, statsTransactions, tagColorByName, ledgerMonthStartDay])
 
-  const kindLabel = category
-    ? category.kind === 'expense'
-      ? t('enum.txType.expense')
-      : category.kind === 'income'
-        ? t('enum.txType.income')
-        : t('enum.txType.transfer')
-    : ''
+  // 欠款分類(receivable / payable)用自己的標籤,不要落到「轉帳」。
+  const kindLabel = category ? t(`enum.txType.${category.kind || 'expense'}`) : ''
   const kindToneClass =
     category?.kind === 'expense'
       ? 'text-expense'
