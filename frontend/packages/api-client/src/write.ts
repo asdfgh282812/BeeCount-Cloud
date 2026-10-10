@@ -10,6 +10,8 @@ import type {
   CardRewardRuleUpdatePayload,
   CategoryPayload,
   DebtCreatePayload,
+  DebtRepayPayload,
+  DebtWriteOffPayload,
   DebtRenameCounterpartyPayload,
   DebtRenameCounterpartyResponse,
   DebtUpdatePayload,
@@ -674,6 +676,49 @@ export async function deleteDebt(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
     token,
     { base_change_id: baseChangeId },
+  )
+}
+
+/** App v68:多筆收還款,每筆欠款各一筆收還款交易(不計收支/預算)。 */
+export async function repayDebts(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: DebtRepayPayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/repay`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** App v68:停止追蹤 = 結案 + 刪掉分期排程裡還沒到日期的收還款。 */
+export async function stopTrackingDebt(
+  token: string,
+  ledgerId: string,
+  debtId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}/stop`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** App v68:轉為支出(應付:轉為收入),剩餘金額記成呆帳。 */
+export async function writeOffDebt(
+  token: string,
+  ledgerId: string,
+  debtId: string,
+  baseChangeId: number,
+  payload: DebtWriteOffPayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}/write-off`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
   )
 }
 

@@ -709,6 +709,18 @@ def _assert_debt_exists(db: Session, *, ledger_id: str, debt_id: str) -> ReadDeb
     return debt
 
 
+def _mark_debt_tx_payload(
+    payload: dict, debt_row: ReadDebtProjection, *, merchant_fallback: Any = None,
+) -> None:
+    """收還款交易:借還款不算收支、不算預算(App v68,docs/design/
+    DEBT_MOZE_PARITY_WEB.md §0),帳戶餘額照常。商家沒填時補對象名稱,同 App
+    `LocalRepository.repayDebts`。"""
+    payload["exclude_from_stats"] = True
+    payload["exclude_from_budget"] = True
+    if not payload.get("merchant") and not merchant_fallback and debt_row.counterparty_name:
+        payload["merchant"] = debt_row.counterparty_name
+
+
 def _cascade_delete_orphaned_origin_debt(
     db: Session,
     *,
@@ -757,18 +769,70 @@ def _assert_debt_not_from_split(db: Session, *, ledger_id: str, debt_id: str) ->
 
 
 def _debt_has_repayments(db: Session, *, ledger_id: str, debt_id: str) -> bool:
-    return db.scalar(
-        select(ReadTxProjection.sync_id).where(
-            ReadTxProjection.ledger_id == ledger_id,
-            ReadTxProjection.debt_sync_id == debt_id,
-        ).limit(1)
-    ) is not None
+    """已經發生的收還款是否存在。分期排程裡還沒到日期的收還款不算(刪欠款
+    時一起刪),同 App `LocalDebtRepository.hasPastRepayments`。"""
+    from ...services.debt_status import is_future
+    return any(
+        not is_future(happened_at)
+        for happened_at in db.scalars(
+            select(ReadTxProjection.happened_at).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.debt_sync_id == debt_id,
+            )
+        ).all()
+    )
+
+
+def _future_debt_tx_ids(db: Session, *, ledger_id: str, debt_id: str) -> list[str]:
+    """這筆欠款分期排程裡還沒到日期的收還款交易。"""
+    from ...services.debt_status import is_future
+    return [
+        sync_id
+        for sync_id, happened_at in db.execute(
+            select(ReadTxProjection.sync_id, ReadTxProjection.happened_at).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.debt_sync_id == debt_id,
+            )
+        ).all()
+        if is_future(happened_at)
+    ]
+
+
+def _emit_tx_delete(
+    db: Session, *, ledger: Ledger, tx_id: str, now: datetime,
+    device_id: str, current_user: User,
+) -> None:
+    file_ids = projection.collect_tx_attachment_fileids(db, ledger_id=ledger.id, sync_id=tx_id)
+    db.add(
+        SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            entity_type="transaction",
+            entity_sync_id=tx_id,
+            action="delete",
+            payload_json={},
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
+    )
+    db.flush()
+    projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
+    if file_ids:
+        projection.gc_orphan_attachments(db, user_id=ledger.user_id, file_ids=file_ids)
 
 
 def _emit_debt_delete(
     db: Session, *, ledger: Ledger, debt_id: str, now: datetime,
     device_id: str, current_user: User,
 ) -> None:
+    # 分期排程裡還沒到日期的收還款跟欠款一起刪(呼叫端已確認沒有已發生的
+    # 收還款),同 App `LocalRepository.deleteDebt`。
+    for tx_id in _future_debt_tx_ids(db, ledger_id=ledger.id, debt_id=debt_id):
+        _emit_tx_delete(
+            db, ledger=ledger, tx_id=tx_id, now=now,
+            device_id=device_id, current_user=current_user,
+        )
     db.add(
         SyncChange(
             user_id=ledger.user_id,
@@ -943,6 +1007,15 @@ def _debt_row_to_payload(row: ReadDebtProjection) -> dict[str, Any]:
         d["categoryId"] = row.category_sync_id
     if row.origin_tx_sync_id:
         d["originTxId"] = row.origin_tx_sync_id
+    d["kind"] = row.kind or "new"
+    if row.started_at is not None:
+        d["startedAt"] = _to_iso_utc(row.started_at)
+    if row.installment_count is not None:
+        d["installmentCount"] = row.installment_count
+    if row.installment_no is not None:
+        d["installmentNo"] = row.installment_no
+    if row.installment_group_id:
+        d["installmentGroupId"] = row.installment_group_id
     return d
 
 
@@ -976,6 +1049,7 @@ def _apply_split_debts(
                 "syncId": debt_id,
                 "originTxId": tx_id,
                 "excludedFromTotal": False,
+                "kind": "new",
             }
             create = True
         else:
@@ -1616,6 +1690,8 @@ async def _commit_create_tx_fast(
                     direction=debt_row.direction,
                     counterparty_name=debt_row.counterparty_name,
                 )
+            # 借還款不算收支、不算預算(App v68 規則),商家補對象名稱。
+            _mark_debt_tx_payload(mutate_payload, debt_row)
         project_id = mutate_payload.get("project_id")
         if project_id:
             _assert_project_exists(
@@ -1883,7 +1959,9 @@ async def _commit_write_fast_tx(
             # 校验存在性 —— exclude_unset 没传该 key 代表这次 PATCH 不动它。
             debt_id = mutate_payload.get("debt_id")
             if debt_id:
-                _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+                debt_row = _assert_debt_exists(db, ledger_id=ledger.id, debt_id=str(debt_id))
+                if debt_id != prev_item.get("debtId"):
+                    _mark_debt_tx_payload(mutate_payload, debt_row, merchant_fallback=prev_item.get("merchant"))
             # 專案(Phase 13):同款语义,显式改 project_id(非空)时才校验存在性
             # 与 tx_type 限制 —— exclude_unset 没传该 key 代表这次 PATCH 不动它。
             project_id = mutate_payload.get("project_id")
@@ -2888,6 +2966,9 @@ __all__ = [
     '_cascade_delete_linked_stock_trades',
     'ReadTxSplitProjection',
     '_assert_debt_not_from_split',
+    '_debt_has_repayments',
+    '_future_debt_tx_ids',
+    '_emit_tx_delete',
     'WriteDebtUpdateRequest',
     'WriteEntityDeleteRequest',
     'WriteInstallmentEarlyRepayRequest',

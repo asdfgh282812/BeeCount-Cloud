@@ -1704,6 +1704,31 @@ export function TransactionsPage() {
 
   const renderError = (err: unknown): string => localizeError(err, t)
 
+  // 記帳「應收」「應付」分頁(App v68):server 一次建立欠款、起點交易與分期排程。
+  const onCreateDebtEntry = async (
+    ledgerId: string,
+    payload: Parameters<typeof createDebt>[3]
+  ): Promise<boolean> => {
+    if (!ledgerId) {
+      setErrorNotice(t('shell.selectLedgerFirst'))
+      return false
+    }
+    try {
+      const res = await retryOnConflict(ledgerId, (base) => createDebt(token, ledgerId, base, payload))
+      if (activeLedgerId === ledgerId) setBaseChangeId(res.new_change_id)
+      setSuccessNotice(t('debtEntry.notice.created'))
+      fetchReadDebts(token, ledgerId)
+        .then(setTxDictionaryDebts)
+        .catch(() => undefined)
+      await refreshSectionData(activeLedgerId || ledgerId, 'transactions')
+      await loadTxDictionaries()
+      return true
+    } catch (err) {
+      setErrorNotice(renderError(err))
+      return false
+    }
+  }
+
   const fetchBaseChangeId = async (ledgerId: string): Promise<number> => {
     const detail = await fetchReadLedgerDetail(token, ledgerId)
     return detail.source_change_id
@@ -3051,6 +3076,7 @@ export function TransactionsPage() {
                 tags={txWriteTags}
                 debts={txDictionaryDebts}
                 canCreateDebt={txCanCreateDebt}
+                onCreateDebtEntry={onCreateDebtEntry}
                 projects={txDictionaryProjects}
                 onCreateProject={txCanManageProjects ? onCreateTxProject : undefined}
                 rewardRules={txFormRewardRules}

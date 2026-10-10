@@ -1064,6 +1064,23 @@ export function GlobalEditDialogs() {
     notifySuccess,
   ])
 
+  // 記帳「應收」「應付」分頁(App v68):server 一次建立欠款、起點交易與
+  // 分期排程;其他頁面靠 sync_change 廣播自己刷新。
+  const handleCreateDebtEntry = useCallback(
+    async (ledgerId: string, payload: Parameters<typeof createDebt>[3]): Promise<boolean> => {
+      if (!ledgerId) return false
+      try {
+        await retryOnConflict(ledgerId, (base) => createDebt(token, ledgerId, base, payload))
+        notifySuccess(t('debtEntry.notice.created'))
+        return true
+      } catch (err) {
+        notifyError(err)
+        return false
+      }
+    },
+    [retryOnConflict, token, notifySuccess, notifyError, t],
+  )
+
   return (
     <>
       <TransactionsPanel
@@ -1080,6 +1097,7 @@ export function GlobalEditDialogs() {
       tags={editTxTags}
       debts={editTxDebts}
       canCreateDebt={editTxCanCreateDebt}
+      onCreateDebtEntry={handleCreateDebtEntry}
       projects={editTxProjects}
       onCreateProject={editTxCanManageProjects ? onCreateTxProject : undefined}
       rewardRules={editTxRewardRules}

@@ -1377,6 +1377,17 @@ class ReadDebtProjection(Base):
     excluded_from_total: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # 款項類型與分期(App v68,MOZE 化):`kind` = 'new'(新借入/新借出,有
+    # 起點交易)/ 'existing'(既有欠款/既有應收,不動帳戶,本金 = 登記時的
+    # 剩餘金額)。`started_at` 是借出/借入日(瞬間)。分期:`installment_count`
+    # 是總期數;代刷分期每期一筆 debt,`installment_no`(1 起算)+
+    # `installment_group_id` 標出同一次代刷。收還款排程是帶 debt_sync_id 的
+    # 未來日期交易,不落在這張表。
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="new", default="new")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    installment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    installment_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    installment_group_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

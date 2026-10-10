@@ -327,6 +327,12 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("categoryId", "category_sync_id"),
         ("originTxId", "origin_tx_sync_id"),
         ("excludedFromTotal", "excluded_from_total"),
+        # App v68 款項類型/分期(docs/design/DEBT_MOZE_PARITY_WEB.md §1)。
+        ("kind", "kind"),
+        ("startedAt", "started_at", _isoformat_or_none),
+        ("installmentCount", "installment_count"),
+        ("installmentNo", "installment_no"),
+        ("installmentGroupId", "installment_group_id"),
     ]),
     # 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。對齊 App
     # lib/cloud/sync/entity_serializer.dart::serializeStockTrade。

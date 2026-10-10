@@ -33,8 +33,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Notification, ReadDebtProjection, ReadTxProjection
+from ..models import Notification, ReadDebtProjection
 from . import notifications as notification_service
+from .debt_status import debt_repayment_totals
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +52,10 @@ def sync_unsettled_counterparty_notifications(db: Session, *, now: datetime | No
         return 0
 
     debt_ids = [d.sync_id for d in debts]
-    repaid_by_debt: dict[str, float] = {}
-    for debt_sync_id, amount in db.execute(
-        select(ReadTxProjection.debt_sync_id, ReadTxProjection.amount).where(
-            ReadTxProjection.debt_sync_id.in_(debt_ids),
-        )
-    ).all():
-        repaid_by_debt[debt_sync_id] = repaid_by_debt.get(debt_sync_id, 0.0) + abs(float(amount or 0))
+    # 已還只算到現在(分期排程的未來收還款不算),見 debt_status.py。
+    repaid_by_debt = {
+        k: v.repaid for k, v in debt_repayment_totals(db, debt_ids, now=now).items()
+    }
 
     # 分組:(user_id, ledger_id, counterparty_name) -> {remaining, count}
     groups: dict[tuple[str, str, str], dict[str, float]] = {}

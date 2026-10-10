@@ -686,18 +686,35 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadDebtProjection.category_sync_id,
         ReadDebtProjection.origin_tx_sync_id,
         ReadDebtProjection.excluded_from_total,
+        ReadDebtProjection.kind,
+        ReadDebtProjection.started_at,
+        ReadDebtProjection.installment_count,
+        ReadDebtProjection.installment_no,
+        ReadDebtProjection.installment_group_id,
     ).where(ReadDebtProjection.ledger_id == ledger_id)
     for (
         sid, direction, counterparty_name, principal_amount, due_at, note,
         closed_at, cat_sid, origin_tx_sid, excluded_from_total,
+        kind, started_at, installment_count, installment_no, installment_group_id,
     ) in db.execute(debt_stmt).all():
+        # upsert_debt 是整列覆蓋:App v68 的款項類型/分期欄位必須一起帶上,
+        # 否則 Web 改一筆欠款的備註就會把它們沖掉。
         d: dict[str, Any] = {
             "syncId": sid,
             "direction": direction,
             "counterpartyName": counterparty_name,
             "principalAmount": principal_amount,
             "excludedFromTotal": bool(excluded_from_total),
+            "kind": kind or "new",
         }
+        if started_at is not None:
+            d["startedAt"] = _to_iso_utc(started_at)
+        if installment_count is not None:
+            d["installmentCount"] = installment_count
+        if installment_no is not None:
+            d["installmentNo"] = installment_no
+        if installment_group_id:
+            d["installmentGroupId"] = installment_group_id
         if due_at is not None:
             d["dueAt"] = _to_iso_utc(due_at)
         if note is not None:

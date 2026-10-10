@@ -804,21 +804,41 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     stock_trades[:] = [t for t in stock_trades if t.get("txId") != tx_id]
 
     # 拆帳欠款明細(App v67):一筆交易可以是多筆欠款的起點,要逐筆處理。
+    # 只有已發生的收還款算「已有還款」;分期排程的未來收還款跟欠款一起刪。
     debts = _ensure_list(target, "debts")
+    now = datetime.now(timezone.utc)
     repaid_debt_ids = {
         other.get("debtId") for other in items
         if isinstance(other, dict) and other.get("debtId")
+        and not _is_future_iso(other.get("happenedAt"), now)
     }
-    debts[:] = [
-        debt for debt in debts
-        if not (
-            isinstance(debt, dict)
-            and debt.get("originTxId") == tx_id
-            and debt.get("syncId") not in repaid_debt_ids
-        )
-    ]
+    removed_debt_ids = {
+        debt.get("syncId") for debt in debts
+        if isinstance(debt, dict)
+        and debt.get("originTxId") == tx_id
+        and debt.get("syncId") not in repaid_debt_ids
+    }
+    if removed_debt_ids:
+        debts[:] = [d for d in debts if not (isinstance(d, dict) and d.get("syncId") in removed_debt_ids)]
+        items[:] = [
+            it for it in items
+            if not (isinstance(it, dict) and it.get("debtId") in removed_debt_ids)
+        ]
+        target["count"] = len(items)
 
     return target
+
+
+def _is_future_iso(raw: object, now: datetime) -> bool:
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed > now
 
 
 def _normalize_name(raw: object) -> str:
@@ -1861,6 +1881,16 @@ def create_debt(snapshot: dict, payload: dict) -> tuple[dict, str]:
     # (web 沒有「起點交易」這個概念)——建立後不可改,見 update_debt。
     if payload.get("origin_tx_id") is not None:
         debt["originTxId"] = str(payload.get("origin_tx_id"))
+    # App v68 款項類型/分期,欄位語意見 ReadDebtProjection。
+    debt["kind"] = "existing" if payload.get("kind") == "existing" else "new"
+    if payload.get("started_at") is not None:
+        debt["startedAt"] = _to_iso8601(payload.get("started_at"))
+    for key, wire in (("installment_count", "installmentCount"), ("installment_no", "installmentNo")):
+        value = _to_optional_int(payload.get(key))
+        if value is not None:
+            debt[wire] = value
+    if payload.get("installment_group_id"):
+        debt["installmentGroupId"] = str(payload.get("installment_group_id"))
     _mark_entity_actor(debt, payload, create=True)
     debts.append(debt)
     return target, sync_id
@@ -1934,6 +1964,19 @@ def delete_debt(snapshot: dict, debt_id: str, payload: dict | None = None) -> di
     idx, debt = _find_by_sync_id(debts, debt_id, expected_prefix="debt")
     _assert_actor_can_modify(debt, payload or {})
     debts.pop(idx)
+    # 分期排程裡還沒到日期的收還款一起刪(router 已擋掉有已發生收還款的
+    # 欠款),同 App `LocalRepository.deleteDebt`。
+    items = _ensure_list(target, "items")
+    now = datetime.now(timezone.utc)
+    items[:] = [
+        it for it in items
+        if not (
+            isinstance(it, dict)
+            and it.get("debtId") == debt_id
+            and _is_future_iso(it.get("happenedAt"), now)
+        )
+    ]
+    target["count"] = len(items)
     return target
 
 

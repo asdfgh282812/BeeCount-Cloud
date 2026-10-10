@@ -23,8 +23,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Notification, ReadDebtProjection, ReadTxProjection
+from ..models import Notification, ReadDebtProjection
 from . import notifications as notification_service
+from .debt_status import debt_repayment_totals
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +83,11 @@ def send_due_debt_reminders(db: Session, *, now: datetime | None = None) -> int:
         if debt.closed_at is not None:
             continue  # 已手動結案,不再提醒
 
-        repaid_total = 0.0
-        for amount in db.scalars(
-            select(ReadTxProjection.amount).where(
-                ReadTxProjection.ledger_id == debt.ledger_id,
-                ReadTxProjection.debt_sync_id == debt.sync_id,
-            )
-        ).all():
-            repaid_total += abs(float(amount or 0))
+        # 已還只算到現在(分期排程的未來收還款不算),見 debt_status.py。
+        totals = debt_repayment_totals(
+            db, [debt.sync_id], ledger_ids=[debt.ledger_id], now=now,
+        ).get(debt.sync_id)
+        repaid_total = totals.repaid if totals else 0.0
         if repaid_total >= float(debt.principal_amount or 0) - 0.01:
             continue  # 已结清,不提醒
 

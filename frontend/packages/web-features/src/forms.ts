@@ -1,6 +1,9 @@
 import type {
   AttachmentRef,
   CategoryKind,
+  DebtCreatePayload,
+  DebtDirection,
+  DebtKind,
   InstallmentInterestPeriod,
   InstallmentPlanCreatePayload,
   InstallmentPlanStatus,
@@ -836,4 +839,137 @@ export function buildTxSplitsPayload(form: TxForm): TxSplitPayload[] {
       note: row.note.trim() || null,
     }
   })
+}
+
+
+// ────────── 記帳「應收」「應付」分頁(App v68 MOZE 化)──────────
+//
+// 對齊 App `lib/widgets/transaction/debt_entry_form.dart`:上方分類網格(欠款
+// 分類,kind = receivable/payable)、金額、對象、備註、帳戶、日期、到期日,最後
+// 是「進階設定」(單次/分期、款項類型、期數、首期日、收還款帳戶、不納入總餘額)。
+// 送出走 `POST .../debts`,server 在同一次寫入裡建起點交易與分期排程。
+
+export type DebtEntryForm = {
+  category_id: string
+  amount: string
+  counterparty_name: string
+  note: string
+  account_id: string
+  /** ISO 瞬間;借出/借入日(既有款項 = 登記日)。 */
+  started_at: string
+  /** `YYYY-MM-DD`,空 = 不設到期日。 */
+  due_date: string
+  kind: DebtKind
+  installment: boolean
+  /** 代刷分期(只限應收 + 新借出 + 分期)。 */
+  card_installment: boolean
+  installment_count: string
+  /** ISO 瞬間;第一次收還款日(代刷分期 = 首期刷卡日)。 */
+  first_at: string
+  /** 既有款項分期的收還款帳戶(選填)。 */
+  schedule_account_id: string
+  excluded_from_total: boolean
+}
+
+export const debtEntryDefaults = (): DebtEntryForm => {
+  const now = new Date()
+  return {
+    category_id: '',
+    amount: '',
+    counterparty_name: '',
+    note: '',
+    account_id: '',
+    started_at: now.toISOString(),
+    due_date: '',
+    kind: 'new',
+    installment: false,
+    card_installment: false,
+    installment_count: '12',
+    first_at: installmentDateAt(now, 1).toISOString(),
+    schedule_account_id: '',
+    excluded_from_total: false,
+  }
+}
+
+/** 代刷分期只限應收 + 新借出 + 分期。 */
+export function debtEntryIsCardInstallment(form: DebtEntryForm, direction: DebtDirection): boolean {
+  return form.installment && form.card_installment && direction === 'receivable' && form.kind === 'new'
+}
+
+/** 既有欠款/既有應收(代刷分期一定是新借出)。 */
+export function debtEntryIsExisting(form: DebtEntryForm, direction: DebtDirection): boolean {
+  return form.kind === 'existing' && !debtEntryIsCardInstallment(form, direction)
+}
+
+/** 金額框的標籤 key:金額 / 目前剩餘金額 / 分期總金額 / 剩餘本金。 */
+export function debtEntryAmountLabelKey(form: DebtEntryForm, direction: DebtDirection): string {
+  const existing = debtEntryIsExisting(form, direction)
+  if (!form.installment) return existing ? 'debtEntry.amount.remaining' : 'debtEntry.amount.plain'
+  return existing ? 'debtEntry.amount.remainingPrincipal' : 'debtEntry.amount.installmentTotal'
+}
+
+/** 分期金額拆分,同 App `splitInstallmentAmounts` / server `debt_schedule.py`:
+ *  整數金額取整到元,有小數的取到分;尾差放在最後一期。 */
+export function splitInstallmentAmounts(total: number, count: number): number[] {
+  if (count <= 0) return []
+  const cents = Math.round(total * 100)
+  const unit = cents % 100 === 0 ? 100 : 1
+  const units = Math.floor(cents / unit)
+  const per = Math.floor(units / count)
+  const remainder = units - per * count
+  return Array.from({ length: count }, (_, i) =>
+    ((per + (i === count - 1 ? remainder : 0)) * unit) / 100
+  )
+}
+
+/** 第 `index` 期(0 起算)的日期:往後加 index 個月,超過當月天數取月底,
+ *  保留時分(本地時間),同 App `installmentDateAt`。 */
+export function installmentDateAt(first: Date, index: number): Date {
+  const m = first.getMonth() + index
+  const year = first.getFullYear() + Math.floor(m / 12)
+  const month = ((m % 12) + 12) % 12
+  const lastDay = new Date(year, month + 1, 0).getDate()
+  return new Date(year, month, Math.min(first.getDate(), lastDay), first.getHours(), first.getMinutes())
+}
+
+/** 回傳 i18n key;null = 可以送出。 */
+export function validateDebtEntry(form: DebtEntryForm, direction: DebtDirection): string | null {
+  if (!form.category_id) return 'debtEntry.error.category'
+  const amount = Number(form.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return 'debtEntry.error.amount'
+  if (!form.counterparty_name.trim()) return 'debtEntry.error.counterparty'
+  if (!debtEntryIsExisting(form, direction) && !form.account_id) return 'debtEntry.error.account'
+  if (form.installment) {
+    const count = Number(form.installment_count)
+    if (!Number.isInteger(count) || count < 2 || count > 600) return 'debtEntry.error.installmentCount'
+    if (!form.first_at) return 'debtEntry.error.firstAt'
+  }
+  return null
+}
+
+export function buildDebtEntryPayload(form: DebtEntryForm, direction: DebtDirection): DebtCreatePayload {
+  const card = debtEntryIsCardInstallment(form, direction)
+  const existing = debtEntryIsExisting(form, direction)
+  return {
+    direction,
+    counterparty_name: form.counterparty_name.trim(),
+    principal_amount: Number(form.amount),
+    // 到期日是純日期:送 UTC 零點,server 只取年月日(見 App CLAUDE.md 日期慣例)。
+    due_at: form.due_date ? `${form.due_date}T00:00:00Z` : null,
+    note: form.note.trim() || null,
+    category_id: form.category_id || null,
+    excluded_from_total: form.excluded_from_total,
+    kind: card ? 'new' : form.kind,
+    started_at: form.started_at || null,
+    account_id: existing ? null : form.account_id || null,
+    installment: form.installment
+      ? {
+          count: Number(form.installment_count),
+          first_at: form.first_at,
+          // 新款項的排程走起點帳戶;既有款項才有獨立(選填)的收還款帳戶。
+          schedule_account_id: existing ? form.schedule_account_id || null : null,
+          card,
+        }
+      : null,
+  }
 }

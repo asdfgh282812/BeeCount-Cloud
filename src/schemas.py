@@ -576,6 +576,7 @@ DebtDirection = Literal["payable", "receivable"]
 # "closed" = 手動結案(closed_at 非空),優先權蓋過其它三種從 remaining_amount
 # 算出來的狀態 —— 不代表已還清全額,可能少還一點就結案。
 DebtStatus = Literal["open", "partial", "settled", "closed"]
+DebtKind = Literal["new", "existing"]
 
 
 class ReadTransactionOut(BaseModel):
@@ -1179,6 +1180,11 @@ class ReadDebtRepaymentOut(BaseModel):
     id: str
     amount: float
     happened_at: datetime
+    # App v68:分期排程裡還沒到日期的收還款(MOZE「待出帳」),不算已還。
+    scheduled: bool = False
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
 
 
 class ReadDebtOut(BaseModel):
@@ -1211,6 +1217,17 @@ class ReadDebtOut(BaseModel):
     # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
     # 本身或通知的可見性。
     excluded_from_total: bool = False
+    # App v68 款項類型/分期(MOZE 化)。`started_at` 為 None 時讀端退回起點
+    # 交易時間。`repaid_amount` 只算到現在,`scheduled_amount` 是未來排程。
+    kind: DebtKind = "new"
+    started_at: datetime | None = None
+    installment_count: int | None = None
+    installment_no: int | None = None
+    installment_group_id: str | None = None
+    repaid_amount: float = 0.0
+    scheduled_amount: float = 0.0
+    last_repayment_at: datetime | None = None
+    category_name: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -2174,6 +2191,54 @@ class WriteDebtCreateRequest(WriteBaseRequest):
     origin_tx_id: str | None = None
     # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計。
     excluded_from_total: bool = False
+    # App v68 款項類型/分期(MOZE 化,docs/design/DEBT_MOZE_PARITY_WEB.md §2.5)。
+    # `kind='new'` 帶 `account_id` 時,同一次寫入建立起點交易(借出=支出、
+    # 借入=收入,不計收支/預算);沒帶帳戶維持舊行為(只登記欠款)。
+    # `kind='existing'` 不建起點交易,本金是登記時的剩餘金額。
+    kind: DebtKind = "new"
+    started_at: datetime | None = None
+    account_id: str | None = None
+    installment: "WriteDebtInstallment | None" = None
+    reward_rule_ids: list[str] | None = None
+
+
+class WriteDebtInstallment(BaseModel):
+    """分期:單筆欠款建 `count` 筆未來日期的收還款交易(每月一筆,寫進
+    `schedule_account_id`,null = 起點帳戶);`card=True` 是代刷分期(只限應收
+    + 新借出),改成每期一筆獨立應收欠款,起點是刷在 `account_id` 上的每期金額。"""
+    count: int = Field(ge=2, le=600)
+    first_at: datetime
+    schedule_account_id: str | None = None
+    card: bool = False
+
+
+class WriteDebtRepayAllocation(BaseModel):
+    debt_id: str = Field(min_length=1)
+    amount: float = Field(gt=0)
+
+
+class WriteDebtRepayRequest(WriteBaseRequest):
+    """多筆收還款(MOZE「新增收款」):每筆欠款各一筆收還款交易(不計收支/
+    預算)。`settle_debt_ids` 是金額不足時選「視為結清」的欠款,會停止追蹤。"""
+    allocations: list[WriteDebtRepayAllocation] = Field(min_length=1, max_length=200)
+    account_id: str | None = None
+    happened_at: datetime
+    category_id: str | None = None
+    note: str | None = None
+    settle_debt_ids: list[str] = Field(default_factory=list)
+
+
+class WriteDebtStopRequest(WriteBaseRequest):
+    """停止追蹤:結案 + 刪掉分期排程裡還沒到日期的收還款。"""
+
+
+class WriteDebtWriteOffRequest(WriteBaseRequest):
+    """轉為支出(應付:轉為收入):剩餘金額先記一筆收還款(不計收支),再記
+    一筆同額、計入收支的支出/收入,帳戶餘額不變。分類必填。"""
+    account_id: str | None = None
+    category_id: str = Field(min_length=1)
+    happened_at: datetime
+    note: str | None = None
 
 
 class WriteDebtUpdateRequest(WriteBaseRequest):
@@ -2801,3 +2866,6 @@ class PendingDividendConfirmRequest(WriteBaseRequest):
     stock_shares: float | None = Field(default=None, ge=0)
     trade_date: datetime | None = None
     note: str | None = None
+
+
+WriteDebtCreateRequest.model_rebuild()

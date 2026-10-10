@@ -1854,7 +1854,16 @@ export type ReadDebtRepayment = {
   id: string
   amount: number
   happened_at: string
+  /** App v68:分期排程裡還沒到日期的收還款(「待出帳」),不算已還。 */
+  scheduled?: boolean
+  account_id?: string | null
+  account_name?: string | null
+  note?: string | null
 }
+
+/** App v68 款項類型:new = 新借入/新借出(有起點交易);existing = 既有欠款/
+ *  既有應收(不動帳戶,本金 = 登記時的剩餘金額)。 */
+export type DebtKind = 'new' | 'existing'
 
 /**
  * `remaining_amount`/`status` 不落库,是 server 读路径从反查交易即时算出
@@ -1888,11 +1897,36 @@ export type ReadDebt = {
   /** 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
    *  本身或通知的可見性。 */
   excluded_from_total: boolean
+  /** App v68 款項類型/分期(MOZE 化)。舊 server 不帶,前端當 'new'。 */
+  kind?: DebtKind
+  /** 借出/借入日;null 時 server 已退回起點交易時間,仍可能為 null。 */
+  started_at?: string | null
+  installment_count?: number | null
+  /** 代刷分期:第幾期(1 起算),同一次代刷共用 installment_group_id。 */
+  installment_no?: number | null
+  installment_group_id?: string | null
+  /** 已還(只算到現在)。 */
+  repaid_amount?: number
+  /** 分期排程裡還沒到日期的收還款合計(「待出帳」)。 */
+  scheduled_amount?: number
+  last_repayment_at?: string | null
+  category_name?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
 }
 
+export type DebtInstallmentPayload = {
+  /** 2..600 */
+  count: number
+  first_at: string
+  /** 單筆分期的收還款帳戶,null = 起點帳戶。 */
+  schedule_account_id?: string | null
+  /** 代刷分期(只限應收 + 新借出)。 */
+  card?: boolean
+}
+
+/** 不帶 account_id 且 kind='new' = 舊行為(只登記欠款,沒有起點交易)。 */
 export type DebtCreatePayload = {
   direction: DebtDirection
   counterparty_name: string
@@ -1901,6 +1935,29 @@ export type DebtCreatePayload = {
   note?: string | null
   category_id?: string | null
   excluded_from_total?: boolean
+  kind?: DebtKind
+  started_at?: string | null
+  account_id?: string | null
+  installment?: DebtInstallmentPayload | null
+  reward_rule_ids?: string[] | null
+}
+
+export type DebtRepayPayload = {
+  allocations: { debt_id: string; amount: number }[]
+  account_id?: string | null
+  happened_at: string
+  category_id?: string | null
+  note?: string | null
+  /** 金額不足時「視為結清」的欠款,會停止追蹤。 */
+  settle_debt_ids?: string[]
+}
+
+export type DebtWriteOffPayload = {
+  account_id?: string | null
+  /** 應收選支出分類、應付選收入分類。 */
+  category_id: string
+  happened_at: string
+  note?: string | null
 }
 
 /** `principal_amount`/`direction` 建立后不可改,只暴露

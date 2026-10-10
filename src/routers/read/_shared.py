@@ -568,16 +568,12 @@ def _split_debt_info_map(
         ).all()
         if not debts:
             continue
-        repaid_rows = db.execute(
-            select(
-                ReadTxProjection.debt_sync_id,
-                func.coalesce(func.sum(func.abs(ReadTxProjection.amount)), 0.0),
-            ).where(
-                ReadTxProjection.ledger_id == ledger_id,
-                ReadTxProjection.debt_sync_id.in_(debt_ids),
-            ).group_by(ReadTxProjection.debt_sync_id)
-        ).all()
-        repaid_by_debt = {sid: float(amt or 0.0) for sid, amt in repaid_rows}
+        # 已還只算到現在(分期排程的未來收還款不算),見 services/debt_status.py。
+        from ...services.debt_status import debt_repayment_totals
+        repaid_by_debt = {
+            sid: t.repaid
+            for sid, t in debt_repayment_totals(db, debt_ids, ledger_ids=[ledger_id]).items()
+        }
         category_ids = {d.category_sync_id for d in debts if d.category_sync_id}
         category_names: dict[str, str] = {}
         if category_ids:
@@ -609,7 +605,7 @@ def _split_debt_info_map(
                 "debt_category_name": category_names.get(d.category_sync_id or ""),
                 "debt_remaining_amount": remaining,
                 "debt_status": debt_status,
-                "debt_has_repayments": d.sync_id in repaid_by_debt,
+                "debt_has_repayments": repaid_by_debt.get(d.sync_id, 0.0) > 0,
             }
     return out
 

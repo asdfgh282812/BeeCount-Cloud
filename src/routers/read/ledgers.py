@@ -1817,6 +1817,14 @@ def list_installment_periods(
     return out
 
 
+def _aware_utc(dt: datetime | None) -> datetime | None:
+    """SQLite 讀回的 DateTime(timezone=True) 是 naive UTC;不補時區的話前端
+    `new Date()` 會當本地時間解析,UTC+8 差 8 小時(欠款列表的時間瞬間欄位)。"""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 @router.get(
     "/ledgers/{ledger_external_id}/debts",
     response_model=list[ReadDebtOut],
@@ -1846,28 +1854,38 @@ def list_debts(
         return []
 
     debt_ids = [row.sync_id for row in rows]
+    # App v68:已還只算到現在,分期排程的未來收還款計入 scheduled_amount
+    # (MOZE「待出帳」),口徑見 services/debt_status.py。
+    from ...services.debt_status import debt_repayment_totals, is_future
+    now = datetime.now(timezone.utc)
+    totals_by_debt = debt_repayment_totals(db, debt_ids, ledger_ids=[ledger.id], now=now)
     repayment_rows = db.execute(
         select(
             ReadTxProjection.debt_sync_id,
             ReadTxProjection.sync_id,
             ReadTxProjection.amount,
             ReadTxProjection.happened_at,
+            ReadTxProjection.account_sync_id,
+            ReadTxProjection.account_name,
+            ReadTxProjection.note,
         ).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.debt_sync_id.in_(debt_ids),
         ).order_by(ReadTxProjection.happened_at.desc())
     ).all()
     repayments_by_debt: dict[str, list[ReadDebtRepaymentOut]] = {}
-    repaid_by_debt: dict[str, float] = {}
-    for debt_sid, tx_sid, amount, happened_at in repayment_rows:
+    for debt_sid, tx_sid, amount, happened_at, acc_sid, acc_name, tx_note in repayment_rows:
         repayments_by_debt.setdefault(debt_sid, []).append(
-            ReadDebtRepaymentOut(id=tx_sid, amount=float(amount or 0), happened_at=happened_at)
+            ReadDebtRepaymentOut(
+                id=tx_sid, amount=float(amount or 0), happened_at=_aware_utc(happened_at),
+                scheduled=is_future(happened_at, now),
+                account_id=acc_sid, account_name=acc_name, note=tx_note,
+            )
         )
-        repaid_by_debt[debt_sid] = repaid_by_debt.get(debt_sid, 0.0) + abs(float(amount or 0))
 
     # 欠款紀錄本身(起點交易摘要),跟上面的還款記錄平行——只有 mobile 建立
     # 連帶起點交易的欠款才有 origin_tx_sync_id;若該交易已被刪除(或欠款是
-    # web 建的,原本就是 None),這裡就查不到,維持 None。
+    # 既有款項,原本就是 None),這裡就查不到,維持 None。
     # 拆帳欠款明細(App v67):被拆帳明細引用的欠款,起點交易是整筆拆帳交易,
     # 欠款紀錄要顯示這筆欠款的本金,不是交易總額。
     from_split_ids = set(db.scalars(
@@ -1884,31 +1902,44 @@ def list_debts(
                 ReadTxProjection.sync_id,
                 ReadTxProjection.amount,
                 ReadTxProjection.happened_at,
+                ReadTxProjection.account_sync_id,
+                ReadTxProjection.account_name,
+                ReadTxProjection.note,
             ).where(
                 ReadTxProjection.ledger_id == ledger.id,
                 ReadTxProjection.sync_id.in_(origin_tx_ids),
             )
         ).all()
-        tx_by_sync_id = {
-            tx_sid: (amount, happened_at) for tx_sid, amount, happened_at in origin_tx_rows
-        }
+        tx_by_sync_id = {r[0]: r for r in origin_tx_rows}
         for row in rows:
             if not row.origin_tx_sync_id:
                 continue
             found = tx_by_sync_id.get(row.origin_tx_sync_id)
             if found is None:
                 continue
-            amount, happened_at = found
+            _sid, amount, happened_at, acc_sid, acc_name, tx_note = found
             if row.sync_id in from_split_ids:
                 amount = row.principal_amount
             origin_tx_by_debt[row.sync_id] = ReadDebtRepaymentOut(
-                id=row.origin_tx_sync_id, amount=float(amount or 0), happened_at=happened_at,
+                id=row.origin_tx_sync_id, amount=float(amount or 0),
+                happened_at=_aware_utc(happened_at), account_id=acc_sid, account_name=acc_name, note=tx_note,
             )
+
+    category_ids = {row.category_sync_id for row in rows if row.category_sync_id}
+    category_names: dict[str, str] = {}
+    if category_ids:
+        category_names = dict(db.execute(
+            select(UserCategoryProjection.sync_id, UserCategoryProjection.name).where(
+                UserCategoryProjection.user_id == ledger.user_id,
+                UserCategoryProjection.sync_id.in_(category_ids),
+            )
+        ).all())
 
     out: list[ReadDebtOut] = []
     for row in rows:
         principal = float(row.principal_amount or 0)
-        repaid = repaid_by_debt.get(row.sync_id, 0.0)
+        totals = totals_by_debt.get(row.sync_id)
+        repaid = totals.repaid if totals else 0.0
         remaining = max(principal - repaid, 0.0)
         if row.closed_at is not None:
             debt_status = "closed"
@@ -1918,6 +1949,7 @@ def list_debts(
             debt_status = "partial"
         else:
             debt_status = "open"
+        origin = origin_tx_by_debt.get(row.sync_id)
         out.append(
             ReadDebtOut(
                 id=row.sync_id,
@@ -1929,12 +1961,21 @@ def list_debts(
                 due_at=row.due_at,
                 note=row.note,
                 repayments=repayments_by_debt.get(row.sync_id, []),
-                closed_at=row.closed_at,
+                closed_at=_aware_utc(row.closed_at),
                 category_id=row.category_sync_id,
+                category_name=category_names.get(row.category_sync_id or ""),
                 origin_tx_id=row.origin_tx_sync_id,
-                origin_transaction=origin_tx_by_debt.get(row.sync_id),
+                origin_transaction=origin,
                 from_split=row.sync_id in from_split_ids,
                 excluded_from_total=bool(row.excluded_from_total),
+                kind=cast("Any", row.kind if row.kind in ("new", "existing") else "new"),
+                started_at=_aware_utc(row.started_at) or (origin.happened_at if origin else None),
+                installment_count=row.installment_count,
+                installment_no=row.installment_no,
+                installment_group_id=row.installment_group_id,
+                repaid_amount=repaid,
+                scheduled_amount=totals.scheduled if totals else 0.0,
+                last_repayment_at=totals.last_repayment_at if totals else None,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

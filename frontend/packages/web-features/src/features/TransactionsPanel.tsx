@@ -22,6 +22,7 @@ import {
 
 import type {
   AttachmentRef,
+  DebtCreatePayload,
   ReadAccount,
   ReadCardRewardRule,
   ReadCategory,
@@ -50,9 +51,14 @@ import {
   isRuleWithinWindow,
   stripAutoAppliedRewardIds
 } from '../lib/rewardBasic'
+import { DebtEntryForm } from './DebtEntryForm'
 import {
+  buildDebtEntryPayload,
   computeTxTotalAmount,
+  debtEntryDefaults,
   splitDebtKindFor,
+  validateDebtEntry,
+  type DebtEntryForm as DebtEntryFormState,
   txSplitAssignedTotal,
   txSplitDebtDefaults,
   txSplitItemDefaults,
@@ -179,6 +185,10 @@ type TransactionsPanelProps = {
    *  按 ledger role === 'owner' 算好再传进来(對齊 DebtsPage.tsx 的
    *  canManage 判斷),不在這個 panel 內部重新猜權限。 */
   canCreateDebt?: boolean
+  /** 記帳「應收」「應付」分頁(App v68 MOZE 化):傳了才顯示這兩個分頁(新增
+   *  時、且 canCreateDebt)。送出 `POST .../debts`,server 一次建立欠款、起點
+   *  交易與分期排程。成功回傳 true(對話框會關閉),失敗由呼叫方自行提示。 */
+  onCreateDebtEntry?: (ledgerId: string, payload: DebtCreatePayload) => Promise<boolean>
   /** 專案(Phase 13,docs/PH13_PROJECT_SD.md):主表單掛專案用,只需要
    *  啟用中的專案(`ProjectSelector`/`ProjectPickerDialog` 内部已經會過濾
    *  `enabled=false`,這裡傳全量列表即可)。 */
@@ -414,6 +424,7 @@ export function TransactionsPanel({
   tags,
   debts = [],
   canCreateDebt = false,
+  onCreateDebtEntry,
   projects = [],
   onCreateProject,
   rewardRules = [],
@@ -454,6 +465,24 @@ export function TransactionsPanel({
   const t = useT()
   const open = dialogOpen
   const setOpen = onDialogOpenChange
+  // 記帳「應收」「應付」分頁(App v68):跟支出/收入/轉帳並列,但表單與送出
+  // 完全不同(DebtEntryForm + POST .../debts),所以獨立一份狀態,不塞進 TxForm。
+  type EntryMode = 'tx' | 'receivable' | 'payable'
+  const [entryMode, setEntryMode] = useState<EntryMode>('tx')
+  const [debtForms, setDebtForms] = useState(() => ({
+    receivable: debtEntryDefaults(),
+    payable: debtEntryDefaults()
+  }))
+  const [debtError, setDebtError] = useState<string | null>(null)
+  const [debtSaving, setDebtSaving] = useState(false)
+  const showDebtTabs = Boolean(onCreateDebtEntry && canCreateDebt && !form.editingId)
+  const debtMode = showDebtTabs && entryMode !== 'tx' ? (entryMode as 'receivable' | 'payable') : null
+  useEffect(() => {
+    if (!open) return
+    setEntryMode('tx')
+    setDebtForms({ receivable: debtEntryDefaults(), payable: debtEntryDefaults() })
+    setDebtError(null)
+  }, [open])
   // 金額欄位自動 focus(Phase 20,2026-08 使用者回饋):開啟表單時直接可以打字,
   // 不用先點一下金額欄位。編輯既有交易時全選原有數值,方便直接輸入新數字覆蓋。
   const amountInputRef = useRef<HTMLInputElement>(null)
@@ -764,6 +793,73 @@ export function TransactionsPanel({
       )
     : null
 
+  // 共用欄位同步(同 App `exportSharedFields`/`applySharedFields`):金額、
+  // 備註、帳戶、時間在分頁間帶過去,商家 ↔ 對象。
+  const enterDebtMode = (kind: 'receivable' | 'payable') => {
+    const source: Partial<DebtEntryFormState> = debtMode ? debtForms[debtMode] : {}
+    const accountId = accounts.find(
+      (a) => a.name.trim().toLowerCase() === form.account_name.trim().toLowerCase()
+    )?.id
+    setDebtForms((prev) => {
+      const cur = prev[kind]
+      const next: DebtEntryFormState = debtMode
+        ? {
+            ...cur,
+            amount: source.amount || cur.amount,
+            note: source.note || cur.note,
+            account_id: source.account_id || cur.account_id,
+            started_at: source.started_at || cur.started_at,
+            counterparty_name: source.counterparty_name || cur.counterparty_name
+          }
+        : {
+            ...cur,
+            amount: form.amount.trim() || cur.amount,
+            note: form.note.trim() || cur.note,
+            account_id: accountId || cur.account_id,
+            started_at: form.happened_at || cur.started_at,
+            counterparty_name: form.merchant.trim() || cur.counterparty_name
+          }
+      return { ...prev, [kind]: next }
+    })
+    setDebtError(null)
+    setEntryMode(kind)
+  }
+
+  const leaveDebtMode = () => {
+    if (!debtMode) return
+    const d = debtForms[debtMode]
+    const accountName = accounts.find((a) => a.id === d.account_id)?.name
+    onFormChange({
+      ...form,
+      amount: d.amount || form.amount,
+      note: d.note || form.note,
+      account_name: accountName || form.account_name,
+      happened_at: d.started_at || form.happened_at,
+      merchant: d.counterparty_name || form.merchant
+    })
+    setEntryMode('tx')
+  }
+
+  const handleSaveDebt = async (kind: 'receivable' | 'payable') => {
+    if (!onCreateDebtEntry) return
+    const draft = debtForms[kind]
+    const errorKey = validateDebtEntry(draft, kind)
+    if (errorKey) {
+      setDebtError(t(errorKey) as string)
+      return
+    }
+    setDebtSaving(true)
+    try {
+      const ok = await onCreateDebtEntry(writeLedgerId, buildDebtEntryPayload(draft, kind))
+      if (ok) {
+        onReset()
+        setOpen(false)
+      }
+    } finally {
+      setDebtSaving(false)
+    }
+  }
+
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
       // 转账两个标记都隐藏 → 清掉,避免残留脏值。currency 一并清空:那顆整
@@ -917,14 +1013,20 @@ export function TransactionsPanel({
                   樣式取代下拉選單,放在表單最上方(帳本欄位之下)。 */}
               <div className="space-y-1 md:col-span-2">
                 <Label>{t('transactions.table.type')}</Label>
-                <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted/40 p-1">
+                <div
+                  className={`grid ${showDebtTabs ? 'grid-cols-5' : 'grid-cols-3'} gap-1 rounded-lg bg-muted/40 p-1`}
+                >
                   {(['expense', 'income', 'transfer'] as const).map((type) => (
                     <button
                       key={type}
                       type="button"
-                      onClick={() => applyTxType(type)}
+                      data-testid={`tx-type-${type}`}
+                      onClick={() => {
+                        if (debtMode) leaveDebtMode()
+                        applyTxType(type)
+                      }}
                       className={`rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
-                        form.tx_type === type
+                        !debtMode && form.tx_type === type
                           ? 'bg-background text-foreground shadow-sm'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
@@ -932,8 +1034,42 @@ export function TransactionsPanel({
                       {t(`enum.txType.${type}`)}
                     </button>
                   ))}
+                  {showDebtTabs
+                    ? (['receivable', 'payable'] as const).map((kind) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          data-testid={`tx-type-${kind}`}
+                          onClick={() => enterDebtMode(kind)}
+                          className={`rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+                            debtMode === kind
+                              ? 'bg-background text-foreground shadow-sm'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {t(`enum.txType.${kind}`)}
+                        </button>
+                      ))
+                    : null}
                 </div>
               </div>
+            {debtMode ? (
+              <DebtEntryForm
+                direction={debtMode}
+                form={debtForms[debtMode]}
+                onChange={(next) => {
+                  setDebtError(null)
+                  setDebtForms((prev) => ({ ...prev, [debtMode]: next }))
+                }}
+                accounts={accounts}
+                categories={categories}
+                debts={debts}
+                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                onCreateCategory={onCreateCategory}
+                disabled={dictionariesLoading}
+              />
+            ) : (
+            <>
             {/* 分類(Phase 20,2026-08 使用者回饋):比照 Moze 參考圖搬到類型頁籤
                 正下方、金額之前——對齊「先選類別再輸入金額」的操作順序。原本依
                 是否拆帳決定 col-span 的寫法(未拆帳時只占一半寬)改成一律
@@ -2013,7 +2149,9 @@ export function TransactionsPanel({
                         {t('transactions.placeholder.debt')}
                       </span>
                     </SelectItem>
-                    {canCreateDebt ? (
+                    {/* 有應收/應付分頁時,建立欠款一律走分頁(App v68 同樣移除了
+                        交易表單裡另一個建立欠款的入口),這裡只留關聯既有欠款。 */}
+                    {canCreateDebt && !onCreateDebtEntry ? (
                       <SelectItem value="__new__">
                         {t('transactions.placeholder.newDebt')}
                       </SelectItem>
@@ -2128,7 +2266,12 @@ export function TransactionsPanel({
                 <span className="text-xs text-muted-foreground opacity-60">▾</span>
               </button>
             </div>
+            </>
+            )}
           </div>
+          {debtMode && debtError ? (
+            <p className="mt-3 text-sm text-destructive" data-testid="debt-entry-error">{debtError}</p>
+          ) : null}
           </div>
           <DialogFooter className="shrink-0 border-t border-border/60 bg-card px-6 py-4">
             <Button
@@ -2140,6 +2283,15 @@ export function TransactionsPanel({
             >
               {t('dialog.cancel')}
             </Button>
+            {debtMode ? (
+              <Button
+                data-testid="debt-entry-submit"
+                disabled={!canWrite || debtSaving}
+                onClick={() => void handleSaveDebt(debtMode)}
+              >
+                {t('transactions.button.create')}
+              </Button>
+            ) : (
             <Button
               disabled={!canWrite || !canSubmit}
               onClick={async () => {
@@ -2151,6 +2303,7 @@ export function TransactionsPanel({
             >
               {form.editingId ? t('transactions.button.update') : t('transactions.button.create')}
             </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

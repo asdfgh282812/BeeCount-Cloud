@@ -1063,16 +1063,12 @@ def _workspace_debt_currency_totals(
         return {}
 
     debt_ids = [row.sync_id for row in rows]
-    repaid_rows = db.execute(
-        select(
-            ReadTxProjection.debt_sync_id,
-            func.coalesce(func.sum(func.abs(ReadTxProjection.amount)), 0.0),
-        ).where(
-            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
-            ReadTxProjection.debt_sync_id.in_(debt_ids),
-        ).group_by(ReadTxProjection.debt_sync_id)
-    ).all()
-    repaid_by_debt = {debt_sid: float(amt or 0.0) for debt_sid, amt in repaid_rows}
+    # 已還只算到現在(分期排程的未來收還款不算),見 services/debt_status.py。
+    from ...services.debt_status import debt_repayment_totals
+    repaid_by_debt = {
+        k: v.repaid
+        for k, v in debt_repayment_totals(db, debt_ids, ledger_ids=ledger_internal_ids).items()
+    }
 
     # remaining_amount 口徑同 /ledgers/{id}/debts:principal - repaid,已結清
     # (<=0.01)的不計入,避免已還清部分重複算進總額。

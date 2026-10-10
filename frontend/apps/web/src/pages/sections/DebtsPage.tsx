@@ -2,19 +2,27 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import {
+  createCategory,
   createDebt,
-  createTransaction,
   deleteDebt,
   fetchReadDebts,
   fetchWorkspaceAccounts,
+  fetchWorkspaceCategories,
   fetchWorkspaceTransactions,
   renameDebtCounterparty,
+  repayDebts,
+  stopTrackingDebt,
   updateDebt,
+  writeOffDebt,
+  type DebtCreatePayload,
+  type DebtRepayPayload,
+  type DebtWriteOffPayload,
   type ReadAccount,
   type ReadDebt,
+  type WorkspaceCategory,
 } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beecount/ui'
-import { DebtsPanel, debtDefaults, type DebtForm, type RepaymentPayload } from '@beecount/web-features'
+import { DebtsPanel, debtDefaults, type DebtForm } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -45,6 +53,7 @@ export function DebtsPage() {
   const bucket = activeLedgerId || '__none__'
   const [debts, setDebts] = usePageCache<ReadDebt[]>(`debts:${bucket}:rows`, [])
   const [accounts, setAccounts] = usePageCache<ReadAccount[]>(`debts:${bucket}:accounts`, [])
+  const [categories, setCategories] = usePageCache<WorkspaceCategory[]>(`debts:${bucket}:categories`, [])
   const [form, setForm] = useState<DebtForm>(debtDefaults())
 
   const notifyError = useCallback(
@@ -63,12 +72,14 @@ export function DebtsPage() {
       return
     }
     try {
-      const [d, a] = await Promise.all([
+      const [d, a, c] = await Promise.all([
         fetchReadDebts(token, activeLedgerId),
         fetchWorkspaceAccounts(token, { limit: 500 }),
+        fetchWorkspaceCategories(token, { limit: 1000 }),
       ])
       setDebts(d)
       setAccounts(a)
+      setCategories(c)
     } catch (err) {
       notifyError(err)
     }
@@ -168,55 +179,109 @@ export function DebtsPage() {
     }
   }
 
-  const onRecordRepayment = async (debt: ReadDebt, payload: RepaymentPayload): Promise<void> => {
-    if (!activeLedgerId) return
-    const account = payload.account_id ? accounts.find((a) => a.id === payload.account_id) : null
+  /** 包一層:寫入 → 成功提示 → 刷新;衝突時也刷新。回傳是否成功。 */
+  const runWrite = async (
+    write: (ledgerId: string) => Promise<unknown>,
+    successKey: string,
+  ): Promise<boolean> => {
+    if (!activeLedgerId) return false
     try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        createTransaction(token, activeLedgerId, base, {
-          tx_type: debt.direction === 'receivable' ? 'income' : 'expense',
-          amount: payload.amount,
-          happened_at: payload.happened_at,
-          note: payload.note,
-          account_id: payload.account_id,
-          account_name: account?.name || null,
-          debt_id: debt.id,
-        }),
-      )
-      notifySuccess(t('debts.repayment.notice.recorded'))
+      await write(activeLedgerId)
+      notifySuccess(t(successKey))
       await refresh()
+      return true
     } catch (err) {
       if (isWriteConflict(err)) await refresh()
       notifyError(err)
+      return false
     }
   }
 
-  const onCloseDebt = async (debt: ReadDebt): Promise<void> => {
-    if (!activeLedgerId) return
+  // App v68:新增款項(同記帳對話框的應收/應付分頁)。
+  const onCreateEntry = (payload: DebtCreatePayload) =>
+    runWrite(
+      (ledgerId) => retryOnConflict(ledgerId, (base) => createDebt(token, ledgerId, base, payload)),
+      'debts.notice.created',
+    )
+
+  // App v68:多筆收還款,每筆欠款各一筆收還款交易(不計收支)。
+  const onRepay = (payload: DebtRepayPayload) =>
+    runWrite(
+      (ledgerId) => retryOnConflict(ledgerId, (base) => repayDebts(token, ledgerId, base, payload)),
+      'debts.repayment.notice.recorded',
+    )
+
+  const onStopTracking = (debt: ReadDebt) =>
+    runWrite(
+      (ledgerId) => retryOnConflict(ledgerId, (base) => stopTrackingDebt(token, ledgerId, debt.id, base)),
+      'debts.notice.stopped',
+    )
+
+  const onWriteOff = (debt: ReadDebt, payload: DebtWriteOffPayload) =>
+    runWrite(
+      (ledgerId) => retryOnConflict(ledgerId, (base) => writeOffDebt(token, ledgerId, debt.id, base, payload)),
+      'debts.notice.writtenOff',
+    )
+
+  const onToggleExcluded = async (debt: ReadDebt): Promise<void> => {
+    await runWrite(
+      (ledgerId) =>
+        retryOnConflict(ledgerId, (base) =>
+          updateDebt(token, ledgerId, debt.id, base, { excluded_from_total: !debt.excluded_from_total }),
+        ),
+      debt.excluded_from_total ? 'debts.notice.included' : 'debts.notice.excluded',
+    )
+  }
+
+  const onCreateCategory = async (
+    name: string,
+    kind: 'expense' | 'income' | 'receivable' | 'payable',
+  ): Promise<WorkspaceCategory | null> => {
+    if (!activeLedgerId) return null
     try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        updateDebt(token, activeLedgerId, debt.id, base, { closed_at: new Date().toISOString() }),
+      const res = await retryOnConflict(activeLedgerId, (base) =>
+        createCategory(token, activeLedgerId, base, {
+          name,
+          kind,
+          level: 1,
+          sort_order: null,
+          icon: null,
+          icon_type: null,
+          custom_icon_path: null,
+          icon_cloud_file_id: null,
+          icon_cloud_sha256: null,
+          parent_name: null,
+        }),
       )
-      notifySuccess(t('debts.notice.closed'))
-      await refresh()
+      const created: WorkspaceCategory = {
+        id: res.entity_id || '',
+        name,
+        kind,
+        level: 1,
+        sort_order: null,
+        icon: null,
+        icon_type: null,
+        parent_name: null,
+        last_change_id: res.new_change_id,
+        ledger_id: activeLedgerId,
+        ledger_name: null,
+        created_by_user_id: null,
+        created_by_email: null,
+      }
+      setCategories([...categories, created])
+      return created
     } catch (err) {
-      if (isWriteConflict(err)) await refresh()
       notifyError(err)
+      return null
     }
   }
 
   const onReopenDebt = async (debt: ReadDebt): Promise<void> => {
-    if (!activeLedgerId) return
-    try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        updateDebt(token, activeLedgerId, debt.id, base, { closed_at: null }),
-      )
-      notifySuccess(t('debts.notice.reopened'))
-      await refresh()
-    } catch (err) {
-      if (isWriteConflict(err)) await refresh()
-      notifyError(err)
-    }
+    await runWrite(
+      (ledgerId) =>
+        retryOnConflict(ledgerId, (base) => updateDebt(token, ledgerId, debt.id, base, { closed_at: null })),
+      'debts.notice.resumed',
+    )
   }
 
   // 雙向勾稽(體驗補強):還款記錄點一下,查到完整交易後用全域事件開
@@ -248,15 +313,20 @@ export function DebtsPage() {
           <DebtsPanel
             debts={debts}
             accounts={accounts}
+            categories={categories}
             currency={currency}
             form={form}
             onFormChange={setForm}
             onSubmit={onSubmit}
+            onCreateEntry={onCreateEntry}
+            onCreateCategory={canManage ? onCreateCategory : undefined}
             onDelete={onDelete}
-            onRecordRepayment={onRecordRepayment}
-            onJumpToTx={(txId) => void onJumpToTx(txId)}
-            onCloseDebt={onCloseDebt}
+            onRepay={onRepay}
+            onStopTracking={onStopTracking}
+            onWriteOff={onWriteOff}
             onReopenDebt={onReopenDebt}
+            onToggleExcluded={onToggleExcluded}
+            onJumpToTx={(txId) => void onJumpToTx(txId)}
             highlightDebtId={highlightDebtId}
             canManage={canManage}
           />

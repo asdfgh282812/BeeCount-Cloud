@@ -821,6 +821,12 @@ def upsert_debt(
         "category_sync_id": _as_str(payload.get("categoryId")),
         "origin_tx_sync_id": _as_str(payload.get("originTxId")),
         "excluded_from_total": _as_bool(payload.get("excludedFromTotal"), default=False),
+        # App v68 款項類型/分期,缺鍵 = 新款項、不分期。
+        "kind": "existing" if _as_str(payload.get("kind")) == "existing" else "new",
+        "started_at": _parse_happened_at(payload.get("startedAt")) if payload.get("startedAt") else None,
+        "installment_count": _as_int_or_none(payload.get("installmentCount")),
+        "installment_no": _as_int_or_none(payload.get("installmentNo")),
+        "installment_group_id": _as_str(payload.get("installmentGroupId")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadDebtProjection, ("ledger_id", "sync_id"), values)
