@@ -419,7 +419,8 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
 - **進度與 syncId 仍以原本排定的時間為準**(`generated_until_at`、`stock_dca_occurrence_ids`),只有
   `happenedAt` / `tradeDate` 換成順延後的成交時間;補期上限(7 天)也看成交時間。App 與 Cloud 因此仍
   推導出同一組 syncId,不會雙生成。
-- `GET /read/ledgers/{id}/recurring-rules` 的 `upcoming_run_at` 對 stock_dca 回順延後的成交時間。
+- `upcoming_run_at` **刻意維持原排定日**:Web 編輯表單拿它回填成規則起算日,換成順延日存檔會讓排程悄悄漂移。
+  所以 Web 列表顯示的「下次」是排定日,實際成交日以交易紀錄為準(App 列表有顯示順延後的日期)。
 
 **限制**:只涵蓋事先公告的休市日,颱風停市等臨時休市預測不到;App 內建靜態表
 (`lib/services/investment/trading_calendar_data.dart`,涵蓋 去年~今年+5),超出年份只剩週末判斷。

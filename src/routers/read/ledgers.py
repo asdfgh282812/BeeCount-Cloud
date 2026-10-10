@@ -1647,24 +1647,20 @@ def list_recurring_rules(
 
 
 def _upcoming_run_at(row: ReadRecurringRuleProjection) -> datetime | None:
+    # 刻意維持「原排定日」,不要換成 stock_dca 休市順延後的成交日:Web 編輯表單把它
+    # 當規則的起算日回填,存檔時 server 會從這個時間重新起算,換成順延日會讓排程
+    # 悄悄改掉(例如每月 14 號變 23 號)。
     if row.tx_type != "transfer" or not row.enabled or row.next_run_at is None:
         return None
-    from ...services.recurring_materializer import (
-        next_pending_occurrence,
-        stock_dca_rule_trade_time,
-    )
+    from ...services.recurring_materializer import next_pending_occurrence
 
-    advanced_rule = _parse_advanced_rule_json(row.advanced_rule_json)
-    nxt = next_pending_occurrence(row, advanced_rule)
+    nxt = next_pending_occurrence(row, _parse_advanced_rule_json(row.advanced_rule_json))
     if nxt is None:
         return None
     if row.end_at is not None:
         end_at = row.end_at if row.end_at.tzinfo else row.end_at.replace(tzinfo=timezone.utc)
         if nxt > end_at:
             return None
-    if row.kind == "stock_dca":
-        # 排定日遇休市會順延,顯示實際會成交的日子(不能順延的略過期維持原日期)。
-        return stock_dca_rule_trade_time(row, nxt, advanced_rule) or nxt
     return nxt
 
 
