@@ -21,6 +21,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from .stats_amount import debt_split_total
 from .models import (
     AttachmentFile,
     Ledger,
@@ -231,22 +232,27 @@ def _resolve_account_sync_id_by_name(
 def _normalize_tx_splits_for_projection(raw: Any) -> list[dict[str, Any]]:
     """`payload["splits"]`(item 里已经是 camelCase dict 列表,由
     snapshot_mutator._normalize_tx_splits 规范化过)→ 落 read_tx_split_projection
-    的 dict 列表,过滤掉没有 categoryId 的脏行。"""
+    的 dict 列表,过滤掉没有 categoryId 的脏行。
+
+    拆帳欠款明細(App v67):帶 `debtId` 的項目沒有 categoryId,也要保留
+    (`debt_sync_id` 有值、分類為 NULL),讀 API 和刪欠款守衛靠它反查。"""
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
     for idx, entry in enumerate(raw):
         if not isinstance(entry, dict):
             continue
-        category_sync_id = _as_str(entry.get("categoryId"))
-        if category_sync_id is None:
+        debt_sync_id = _as_str(entry.get("debtId"))
+        category_sync_id = None if debt_sync_id else _as_str(entry.get("categoryId"))
+        if category_sync_id is None and debt_sync_id is None:
             continue
         out.append({
             "sort_order": _as_int(entry.get("sortOrder"), default=idx),
             "category_sync_id": category_sync_id,
-            "category_name": _as_str(entry.get("categoryName")),
+            "category_name": None if debt_sync_id else _as_str(entry.get("categoryName")),
             "amount": _as_float(entry.get("amount")),
             "note": _as_str(entry.get("note")),
+            "debt_sync_id": debt_sync_id,
         })
     return out
 
@@ -427,6 +433,8 @@ def upsert_tx(
     has_splits = isinstance(splits_raw, list) and len(splits_raw) > 0
     values["has_splits"] = has_splits
     values["splits_json"] = json.dumps(splits_raw) if has_splits else None
+    # 拆帳欠款明細(App v67):欠款明細金額合計,統計口徑見 src/stats_amount.py。
+    values["debt_split_amount"] = debt_split_total(splits_raw) if has_splits else 0.0
     if has_splits:
         values["category_sync_id"] = None
         values["category_name"] = None

@@ -150,6 +150,7 @@ async def delete_debt_api(
     if replay:
         return replay
     _assert_debt_has_no_repayments(db, ledger_id=ledger.id, debt_id=debt_id)
+    _assert_debt_not_from_split(db, ledger_id=ledger.id, debt_id=debt_id)
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,

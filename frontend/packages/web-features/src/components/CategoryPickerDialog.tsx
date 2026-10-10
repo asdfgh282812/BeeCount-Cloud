@@ -8,6 +8,7 @@ import {
   useT,
 } from '@beecount/ui'
 import type { WorkspaceCategory } from '@beecount/api-client'
+import type { ReactNode } from 'react'
 
 import { CategorySelector } from './CategorySelector'
 
@@ -40,6 +41,8 @@ type CategoryPickerDialogProps = {
   onCreateNew?: (name: string) => void | Promise<void>
   /** 分類智慧推薦(Phase 21):透传给 `CategorySelector`。 */
   suggestedCategoryIds?: string[]
+  /** 標題下方、網格上方的額外內容(例如拆帳明細的「支出|應收」切換)。 */
+  headerExtra?: ReactNode
 }
 
 /**
@@ -67,6 +70,7 @@ export function CategoryPickerDialog({
   columns = 4,
   onCreateNew,
   suggestedCategoryIds,
+  headerExtra,
 }: CategoryPickerDialogProps) {
   const t = useT()
   return (
@@ -75,6 +79,7 @@ export function CategoryPickerDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
+        {headerExtra}
         {/* `px-1 py-2` 给 CategorySelector 留出 ring 溢出空间 —— 选中态用
             `ring-2`(2px 外扩),还有 hasChildren 父级右下角徽章 `-bottom-1
             -right-1`(4px 外扩),裸 overflow 容器会把第一行 ring 顶部裁掉

@@ -255,7 +255,7 @@ async def get_transaction(ctx: Context, sync_id: str) -> dict[str, Any] | None:
 async def list_categories(
     ctx: Context, kind: str | None = None
 ) -> list[dict[str, Any]]:
-    """List user's categories. kind is one of: expense, income, transfer."""
+    """List user's categories. kind is one of: expense, income, transfer, receivable, payable (the last two are debt categories)."""
     return await _logged_call(
         ctx, name="list_categories", scope=SCOPE_MCP_READ, kwargs={"kind": kind},
         body=lambda user: asyncio.to_thread(read_tools.list_categories, user, kind=kind),

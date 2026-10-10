@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .category_kinds import CategoryKind
+
 
 # 6 位 hex，开头必须有 #；字母大小写都接受，validator 会归一化成大写。
 _HEX6_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -555,6 +557,19 @@ class ReadTxSplitOut(BaseModel):
     amount: float
     note: str | None = None
     sort_order: int = 0
+    # 拆帳欠款明細(App v67):有值 = 這一列是欠款明細,category_* 為 None。
+    # 其餘 debt_* 是反查欠款拿到的展示/編輯欄位;欠款已被刪除時只有 debt_id。
+    debt_id: str | None = None
+    debt_direction: "DebtDirection | None" = None
+    debt_counterparty_name: str | None = None
+    debt_due_at: datetime | None = None
+    debt_excluded_from_total: bool = False
+    debt_category_id: str | None = None
+    debt_category_name: str | None = None
+    debt_remaining_amount: float | None = None
+    debt_status: "DebtStatus | None" = None
+    # 已有收款/還款紀錄:編輯交易時不能移除這筆明細(server 回 409)。
+    debt_has_repayments: bool = False
 
 
 DebtDirection = Literal["payable", "receivable"]
@@ -1189,6 +1204,10 @@ class ReadDebtOut(BaseModel):
     # 同時展示「還款紀錄」跟「欠款紀錄」用):`origin_tx_id` 指向的交易若還
     # 找得到(未被刪除),就带上金额/日期,None = 沒有起點交易或已被刪除。
     origin_transaction: ReadDebtRepaymentOut | None = None
+    # 拆帳欠款明細(App v67):True = 這筆欠款是某筆拆帳交易裡的欠款明細
+    # (`origin_tx_id` 那筆交易的 splits 引用它)。`origin_transaction.amount`
+    # 是本金而不是整筆交易金額;本金、方向要到原交易改;不能從欠款 API 刪除。
+    from_split: bool = False
     # 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
     # 本身或通知的可見性。
     excluded_from_total: bool = False
@@ -1650,10 +1669,28 @@ class WriteTxSplitItem(BaseModel):
     """拆帳(§2.4):挂在 `WriteTransactionCreateRequest`/`UpdateRequest.splits`
     上的单个分类明细。`amount` 是这个分类分到的金额,所有明细项加总必须等于
     交易本身的 amount(server 端校验,见 write/_shared.py `_validate_tx_splits`)。"""
-    category_id: str = Field(min_length=1)
+    # 拆帳欠款明細(App v67):帶 `debt` 的項目是欠款明細(支出拆帳=應收、
+    # 收入拆帳=應付),不帶分類;其餘項目照舊必須有 category_id。
+    category_id: str | None = None
     category_name: str | None = None
     amount: float = Field(gt=0)
     note: str | None = None
+    debt: "WriteTxSplitDebt | None" = None
+
+
+class WriteTxSplitDebt(BaseModel):
+    """拆帳欠款明細背後那筆欠款的欄位。server 在同一次寫入裡建立/更新/刪除
+    欠款(write/_shared.py `_reconcile_split_debts`,對齊 App
+    `LocalRepository._reconcileSplitDebts`):方向依交易 type,本金 = 明細
+    金額,備註 = 明細備註,`origin_tx_id` = 這筆交易。"""
+    # None = 新欠款(server 產生 id);有值 = 這筆交易既有的欠款明細。
+    debt_id: str | None = None
+    counterparty_name: str = Field(min_length=1)
+    # 純日期:Web 送 `YYYY-MM-DDT00:00:00Z`,server 取 UTC 年月日。
+    due_at: datetime | None = None
+    excluded_from_total: bool = False
+    # 欠款分類(kind = receivable/payable),只記在欠款上,明細列不帶分類。
+    category_id: str | None = None
 
 
 class WriteTransactionCreateRequest(WriteBaseRequest):
@@ -1669,7 +1706,7 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
     merchant: str | None = None
     category_name: str | None = None
-    category_kind: Literal["expense", "income", "transfer"] | None = None
+    category_kind: CategoryKind | None = None
     account_name: str | None = None
     from_account_name: str | None = None
     to_account_name: str | None = None
@@ -1741,7 +1778,7 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
     merchant: str | None = None
     category_name: str | None = None
-    category_kind: Literal["expense", "income", "transfer"] | None = None
+    category_kind: CategoryKind | None = None
     account_name: str | None = None
     from_account_name: str | None = None
     to_account_name: str | None = None
@@ -1912,7 +1949,7 @@ class WriteBudgetUpdateRequest(WriteBaseRequest):
 
 
 class WriteRecurringRuleCreateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    tx_type: CategoryKind = "expense"
     amount: float = Field(gt=0)
     note: str | None = None
     category_id: str | None = None
@@ -1957,7 +1994,7 @@ class WriteRecurringRuleCreateRequest(WriteBaseRequest):
 
 
 class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: CategoryKind | None = None
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     category_id: str | None = None
@@ -2007,7 +2044,7 @@ class WriteRecurringUpdateFromRequest(WriteBaseRequest):
     `to_account_id`(RecurringRule entity 本來就有的欄位,純粹是這支端點沒
     轉發),以及新增的 `merchant`/`project_id`/`tag_ids` 三個欄位。
     """
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: CategoryKind | None = None
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     category_id: str | None = None
@@ -2306,7 +2343,7 @@ class WriteCardRewardManualPayoutRequest(WriteBaseRequest):
 
 class WriteTxTemplateCreateRequest(WriteBaseRequest):
     name: str = Field(min_length=1, max_length=255)
-    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    tx_type: CategoryKind = "expense"
     amount: float = Field(gt=0)
     note: str | None = None
     category_id: str | None = None
@@ -2319,7 +2356,7 @@ class WriteTxTemplateCreateRequest(WriteBaseRequest):
 
 class WriteTxTemplateUpdateRequest(WriteBaseRequest):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: CategoryKind | None = None
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     category_id: str | None = None
@@ -2340,7 +2377,7 @@ class WriteTxTemplateApplyRequest(WriteBaseRequest):
 
 class WriteCategoryCreateRequest(WriteBaseRequest):
     name: str = Field(min_length=1, max_length=255)
-    kind: Literal["expense", "income", "transfer"]
+    kind: CategoryKind
     level: int | None = None
     sort_order: int | None = None
     icon: str | None = None
@@ -2354,7 +2391,7 @@ class WriteCategoryCreateRequest(WriteBaseRequest):
 
 class WriteCategoryUpdateRequest(WriteBaseRequest):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    kind: Literal["expense", "income", "transfer"] | None = None
+    kind: CategoryKind | None = None
     level: int | None = None
     sort_order: int | None = None
     icon: str | None = None

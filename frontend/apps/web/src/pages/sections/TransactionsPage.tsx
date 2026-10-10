@@ -109,6 +109,7 @@ import {
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
+  txSplitFormItemsFromRead,
   validateTxSplits,
   computeTxTotalAmount,
   CategoryPickerDialog,
@@ -1597,7 +1598,7 @@ export function TransactionsPage() {
   // 剛建立的這筆、也讓其它交易接下來能直接選用。
   const onCreateTxCategory = async (
     name: string,
-    kind: 'expense' | 'income'
+    kind: 'expense' | 'income' | 'receivable' | 'payable'
   ): Promise<WorkspaceCategory | null> => {
     const ledgerId = txWriteLedgerId.trim()
     if (!ledgerId) {
@@ -2576,14 +2577,7 @@ export function TransactionsPage() {
       reward_rule_ids: tx.reward_rule_ids || [],
       // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
       split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
-      splits: Boolean(tx.has_splits)
-        ? (tx.splits || []).map((s) => ({
-            category_id: s.category_id || '',
-            category_name: s.category_name || '',
-            amount: String(s.amount),
-            note: s.note || ''
-          }))
-        : []
+      splits: Boolean(tx.has_splits) ? txSplitFormItemsFromRead(tx.splits) : []
     })
   }
 

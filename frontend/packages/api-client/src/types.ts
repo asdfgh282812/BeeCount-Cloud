@@ -305,6 +305,22 @@ export type ReadTxSplit = {
   amount: number
   note: string | null
   sort_order: number
+  /**
+   * 拆帳欠款明細(App v67):有值 = 這一列是欠款明細(支出拆帳=應收、收入
+   * 拆帳=應付),category_* 為 null,分類記在欠款上(debt_category_*)。
+   * 其餘 debt_* 是反查欠款拿到的欄位;欠款已被刪除時只有 debt_id。
+   */
+  debt_id?: string | null
+  debt_direction?: 'payable' | 'receivable' | null
+  debt_counterparty_name?: string | null
+  debt_due_at?: string | null
+  debt_excluded_from_total?: boolean
+  debt_category_id?: string | null
+  debt_category_name?: string | null
+  debt_remaining_amount?: number | null
+  debt_status?: 'open' | 'partial' | 'settled' | 'closed' | null
+  /** 已有收款/還款紀錄:編輯交易時不能移除這筆明細(server 回 409)。 */
+  debt_has_repayments?: boolean
 }
 
 export type ReadAccount = {
@@ -904,10 +920,28 @@ export type TxPayload = {
 
 /** 拆帳(§2.4):挂在 `TxPayload.splits` 上的单个分类明细。 */
 export type TxSplitPayload = {
-  category_id: string
+  /** 分類明細必填;欠款明細不帶(帶 `debt`)。 */
+  category_id?: string | null
   category_name?: string | null
   amount: number
   note?: string | null
+  /**
+   * 拆帳欠款明細(App v67):server 在同一次寫入裡建立/更新欠款(方向依交易
+   * type,本金 = 明細金額,備註 = 明細備註)。原本有、這次沒送的欠款明細會被
+   * 刪除;已有收還款的回 409 `SPLIT_DEBT_HAS_REPAYMENTS`。
+   */
+  debt?: TxSplitDebtPayload | null
+}
+
+export type TxSplitDebtPayload = {
+  /** null = 新欠款;有值 = 這筆交易既有的欠款明細。 */
+  debt_id: string | null
+  counterparty_name: string
+  /** 純日期,送 `YYYY-MM-DDT00:00:00Z`。 */
+  due_at: string | null
+  excluded_from_total: boolean
+  /** 欠款分類(kind = receivable/payable)。 */
+  category_id: string | null
 }
 
 export type BudgetCreatePayload = {
@@ -1845,6 +1879,12 @@ export type ReadDebt = {
   /** 起點交易摘要(欠款紀錄本身),跟 `repayments` 平行——`origin_tx_id`
    *  指向的交易若還找得到就帶上金額/日期,null = 沒有起點交易或已被刪除。 */
   origin_transaction?: ReadDebtRepayment | null
+  /**
+   * 拆帳欠款明細(App v67):這筆欠款是某筆拆帳交易裡的欠款明細。
+   * origin_transaction.amount 是本金;本金/方向要到原交易改;不能直接刪除
+   * (server 回 409 `DEBT_FROM_SPLIT`)。
+   */
+  from_split?: boolean
   /** 排除計入總額(§5.4 對象管理):只影響淨資產/總額統計,不影響這個清單
    *  本身或通知的可見性。 */
   excluded_from_total: boolean

@@ -50,7 +50,14 @@ import {
   isRuleWithinWindow,
   stripAutoAppliedRewardIds
 } from '../lib/rewardBasic'
-import { computeTxTotalAmount, txSplitItemDefaults, type TxForm } from '../forms'
+import {
+  computeTxTotalAmount,
+  splitDebtKindFor,
+  txSplitAssignedTotal,
+  txSplitDebtDefaults,
+  txSplitItemDefaults,
+  type TxForm
+} from '../forms'
 
 /**
  * 跨幣別自動換算(2026-08;2026-08-14 補充「換算後金額」優先於匯率):
@@ -188,7 +195,10 @@ type TransactionsPanelProps = {
    *  不顯示「新增 "xxx"」內嵌入口。建立成功後回傳新分類/標籤(用來直接寫回
    *  `form.category_name`/`form.tags`,不必等下一輪 dictionaries 刷新才能
    *  選中它),失敗回傳 null(呼叫方已自行 toast 提示錯誤)。 */
-  onCreateCategory?: (name: string, kind: 'expense' | 'income') => Promise<WorkspaceCategory | null>
+  onCreateCategory?: (
+    name: string,
+    kind: 'expense' | 'income' | 'receivable' | 'payable'
+  ) => Promise<WorkspaceCategory | null>
   onCreateTag?: (name: string) => Promise<{ id: string; name: string } | null>
   /** SwipeSmart 刷卡建議(Phase 14,docs/PH14_SWIPESMART_CARD_RECOMMEND_SD.md
    *  §3.3.5):不傳則不顯示建議區塊。呼叫方負責實際打 API(需要 token),
@@ -512,20 +522,59 @@ export function TransactionsPanel({
   // 拆帳(§2.4):null = 分类 picker 打开时选的是主分类字段;数字 = 选的是
   // splits[index] 那一行,同一个 CategoryPickerDialog 实例按这个分流 onSelect。
   const [splitPickerIndex, setSplitPickerIndex] = useState<number | null>(null)
+  // 拆帳欠款明細(App v67):拆帳明細的分類 picker 可以切到欠款分類——支出
+  // 拆帳切「應收」、收入拆帳切「應付」。選到欠款分類,那一列就變成欠款明細
+  // (要填對象),不算收支統計。
+  const txCategoryKind: 'expense' | 'income' = form.tx_type === 'income' ? 'income' : 'expense'
+  const splitDebtKind = splitDebtKindFor(form.tx_type)
+  const [splitPickKind, setSplitPickKind] = useState<
+    'expense' | 'income' | 'receivable' | 'payable'
+  >('expense')
+  const openSplitPicker = (idx: number) => {
+    const row = form.splits[idx]
+    setSplitPickKind(row?.debt && splitDebtKind ? splitDebtKind : txCategoryKind)
+    setSplitPickerIndex(idx)
+    setCategoryPickerOpen(true)
+  }
+  const applySplitCategory = (
+    idx: number,
+    cat: { id: string; name: string },
+    kind: 'expense' | 'income' | 'receivable' | 'payable'
+  ) => {
+    const next = form.splits.slice()
+    const row = next[idx]
+    if (!row) return
+    const isDebt = kind === 'receivable' || kind === 'payable'
+    // 已有收還款的欠款明細不能改回分類明細(server 也會 409)。
+    if (!isDebt && row.debt?.has_repayments) return
+    next[idx] = {
+      ...row,
+      category_id: cat.id,
+      category_name: cat.name.trim(),
+      debt: isDebt ? row.debt || txSplitDebtDefaults() : null
+    }
+    onFormChange({ ...form, splits: next })
+  }
+  // 欠款對象建議:欠款列表的歷史對象,依使用次數排序(同 App
+  // `recentCounterpartyNames`)。
+  const splitCounterpartySuggestions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const d of debts) {
+      const name = (d.counterparty_name || '').trim()
+      if (name) counts.set(name, (counts.get(name) || 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name)
+  }, [debts])
   // 表單內直接新增分類(需求 #10,Phase 11):建立成功後直接寫回 form,不必
   // 等下一輪 dictionaries 刷新——分流邏輯跟上面既有的 onSelect(splitPickerIndex
   // 非 null 时写 splits[index],否则写主 category_name)完全一致。
   const handleCreateCategory = onCreateCategory
     ? async (name: string) => {
-        const created = await onCreateCategory(name, form.tx_type === 'income' ? 'income' : 'expense')
+        const kind = splitPickerIndex !== null ? splitPickKind : txCategoryKind
+        const created = await onCreateCategory(name, kind)
         if (!created) return
         if (splitPickerIndex !== null) {
-          const next = form.splits.slice()
-          const idx = splitPickerIndex
-          if (next[idx]) {
-            next[idx] = { ...next[idx], category_id: created.id, category_name: created.name.trim() }
-            onFormChange({ ...form, splits: next })
-          }
+          applySplitCategory(splitPickerIndex, created, kind)
           return
         }
         onFormChange({ ...form, category_name: created.name.trim(), category_kind: form.tx_type })
@@ -658,9 +707,7 @@ export function TransactionsPanel({
   const categoryValue = form.category_name.trim()
   // 拆帳(§2.4):已填金额的行加总,给"已分配 X / 总额 Y"提示用;跟
   // forms.ts::validateTxSplits 的加总逻辑口径一致(未选分类的占位行不计入)。
-  const splitAssignedTotal = form.splits
-    .filter((row) => row.category_id.trim().length > 0)
-    .reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
+  const splitAssignedTotal = txSplitAssignedTotal(form)
 
   // 跨幣別自動換算(2026-08):expense/income 選中帳戶的幣別跟入帳幣別不同時
   // 顯示換算列;transfer 轉出/轉入帳戶幣別不同時同理。帳戶下拉已不再按幣別
@@ -927,50 +974,125 @@ export function TransactionsPanel({
                 <Input disabled value={t('common.none')} />
               ) : form.split_enabled ? (
                 <div className="space-y-2 rounded-lg border border-border/60 bg-muted/10 p-3">
-                  {form.splits.map((row, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={dictionariesLoading}
-                        onClick={() => {
-                          setSplitPickerIndex(idx)
-                          setCategoryPickerOpen(true)
-                        }}
-                        className="flex h-9 flex-1 items-center gap-2 rounded-md border border-input bg-muted px-3 py-1.5 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  {form.splits.map((row, idx) => {
+                    const debt = row.debt
+                    const updateDebt = (patch: Partial<NonNullable<typeof debt>>) => {
+                      if (!debt) return
+                      const next = form.splits.slice()
+                      next[idx] = { ...next[idx], debt: { ...debt, ...patch } }
+                      onFormChange({ ...form, splits: next })
+                    }
+                    return (
+                      <div
+                        key={idx}
+                        className={debt ? 'space-y-2 rounded-md border border-dashed border-input p-2' : undefined}
                       >
-                        <span
-                          className={`flex-1 truncate ${
-                            row.category_name ? '' : 'text-muted-foreground'
-                          }`}
-                        >
-                          {row.category_name || t('transactions.placeholder.categoryName')}
-                        </span>
-                      </button>
-                      <Input
-                        className="h-9 w-28"
-                        placeholder={t('transactions.table.amount')}
-                        value={row.amount}
-                        onChange={(e) => {
-                          const next = form.splits.slice()
-                          next[idx] = { ...next[idx], amount: e.target.value }
-                          onFormChange({ ...form, splits: next })
-                        }}
-                      />
-                      <button
-                        type="button"
-                        aria-label={t('transactions.split.removeRow') as string}
-                        onClick={() =>
-                          onFormChange({
-                            ...form,
-                            splits: form.splits.filter((_, i) => i !== idx)
-                          })
-                        }
-                        className="shrink-0 px-1 text-sm text-muted-foreground hover:text-destructive"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
+                        <div className="flex items-center gap-2">
+                          {debt && splitDebtKind ? (
+                            // 拆帳欠款明細(App v67):應收/應付標籤,hover 說明不計收支。
+                            <span
+                              className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                              title={t('transactions.split.debtHint') as string}
+                            >
+                              {t(`enum.txType.${splitDebtKind}`)}
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            disabled={dictionariesLoading}
+                            onClick={() => openSplitPicker(idx)}
+                            className="flex h-9 flex-1 items-center gap-2 rounded-md border border-input bg-muted px-3 py-1.5 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <span
+                              className={`flex-1 truncate ${
+                                row.category_name ? '' : 'text-muted-foreground'
+                              }`}
+                            >
+                              {row.category_name || t('transactions.placeholder.categoryName')}
+                            </span>
+                          </button>
+                          <Input
+                            className="h-9 w-28"
+                            placeholder={t('transactions.table.amount')}
+                            value={row.amount}
+                            onChange={(e) => {
+                              const next = form.splits.slice()
+                              next[idx] = { ...next[idx], amount: e.target.value }
+                              onFormChange({ ...form, splits: next })
+                            }}
+                          />
+                          <button
+                            type="button"
+                            aria-label={t('transactions.split.removeRow') as string}
+                            disabled={Boolean(debt?.has_repayments)}
+                            title={debt?.has_repayments ? (t('transactions.split.debtLocked') as string) : undefined}
+                            onClick={() =>
+                              onFormChange({
+                                ...form,
+                                splits: form.splits.filter((_, i) => i !== idx)
+                              })
+                            }
+                            className="shrink-0 px-1 text-sm text-muted-foreground hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted-foreground"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        {debt ? (
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label className="text-xs">{t('transactions.split.counterparty')}</Label>
+                              <Input
+                                className="h-9"
+                                list="split-debt-counterparties"
+                                data-testid={`split-debt-counterparty-${idx}`}
+                                value={debt.counterparty_name}
+                                placeholder={t('transactions.split.counterpartyPlaceholder') as string}
+                                onChange={(e) => updateDebt({ counterparty_name: e.target.value })}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">{t('transactions.split.dueDate')}</Label>
+                              <DatePicker
+                                value={debt.due_date}
+                                onChange={(next) => updateDebt({ due_date: next })}
+                                clearable
+                              />
+                            </div>
+                            <div className="space-y-1 sm:col-span-2">
+                              <Label className="text-xs">{t('transactions.split.note')}</Label>
+                              <Input
+                                className="h-9"
+                                value={row.note}
+                                onChange={(e) => {
+                                  const next = form.splits.slice()
+                                  next[idx] = { ...next[idx], note: e.target.value }
+                                  onFormChange({ ...form, splits: next })
+                                }}
+                              />
+                            </div>
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground sm:col-span-2">
+                              <input
+                                type="checkbox"
+                                checked={debt.excluded_from_total}
+                                onChange={(e) => updateDebt({ excluded_from_total: e.target.checked })}
+                              />
+                              {t('transactions.split.excludedFromTotal')}
+                            </label>
+                            {debt.has_repayments ? (
+                              <p className="text-xs text-muted-foreground sm:col-span-2">
+                                {t('transactions.split.debtLocked')}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                  <datalist id="split-debt-counterparties">
+                    {splitCounterpartySuggestions.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
                   <button
                     type="button"
                     className={textActionClass}
@@ -2110,7 +2232,7 @@ export function TransactionsPanel({
           setCategoryPickerOpen(false)
           setSplitPickerIndex(null)
         }}
-        kind={form.tx_type === 'income' ? 'income' : 'expense'}
+        kind={splitPickerIndex !== null ? splitPickKind : txCategoryKind}
         rows={categories as WorkspaceCategory[]}
         iconPreviewUrlByFileId={iconPreviewUrlByFileId}
         selectedId={
@@ -2120,17 +2242,43 @@ export function TransactionsPanel({
         }
         title={t('transactions.placeholder.categoryName')}
         onCreateNew={handleCreateCategory}
-        suggestedCategoryIds={categorySuggestions}
+        suggestedCategoryIds={splitPickerIndex !== null && splitPickKind !== txCategoryKind ? undefined : categorySuggestions}
+        headerExtra={
+          // 拆帳欠款明細(App v67):拆帳明細的 picker 才有「支出|應收」
+          // (收入是「收入|應付」)切換。已有收還款的欠款明細鎖在欠款分類。
+          splitPickerIndex !== null && splitDebtKind ? (
+            <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist">
+              {[txCategoryKind, splitDebtKind].map((kind) => {
+                const locked =
+                  kind === txCategoryKind && Boolean(form.splits[splitPickerIndex]?.debt?.has_repayments)
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    role="tab"
+                    data-testid={`split-kind-${kind}`}
+                    aria-selected={splitPickKind === kind}
+                    disabled={locked}
+                    title={locked ? (t('transactions.split.debtLocked') as string) : undefined}
+                    onClick={() => setSplitPickKind(kind)}
+                    className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      splitPickKind === kind
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {t(`enum.txType.${kind}`)}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null
+        }
         onSelect={(cat) => {
           // 拆帳(§2.4):splitPickerIndex 非 null = 这次选的是某个 split 行的
           // 分类,写回 form.splits[index] 而不是主 category 字段。
           if (splitPickerIndex !== null) {
-            const next = form.splits.slice()
-            const idx = splitPickerIndex
-            if (next[idx]) {
-              next[idx] = { ...next[idx], category_id: cat.id, category_name: cat.name.trim() }
-              onFormChange({ ...form, splits: next })
-            }
+            applySplitCategory(splitPickerIndex, cat, splitPickKind)
             return
           }
           onFormChange({

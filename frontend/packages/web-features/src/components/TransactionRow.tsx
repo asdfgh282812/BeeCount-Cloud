@@ -130,7 +130,17 @@ export function TransactionRow({
   // 拼接(如"餐饮、交通"),让列表一眼看出这笔已拆到多个分类,而不是显示"-"。
   const splitCategoryNames = row.has_splits
     ? Array.from(
-        new Set((row.splits || []).map((s) => s.category_name?.trim()).filter((s): s is string => Boolean(s)))
+        new Set(
+          (row.splits || [])
+            // 拆帳欠款明細(App v67):沒有明細分類,顯示欠款分類或「應收/應付」。
+            .map((s) =>
+              s.debt_id
+                ? s.debt_category_name?.trim() ||
+                  t(`enum.txType.${s.debt_direction || (row.tx_type === 'income' ? 'payable' : 'receivable')}`)
+                : s.category_name?.trim()
+            )
+            .filter((s): s is string => Boolean(s))
+        )
       )
     : []
   const categoryText = row.has_splits

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
+from ...stats_amount import debt_split_total, stats_amount_expr
 from ...models import ExchangeRateCache, UserExchangeRateProjection
 from datetime import date as _date_type
 
@@ -202,6 +203,8 @@ def list_workspace_transactions(
     # 借還款追蹤(§2.5 體驗補強):批次查這一頁交易關聯到的欠款,建
     # sync_id -> (counterparty_name, direction) 字典,同 refund 批次 join
     # 同一套模式,scope 到本次可见的多个账本内。
+    # 拆帳欠款明細(App v67):明細裡的欠款資訊一次查好。
+    split_debts = _split_debt_info_map(db, rows)
     debt_sync_ids = {r.debt_sync_id for r in rows if r.debt_sync_id}
     debt_info_by_id: dict[str, tuple[str | None, str | None]] = {}
     if debt_sync_ids:
@@ -324,7 +327,7 @@ def list_workspace_transactions(
                 recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
                 refunds=refunds_by_target.get(row.sync_id, []),
                 has_splits=bool(row.has_splits),
-                splits=_tx_splits_list(row.splits_json),
+                splits=_tx_splits_list(row.splits_json, split_debts, row.ledger_id),
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
@@ -1313,7 +1316,8 @@ def list_workspace_tags(
     tx_rows = db.execute(
         select(
             ReadTxProjection.tx_type,
-            func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
+            # 拆帳欠款明細(App v67):欠款明細那部分不算收支。
+            stats_amount_expr(),
             ReadTxProjection.tag_sync_ids_json,
             ReadTxProjection.tags_csv,
         ).where(
@@ -1743,7 +1747,10 @@ def _load_refund_targets(
 
 
 def _split_entries(splits_json: str | None) -> list[tuple[str, str | None, float]]:
-    """拆帳 JSON → `(category_name, category_sync_id, 原幣金額)` 列表。"""
+    """拆帳 JSON → `(category_name, category_sync_id, 原幣金額)` 列表。
+
+    拆帳欠款明細(App v67):帶 `debtId` 的項目是借貸,不算收支,不出現在這裡
+    (金額合計見 `stats_amount.debt_split_total`)。"""
     if not splits_json:
         return []
     try:
@@ -1754,7 +1761,7 @@ def _split_entries(splits_json: str | None) -> list[tuple[str, str | None, float
         return []
     out: list[tuple[str, str | None, float]] = []
     for entry in raw_splits:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or entry.get("debtId"):
             continue
         leg_cat = (entry.get("categoryName") or "").strip() or "Uncategorized"
         leg_sid = entry.get("categoryId") or entry.get("categorySyncId")
@@ -1801,7 +1808,11 @@ def _stat_legs(
         if refund_target.exclude_from_stats:
             return []
         target_splits = _split_entries(refund_target.splits_json) if refund_target.has_splits else []
-        base = sum(a for _, _, a in target_splits)
+        # 拆帳欠款明細(App v67):退款仍按全部明細(含欠款那份)攤提,欠款
+        # 那一份不算收支,直接略過。
+        base = sum(a for _, _, a in target_splits) + (
+            debt_split_total(refund_target.splits_json) if refund_target.has_splits else 0.0
+        )
         if target_splits and base:
             legs = [(c, sid, coalesced_amt * a / base) for c, sid, a in target_splits]
         else:
@@ -1814,6 +1825,9 @@ def _stat_legs(
     elif has_splits:
         scale = (coalesced_amt / raw_amt) if raw_amt else 1.0
         legs = [(c, sid, a * scale) for c, sid, a in _split_entries(splits_json)]
+        if not legs and debt_split_total(splits_json) > 0:
+            # 只剩欠款明細(正常不會發生,寫入端要求至少一筆分類明細)。
+            return []
     if not legs:
         legs = [((category_name or "").strip() or "Uncategorized", category_sync_id, coalesced_amt)]
 

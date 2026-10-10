@@ -633,6 +633,7 @@ function DebtCard({
         <div className="mt-2 space-y-1">
           <div className="text-[11px] font-medium text-muted-foreground">
             {t('debts.label.originTransaction')}
+            {debt.from_split ? ` · ${t('debts.fromSplit')}` : ''}
           </div>
           <button
             type="button"
@@ -690,8 +691,16 @@ function DebtCard({
         <Button
           size="sm"
           variant="ghost"
-          disabled={!canManage || hasRepayments}
-          title={hasRepayments ? t('debts.delete.blockedByRepayments') : undefined}
+          disabled={!canManage || hasRepayments || Boolean(debt.from_split)}
+          title={
+            // 拆帳欠款明細(App v67):要到原交易移除那筆明細(server 回
+            // DEBT_FROM_SPLIT)。
+            debt.from_split
+              ? t('error.DEBT_FROM_SPLIT')
+              : hasRepayments
+                ? t('debts.delete.blockedByRepayments')
+                : undefined
+          }
           onClick={onDelete}
         >
           {t('common.delete')}

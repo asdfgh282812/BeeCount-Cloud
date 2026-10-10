@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from ...category_kinds import CATEGORY_KINDS
 from ...config import get_settings
 from ...database import SessionLocal
 from ...models import (
@@ -352,7 +353,7 @@ async def create_category(
     ledger_id: str | None = None,
 ) -> dict[str, Any]:
     """新建一个分类(罕见 — LLM 一般用现有分类)。"""
-    if kind not in {"expense", "income", "transfer"}:
+    if kind not in CATEGORY_KINDS:
         raise ValueError(f"Invalid kind: {kind}")
 
     with SessionLocal() as db:

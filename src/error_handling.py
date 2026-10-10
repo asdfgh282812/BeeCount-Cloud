@@ -66,6 +66,9 @@ _DETAIL_ERROR_CODE_RULES: list[tuple[str, str]] = [
     ("profile avatar file is empty", "PROFILE_AVATAR_FILE_EMPTY"),
     ("profile avatar format invalid", "PROFILE_AVATAR_FORMAT_INVALID"),
     ("profile avatar not found", "PROFILE_AVATAR_NOT_FOUND"),
+    # 拆帳欠款明細(App v67)
+    ("split debt has repayments", "SPLIT_DEBT_HAS_REPAYMENTS"),
+    ("debt belongs to a split transaction", "DEBT_FROM_SPLIT"),
 ]
 
 _STATUS_ERROR_CODE_MAP: dict[int, str] = {

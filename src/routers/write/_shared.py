@@ -51,6 +51,7 @@ from ...models import (
     ReadProjectProjection,
     ReadRecurringRuleProjection,
     ReadTxProjection,
+    ReadTxSplitProjection,
     ReadTxTemplateProjection,
     SyncChange,
     SyncPushIdempotency,
@@ -723,28 +724,57 @@ def _cascade_delete_orphaned_origin_debt(
     記錄,一併刪除。跟 debts.py::_assert_debt_has_no_repayments(使用者主動
     刪欠款的守衛)是同一條判斷邏輯,這裡只是反過來在刪交易時自動觸發。
     App 端對應改動見 LocalRepository.deleteTransaction。"""
-    debt = db.scalar(
+    # 拆帳欠款明細(App v67):一筆拆帳交易可以是多筆欠款的起點,逐筆處理。
+    debts = db.scalars(
         select(ReadDebtProjection).where(
             ReadDebtProjection.ledger_id == ledger.id,
             ReadDebtProjection.origin_tx_sync_id == tx_id,
         )
-    )
-    if debt is None:
-        return
-    has_repayment = db.scalar(
-        select(ReadTxProjection.sync_id).where(
-            ReadTxProjection.ledger_id == ledger.id,
-            ReadTxProjection.debt_sync_id == debt.sync_id,
+    ).all()
+    for debt in debts:
+        if _debt_has_repayments(db, ledger_id=ledger.id, debt_id=debt.sync_id):
+            continue
+        _emit_debt_delete(
+            db, ledger=ledger, debt_id=debt.sync_id, now=now,
+            device_id=device_id, current_user=current_user,
+        )
+
+
+def _assert_debt_not_from_split(db: Session, *, ledger_id: str, debt_id: str) -> None:
+    """拆帳欠款明細(App v67):被拆帳明細引用的欠款不能從欠款 API 直接刪,
+    否則交易裡會留下指向不存在欠款的明細。要到原交易移除那筆明細。"""
+    referenced = db.scalar(
+        select(ReadTxSplitProjection.tx_sync_id).where(
+            ReadTxSplitProjection.ledger_id == ledger_id,
+            ReadTxSplitProjection.debt_sync_id == debt_id,
         ).limit(1)
     )
-    if has_repayment is not None:
-        return
+    if referenced is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="debt belongs to a split transaction; remove the split entry from that transaction instead",
+        )
+
+
+def _debt_has_repayments(db: Session, *, ledger_id: str, debt_id: str) -> bool:
+    return db.scalar(
+        select(ReadTxProjection.sync_id).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.debt_sync_id == debt_id,
+        ).limit(1)
+    ) is not None
+
+
+def _emit_debt_delete(
+    db: Session, *, ledger: Ledger, debt_id: str, now: datetime,
+    device_id: str, current_user: User,
+) -> None:
     db.add(
         SyncChange(
             user_id=ledger.user_id,
             ledger_id=ledger.id,
             entity_type="debt",
-            entity_sync_id=debt.sync_id,
+            entity_sync_id=debt_id,
             action="delete",
             payload_json={},
             updated_at=now,
@@ -753,7 +783,253 @@ def _cascade_delete_orphaned_origin_debt(
         )
     )
     db.flush()
-    projection.delete_debt(db, ledger_id=ledger.id, sync_id=debt.sync_id)
+    projection.delete_debt(db, ledger_id=ledger.id, sync_id=debt_id)
+
+
+# ============================================================================
+# 拆帳欠款明細(App v67,2026-10-10):拆帳裡的欠款明細(支出拆帳=應收、收入
+# 拆帳=應付)背後各是一筆獨立的 debt(`originTxId` = 這筆交易,本金 = 明細
+# 金額)。Web 新增/編輯拆帳交易時,server 在同一次寫入裡建立/更新/刪除這些
+# 欠款,對齊 App `LocalRepository._reconcileSplitDebts`。設計見 App repo
+# `docs/design/SPLIT_DEBT_LINES_WEB.md` §3。
+# ============================================================================
+
+
+def _split_entry_debt_id(entry: dict) -> str | None:
+    """splits 項目(request snake_case 或已存的 camelCase)的欠款 id。"""
+    debt = entry.get("debt")
+    if isinstance(debt, dict) and debt.get("debt_id"):
+        return str(debt["debt_id"])
+    value = entry.get("debt_id") or entry.get("debtId")
+    return str(value) if value else None
+
+
+def _split_entry_is_debt(entry: dict) -> bool:
+    return isinstance(entry.get("debt"), dict) or _split_entry_debt_id(entry) is not None
+
+
+def _split_debt_ids(splits: Any) -> set[str]:
+    if not isinstance(splits, list):
+        return set()
+    out: set[str] = set()
+    for entry in splits:
+        if isinstance(entry, dict):
+            debt_id = _split_entry_debt_id(entry)
+            if debt_id:
+                out.add(debt_id)
+    return out
+
+
+def _split_debt_direction(tx_type: str | None) -> str:
+    return "payable" if tx_type == "income" else "receivable"
+
+
+class _SplitDebtPlan:
+    """`_plan_split_debts` 的結果:寫交易前先把所有檢查做完(包含 409),
+    交易寫入後再由 `_apply_split_debts` 落地,不會寫一半。"""
+
+    def __init__(self) -> None:
+        # (debt_id, is_new, fields):fields 是要寫進 debt 的欄位(snake_case)。
+        self.upserts: list[tuple[str, bool, dict[str, Any]]] = []
+        self.deletes: list[str] = []
+
+    def __bool__(self) -> bool:
+        return bool(self.upserts or self.deletes)
+
+
+def _plan_split_debts(
+    db: Session,
+    *,
+    ledger_id: str,
+    tx_type: str | None,
+    request_splits: list[dict] | None,
+    prev_splits: Any,
+    splits_changed: bool,
+    type_changed: bool,
+) -> tuple[list[dict] | None, _SplitDebtPlan]:
+    """回傳(給 mutator 的 splits,欠款變更計畫)。
+
+    - `splits_changed`(這次有帶 splits):帶 `debt` 物件的項目建立或更新欠款。
+      `debt.debt_id` 為 None → 產生新 id;有值則必須是這筆交易原本就有的欠款
+      明細,不能借用別筆欠款。原本有、這次沒出現的欠款:沒有收還款就刪除,
+      有就整筆 409 `SPLIT_DEBT_HAS_REPAYMENTS`。
+    - 沒帶 splits、但交易 type 變了:既有欠款明細的方向跟著翻轉。
+    """
+    plan = _SplitDebtPlan()
+    prev_ids = _split_debt_ids(prev_splits)
+    direction = _split_debt_direction(tx_type)
+    if not splits_changed:
+        if type_changed and tx_type in ("expense", "income"):
+            for debt_id in sorted(prev_ids):
+                plan.upserts.append((debt_id, False, {"direction": direction}))
+        return request_splits, plan
+
+    mutator_splits: list[dict] | None = None
+    keep: set[str] = set()
+    if request_splits:
+        mutator_splits = []
+        for entry in request_splits:
+            if not isinstance(entry, dict):
+                continue
+            if not _split_entry_is_debt(entry):
+                mutator_splits.append(entry)
+                continue
+            debt = entry.get("debt") if isinstance(entry.get("debt"), dict) else None
+            debt_id = _split_entry_debt_id(entry)
+            if debt_id is not None and debt_id not in prev_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="split debt does not belong to this transaction",
+                )
+            is_new = debt_id is None
+            if is_new:
+                debt_id = str(uuid4())
+            keep.add(debt_id)
+            note = (entry.get("note") or "").strip() or None
+            fields: dict[str, Any] = {
+                "direction": direction,
+                "principal_amount": float(entry.get("amount") or 0.0),
+                "note": note,
+            }
+            if debt is not None:
+                fields["counterparty_name"] = str(debt.get("counterparty_name") or "").strip()
+                if not fields["counterparty_name"]:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="each split debt entry must have a counterparty",
+                    )
+                fields["due_at"] = debt.get("due_at")
+                fields["excluded_from_total"] = bool(debt.get("excluded_from_total"))
+                fields["category_id"] = debt.get("category_id") or None
+            plan.upserts.append((debt_id, is_new, fields))
+            mutator_splits.append({
+                "debt_id": debt_id,
+                "amount": entry.get("amount"),
+                "note": entry.get("note"),
+            })
+
+    for removed in sorted(prev_ids - keep):
+        if _debt_has_repayments(db, ledger_id=ledger_id, debt_id=removed):
+            name = db.scalar(
+                select(ReadDebtProjection.counterparty_name).where(
+                    ReadDebtProjection.ledger_id == ledger_id,
+                    ReadDebtProjection.sync_id == removed,
+                )
+            ) or ""
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"split debt has repayments: {name}",
+            )
+        plan.deletes.append(removed)
+    return mutator_splits, plan
+
+
+def _debt_row_to_payload(row: ReadDebtProjection) -> dict[str, Any]:
+    from ...snapshot_builder import _to_iso_utc
+    d: dict[str, Any] = {
+        "syncId": row.sync_id,
+        "direction": row.direction,
+        "counterpartyName": row.counterparty_name,
+        "principalAmount": row.principal_amount,
+        "excludedFromTotal": bool(row.excluded_from_total),
+    }
+    if row.due_at is not None:
+        d["dueAt"] = _to_iso_utc(row.due_at)
+    if row.note is not None:
+        d["note"] = row.note
+    if row.closed_at is not None:
+        d["closedAt"] = _to_iso_utc(row.closed_at)
+    if row.category_sync_id:
+        d["categoryId"] = row.category_sync_id
+    if row.origin_tx_sync_id:
+        d["originTxId"] = row.origin_tx_sync_id
+    return d
+
+
+def _apply_split_debts(
+    db: Session,
+    *,
+    ledger: Ledger,
+    tx_id: str,
+    plan: _SplitDebtPlan,
+    actor_payload: dict,
+    now: datetime,
+    device_id: str,
+    current_user: User,
+) -> None:
+    """把 `_plan_split_debts` 的計畫落地:每筆欠款一條 debt SyncChange +
+    projection,跟交易在同一個 DB transaction 裡 commit。"""
+    from ...snapshot_mutator import _date_only_iso8601, _mark_entity_actor
+
+    for debt_id, is_new, fields in plan.upserts:
+        existing = None if is_new else db.scalar(
+            select(ReadDebtProjection).where(
+                ReadDebtProjection.ledger_id == ledger.id,
+                ReadDebtProjection.sync_id == debt_id,
+            )
+        )
+        if existing is None:
+            # 新欠款,或 App 端欠款已經不見(資料不一致)時重建一筆。
+            if "counterparty_name" not in fields:
+                continue
+            payload: dict[str, Any] = {
+                "syncId": debt_id,
+                "originTxId": tx_id,
+                "excludedFromTotal": False,
+            }
+            create = True
+        else:
+            payload = _debt_row_to_payload(existing)
+            create = False
+        if "direction" in fields:
+            payload["direction"] = fields["direction"]
+        if "principal_amount" in fields:
+            payload["principalAmount"] = fields["principal_amount"]
+        if "note" in fields:
+            if fields["note"]:
+                payload["note"] = fields["note"]
+            else:
+                payload.pop("note", None)
+        if "counterparty_name" in fields:
+            payload["counterpartyName"] = fields["counterparty_name"]
+        if "due_at" in fields:
+            if fields["due_at"]:
+                payload["dueAt"] = _date_only_iso8601(fields["due_at"])
+            else:
+                payload.pop("dueAt", None)
+        if "excluded_from_total" in fields:
+            payload["excludedFromTotal"] = fields["excluded_from_total"]
+        if "category_id" in fields:
+            if fields["category_id"]:
+                payload["categoryId"] = str(fields["category_id"])
+            else:
+                payload.pop("categoryId", None)
+        _mark_entity_actor(payload, actor_payload, create=create)
+        change_row = SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            entity_type="debt",
+            entity_sync_id=debt_id,
+            action="upsert",
+            payload_json=payload,
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
+        db.add(change_row)
+        db.flush()
+        projection.upsert_debt(
+            db,
+            ledger_id=ledger.id,
+            user_id=ledger.user_id,
+            source_change_id=change_row.change_id,
+            payload=payload,
+        )
+    for debt_id in plan.deletes:
+        _emit_debt_delete(
+            db, ledger=ledger, debt_id=debt_id, now=now,
+            device_id=device_id, current_user=current_user,
+        )
 
 
 def _cascade_delete_linked_stock_trades(
@@ -1200,13 +1476,24 @@ def _validate_tx_splits(
             detail=f"a split transaction needs at least {_SPLIT_MIN_COUNT} category entries",
         )
     total = 0.0
+    category_count = 0
     for entry in splits:
-        category_id = entry.get("category_id") or entry.get("categoryId")
-        if not category_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="each split entry must have a category",
-            )
+        if _split_entry_is_debt(entry):
+            # 拆帳欠款明細(App v67):不帶分類;新的/要改的欠款明細必須有對象。
+            debt = entry.get("debt")
+            if isinstance(debt, dict) and not str(debt.get("counterparty_name") or "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="each split debt entry must have a counterparty",
+                )
+        else:
+            category_id = entry.get("category_id") or entry.get("categoryId")
+            if not category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="each split entry must have a category",
+                )
+            category_count += 1
         try:
             split_amount = float(entry.get("amount") or 0)
         except (TypeError, ValueError):
@@ -1217,6 +1504,11 @@ def _validate_tx_splits(
                 detail="each split amount must be greater than zero",
             )
         total += split_amount
+    if category_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="a split transaction needs at least one category entry",
+        )
     if amount is None or abs(total - float(amount)) > _SPLIT_AMOUNT_EPSILON:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1280,6 +1572,15 @@ async def _commit_create_tx_fast(
                 amount=mutate_payload.get("amount"),
                 splits=splits_payload,
             )
+        # 拆帳欠款明細(App v67):先算好要建的欠款(產生 debtId),交易寫入後
+        # 再落地,見 `_plan_split_debts`。
+        mutator_splits, split_debt_plan = _plan_split_debts(
+            db, ledger_id=ledger.id, tx_type=mutate_payload.get("tx_type"),
+            request_splits=splits_payload, prev_splits=None,
+            splits_changed=bool(splits_payload), type_changed=False,
+        )
+        if splits_payload:
+            mutate_payload["splits"] = mutator_splits
         if refund_of_id:
             _assert_refund_target_not_already_refunded(
                 db, ledger_id=ledger.id, refund_of_id=str(refund_of_id),
@@ -1351,6 +1652,12 @@ async def _commit_create_tx_fast(
             source_change_id=change_row.change_id,
             payload=new_item,
         )
+        if split_debt_plan:
+            _apply_split_debts(
+                db, ledger=ledger, tx_id=tx_id, plan=split_debt_plan,
+                actor_payload=mutate_payload, now=now,
+                device_id=device_id, current_user=current_user,
+            )
 
         if refund_of_id:
             # 信用卡回饋沖銷(2026-08-04 使用者反馈):这笔退款如果冲抵了一笔
@@ -1585,6 +1892,23 @@ async def _commit_write_fast_tx(
                     db, ledger_id=ledger.id, project_id=str(project_id),
                     tx_type=mutate_payload.get("tx_type") or prev_item.get("type"),
                 )
+            # 拆帳欠款明細(App v67):寫入前先算好欠款變更並做完檢查(移除已有
+            # 收還款的欠款明細 → 409),帶 `debt` 物件的項目換成 debt_id 再交給
+            # mutator。
+            splits_changed = "splits" in mutate_payload
+            effective_type = mutate_payload.get("tx_type") or prev_item.get("type")
+            type_changed = (
+                "tx_type" in mutate_payload
+                and mutate_payload.get("tx_type") != prev_item.get("type")
+            )
+            mutator_splits, split_debt_plan = _plan_split_debts(
+                db, ledger_id=ledger.id, tx_type=effective_type,
+                request_splits=mutate_payload.get("splits"),
+                prev_splits=prev_item.get("splits"),
+                splits_changed=splits_changed, type_changed=type_changed,
+            )
+            if splits_changed:
+                mutate_payload["splits"] = mutator_splits
             # Upsert:merge payload 到 prev_item
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
@@ -1709,6 +2033,12 @@ async def _commit_write_fast_tx(
                 source_change_id=change_row.change_id,
                 payload=new_item,
             )
+            if split_debt_plan:
+                _apply_split_debts(
+                    db, ledger=ledger, tx_id=tx_id, plan=split_debt_plan,
+                    actor_payload=mutate_payload, now=now,
+                    device_id=device_id, current_user=current_user,
+                )
 
             if is_newly_refund:
                 # 信用卡回饋沖銷:跟 create 快路径同一套逻辑,见该处注释。
@@ -2556,6 +2886,8 @@ __all__ = [
     'WriteStockTradeUpdateRequest',
     'ReadStockTradeProjection',
     '_cascade_delete_linked_stock_trades',
+    'ReadTxSplitProjection',
+    '_assert_debt_not_from_split',
     'WriteDebtUpdateRequest',
     'WriteEntityDeleteRequest',
     'WriteInstallmentEarlyRepayRequest',

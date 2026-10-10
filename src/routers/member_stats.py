@@ -92,7 +92,10 @@ def get_member_stats(
     # 成员金额错、排序错、与账本卡片对不上)。
     from sqlalchemy import false as sa_false
 
-    _native = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+    from ..stats_amount import stats_amount_expr
+
+    # 拆帳欠款明細(App v67):欠款明細那部分不算收支。
+    _native = stats_amount_expr()
     q = select(
         ReadTxProjection.created_by_user_id,
         func.sum(

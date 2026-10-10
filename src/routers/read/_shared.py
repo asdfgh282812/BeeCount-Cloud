@@ -492,9 +492,17 @@ def _reward_rule_ids_list(raw: str | None) -> list[str]:
     return [str(v) for v in parsed]
 
 
-def _tx_splits_list(raw: str | None) -> list["ReadTxSplitOut"]:
+def _tx_splits_list(
+    raw: str | None,
+    split_debts: dict[tuple[str, str], dict[str, Any]] | None = None,
+    ledger_id: str | None = None,
+) -> list["ReadTxSplitOut"]:
     """拆帳(§2.4):`read_tx_projection.splits_json` → `ReadTxSplitOut` 列表,
-    交易列表/明细两处读端点共用。"""
+    交易列表/明细两处读端点共用。
+
+    拆帳欠款明細(App v67):帶 `debtId` 的項目回傳 `debt_id`,再從
+    [split_debts](`_split_debt_info_map` 的結果,key = (ledger_id, debt_id))
+    帶上對象、方向、剩餘金額等欄位。"""
     if not raw:
         return []
     try:
@@ -507,6 +515,17 @@ def _tx_splits_list(raw: str | None) -> list["ReadTxSplitOut"]:
     for entry in parsed:
         if not isinstance(entry, dict):
             continue
+        debt_id = entry.get("debtId") or None
+        if debt_id:
+            info = (split_debts or {}).get((ledger_id or "", str(debt_id))) or {}
+            out.append(ReadTxSplitOut(
+                amount=float(entry.get("amount") or 0.0),
+                note=entry.get("note"),
+                sort_order=int(entry.get("sortOrder") or 0),
+                debt_id=str(debt_id),
+                **info,
+            ))
+            continue
         out.append(ReadTxSplitOut(
             category_id=entry.get("categoryId"),
             category_name=entry.get("categoryName"),
@@ -514,6 +533,84 @@ def _tx_splits_list(raw: str | None) -> list["ReadTxSplitOut"]:
             note=entry.get("note"),
             sort_order=int(entry.get("sortOrder") or 0),
         ))
+    return out
+
+
+def _split_debt_info_map(
+    db: Session, rows: list[Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """拆帳欠款明細(App v67):一次查出這批交易(有 `ledger_id`/`splits_json`
+    屬性的 projection row)裡所有欠款明細的欠款資訊,給 `_tx_splits_list` 用。
+    key = (ledger 內部 id, debt sync_id)。"""
+    wanted: dict[str, set[str]] = {}
+    for row in rows:
+        raw = getattr(row, "splits_json", None)
+        if not raw or "debtId" not in raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, list):
+            continue
+        for entry in parsed:
+            if isinstance(entry, dict) and entry.get("debtId"):
+                wanted.setdefault(row.ledger_id, set()).add(str(entry["debtId"]))
+    if not wanted:
+        return {}
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for ledger_id, debt_ids in wanted.items():
+        debts = db.scalars(
+            select(ReadDebtProjection).where(
+                ReadDebtProjection.ledger_id == ledger_id,
+                ReadDebtProjection.sync_id.in_(debt_ids),
+            )
+        ).all()
+        if not debts:
+            continue
+        repaid_rows = db.execute(
+            select(
+                ReadTxProjection.debt_sync_id,
+                func.coalesce(func.sum(func.abs(ReadTxProjection.amount)), 0.0),
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.debt_sync_id.in_(debt_ids),
+            ).group_by(ReadTxProjection.debt_sync_id)
+        ).all()
+        repaid_by_debt = {sid: float(amt or 0.0) for sid, amt in repaid_rows}
+        category_ids = {d.category_sync_id for d in debts if d.category_sync_id}
+        category_names: dict[str, str] = {}
+        if category_ids:
+            for sid, name in db.execute(
+                select(UserCategoryProjection.sync_id, UserCategoryProjection.name).where(
+                    UserCategoryProjection.user_id == debts[0].user_id,
+                    UserCategoryProjection.sync_id.in_(category_ids),
+                )
+            ).all():
+                category_names[sid] = name
+        for d in debts:
+            principal = float(d.principal_amount or 0.0)
+            repaid = repaid_by_debt.get(d.sync_id, 0.0)
+            remaining = max(principal - repaid, 0.0)
+            if d.closed_at is not None:
+                debt_status = "closed"
+            elif remaining <= 0.01:
+                debt_status = "settled"
+            elif repaid > 0:
+                debt_status = "partial"
+            else:
+                debt_status = "open"
+            out[(ledger_id, d.sync_id)] = {
+                "debt_direction": d.direction or "payable",
+                "debt_counterparty_name": d.counterparty_name or "",
+                "debt_due_at": d.due_at,
+                "debt_excluded_from_total": bool(d.excluded_from_total),
+                "debt_category_id": d.category_sync_id,
+                "debt_category_name": category_names.get(d.category_sync_id or ""),
+                "debt_remaining_amount": remaining,
+                "debt_status": debt_status,
+                "debt_has_repayments": d.sync_id in repaid_by_debt,
+            }
     return out
 
 
@@ -559,7 +656,11 @@ def _projection_totals(
 
     from sqlalchemy.orm import aliased
 
+    from ...stats_amount import stats_amount_expr
+
     _native = func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+    # 拆帳欠款明細(App v67):收支分項扣掉欠款明細;balance_all 照整筆。
+    _stats = stats_amount_expr()
     _counted = ReadTxProjection.exclude_from_stats == sa_false()
     _orig = aliased(ReadTxProjection)
     _target_excluded = (
@@ -586,14 +687,14 @@ def _projection_totals(
             func.count(ReadTxProjection.sync_id),
             func.coalesce(func.sum(
                 sa_case(
-                    ((ReadTxProjection.tx_type == "income") & _counted & ~_is_income_refund, _native),
+                    ((ReadTxProjection.tx_type == "income") & _counted & ~_is_income_refund, _stats),
                     (_is_expense_refund & _refund_counted, -_native),
                     else_=0.0,
                 )
             ), 0.0),
             func.coalesce(func.sum(
                 sa_case(
-                    ((ReadTxProjection.tx_type == "expense") & _counted & ~_is_expense_refund, _native),
+                    ((ReadTxProjection.tx_type == "expense") & _counted & ~_is_expense_refund, _stats),
                     (_is_income_refund & _refund_counted, -_native),
                     else_=0.0,
                 )
@@ -769,6 +870,7 @@ def _sanitize_filename(name: str | None, max_len: int = 64) -> str:
 __all__ = [
     '_investment_settings_or_none',
     '_tx_splits_list',
+    '_split_debt_info_map',
     'json',
     'datetime',
     'timedelta',

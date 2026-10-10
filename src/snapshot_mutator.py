@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from .category_kinds import CATEGORY_KINDS
 from .services.securities.trade_fees import stock_gross
 
 logger = logging.getLogger(__name__)
@@ -412,23 +413,31 @@ def _normalize_tx_tags(raw: object) -> str | None:
 def _normalize_tx_splits(raw: object) -> list[dict] | None:
     """拆帳(§2.4):request payload 的 `splits`(snake_case dict 列表,
     `category_id`/`category_name`/`amount`/`note`)→ item 里存的 camelCase
-    dict 列表。空/非法输入一律 None(= 不产生 splits key,等同没拆帳)。"""
+    dict 列表。空/非法输入一律 None(= 不产生 splits key,等同没拆帳)。
+
+    拆帳欠款明細(App v67):帶 `debt_id`/`debtId` 的項目是欠款明細,輸出
+    `debtId`、不帶分類(跟 App wire 一致)。新欠款的 id 由寫入端點
+    (`write/_shared.py::_reconcile_split_debts`)在呼叫這裡之前就產生好。"""
     if not isinstance(raw, list) or not raw:
         return None
     normalized: list[dict] = []
     for idx, entry in enumerate(raw):
         if not isinstance(entry, dict):
             continue
+        debt_id = entry.get("debt_id") or entry.get("debtId")
         category_id = entry.get("category_id") or entry.get("categoryId")
-        if not category_id:
+        if not debt_id and not category_id:
             continue
         split_item: dict[str, object] = {
-            "categoryId": str(category_id),
             "amount": _to_float(entry.get("amount")),
             "sortOrder": idx,
         }
+        if debt_id:
+            split_item["debtId"] = str(debt_id)
+        else:
+            split_item["categoryId"] = str(category_id)
         category_name = entry.get("category_name") or entry.get("categoryName")
-        if category_name:
+        if category_name and not debt_id:
             split_item["categoryName"] = str(category_name)
         note = entry.get("note")
         if note:
@@ -794,18 +803,20 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     stock_trades = _ensure_list(target, "stockTrades")
     stock_trades[:] = [t for t in stock_trades if t.get("txId") != tx_id]
 
+    # 拆帳欠款明細(App v67):一筆交易可以是多筆欠款的起點,要逐筆處理。
     debts = _ensure_list(target, "debts")
-    for d_idx, debt in enumerate(debts):
-        if not isinstance(debt, dict) or debt.get("originTxId") != tx_id:
-            continue
-        debt_sync_id = debt.get("syncId")
-        has_repayment = any(
-            isinstance(other, dict) and other.get("debtId") == debt_sync_id
-            for other in items
+    repaid_debt_ids = {
+        other.get("debtId") for other in items
+        if isinstance(other, dict) and other.get("debtId")
+    }
+    debts[:] = [
+        debt for debt in debts
+        if not (
+            isinstance(debt, dict)
+            and debt.get("originTxId") == tx_id
+            and debt.get("syncId") not in repaid_debt_ids
         )
-        if not has_repayment:
-            debts.pop(d_idx)
-        break
+    ]
 
     return target
 
@@ -1022,7 +1033,7 @@ def create_category(snapshot: dict, payload: dict) -> tuple[dict, str]:
     categories = _ensure_list(target, "categories")
     name = _normalize_name(payload.get("name"))
     kind = str(payload.get("kind") or "expense").strip()
-    if kind not in {"expense", "income", "transfer"}:
+    if kind not in CATEGORY_KINDS:
         raise ValueError("write validation failed: invalid category kind")
     if any(
         str(row.get("name", "")).strip().lower() == name.lower()
@@ -1062,7 +1073,7 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         category["name"] = _normalize_name(payload.get("name"))
     if "kind" in payload:
         kind = str(payload.get("kind") or "").strip()
-        if kind not in {"expense", "income", "transfer"}:
+        if kind not in CATEGORY_KINDS:
             raise ValueError("write validation failed: invalid category kind")
         category["kind"] = kind
     for req_key, snapshot_key in [

@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...category_kinds import DEBT_CATEGORY_KINDS
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes
 from ...models import (
@@ -219,6 +220,9 @@ def _load_ledger_context(
     selectable_cats: list[str] = []
     for c in cat_rows:
         if not c.name:
+            continue
+        # 欠款分類(應收/應付)只給 App 應收/應付分頁用,AI 記帳不該挑到。
+        if (c.kind or "") in DEBT_CATEGORY_KINDS:
             continue
         if c.parent_name:
             # 子分类,可选

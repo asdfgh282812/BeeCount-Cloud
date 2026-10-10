@@ -31,6 +31,7 @@ from ...models import (
 # 复用 read 端的唯一权威"软删除"判定 —— 保证 MCP 与 web/mobile 账本可见性口径
 # 一致(issue #31)。read._shared 不依赖 mcp,无循环 import。
 from ...routers.read._shared import _is_ledger_deleted
+from ...stats_amount import stats_amount, stats_amount_expr
 
 
 # ---------- helpers ----------------------------------------------------------
@@ -204,7 +205,7 @@ def get_transaction(user: User, sync_id: str) -> dict[str, Any] | None:
 
 
 def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, Any]]:
-    """列分类。kind 可选 'expense' / 'income' / 'transfer'。"""
+    """列分类。kind 可选 'expense' / 'income' / 'transfer' / 'receivable' / 'payable'(后两者是欠款分类)。"""
     with SessionLocal() as db:
         query = select(UserCategoryProjection).where(UserCategoryProjection.user_id == user.id)
         if kind:
@@ -290,8 +291,8 @@ def list_budgets(user: User, *, ledger_id: str | None = None) -> list[dict[str, 
         total_expense = 0.0
         tx_rows = db.execute(
             # 账本维度折本位币口径(0018):native_amount ?? amount,与 /read 预算用量一致
-            select(ReadTxProjection.category_sync_id, func.sum(
-                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)))
+            # 拆帳欠款明細(App v67):欠款明細那部分不算預算用量。
+            select(ReadTxProjection.category_sync_id, func.sum(stats_amount_expr()))
             .where(
                 ReadTxProjection.ledger_id == led.id,
                 ReadTxProjection.tx_type == "expense",
@@ -496,8 +497,9 @@ def get_analytics_summary(
 
         # 账本维度折本位币口径(0018):native_amount ?? amount(多币种账本
         # 裸加原币会错;单币种 native==amount 结果不变)。
+        # 拆帳欠款明細(App v67):欠款明細那部分不算收支(stats_amount)。
         def _native(r) -> float:
-            return float((r.native_amount if r.native_amount is not None else r.amount) or 0)
+            return stats_amount(r.amount, r.native_amount, r.debt_split_amount)
 
         income = sum(_native(r) for r in rows if r.tx_type == "income")
         expense = sum(_native(r) for r in rows if r.tx_type == "expense")

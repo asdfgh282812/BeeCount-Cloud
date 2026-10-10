@@ -39,6 +39,7 @@ import {
   buildInstallmentPlanPayload,
   buildRecurringInlinePayload,
   buildTxSplitsPayload,
+  txSplitFormItemsFromRead,
   validateTxSplits,
   computeTxTotalAmount,
   CategoriesPanel,
@@ -243,7 +244,7 @@ export function GlobalEditDialogs() {
   // (`editTxLedgerId`),成功後樂觀 append 進 `editTxCategories`/`editTxTags`,
   // 不必等下一輪 loadRefsForLedger 才能反查到剛建立的這筆。
   const onCreateTxCategory = useCallback(
-    async (name: string, kind: 'expense' | 'income'): Promise<WorkspaceCategory | null> => {
+    async (name: string, kind: 'expense' | 'income' | 'receivable' | 'payable'): Promise<WorkspaceCategory | null> => {
       const ledgerId = editTxLedgerId.trim()
       if (!ledgerId) return null
       try {
@@ -428,14 +429,7 @@ export function GlobalEditDialogs() {
         reward_rule_ids: tx.reward_rule_ids || [],
         // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
         split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
-        splits: Boolean(tx.has_splits)
-          ? (tx.splits || []).map((s) => ({
-              category_id: s.category_id || '',
-              category_name: s.category_name || '',
-              amount: String(s.amount),
-              note: s.note || '',
-            }))
-          : [],
+        splits: Boolean(tx.has_splits) ? txSplitFormItemsFromRead(tx.splits) : [],
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
@@ -525,12 +519,7 @@ export function GlobalEditDialogs() {
               reward_rule_ids: duplicateOf.reward_rule_ids || [],
               split_enabled: Boolean(duplicateOf.has_splits) && (duplicateOf.splits?.length || 0) >= 2,
               splits: Boolean(duplicateOf.has_splits)
-                ? (duplicateOf.splits || []).map((s) => ({
-                    category_id: s.category_id || '',
-                    category_name: s.category_name || '',
-                    amount: String(s.amount),
-                    note: s.note || '',
-                  }))
+                ? txSplitFormItemsFromRead(duplicateOf.splits, { duplicate: true })
                 : [],
             }
           : {}),

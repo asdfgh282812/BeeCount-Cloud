@@ -665,6 +665,13 @@ class ReadTxProjection(Base):
     # 纯粹是个跟 installment_plan_sync_id/recurring_rule_sync_id 同款的
     # denormalized 反查列。
     debt_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 拆帳欠款明細(App v67,2026-10-10):splits 裡帶 debtId 的明細金額合計
+    # (原幣)。那部分是借貸不是收支,收支統計/預算要扣掉,帳戶餘額照整筆算。
+    # 由 projection.upsert_tx 從 splits 算出,不上 wire。統計口徑見
+    # `src/stats_amount.py`(對齊 App `lib/utils/debt_split_stats.dart`)。
+    debt_split_amount: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0", default=0.0
+    )
     # 專案(Phase 13,docs/PH13_PROJECT_SD.md §2.2):有值 = 使用者手動指定
     # 這筆交易屬於哪個 read_project_projection.sync_id。None = 沒掛專案。
     # 只支援 expense/income(跟 debt_sync_id 同款單值反查,寫入路徑
@@ -1309,6 +1316,9 @@ class ReadTxSplitProjection(Base):
     category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 拆帳欠款明細(App v67):有值 = 這一列是欠款明細(支出拆帳=應收、收入
+    # 拆帳=應付),指向 read_debt_projection.sync_id,category_sync_id 為 NULL。
+    debt_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 Index(

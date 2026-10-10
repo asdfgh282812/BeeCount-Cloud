@@ -288,17 +288,67 @@ export function TransactionDetailDialog({
                 value={
                   tx.has_splits && tx.splits && tx.splits.length > 0 ? (
                     <div className="flex flex-col items-end gap-1">
-                      {tx.splits.map((s, i) => (
-                        <div key={`${s.category_id || 'uncategorized'}-${i}`} className="flex items-center gap-2 text-sm">
-                          <span>{s.category_name || '—'}</span>
-                          <span className="tabular-nums text-muted-foreground">
-                            {s.amount.toLocaleString('zh-CN', {
-                              minimumFractionDigits: 0,
-                              maximumFractionDigits: 2,
-                            })}
-                          </span>
-                        </div>
-                      ))}
+                      {tx.splits.map((s, i) => {
+                        const amountText = s.amount.toLocaleString('zh-CN', {
+                          minimumFractionDigits: 0,
+                          maximumFractionDigits: 2,
+                        })
+                        if (s.debt_id) {
+                          // 拆帳欠款明細(App v67):「代付 · 小明」(沒有欠款分類時用
+                          // 應收/應付),副標是剩餘金額 + 不計收支;可點擊跳到借還款頁
+                          // 收款/還款。
+                          const kindLabel = t(
+                            `enum.txType.${s.debt_direction || (tx.tx_type === 'income' ? 'payable' : 'receivable')}`,
+                          )
+                          const name = [s.debt_category_name || kindLabel, s.debt_counterparty_name]
+                            .filter(Boolean)
+                            .join(' · ')
+                          const statusText =
+                            s.debt_status === 'settled'
+                              ? t('transactions.split.debtStatus.settled')
+                              : s.debt_status === 'closed'
+                                ? t('transactions.split.debtStatus.closed')
+                                : s.debt_remaining_amount != null
+                                  ? t('transactions.split.debtStatus.open', {
+                                      amount: s.debt_remaining_amount.toLocaleString('zh-CN', {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 2,
+                                      }),
+                                    })
+                                  : null
+                          const label = (
+                            <span className="flex flex-col items-end">
+                              <span>{name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {[statusText, t('transactions.split.debtHint')].filter(Boolean).join(' · ')}
+                              </span>
+                            </span>
+                          )
+                          return (
+                            <div key={`debt-${s.debt_id}-${i}`} className="flex items-center gap-2 text-sm">
+                              {onJumpToDebt ? (
+                                <button
+                                  type="button"
+                                  className="text-right text-primary hover:underline"
+                                  onClick={() => onJumpToDebt(s.debt_id!)}
+                                  title={t('transactions.badge.debt.jumpHint')}
+                                >
+                                  {label}
+                                </button>
+                              ) : (
+                                label
+                              )}
+                              <span className="tabular-nums text-muted-foreground">{amountText}</span>
+                            </div>
+                          )
+                        }
+                        return (
+                          <div key={`${s.category_id || 'uncategorized'}-${i}`} className="flex items-center gap-2 text-sm">
+                            <span>{s.category_name || '—'}</span>
+                            <span className="tabular-nums text-muted-foreground">{amountText}</span>
+                          </div>
+                        )
+                      })}
                     </div>
                   ) : (
                     tx.category_name || (tx.tx_type === 'adjustment' ? t('enum.txType.adjustment') : '—')

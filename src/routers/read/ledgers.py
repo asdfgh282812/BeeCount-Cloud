@@ -11,6 +11,7 @@ from sqlalchemy import false as sa_false
 from ...models import CardRewardPayout
 from ...services.business_time import business_today, to_business_date
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
+from ...stats_amount import stats_amount_expr
 
 
 def _dedupe_by_sync_id(rows):
@@ -329,6 +330,8 @@ def list_transactions(
     # 借還款追蹤(§2.5 體驗補強):批次查這一頁交易關聯到的欠款,建
     # sync_id -> (counterparty_name, direction) 字典,讓前端不用額外查表
     # 就能直接顯示欠款資訊(跟上面 refund 的批次 join 同一套模式)。
+    # 拆帳欠款明細(App v67):明細裡的欠款資訊一次查好。
+    split_debts = _split_debt_info_map(db, rows)
     debt_sync_ids = {row.debt_sync_id for row in rows if row.debt_sync_id}
     debt_info_by_id: dict[str, tuple[str | None, str | None]] = {}
     if debt_sync_ids:
@@ -419,7 +422,7 @@ def list_transactions(
                 recurring_occurrence_overridden=bool(row.recurring_occurrence_overridden),
                 refunds=refunds_by_target.get(row.sync_id, []),
                 has_splits=bool(row.has_splits),
-                splits=_tx_splits_list(row.splits_json),
+                splits=_tx_splits_list(row.splits_json, split_debts, row.ledger_id),
                 debt_id=row.debt_sync_id,
                 debt_counterparty_name=debt_info[0] if debt_info else None,
                 debt_direction=cast("Any", debt_info[1]) if debt_info else None,
@@ -1490,8 +1493,9 @@ def list_budgets_usage(
     for b in dedup.values():
         # 预算金额本身是账本本位币,用量必须同计量单位:
         # 折本位币口径(0018)读 native_amount,NULL 回退 amount。
+        # 拆帳欠款明細(App v67):欠款明細那部分不算預算用量(stats_amount_expr)。
         base_q = select(func.coalesce(func.sum(
-            func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+            stats_amount_expr()
         ), 0.0)).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.tx_type == "expense",
@@ -1864,6 +1868,14 @@ def list_debts(
     # 欠款紀錄本身(起點交易摘要),跟上面的還款記錄平行——只有 mobile 建立
     # 連帶起點交易的欠款才有 origin_tx_sync_id;若該交易已被刪除(或欠款是
     # web 建的,原本就是 None),這裡就查不到,維持 None。
+    # 拆帳欠款明細(App v67):被拆帳明細引用的欠款,起點交易是整筆拆帳交易,
+    # 欠款紀錄要顯示這筆欠款的本金,不是交易總額。
+    from_split_ids = set(db.scalars(
+        select(ReadTxSplitProjection.debt_sync_id).where(
+            ReadTxSplitProjection.ledger_id == ledger.id,
+            ReadTxSplitProjection.debt_sync_id.in_(debt_ids),
+        )
+    ).all())
     origin_tx_ids = [row.origin_tx_sync_id for row in rows if row.origin_tx_sync_id]
     origin_tx_by_debt: dict[str, ReadDebtRepaymentOut] = {}
     if origin_tx_ids:
@@ -1887,6 +1899,8 @@ def list_debts(
             if found is None:
                 continue
             amount, happened_at = found
+            if row.sync_id in from_split_ids:
+                amount = row.principal_amount
             origin_tx_by_debt[row.sync_id] = ReadDebtRepaymentOut(
                 id=row.origin_tx_sync_id, amount=float(amount or 0), happened_at=happened_at,
             )
@@ -1919,6 +1933,7 @@ def list_debts(
                 category_id=row.category_sync_id,
                 origin_tx_id=row.origin_tx_sync_id,
                 origin_transaction=origin_tx_by_debt.get(row.sync_id),
+                from_split=row.sync_id in from_split_ids,
                 excluded_from_total=bool(row.excluded_from_total),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
@@ -2005,7 +2020,7 @@ def _project_carried_over(
     prev_start, prev_end = prev_window
     prev_spent = float(db.scalar(
         select(func.coalesce(func.sum(
-            func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+            stats_amount_expr()
         ), 0.0)).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.project_sync_id == project_sync_id,
@@ -2069,7 +2084,7 @@ def list_projects(
             budget_stats_rows = db.execute(
                 select(
                     ReadTxProjection.tx_type,
-                    func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+                    func.sum(stats_amount_expr()),
                 ).where(
                     ReadTxProjection.ledger_id == ledger.id,
                     ReadTxProjection.project_sync_id == row.sync_id,
@@ -2250,7 +2265,7 @@ def get_project_breakdown(
     stats_rows = db.execute(
         select(
             ReadTxProjection.tx_type,
-            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+            func.sum(stats_amount_expr()),
             func.count(),
         ).where(
             ReadTxProjection.ledger_id == ledger.id,
@@ -2273,7 +2288,7 @@ def get_project_breakdown(
     budget_stats_rows = db.execute(
         select(
             ReadTxProjection.tx_type,
-            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+            func.sum(stats_amount_expr()),
         ).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.project_sync_id == project_id,
@@ -2341,7 +2356,7 @@ def get_project_breakdown(
         select(
             ReadTxProjection.category_sync_id,
             ReadTxProjection.tx_type,
-            func.sum(func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)),
+            func.sum(stats_amount_expr()),
             func.count(),
         ).where(
             ReadTxProjection.ledger_id == ledger.id,

@@ -8,6 +8,7 @@ import type {
   InstallmentRepaymentMethod,
   RecurringAdvancedRule,
   RecurringInlineCreatePayload,
+  ReadTxSplit,
   RecurringRuleKind,
   TxSplitPayload,
 } from '@beecount/api-client'
@@ -160,10 +161,27 @@ export const computeTxTotalAmount = (
 
 /** 拆帳(§2.4):`TxForm.splits` 单行明细的表单态(金额存字符串绑 input)。 */
 export type TxSplitFormItem = {
+  /** 分類明細 = 明細分類;欠款明細 = 欠款分類(kind receivable/payable)。 */
   category_id: string
   category_name: string
   amount: string
   note: string
+  /**
+   * 拆帳欠款明細(App v67):有值 = 這一列是欠款明細(支出拆帳=應收、收入
+   * 拆帳=應付)。分類記在欠款上,不算收支統計。
+   */
+  debt?: TxSplitDebtFormItem | null
+}
+
+export type TxSplitDebtFormItem = {
+  /** null = 新欠款(存檔時 server 建立)。 */
+  debt_id: string | null
+  counterparty_name: string
+  /** YYYY-MM-DD,空字串 = 沒有到期日。 */
+  due_date: string
+  excluded_from_total: boolean
+  /** 已有收款/還款紀錄:不能移除這筆明細。 */
+  has_repayments: boolean
 }
 
 export const txSplitItemDefaults = (): TxSplitFormItem => ({
@@ -172,6 +190,58 @@ export const txSplitItemDefaults = (): TxSplitFormItem => ({
   amount: '',
   note: '',
 })
+
+export const txSplitDebtDefaults = (): TxSplitDebtFormItem => ({
+  debt_id: null,
+  counterparty_name: '',
+  due_date: '',
+  excluded_from_total: false,
+  has_repayments: false,
+})
+
+/** 支出拆帳的欠款明細是「應收」,收入拆帳是「應付」。 */
+export function splitDebtKindFor(txType: string): 'receivable' | 'payable' | null {
+  if (txType === 'expense') return 'receivable'
+  if (txType === 'income') return 'payable'
+  return null
+}
+
+/**
+ * 讀 API 的拆帳明細 → 表單明細,編輯/複製交易共用。[duplicate] = 複製成新
+ * 交易:欠款明細沿用對象等欄位,但會建立新欠款(debt_id 清空)。到期日是
+ * 純日期(server 存 UTC 00:00),取 UTC 年月日。
+ */
+export function txSplitFormItemsFromRead(
+  splits: readonly ReadTxSplit[] | null | undefined,
+  options: { duplicate?: boolean } = {},
+): TxSplitFormItem[] {
+  return (splits || []).map((s) => {
+    const item: TxSplitFormItem = {
+      category_id: (s.debt_id ? s.debt_category_id : s.category_id) || '',
+      category_name: (s.debt_id ? s.debt_category_name : s.category_name) || '',
+      amount: String(s.amount),
+      note: s.note || '',
+    }
+    if (s.debt_id) {
+      item.debt = {
+        debt_id: options.duplicate ? null : s.debt_id,
+        counterparty_name: s.debt_counterparty_name || '',
+        due_date: s.debt_due_at ? _utcDatePart(s.debt_due_at) : '',
+        excluded_from_total: Boolean(s.debt_excluded_from_total),
+        has_repayments: options.duplicate ? false : Boolean(s.debt_has_repayments),
+      }
+    }
+    return item
+  })
+}
+
+function _utcDatePart(iso: string): string {
+  const hasTimezone = /[Zz]$|[+-]\d{2}:\d{2}$/.test(iso)
+  const d = new Date(iso.includes('T') && !hasTimezone ? `${iso}Z` : iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+}
 
 export type AccountForm = {
   editingId: string | null
@@ -707,7 +777,12 @@ export function buildInstallmentPlanPayload(
  * 避免两处各写一套导致行数不一致。
  */
 function _filledTxSplitRows(form: TxForm): TxSplitFormItem[] {
-  return form.splits.filter((row) => row.category_id.trim().length > 0)
+  return form.splits.filter((row) => row.debt || row.category_id.trim().length > 0)
+}
+
+/** 已分配金額(分類明細 + 欠款明細),給「已分配 X / 總額 Y」提示用。 */
+export function txSplitAssignedTotal(form: TxForm): number {
+  return _filledTxSplitRows(form).reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
 }
 
 /**
@@ -722,6 +797,11 @@ export function validateTxSplits(form: TxForm, amountNum: number): string | null
   const rows = _filledTxSplitRows(form)
   if (rows.length < 2) return 'transactions.error.splitNeedsTwo'
   if (rows.some((row) => !(Number(row.amount) > 0))) return 'transactions.error.splitAmountInvalid'
+  // 拆帳欠款明細(App v67):至少一筆分類明細、每筆欠款明細都要有對象。
+  if (!rows.some((row) => !row.debt)) return 'transactions.error.splitNeedsCategory'
+  if (rows.some((row) => row.debt && !row.debt.counterparty_name.trim())) {
+    return 'transactions.error.splitDebtNeedsCounterparty'
+  }
   const sum = rows.reduce((acc, row) => acc + (Number(row.amount) || 0), 0)
   if (Math.abs(sum - amountNum) > 0.01) return 'transactions.error.splitSumMismatch'
   return null
@@ -735,10 +815,25 @@ export function validateTxSplits(form: TxForm, amountNum: number): string | null
  */
 export function buildTxSplitsPayload(form: TxForm): TxSplitPayload[] {
   if (!form.split_enabled) return []
-  return _filledTxSplitRows(form).map((row) => ({
-    category_id: row.category_id.trim(),
-    category_name: row.category_name.trim() || null,
-    amount: Number(row.amount) || 0,
-    note: row.note.trim() || null,
-  }))
+  return _filledTxSplitRows(form).map((row) => {
+    if (row.debt) {
+      return {
+        amount: Number(row.amount) || 0,
+        note: row.note.trim() || null,
+        debt: {
+          debt_id: row.debt.debt_id,
+          counterparty_name: row.debt.counterparty_name.trim(),
+          due_at: row.debt.due_date ? `${row.debt.due_date}T00:00:00Z` : null,
+          excluded_from_total: row.debt.excluded_from_total,
+          category_id: row.category_id.trim() || null,
+        },
+      }
+    }
+    return {
+      category_id: row.category_id.trim(),
+      category_name: row.category_name.trim() || null,
+      amount: Number(row.amount) || 0,
+      note: row.note.trim() || null,
+    }
+  })
 }
