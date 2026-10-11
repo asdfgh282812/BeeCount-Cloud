@@ -75,6 +75,9 @@ class SecurityQuoteOut(BaseModel):
     source: str | None = None
     fetched_at: str | None = None
     stale: bool = False
+    # 報價所屬交易日的開盤價 / 該交易日(市場當地 yyyy-MM-dd)。定期定額用。
+    open_price: float | None = None
+    quote_date: str | None = None
 
 
 class HoldingOut(BaseModel):
@@ -181,6 +184,42 @@ async def search_securities(
         raise HTTPException(status_code=422, detail=f"unsupported market: {market}")
     rows = await search_service.search_securities(db, q, market=market, limit=limit)
     return [SecuritySearchItemOut(**r) for r in rows]
+
+
+class DayOpenOut(BaseModel):
+    market: str
+    symbol: str
+    date: str
+    # ok = open_price 有值;no_trade = 那天這檔沒成交(停牌/休市);unavailable = 上游查不到/還沒開盤。
+    status: str
+    open_price: float | None = None
+
+
+@router.get("/securities/day-open", response_model=DayOpenOut)
+async def get_security_day_open(
+    market: str = Query(min_length=1, max_length=16),
+    symbol: str = Query(min_length=1, max_length=32),
+    date: str = Query(pattern=r"^\d{4}-\d{2}-\d{2}$", description="市場當地日期 yyyy-MM-dd"),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+) -> DayOpenOut:
+    """某一天的開盤價(App 股票定期定額補期用:快取的報價已經是更晚的日期時,
+    不能拿來當那天的成交價)。只查 Yahoo 日線,失敗回 `unavailable`,不拋 5xx。"""
+    from datetime import date as date_type
+
+    from ...services.securities.providers import yahoo
+
+    if markets.get_market(market) is None:
+        raise HTTPException(status_code=422, detail=f"unsupported market: {market}")
+    try:
+        day = date_type.fromisoformat(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid date") from exc
+    try:
+        status, price = await yahoo.fetch_day_open(market.upper(), symbol.upper(), day)
+    except Exception:  # noqa: BLE001 — 上游失敗不是 client 的錯
+        status, price = "unavailable", None
+    return DayOpenOut(market=market.upper(), symbol=symbol.upper(), date=date, status=status, open_price=price)
 
 
 @router.get("/securities/quotes", response_model=list[SecurityQuoteOut])

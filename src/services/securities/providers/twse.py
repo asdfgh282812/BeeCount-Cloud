@@ -58,7 +58,11 @@ def _close_time(d: date | None) -> datetime | None:
     return datetime.combine(d, time(13, 30), tzinfo=_TAIPEI).astimezone(timezone.utc)
 
 
-def _parse(rows: list[dict], *, market: str, code_key: str, name_key: str, close_key: str, change_key: str, source: str) -> MarketSnapshot:
+def _positive(value: float | None) -> float | None:
+    return value if value is not None and value > 0 else None
+
+
+def _parse(rows: list[dict], *, market: str, code_key: str, name_key: str, close_key: str, change_key: str, open_key: str, source: str) -> MarketSnapshot:
     securities: list[SecurityInfo] = []
     quotes: list[QuoteData] = []
     trade_date: date | None = None
@@ -85,17 +89,18 @@ def _parse(rows: list[dict], *, market: str, code_key: str, name_key: str, close
                 currency="TWD",
                 name=name,
                 source=source,
+                open_price=_positive(parse_float(row.get(open_key))),
             )
         )
     return MarketSnapshot(securities=securities, quotes=quotes, trade_date=trade_date)
 
 
 def parse_twse(rows: list[dict]) -> MarketSnapshot:
-    return _parse(rows, market="TW", code_key="Code", name_key="Name", close_key="ClosingPrice", change_key="Change", source="twse")
+    return _parse(rows, market="TW", code_key="Code", name_key="Name", close_key="ClosingPrice", change_key="Change", open_key="OpeningPrice", source="twse")
 
 
 def parse_tpex(rows: list[dict]) -> MarketSnapshot:
-    return _parse(rows, market="TWO", code_key="SecuritiesCompanyCode", name_key="CompanyName", close_key="Close", change_key="Change", source="tpex")
+    return _parse(rows, market="TWO", code_key="SecuritiesCompanyCode", name_key="CompanyName", close_key="Close", change_key="Change", open_key="Open", source="tpex")
 
 
 async def fetch_twse(client: httpx.AsyncClient | None = None) -> MarketSnapshot:

@@ -70,7 +70,14 @@ def parse_quote(payload: dict, *, market: str, symbol: str) -> QuoteData:
         currency=(currency.upper() if isinstance(currency, str) and currency else (m.currency if m else None)),
         name=payload.get("name"),
         source=SOURCE,
+        open_price=_open_of_quote_day(payload),
     )
+
+
+def _open_of_quote_day(payload: dict) -> float | None:
+    """`/quote` 的 `open` 是 `datetime`(該 bar 的市場當地日期)那天的開盤價。"""
+    value = parse_float(payload.get("open"))
+    return value if value is not None and value > 0 else None
 
 
 async def fetch_quote(market: str, symbol: str, api_key: str, client: httpx.AsyncClient | None = None) -> QuoteData:

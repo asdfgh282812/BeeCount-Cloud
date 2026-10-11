@@ -52,6 +52,13 @@ def exchange_closures(exchange: str, year: int) -> list[date]:
     return sorted(d for d in _exchange_holidays(exchange, year) if d.weekday() < 5)
 
 
+def exchange_closure_names(exchange: str, year: int) -> dict[date, str]:
+    """同 [exchange_closures],附上休市原因(`holidays` 套件的名稱,給後台/除錯看)。"""
+    cls = getattr(financial, exchange)
+    names = cls(years=year)
+    return {d: str(names.get(d) or "") for d in exchange_closures(exchange, year)}
+
+
 def is_trading_day(market: str | None, day: date) -> bool:
     """週末與交易所休市日回 False。未知市場只看週末。"""
     if day.weekday() >= 5:

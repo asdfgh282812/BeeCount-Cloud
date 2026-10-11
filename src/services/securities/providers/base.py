@@ -20,6 +20,8 @@ class QuoteData:
     currency: str | None
     name: str | None
     source: str
+    # 該報價所屬交易日的開盤價(還沒開盤/來源沒給 = None)。
+    open_price: float | None = None
 
 
 @dataclass

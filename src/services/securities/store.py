@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from ...models import Security, SecurityQuote
+from . import markets
 from .providers.base import QuoteData, SecurityInfo
 
 _CHUNK = 150
@@ -86,21 +87,45 @@ def security_ids(db: Session, keys: Iterable[tuple[str, str]]) -> dict[tuple[str
     return out
 
 
+def _same_session_day(q: QuoteData, old: SecurityQuote) -> bool:
+    if q.quote_time is None or old.quote_time is None:
+        return False
+    m = markets.get_market(q.market)
+    if m is None:
+        return False
+    old_time = old.quote_time if old.quote_time.tzinfo else old.quote_time.replace(tzinfo=timezone.utc)
+    return markets.local_now(m, q.quote_time).date() == markets.local_now(m, old_time).date()
+
+
 def upsert_quotes(db: Session, quotes: Iterable[QuoteData], *, session: str, now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     quotes = list(quotes)
     ids = security_ids(db, [(q.market, q.symbol) for q in quotes])
+    existing = {
+        row.security_id: row
+        for row in db.scalars(
+            select(SecurityQuote).where(SecurityQuote.security_id.in_(list(ids.values())))
+        ).all()
+    } if ids else {}
     rows: list[dict] = []
     for q in quotes:
         sid = ids.get((q.market, q.symbol))
         if sid is None:
             continue
+        open_price = q.open_price
+        old = existing.get(sid)
+        if open_price is None and old is not None and old.open_price is not None:
+            # 新報價沒帶開盤價(來源不同/暫時缺值),但跟舊報價是同一個交易日:沿用,
+            # 不要把已經拿到的當天開盤價洗掉(定期定額靠它成交)。
+            if _same_session_day(q, old):
+                open_price = old.open_price
         rows.append(
             {
                 "security_id": sid,
                 "price": q.price,
                 "prev_close": q.prev_close,
                 "quote_time": q.quote_time,
+                "open_price": open_price,
                 "session": session,
                 "source": q.source,
                 "fetched_at": now,

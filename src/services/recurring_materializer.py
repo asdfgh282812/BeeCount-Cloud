@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -72,7 +72,7 @@ from ..snapshot_mutator import add_months, stock_trade_amount
 from . import notifications as notification_service
 from . import recurring_schedule
 from .business_time import business_tz
-from .securities import markets, trade_fees, trading_calendar
+from .securities import dca_price, markets, trade_fees, trading_calendar
 from .securities import store as securities_store
 
 logger = logging.getLogger(__name__)
@@ -630,18 +630,51 @@ def materialize_due_transfer_rules(db: Session, *, now: datetime | None = None) 
     return {"materialized": materialized, "skipped_insufficient": skipped}
 
 
-def _lookup_quote_price(db: Session, *, market: str, symbol: str) -> float | None:
-    """本地報價快取(`security_quotes`)目前價,沒有就回 None。呼叫前
-    `materialize_due_stock_rules` 已經先用 `_refresh_quotes` 對到期規則的
-    標的補抓過一次上游(見該函式說明),這裡只負責讀。"""
-    ids = securities_store.security_ids(db, [(market.upper(), symbol.upper())])
-    security_id = ids.get((market.upper(), symbol.upper()))
-    if security_id is None:
-        return None
-    quote = db.scalar(select(SecurityQuote).where(SecurityQuote.security_id == security_id))
-    if quote is None or quote.price is None or quote.price <= 0:
-        return None
-    return float(quote.price)
+def _load_quote_views(db: Session, keys: list[tuple[str, str]]) -> dict[tuple[str, str], Any]:
+    """本地報價快取(`security_quotes`)的 QuoteView(含開盤價與報價所屬交易日)。
+    呼叫前 `materialize_due_stock_rules` 已經用 `_refresh_quotes` 對到期規則的標的補抓過
+    上游,這裡只負責讀。"""
+    from .securities import quotes as quotes_service
+
+    wanted = [(m.upper(), sym.upper()) for m, sym in keys]
+    return quotes_service._load(db, wanted) if wanted else {}
+
+
+def _fetch_day_opens(needs: list[tuple[str, str, date]]) -> dict[tuple[str, str, date], tuple[str, float | None]]:
+    """查指定市場日期的日線開盤價(補期/快取不是成交日當天的資料時)。結果
+    `(status, price)` 見 `yahoo.parse_day_open`;上游失敗的鍵不放進結果(下一輪重試)。
+    沒有任何 DB 存取,可以在還沒寫入前呼叫;測試會 monkeypatch 這個函式。"""
+    if not needs:
+        return {}
+    import asyncio
+
+    from .securities.providers import yahoo
+    from .securities.providers.base import new_client
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        logger.warning("recurring_materializer: running inside an event loop, skip day-open fetch")
+        return {}
+
+    async def _run() -> dict[tuple[str, str, date], tuple[str, float | None]]:
+        out: dict[tuple[str, str, date], tuple[str, float | None]] = {}
+        async with new_client() as client:
+            for key in needs:
+                market, symbol, day = key
+                try:
+                    out[key] = await yahoo.fetch_day_open(market, symbol, day, client)
+                except Exception as exc:  # noqa: BLE001 — 上游失敗不能讓整批定期定額失敗
+                    logger.warning("recurring_materializer: day-open fetch failed %s:%s %s err=%s", market, symbol, day, exc)
+        return out
+
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("recurring_materializer: day-open fetch failed err=%s", exc)
+        return {}
 
 
 def _refresh_quotes(db: Session, keys: list[tuple[str, str]], *, now: datetime) -> None:
@@ -808,6 +841,58 @@ def _already_notified_stock(
     return False
 
 
+def _trade_day(trade_at: datetime) -> date:
+    """成交時間的業務日期(LEDGER_TIMEZONE)——當成「市場當地日期」去比對報價所屬交易日。"""
+    return trade_at.astimezone(business_tz()).date()
+
+
+def _pending_dca_periods(
+    rule: ReadRecurringRuleProjection,
+    advanced_rule: dict[str, Any] | None,
+    now: datetime,
+    *,
+    limit: int = 12,
+) -> list[tuple[datetime, datetime]]:
+    """已到期、尚未超過補期上限、而且(休市順延後)成交時間已到的期數
+    [(原排定時間, 成交時間)],最多 [limit] 期。只用來決定要不要補抓報價/日線,
+    不改任何資料。"""
+    out: list[tuple[datetime, datetime]] = []
+    occurrence = next_pending_occurrence(rule, advanced_rule)
+    guard = 0
+    while occurrence is not None and occurrence <= now and len(out) < limit and guard < limit * 4:
+        guard += 1
+        if rule.end_at is not None and occurrence > _ensure_aware(rule.end_at):
+            break
+        trade_at = stock_dca_rule_trade_time(rule, occurrence, advanced_rule)
+        if trade_at is not None and trade_at <= now and trade_at >= now - STOCK_DCA_MAX_CATCH_UP:
+            out.append((occurrence, trade_at))
+        following = recurring_schedule.enumerate_occurrences(
+            start=occurrence, end=None, frequency=rule.frequency, interval=rule.interval,
+            advanced_rule=advanced_rule, max_count=2,
+        )
+        occurrence = following[1] if len(following) > 1 else None
+    return out
+
+
+def _decide_price(
+    market: str,
+    view: Any,
+    trade_day: date,
+    now: datetime,
+    day_open: tuple[str, float | None] | None,
+) -> dca_price.PriceDecision:
+    m = markets.get_market(market)
+    market_today = markets.local_now(m, now).date() if m is not None else _trade_day(now)
+    return dca_price.decide(
+        has_quote=view is not None and view.price is not None,
+        quote_date=view.quote_date if view is not None else None,
+        open_price=view.open_price if view is not None else None,
+        target_day=trade_day,
+        market_today=market_today,
+        day_open=day_open,
+    )
+
+
 def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> dict[str, int]:
     """股票定期定額(`kind='stock_dca'`,2026-09-28,
     docs/STOCK_HOLDINGS_SD.md §9)規則:到期當下才逐筆生成,跟
@@ -843,14 +928,30 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         if not rule.market or not rule.symbol:
             continue
         adv = _decode_advanced_rule(rule.advanced_rule_json)
-        nxt = next_pending_occurrence(rule, adv)
-        if nxt is not None and nxt <= now:
-            trade_at = stock_dca_rule_trade_time(rule, nxt, adv)
-            if trade_at is not None and trade_at <= now:
-                due_keys.append((rule.market.upper(), rule.symbol.upper()))
+        if _pending_dca_periods(rule, adv, now):
+            due_keys.append((rule.market.upper(), rule.symbol.upper()))
     if due_keys:
         _refresh_quotes(db, list(dict.fromkeys(due_keys)), now=now)
     rules = db.scalars(stmt).all()
+
+    # 補期/快取不是成交日當天資料的期數,要查那天的日線開盤價(`dca_price.decide`
+    # 回 NEED_DAY_OPEN)。一樣要在寫入之前、而且在迴圈外查好(網路請求不能卡在
+    # ledger 鎖裡)。
+    quote_views = _load_quote_views(
+        db, list(dict.fromkeys((r.market, r.symbol) for r in rules if r.market and r.symbol)),
+    )
+    day_open_needs: list[tuple[str, str, date]] = []
+    for rule in rules:
+        if not rule.market or not rule.symbol:
+            continue
+        adv = _decode_advanced_rule(rule.advanced_rule_json)
+        view = quote_views.get((rule.market.upper(), rule.symbol.upper()))
+        for _occurrence, trade_at in _pending_dca_periods(rule, adv, now):
+            day = _trade_day(trade_at)
+            decision = _decide_price(rule.market, view, day, now, None)
+            if decision.status == dca_price.NEED_DAY_OPEN:
+                day_open_needs.append((rule.market.upper(), rule.symbol.upper(), day))
+    day_opens = _fetch_day_opens(list(dict.fromkeys(day_open_needs)))
 
     materialized = 0
     skipped_balance = 0
@@ -953,7 +1054,53 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                     break
                 continue
 
-            price = _lookup_quote_price(db, market=rule.market, symbol=rule.symbol)
+            trade_day = _trade_day(trade_at)
+            decision = _decide_price(
+                rule.market,
+                quote_views.get((rule.market.upper(), rule.symbol.upper())),
+                trade_day,
+                now,
+                day_opens.get((rule.market.upper(), rule.symbol.upper(), trade_day)),
+            )
+            if decision.status == dca_price.NEED_DAY_OPEN:
+                # 前面已經試著查過日線卻沒拿到(上游失敗/還沒給):當成 unavailable 判斷。
+                decision = _decide_price(
+                    rule.market,
+                    quote_views.get((rule.market.upper(), rule.symbol.upper())),
+                    trade_day, now, ("unavailable", None),
+                )
+            if decision.status == dca_price.WAIT:
+                # 還沒開盤 / 上游還沒給成交日當天的開盤價:靜默等下一輪(不通知、
+                # 不推進進度,也不追後面的期數)。休市表過期或臨時休市時,那天根本沒有
+                # 開盤價,會一直等到補期上限被略過,不會誤買。
+                break
+            if decision.status == dca_price.NO_TRADE:
+                # 日線已經涵蓋到成交日之後、卻沒有那天的 bar:這檔那天沒成交(停牌等)。
+                occurrence_iso = next_occurrence.isoformat()
+                if not _already_notified_stock(
+                    db, user_id=rule.user_id, rule_id=rule.sync_id,
+                    occurrence_iso=occurrence_iso, reason="no_trade",
+                ):
+                    notification_service.create_notification(
+                        db,
+                        user_id=rule.user_id,
+                        category="reminder",
+                        title=f"定期定額未執行：{rule.symbol}",
+                        body=f"{trade_day.isoformat()} 這檔標的沒有成交(停牌或休市),本期定期定額已略過。",
+                        payload={
+                            "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
+                            "recurringRuleId": rule.sync_id,
+                            "occurrenceAt": occurrence_iso,
+                            "kind": "no_trade",
+                        },
+                    )
+                rule.generated_until_at = next_occurrence
+                rule_changed = True
+                if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                    rule.enabled = False
+                    break
+                continue
+            price = decision.price
             if price is None:
                 occurrence_iso = next_occurrence.isoformat()
                 if not _already_notified_stock(
@@ -965,7 +1112,10 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                         user_id=rule.user_id,
                         category="reminder",
                         title=f"定期定額未執行：{rule.symbol}",
-                        body="目前沒有這檔標的的報價,本期定期定額未執行,系統會持續每 15 分鐘重試一次。",
+                        body=(
+                            f"取不到這檔標的 {trade_day.isoformat()} 的開盤價,本期定期定額未執行,"
+                            "系統會持續每 15 分鐘重試一次。"
+                        ),
                         payload={
                             "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
                             "recurringRuleId": rule.sync_id,

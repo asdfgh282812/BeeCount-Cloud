@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from . import trading_calendar
+
 
 @dataclass(frozen=True)
 class Market:
@@ -80,9 +82,8 @@ def local_now(market: Market, now: datetime | None = None) -> datetime:
 
 
 def is_trading_day(market: Market, day: date) -> bool:
-    """只排除週末。國定假日不做日曆:假日抓到的仍是前一交易日的收盤價,
-    結果是對的,只是多打一次上游。"""
-    return day.weekday() < 5
+    """週末 + 交易所休市日(`trading_calendar`,來源 holidays.financial)。"""
+    return trading_calendar.is_trading_day(market.code, day)
 
 
 def is_market_open(market: Market, now: datetime | None = None) -> bool:

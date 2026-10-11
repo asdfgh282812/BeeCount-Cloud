@@ -21,7 +21,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ...models import HolidayDatasetMeta, HolidayEntryRow
+from ...models import HolidayDatasetMeta, HolidayEntryRow, MarketClosureRow
+from ..securities import trading_calendar
 from .generator import HolidayEntry, generate_year
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,19 @@ def _hash_entries(entries: list[HolidayEntry]) -> str:
     payload = [{**e.to_wire(), "country": e.country} for e in entries]
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _closure_rows(year: int) -> list[MarketClosureRow]:
+    rows: list[MarketClosureRow] = []
+    for exchange in trading_calendar.EXCHANGES:
+        for day, name in trading_calendar.exchange_closure_names(exchange, year).items():
+            rows.append(MarketClosureRow(year=year, exchange=exchange, day=day, name=name[:128]))
+    return rows
+
+
+def _hash_closures(rows: list[MarketClosureRow]) -> str:
+    payload = [[r.exchange, r.day.isoformat()] for r in sorted(rows, key=lambda r: (r.exchange, r.day))]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _to_row(e: HolidayEntry) -> HolidayEntryRow:
@@ -85,6 +99,20 @@ def refresh_dataset(db: Session, today: date | None = None) -> dict:
         hashes[str(year)] = digest
         changed.append(year)
 
+    # 交易所休市日(定期定額用)跟節日同一個版本號:任何一年變動就 version +1,
+    # App 帶 known_version 來問時一起拿到,不必為了休市表發版。
+    for year in target_years(today):
+        rows = _closure_rows(year)
+        total += len(rows)
+        key = f"mc:{year}"
+        digest = _hash_closures(rows)
+        if hashes.get(key) == digest:
+            continue
+        db.execute(delete(MarketClosureRow).where(MarketClosureRow.year == year))
+        db.add_all(rows)
+        hashes[key] = digest
+        changed.append(year)
+
     if changed:
         meta.version = (meta.version or 0) + 1
         # JSON 欄位要整個換新 dict,SQLAlchemy 才偵測得到變更。
@@ -93,7 +121,7 @@ def refresh_dataset(db: Session, today: date | None = None) -> dict:
     db.commit()
     return {
         "version": meta.version,
-        "changed_years": ",".join(str(y) for y in changed) or "-",
+        "changed_years": ",".join(str(y) for y in sorted(set(changed))) or "-",
         "entries": total,
     }
 
@@ -112,6 +140,13 @@ def ensure_dataset(db: Session) -> HolidayDatasetMeta:
     if meta is None:  # pragma: no cover — refresh 成功後一定有
         raise RuntimeError("holiday dataset unavailable")
     return meta
+
+
+def list_closures(db: Session, *, years: list[int] | None = None) -> list[MarketClosureRow]:
+    stmt = select(MarketClosureRow)
+    if years:
+        stmt = stmt.where(MarketClosureRow.year.in_(years))
+    return list(db.scalars(stmt.order_by(MarketClosureRow.exchange, MarketClosureRow.day)).all())
 
 
 def list_entries(

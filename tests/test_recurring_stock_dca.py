@@ -48,6 +48,21 @@ def _every_day_is_trading_day(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _fake_day_open_fetch(monkeypatch):
+    """定期定額成交價 = 成交日當天的開盤價(`dca_price`)。多數測試只關心股數/手續費/
+    進度,把「查日線開盤價」換成「成交日開盤價就是 `_insert_quote` 給的價格」,
+    不打真的網路;要測等開盤/補期/停牌的測試自己再 monkeypatch 一次。"""
+    _QUOTE_PRICES.clear()
+    monkeypatch.setattr(
+        recurring_materializer, "_fetch_day_opens",
+        lambda needs: {
+            (m, sym, day): ("ok", _QUOTE_PRICES[(m, sym)])
+            for m, sym, day in needs if (m, sym) in _QUOTE_PRICES
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_live_quote_fetch(monkeypatch):
     """到期生成前會補抓上游報價(`_refresh_quotes`),測試裡一律關掉,不打
     真的網路;需要模擬「補抓到報價」的測試自己再 monkeypatch 一次。"""
@@ -148,13 +163,19 @@ def _setup_accounts(client, hdr_app, ledger_id, *, settlement_balance=100000.0):
           {"syncId": "acc-inv", "name": "證券", "type": "investment", "currency": "TWD"})
 
 
-def _insert_quote(TS, *, market="TW", symbol="0050", price=97.45, currency="TWD"):
+_QUOTE_PRICES: dict[tuple[str, str], float] = {}
+
+
+def _insert_quote(TS, *, market="TW", symbol="0050", price=97.45, currency="TWD",
+                  quote_time=None, open_price=None):
+    _QUOTE_PRICES[(market, symbol)] = price
     with TS() as db:
         sec = Security(market=market, symbol=symbol, name="元大台灣50", currency=currency, kind="etf")
         db.add(sec)
         db.flush()
         db.add(SecurityQuote(
             security_id=sec.id, price=price, source="manual",
+            quote_time=quote_time, open_price=open_price,
             fetched_at=datetime.now(timezone.utc),
         ))
         db.commit()
@@ -991,3 +1012,186 @@ def test_daily_stock_dca_skips_closed_days_instead_of_doubling_up():
             assert gu == datetime(2026, 2, 9, 1, 0, tzinfo=timezone.utc)
     finally:
         app.dependency_overrides.clear()
+
+
+# ---- 成交價 = 成交日當天的開盤價(2026-10-12)--------------------------------
+
+def _run_dca(TS, now):
+    with TS() as db:
+        result = materialize_due_stock_rules(db, now=now)
+        db.commit()
+        return result
+
+
+def _first_trade(TS):
+    with TS() as db:
+        return db.scalars(select(ReadStockTradeProjection)).all()
+
+
+@pytest.mark.real_calendar
+def test_dca_waits_for_open_price_of_trade_day_then_buys_at_open_not_last():
+    """成交日(今天)還沒有開盤價:靜默等,不通知、不推進進度;開盤價出現後用「開盤價」
+    成交,不是最新成交價。"""
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-open1@example.com", "L_OPEN1")
+        # 前一個交易日(週五)的收盤報價,開盤價 90、收盤 91。
+        _insert_quote(TS, price=91.0, open_price=90.0, quote_time=datetime(2026, 2, 20, 5, 30, tzinfo=timezone.utc))
+        mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)  # 台北週一 09:00
+        res = _create_stock_dca_rule(
+            client, hdr, "L_OPEN1", token,
+            overrides={"next_run_at": mon.isoformat(), "stock_fee_rate": 0, "stock_fee_min": 0, "amount": 10500.0},
+        )
+        rule_id = res.json()["entity_id"]
+
+        # 剛過 09:00,Yahoo 還沒給今天的資料。
+        result = _run_dca(TS, datetime(2026, 2, 23, 1, 5, tzinfo=timezone.utc))
+        assert result["materialized"] == 0 and result["skipped_no_quote"] == 0
+        assert _first_trade(TS) == []
+        assert _rule_row(TS, rule_id).generated_until_at is None
+        with TS() as db:
+            assert db.scalars(select(Notification)).all() == []
+
+        # 今天開盤了:開盤價 105,最新價 110。
+        with TS() as db:
+            q = db.scalars(select(SecurityQuote)).one()
+            q.quote_time = datetime(2026, 2, 23, 1, 25, tzinfo=timezone.utc)
+            q.open_price, q.price = 105.0, 110.0
+            db.commit()
+        result = _run_dca(TS, datetime(2026, 2, 23, 1, 30, tzinfo=timezone.utc))
+        assert result["materialized"] == 1
+        trade = _first_trade(TS)[0]
+        assert trade.price == 105.0  # 開盤價,不是 110
+        assert trade.shares == 100.0
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.real_calendar
+def test_dca_never_buys_on_unlisted_holiday_with_stale_quote():
+    """休市表沒涵蓋到的臨時休市:那天沒有開盤價資料,快取還停在前一個交易日 → 一直等,
+    不會拿前一天的價格誤買。"""
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-open2@example.com", "L_OPEN2")
+        _insert_quote(TS, price=91.0, open_price=90.0, quote_time=datetime(2026, 2, 20, 5, 30, tzinfo=timezone.utc))
+        mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+        _create_stock_dca_rule(client, hdr, "L_OPEN2", token, overrides={"next_run_at": mon.isoformat()})
+        for hour in (2, 4, 6, 8):  # 整天都沒有新報價
+            result = _run_dca(TS, datetime(2026, 2, 23, hour, 0, tzinfo=timezone.utc))
+            assert result["materialized"] == 0
+        assert _first_trade(TS) == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.real_calendar
+def test_dca_late_catch_up_uses_that_days_open_not_todays_quote(monkeypatch):
+    """成交日已過、快取是更晚的報價:用那天日線的開盤價,不是今天的價格。"""
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-open3@example.com", "L_OPEN3")
+        _insert_quote(TS, price=130.0, open_price=128.0, quote_time=datetime(2026, 2, 25, 3, 0, tzinfo=timezone.utc))
+        mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+        _create_stock_dca_rule(
+            client, hdr, "L_OPEN3", token,
+            overrides={"next_run_at": mon.isoformat(), "stock_fee_rate": 0, "stock_fee_min": 0, "amount": 10150.0},
+        )
+        from datetime import date
+        monkeypatch.setattr(
+            recurring_materializer, "_fetch_day_opens",
+            lambda needs: {(m, s, d): ("ok", 101.5) for m, s, d in needs if d == date(2026, 2, 23)},
+        )
+        result = _run_dca(TS, datetime(2026, 2, 25, 3, 30, tzinfo=timezone.utc))
+        assert result["materialized"] == 1
+        assert _first_trade(TS)[0].price == 101.5
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.real_calendar
+def test_dca_skips_period_when_stock_did_not_trade_that_day(monkeypatch):
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-open4@example.com", "L_OPEN4")
+        _insert_quote(TS, price=130.0, open_price=128.0, quote_time=datetime(2026, 2, 25, 3, 0, tzinfo=timezone.utc))
+        mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+        res = _create_stock_dca_rule(client, hdr, "L_OPEN4", token, overrides={"next_run_at": mon.isoformat()})
+        rule_id = res.json()["entity_id"]
+        monkeypatch.setattr(
+            recurring_materializer, "_fetch_day_opens",
+            lambda needs: {(m, s, d): ("no_trade", None) for m, s, d in needs},
+        )
+        result = _run_dca(TS, datetime(2026, 2, 25, 3, 30, tzinfo=timezone.utc))
+        assert result["materialized"] == 0
+        assert _rule_row(TS, rule_id).generated_until_at is not None  # 推進進度,不卡後面的期數
+        with TS() as db:
+            kinds = [n.payload_json.get("kind") for n in db.scalars(select(Notification)).all()]
+            assert kinds == ["no_trade"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.real_calendar
+def test_dca_reports_missing_open_when_trade_day_passed_and_upstream_has_nothing(monkeypatch):
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-open5@example.com", "L_OPEN5")
+        _insert_quote(TS, price=130.0, open_price=128.0, quote_time=datetime(2026, 2, 25, 3, 0, tzinfo=timezone.utc))
+        mon = datetime(2026, 2, 23, 1, 0, tzinfo=timezone.utc)
+        res = _create_stock_dca_rule(client, hdr, "L_OPEN5", token, overrides={"next_run_at": mon.isoformat()})
+        rule_id = res.json()["entity_id"]
+        monkeypatch.setattr(recurring_materializer, "_fetch_day_opens", lambda needs: {})
+        result = _run_dca(TS, datetime(2026, 2, 25, 3, 30, tzinfo=timezone.utc))
+        assert result["materialized"] == 0 and result["skipped_no_quote"] == 1
+        assert _rule_row(TS, rule_id).generated_until_at is None  # 沒推進,下一輪重試
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_decide_price_table():
+    from datetime import date
+
+    from src.services.securities.dca_price import MISSING, NEED_DAY_OPEN, NO_TRADE, OK, WAIT, decide
+
+    d = date(2026, 2, 23)
+    base = dict(target_day=d, market_today=d)
+    # 當天資料 + 開盤價 → 成交
+    assert decide(has_quote=True, quote_date="2026-02-23", open_price=105.0, **base).status == OK
+    assert decide(has_quote=True, quote_date="2026-02-23", open_price=105.0, **base).price == 105.0
+    # 前一個交易日的資料、成交日是今天 → 等
+    assert decide(has_quote=True, quote_date="2026-02-20", open_price=90.0, **base).status == WAIT
+    # 成交日在未來 → 等
+    assert decide(has_quote=True, quote_date="2026-02-20", open_price=90.0, target_day=date(2026, 2, 24), market_today=d).status == WAIT
+    # 同一天但來源沒給開盤價 → 去查日線;查不到且成交日是今天 → 等
+    assert decide(has_quote=True, quote_date="2026-02-23", open_price=None, **base).status == NEED_DAY_OPEN
+    assert decide(has_quote=True, quote_date="2026-02-23", open_price=None, day_open=("unavailable", None), **base).status == WAIT
+    # 快取比成交日新(補期)→ 查日線
+    late = dict(target_day=d, market_today=date(2026, 2, 25))
+    assert decide(has_quote=True, quote_date="2026-02-25", open_price=128.0, **late).status == NEED_DAY_OPEN
+    assert decide(has_quote=True, quote_date="2026-02-25", open_price=128.0, day_open=("ok", 101.5), **late).price == 101.5
+    assert decide(has_quote=True, quote_date="2026-02-25", open_price=128.0, day_open=("no_trade", None), **late).status == NO_TRADE
+    assert decide(has_quote=True, quote_date="2026-02-25", open_price=128.0, day_open=("unavailable", None), **late).status == MISSING
+    # 完全沒有報價:成交日已過 / 今天都算資料缺失(不能靜默永遠等)
+    assert decide(has_quote=False, quote_date=None, open_price=None, day_open=("unavailable", None), **base).status == MISSING
+
+
+def test_decide_price_slack_for_clients_without_timezone_database():
+    """App 只知道手機本地日期,市場當地日期可能差一天:slack_days=1 時範圍內一律「等」。"""
+    from datetime import date
+
+    from src.services.securities.dca_price import MISSING, WAIT, decide
+
+    d = date(2026, 2, 23)
+    # 手機本地 2/24,美股市場當地其實還是 2/23:成交日 2/23 的資料還沒出來 → 等,不能報缺料
+    r = decide(has_quote=True, quote_date="2026-02-20", open_price=90.0, target_day=d,
+               market_today=date(2026, 2, 24), day_open=("unavailable", None), slack_days=1)
+    assert r.status == WAIT
+    # 成交日明顯過去(差 2 天以上)才算缺料
+    r = decide(has_quote=True, quote_date="2026-02-25", open_price=1.0, target_day=d,
+               market_today=date(2026, 2, 26), day_open=("unavailable", None), slack_days=1)
+    assert r.status == MISSING
+    # 成交日只比手機本地日期晚 1 天:可能已經是市場的今天,不直接當「未來」等死,照常走資料判斷
+    r = decide(has_quote=True, quote_date="2026-02-23", open_price=105.0, target_day=date(2026, 2, 23),
+               market_today=date(2026, 2, 22), slack_days=1)
+    assert r.price == 105.0

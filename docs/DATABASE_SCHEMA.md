@@ -895,6 +895,7 @@ rclone 遠端儲存位置配置（如 S3、Google Drive），也可以是加密�
 | price | Float | not null | 最新價 |
 | prev_close | Float | nullable | 前一日收盤價（算當日漲跌用） |
 | quote_time | DateTime | nullable | 報價本身的時間（交易所時間轉 UTC），不是抓取時間 |
+| open_price | Float | nullable | 該報價所屬交易日（quote_time 的市場當地日期）的開盤價；還沒開盤/來源沒給 = NULL。股票定期定額一律用成交日當天的開盤價成交（`services/securities/dca_price.py`）。同一交易日的新報價沒帶開盤價時沿用舊值 |
 | session | String(16) | not null, default "close" | `close`=收盤價（收盤排程寫入）/ `intraday`=盤中延遲報價（使用者開 App/Web 時補抓） |
 | source | String(32) | not null | 報價來源 |
 | fetched_at | DateTime | default 抓取時 | 抓取時間 |
@@ -1004,6 +1005,16 @@ A：這是本專案刻意的設計取捨：這類彙總數字若落庫，會需�
 | emoji | String(16) | not null | 日曆標記用 emoji |
 | color | String(7) | not null | 主題色 hex |
 | priority | Integer | not null | 同日多個節日的排序（越小越前；補假 999） |
+
+### `market_closure_entries` — 交易所休市日（MarketClosureRow）
+各交易所「平日」休市日（週末不入表）。跟節日資料集同一個版本號（`holiday_dataset_meta.year_hashes` 的 `mc:<year>` 鍵）、同一個排程（`holiday_dataset_refresh`）產生，來源 `holidays.financial`；App 走 `GET /read/holidays` 的 `market_closures`，股票定期定額遇休市日順延/略過用。migration `0068`。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| year | Integer | PK | 年份 |
+| exchange | String(8) | PK | TWSE / NYSE / HKEX / JPX / SSE / SZSE / KRX / LSE |
+| date | Date | PK | 休市日 |
+| name | String(128) | not null | 休市原因（套件名稱，除錯用） |
 
 ### `holiday_dataset_meta` — 節日資料集版本（HolidayDatasetMeta）
 單例 `id=1`。

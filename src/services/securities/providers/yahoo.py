@@ -2,7 +2,7 @@
 ——失敗一律拋例外,由呼叫方決定是否回傳舊快取。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -38,6 +38,9 @@ def parse_chart(payload: dict, *, market: str, symbol: str) -> QuoteData:
         currency = "GBP"
     ts = meta.get("regularMarketTime")
     quote_time = datetime.fromtimestamp(int(ts), tz=timezone.utc) if ts else None
+    open_price = _bar_open(result, quote_time, market)
+    if open_price is not None and meta.get("currency") == "GBp":
+        open_price /= 100.0  # 跟 price 同一個換算,漏掉會差 100 倍
     return QuoteData(
         market=market,
         symbol=symbol,
@@ -47,7 +50,83 @@ def parse_chart(payload: dict, *, market: str, symbol: str) -> QuoteData:
         currency=currency.upper() if isinstance(currency, str) else None,
         name=meta.get("longName") or meta.get("shortName"),
         source=SOURCE,
+        open_price=open_price,
     )
+
+
+def _local_date(ts: int, market: str, meta: dict) -> date:
+    m = markets.get_market(market)
+    tz = ZoneInfo(meta.get("exchangeTimezoneName") or (m.tz if m else "UTC"))
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(tz).date()
+
+
+def _bars(result: dict, market: str) -> dict[date, float]:
+    """chart 的日線 → {市場當地日期: 開盤價};開盤價缺值(還沒開盤)的 bar 略過。
+    GBp 的換算由呼叫方處理。"""
+    meta = result.get("meta") or {}
+    stamps = result.get("timestamp") or []
+    opens = (((result.get("indicators") or {}).get("quote") or [{}])[0] or {}).get("open") or []
+    out: dict[date, float] = {}
+    for ts, raw in zip(stamps, opens):
+        value = parse_float(raw)
+        if ts is None or value is None or value <= 0:
+            continue
+        out[_local_date(ts, market, meta)] = value
+    return out
+
+
+def _bar_open(result: dict, quote_time: datetime | None, market: str) -> float | None:
+    """報價所屬交易日(quote_time 的市場當地日期)的開盤價。只收「日期對得上」
+    的 bar:盤前 Yahoo 回的是前一個交易日的 bar,不能當成今天的開盤價。"""
+    if quote_time is None:
+        return None
+    meta = result.get("meta") or {}
+    target = _local_date(int(quote_time.timestamp()), market, meta)
+    return _bars(result, market).get(target)
+
+
+def parse_day_open(payload: dict, *, market: str, symbol: str, day: date) -> tuple[str, float | None]:
+    """某一個市場當地日期的開盤價(定期定額補期用)。
+
+    回傳 (status, price):
+    - ("ok", 價格):那天有開盤價;
+    - ("no_trade", None):日線資料涵蓋到那天之後、卻沒有那天的 bar = 那天這檔沒成交
+      (停牌、休市);
+    - ("unavailable", None):資料還沒涵蓋到那天(還沒開盤或上游延遲),不能判斷。"""
+    result = ((payload.get("chart") or {}).get("result") or [None])[0]
+    if not result:
+        error = (payload.get("chart") or {}).get("error")
+        raise RuntimeError(f"yahoo chart: no result for {symbol}: {error}")
+    meta = result.get("meta") or {}
+    bars = _bars(result, market)
+    divisor = 100.0 if meta.get("currency") == "GBp" else 1.0
+    if day in bars:
+        return "ok", bars[day] / divisor
+    # 注意是看「有沒有那天的 bar」而不是「有沒有開盤價」:bar 在但開盤價缺值是上游缺料,
+    # 不能當成那天沒成交而略過這一期。
+    bar_days = {_local_date(ts, market, meta) for ts in (result.get("timestamp") or []) if ts is not None}
+    if day not in bar_days and bar_days and max(bar_days) > day:
+        return "no_trade", None
+    return "unavailable", None
+
+
+# 補期用日線:涵蓋定期定額補期上限(7 天)綽綽有餘。
+DAY_OPEN_PARAMS = {"range": "1mo", "interval": "1d"}
+
+
+async def fetch_day_open(
+    market: str, symbol: str, day: date, client: httpx.AsyncClient | None = None
+) -> tuple[str, float | None]:
+    ysym = markets.yahoo_symbol(market, symbol)
+    own = client is None
+    client = client or new_client()
+    try:
+        resp = await client.get(_CHART_URL.format(symbol=ysym), params=DAY_OPEN_PARAMS)
+        resp.raise_for_status()
+        return parse_day_open(resp.json(), market=market.upper(), symbol=symbol.upper(), day=day)
+    finally:
+        if own:
+            await client.aclose()
 
 
 async def fetch_quote(market: str, symbol: str, client: httpx.AsyncClient | None = None) -> QuoteData:

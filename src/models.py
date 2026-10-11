@@ -915,6 +915,21 @@ class HolidayEntryRow(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class MarketClosureRow(Base):
+    """各交易所「平日」休市日(2026-10-12)。跟節日資料集同一個版本號、同一個排程
+    (`holiday_dataset_refresh`)產生,用 `holidays.financial` 的交易所日曆;
+    週末由程式判斷不入表。App 走 `GET /read/holidays` 的 `market_closures` 拿,
+    定期定額遇休市日順延/略過用(`services/securities/trading_calendar.py`)。"""
+
+    __tablename__ = "market_closure_entries"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # TWSE / NYSE / HKEX / JPX / SSE / SZSE / KRX / LSE(`trading_calendar.EXCHANGES`)。
+    exchange: Mapped[str] = mapped_column(String(8), primary_key=True)
+    day: Mapped[date] = mapped_column("date", Date, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+
+
 class HolidayDatasetMeta(Base):
     """節日資料集版本(單例 `id=1`)。內容有任何變動就 `version` +1,客戶端帶
     `known_version` 來問,相同就不重抓。`year_hashes` = {"2026": sha256, ...},
@@ -972,6 +987,9 @@ class SecurityQuote(Base):
     prev_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 報價本身的時間(交易所時間轉 UTC),不是抓取時間。
     quote_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 該報價所屬交易日(quote_time 的市場當地日期)的開盤價;還沒開盤/來源沒給 = None。
+    # 定期定額一律用成交日當天的開盤價,見 recurring_materializer。
+    open_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     session: Mapped[str] = mapped_column(String(16), nullable=False, default="close")
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

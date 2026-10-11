@@ -57,6 +57,16 @@ class QuoteView:
     source: str | None
     fetched_at: datetime | None
     stale: bool
+    # 該報價所屬交易日的開盤價;還沒開盤/來源沒給 = None(定期定額據此等待)。
+    open_price: float | None = None
+
+    @property
+    def quote_date(self) -> str | None:
+        """報價所屬的市場當地日期(`yyyy-MM-dd`)。App 沒有時區資料庫,由 server 算好。"""
+        m = markets.get_market(self.market)
+        if m is None or self.quote_time is None:
+            return None
+        return markets.local_now(m, self.quote_time).date().isoformat()
 
     def to_dict(self) -> dict:
         change = None
@@ -78,6 +88,8 @@ class QuoteView:
             "source": self.source,
             "fetched_at": _iso(self.fetched_at),
             "stale": self.stale,
+            "open_price": self.open_price,
+            "quote_date": self.quote_date,
         }
 
 
@@ -114,6 +126,7 @@ def _load(db: Session, keys: list[tuple[str, str]]) -> dict[tuple[str, str], Quo
                 source=quote.source if quote else None,
                 fetched_at=_aware(quote.fetched_at) if quote else None,
                 stale=False,
+                open_price=quote.open_price if quote else None,
             )
     for key in keys:
         if key not in out:

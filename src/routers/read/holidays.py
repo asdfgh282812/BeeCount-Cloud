@@ -33,6 +33,12 @@ class HolidayEntryOut(BaseModel):
     priority: int
 
 
+class MarketClosureOut(BaseModel):
+    date: str
+    exchange: str
+    name: str
+
+
 class HolidaysOut(BaseModel):
     version: int
     updated_at: str
@@ -40,6 +46,8 @@ class HolidaysOut(BaseModel):
     years: list[int]
     countries: list[str]
     entries: list[HolidayEntryOut]
+    # 各交易所「平日」休市日(2026-10-12,股票定期定額遇休市順延用),跟節日同一個版本號。
+    market_closures: list[MarketClosureOut] = []
 
 
 def _parse_csv(raw: str | None) -> list[str]:
@@ -82,8 +90,12 @@ def get_holidays(
         return out
 
     rows = dataset.list_entries(db, countries=country_list or None, years=year_list or None)
+    closures = dataset.list_closures(db, years=year_list or None)
     return out.model_copy(update=dict(
         unchanged=False,
+        market_closures=[
+            MarketClosureOut(date=c.day.isoformat(), exchange=c.exchange, name=c.name) for c in closures
+        ],
         entries=[
             HolidayEntryOut(
                 date=r.day.isoformat(),

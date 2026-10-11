@@ -404,30 +404,50 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
 常見最低 1 元,帳戶預設最低 20 元是給單筆交易用的,要在規則打開「自訂手續費」
 自己改。
 
-### 10.2b 2026-10-11 遇休市日順延 / 略過
+### 10.2b 2026-10-11 遇休市日順延 / 略過、2026-10-12 成交價改用成交日開盤價
 
-**問題**:定期定額只看排程日期,排定日剛好是週末/休市日(農曆年、國定假日)也照買,
-成交日記在休市日、價格用的是前一個交易日的收盤價——跟券商實際扣款對不上。
+**問題一(休市日)**:定期定額只看排程日期,排定日剛好是週末/休市日(農曆年、國定假日)也照買。
+**問題二(價格)**:成交價用的是快取裡「上次」的報價(前一個交易日收盤、或昨天的價格),不是成交日
+當天的價格,金額/股數跟券商實際扣款對不上。
 
-**規則**(`services/securities/trading_calendar.py`,App `trading_calendar.dart` 同一套):
+**成交日**(`services/securities/trading_calendar.py`,App `trading_calendar.dart` 同一套):
 - 以該期的**業務日期**(Cloud = `LEDGER_TIMEZONE`、App = 手機本地)查市場日曆;週末 + `holidays.financial`
   的交易所休市日(TWSE/NYSE/HKEX/JPX/SSE/SZSE/KRX/LSE,TW/TWO 共用證交所、KS/KQ 共用 KRX)。
 - 排定日是交易日 → 照舊。
-- 休市 + 月/年/每 N 週規則 → **順延到下一個交易日**(同一時刻);還沒到那天就先等(不通知、不推進進度)。
+- 休市 + 月/年/每 N 週規則 → **順延到下一個交易日**(同一時刻)。
 - 休市 + 每日 / `weekly_days` 規則 → **略過這一期**(靜默推進進度)。這兩種相鄰兩期可能順延到同一天
   (週五休市順延週一、週一又要買)造成重複扣款。
 - **進度與 syncId 仍以原本排定的時間為準**(`generated_until_at`、`stock_dca_occurrence_ids`),只有
-  `happenedAt` / `tradeDate` 換成順延後的成交時間;補期上限(7 天)也看成交時間。App 與 Cloud 因此仍
-  推導出同一組 syncId,不會雙生成。
-- `upcoming_run_at` **刻意維持原排定日**:Web 編輯表單拿它回填成規則起算日,換成順延日存檔會讓排程悄悄漂移。
-  所以 Web 列表顯示的「下次」是排定日,實際成交日以交易紀錄為準(App 列表有顯示順延後的日期)。
+  `happenedAt` / `tradeDate` 換成順延後的成交時間;補期上限(7 天)看成交時間。
 
-**限制**:只涵蓋事先公告的休市日,颱風停市等臨時休市預測不到;App 內建靜態表
-(`lib/services/investment/trading_calendar_data.dart`,涵蓋 去年~今年+5),超出年份只剩週末判斷。
-每年發版前執行 `scripts/export_trading_calendar.py` 更新(然後 `dart format`)。已經在休市日生成的舊交易不回頭修。
+**成交價 = 成交日當天的開盤價**(`services/securities/dca_price.py`,App `decideStockDcaPrice` 同一套):
+- 資料就是閘門:只有「報價所屬交易日 == 成交日」且帶 `open_price` 才成交。
+- 還沒開盤/上游還沒給當天資料 → 靜默等(不通知、不推進進度、不追後面的期數)。
+- 休市表過期或臨時休市(颱風停市):那天沒有開盤價 → 一直等到補期上限被略過,**不會用前一天的價誤買**。
+- 成交日已過、快取是更晚的報價(排程/App 很晚才跑)→ 查那天的**日線開盤價**(Yahoo 1mo 日線,
+  `yahoo.fetch_day_open`;App 走 `GET /read/securities/day-open`)。日線涵蓋到成交日之後卻沒有那天的
+  bar = 那天沒成交(停牌),略過這期並通知(`no_trade`);查不到 → `quote_unavailable` 通知、下輪重試。
+- 開盤價來源:Yahoo 日線 bar(只收日期跟報價時間同一天的 bar;LSE 的 GBp 一併 ÷100)、證交所/櫃買
+  `OpeningPrice`/`Open`、Twelve Data `/quote.open`。新報價沒帶開盤價但同一交易日 → 沿用舊值。
+- App 沒有時區資料庫,報價所屬市場日期 `quote_date` 由 server 算好隨報價下發;App 判斷「今天」只有手機本地日期,
+  可能跟市場差一天(台灣看美股),所以 `decide(slack_days=1)`:範圍內一律當「可能就是今天」去等,不誤報缺料。
+- 手動報價(沒登入 Cloud):使用者當天輸入的價格就是成交價(`source=manual` 視為開盤價)。
 
-測試:`tests/test_recurring_stock_dca.py` 的 `real_calendar` 標記測試;其餘測試預設把交易日曆壓成「每天開市」
-(用真實時鐘排規則,不然週末跑會失敗)。
+**休市表怎麼更新(不必為了它發版)**:跟節日是**同一個資料集**——`market_closure_entries` 表(migration 0068)、
+同一個版本號(`holiday_dataset_meta`,年度雜湊鍵 `mc:<year>`)、同一個排程(`holiday_dataset_refresh`,
+每天跑)、同一個端點(`GET /read/holidays` 多一個 `market_closures`)。App 啟動/回前景時 12 小時節流跟 Cloud
+確認版本;定期定額生成前也會先確認一次。沒連 Cloud 的使用者用內建 `assets/holidays/holidays_bundle.json`
+(`scripts/export_holidays_bundle.py` 匯出,休市日往後多給 5 年);表裡沒有的年份只剩週末判斷。
+
+**限制**:只涵蓋事先公告的休市日,颱風停市等臨時休市預測不到(靠「沒有開盤價就不成交」兜底);
+`upcoming_run_at` **刻意維持原排定日**——Web 編輯表單拿它回填成規則起算日,換成順延日存檔會讓排程悄悄漂移。
+已經在休市日/用舊價生成的舊交易不回頭修。
+
+**部署順序**:先部署 Cloud(migration 0068 + 新端點),再發 App。新 App 搭配舊 Cloud 時報價沒有開盤價 →
+定期定額會一直等到補期上限被略過(不會誤買,但也不會成交)。
+
+測試:`tests/test_recurring_stock_dca.py`(`real_calendar` 標記、開盤價各情境、`decide` 對照表)、
+`tests/test_securities_open_price.py`(各來源開盤價解析)、`tests/test_holidays.py`(休市表跟版本號)。
 
 ### 10.3 2026-09-30 App↔Web 定期定額顯示、代號自動帶入、批次期初持股
 

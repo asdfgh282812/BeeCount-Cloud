@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.services.holidays.catalog import SUPPORTED_COUNTRIES  # noqa: E402
 from src.services.holidays.generator import generate_year  # noqa: E402
+from src.services.securities import trading_calendar  # noqa: E402
 
 DEFAULT_OUT = ROOT.parent / "BeeCount-main" / "BeeCount-main" / "assets" / "holidays" / "holidays_bundle.json"
 
@@ -37,16 +38,27 @@ def main() -> None:
     entries = []
     for year in sorted(set(args.years)):
         entries.extend(e.to_wire() for e in generate_year(year))
+    # 交易所休市日(股票定期定額遇休市順延用),跟節日同一個資料集。內建版往後多給 5 年
+    # (只有日期,沒有名稱):節日資料只涵蓋 去年~明年,但沒連 Cloud 的使用者也要能用到
+    # 更遠的休市日;連了 Cloud 的以 Cloud 為準(App 只補 Cloud 沒有的年份)。
+    closure_years = range(min(args.years), max(args.years) + 6)
+    closures = [
+        {"date": d.isoformat(), "exchange": exchange}
+        for year in closure_years
+        for exchange in trading_calendar.EXCHANGES
+        for d in trading_calendar.exchange_closures(exchange, year)
+    ]
     payload = {
         "version": 0,
         "generated_at": date.today().isoformat(),
         "years": sorted(set(args.years)),
         "countries": list(SUPPORTED_COUNTRIES),
         "entries": entries,
+        "market_closures": closures,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
-    print(f"wrote {len(entries)} entries ({payload['years']}) -> {args.out}")
+    print(f"wrote {len(entries)} entries + {len(closures)} market closures ({payload['years']}) -> {args.out}")
 
 
 if __name__ == "__main__":

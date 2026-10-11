@@ -146,3 +146,22 @@ def test_read_holidays_rejects_unknown_country():
         assert r.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_dataset_carries_market_closures_with_same_version():
+    """交易所休市日跟節日同一個資料集/版本號(股票定期定額遇休市順延,App 不必發版)。"""
+    client = _client()
+    try:
+        hdr = {"Authorization": f"Bearer {_login_web(client, 'holiday-mc@t.com')}"}
+        body = client.get("/api/v1/read/holidays", headers=hdr).json()
+        closures = body["market_closures"]
+        assert {c["exchange"] for c in closures} == {"TWSE", "NYSE", "HKEX", "JPX", "SSE", "SZSE", "KRX", "LSE"}
+        assert any(c["exchange"] == "TWSE" and c["date"] == "2026-02-16" for c in closures)
+        assert any(c["exchange"] == "NYSE" and c["date"] == "2026-07-03" for c in closures)
+        # 週末不入表
+        assert all(date.fromisoformat(c["date"]).weekday() < 5 for c in closures)
+        # 版本沒變 → 不帶任何資料
+        again = client.get("/api/v1/read/holidays", headers=hdr, params={"known_version": body["version"]}).json()
+        assert again["unchanged"] is True and again["market_closures"] == []
+    finally:
+        app.dependency_overrides.clear()
