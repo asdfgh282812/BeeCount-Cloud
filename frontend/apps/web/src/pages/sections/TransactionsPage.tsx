@@ -125,6 +125,7 @@ import {
   txDefaults,
   type TxForm,
   isStockAccount,
+  validateDepositForm,
 } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
@@ -135,6 +136,11 @@ import { localizeError } from '../../i18n/errors'
 import { StockTradeDialog, type TradeDialogState } from './InvestmentsPage'
 import { consumePendingShareText } from '../../lib/pwa-intake'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
+import {
+  loadDepositFormPatch,
+  savedTxId,
+  syncDepositBalanceAfterSave,
+} from '../../lib/depositBalanceSync'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 import { buildRecurringUpdateFromPayload, type RecurringUpdateFromSource } from '../../lib/recurringUpdateFrom'
@@ -698,6 +704,8 @@ export function TransactionsPage() {
   const txCanCreateDebt = txContextLedger?.role === 'owner'
   // 專案(Phase 13):新建專案同样是 owner-only 的 `POST .../projects`。
   const txCanManageProjects = txContextLedger?.role === 'owner'
+  // 訂金尾款追蹤:建立/修改/刪除尾款同樣是 owner-only 的 write endpoint。
+  const txCanManageDeposit = txContextLedger?.role === 'owner'
   const { bundle: sharedBundle } = useSharedLedgerResources(
     txIsSharedEditor ? txContextLedgerId : null,
   )
@@ -2152,6 +2160,12 @@ export function TransactionsPage() {
         return false
       }
     }
+    // 訂金尾款追蹤:有填尾款金額就必須是正數(留空 = 未定)。
+    const depositError = validateDepositForm(txForm)
+    if (depositError) {
+      setErrorNotice(t(depositError))
+      return false
+    }
     // 帳戶必選(需求 #9,Phase 11):新建交易 或 使用者主動變更過帳戶欄位時
     // 強制必選;既有 mobile 匯入的無帳戶交易只改其它欄位(帳戶欄位維持
     // 打開表單當下的原樣)時放行,避免被迫補選帳戶才能存檔其它欄位。
@@ -2491,6 +2505,20 @@ export function TransactionsPage() {
           }
         }
       }
+      // 訂金尾款追蹤:尾款是獨立實體,交易存好後另外同步(非原子,v1 可接受);
+      // 失敗只提示、不回滾已保存的交易(同上面的新欠款)。
+      const depositSyncError = await syncDepositBalanceAfterSave({
+        token,
+        ledgerId,
+        txId: savedTxId(txForm, res),
+        form: txForm,
+        retryOnConflict,
+      })
+      if (depositSyncError) {
+        setErrorNotice(
+          t('depositBalance.error.syncFailed').replace('{message}', renderError(depositSyncError))
+        )
+      }
       const editingTxId = txForm.editingId
       setTxForm(txDefaults())
       setRecurringEditContext(null)
@@ -2602,8 +2630,22 @@ export function TransactionsPage() {
       reward_rule_ids: tx.reward_rule_ids || [],
       // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
       split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
-      splits: Boolean(tx.has_splits) ? txSplitFormItemsFromRead(tx.splits) : []
+      splits: Boolean(tx.has_splits) ? txSplitFormItemsFromRead(tx.splits) : [],
+      // 訂金尾款追蹤:週期性/分期產生的交易不能有尾款;其餘交易非同步查它
+      // 的尾款(見下面),查到才覆蓋 deposit_* 欄位。
+      deposit_blocked: Boolean(tx.recurring_rule_id || tx.installment_plan_id)
     })
+    if (!tx.recurring_rule_id && !tx.installment_plan_id) {
+      void loadDepositFormPatch({
+        token,
+        ledgerId: tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '',
+        txId: tx.id,
+        txType: tx.tx_type
+      }).then((patch) => {
+        if (Object.keys(patch).length === 0) return
+        setTxForm((prev) => (prev.editingId === tx.id ? { ...prev, ...patch } : prev))
+      })
+    }
   }
 
   // Phase 24:兩選一之後打開同一個編輯表單(openTxEditForm),但先記住要
@@ -3076,6 +3118,7 @@ export function TransactionsPage() {
                 tags={txWriteTags}
                 debts={txDictionaryDebts}
                 canCreateDebt={txCanCreateDebt}
+                canManageDepositBalance={txCanManageDeposit}
                 onCreateDebtEntry={onCreateDebtEntry}
                 projects={txDictionaryProjects}
                 onCreateProject={txCanManageProjects ? onCreateTxProject : undefined}

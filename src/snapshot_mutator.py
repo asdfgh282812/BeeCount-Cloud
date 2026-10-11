@@ -803,6 +803,18 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     stock_trades = _ensure_list(target, "stockTrades")
     stock_trades[:] = [t for t in stock_trades if t.get("txId") != tx_id]
 
+    # 訂金尾款追蹤:刪訂金 → 連同(未補或已補)的尾款記錄一併刪;刪已補上的
+    # 尾款交易 → 該筆 balance 一併刪(已補上的尾款交易就是一般記錄)。同
+    # _shared.py::_cascade_delete_deposit_balances(单笔 DELETE fast path)。
+    deposit_balances = _ensure_list(target, "depositBalances")
+    deposit_balances[:] = [
+        b for b in deposit_balances
+        if not (
+            isinstance(b, dict)
+            and (b.get("sourceTxId") == tx_id or b.get("completedTxId") == tx_id)
+        )
+    ]
+
     # 拆帳欠款明細(App v67):一筆交易可以是多筆欠款的起點,要逐筆處理。
     # 只有已發生的收還款算「已有還款」;分期排程的未來收還款跟欠款一起刪。
     debts = _ensure_list(target, "debts")
@@ -1978,6 +1990,173 @@ def delete_debt(snapshot: dict, debt_id: str, payload: dict | None = None) -> di
     ]
     target["count"] = len(items)
     return target
+
+
+# ============================================================================
+# 訂金尾款追蹤(doc.moze.app/record/deposit)—— 跟 debt 同款 boilerplate。
+# 尾款補上前只是 depositBalances 裡的一列(不是交易),補上時
+# `complete_deposit_balance` 才建立真實交易並翻 status。欄位語意見
+# ReadDepositBalanceProjection。
+# ============================================================================
+
+# 補尾款時沿用訂金交易的欄位(類別/專案/商家/幣別/帳戶),MOZE 文件「建立尾款時,
+# 會沿用訂金的類別、專案和商家」。
+_DEPOSIT_INHERIT_KEYS = (
+    "categoryId", "categoryName", "categoryKind",
+    "accountId", "accountName",
+    "fromAccountId", "fromAccountName",
+    "toAccountId", "toAccountName",
+    "projectId", "merchant", "currencyCode",
+)
+
+
+def _find_source_tx(items: list[dict], tx_id: str) -> dict:
+    for it in items:
+        if isinstance(it, dict) and str(it.get("syncId")) == tx_id:
+            return it
+    raise ValueError("write validation failed: source transaction not found")
+
+
+def create_deposit_balance(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    balances = _ensure_list(target, "depositBalances")
+    source_tx_id = str(payload.get("source_tx_id") or "").strip()
+    if not source_tx_id:
+        raise ValueError("write validation failed: source_tx_id is required")
+    source = _find_source_tx(_ensure_list(target, "items"), source_tx_id)
+    if source.get("type") not in {"expense", "transfer"}:
+        raise ValueError("write validation failed: deposit balance only applies to expense/transfer")
+    if source.get("recurringRuleId") or source.get("installmentPlanId"):
+        raise ValueError("write validation failed: recurring/installment cannot have deposit balance")
+    if any(isinstance(b, dict) and b.get("sourceTxId") == source_tx_id for b in balances):
+        raise ValueError("write validation failed: deposit balance already exists for this transaction")
+    amount = _to_optional_float(payload.get("amount"))
+    if amount is not None and amount <= 0:
+        raise ValueError("write validation failed: amount must be > 0")
+    sync_id = _new_sync_id("depbal")
+    balance: dict[str, object] = {
+        "syncId": sync_id,
+        "sourceTxId": source_tx_id,
+        "status": "pending",
+    }
+    if amount is not None:
+        balance["amount"] = amount
+    if payload.get("due_at") is not None:
+        balance["dueAt"] = _date_only_iso8601(payload.get("due_at"))
+    _mark_entity_actor(balance, payload, create=True)
+    balances.append(balance)
+    return target, sync_id
+
+
+def update_deposit_balance(snapshot: dict, balance_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    balances = _ensure_list(target, "depositBalances")
+    _, balance = _find_by_sync_id(balances, balance_id, expected_prefix="depbal")
+    _assert_actor_can_modify(balance, payload)
+    if balance.get("status") == "completed":
+        raise ValueError("write validation failed: deposit balance already completed")
+    if "amount" in payload:
+        value = _to_optional_float(payload.get("amount"))
+        if value is None:
+            balance.pop("amount", None)
+        elif value <= 0:
+            raise ValueError("write validation failed: amount must be > 0")
+        else:
+            balance["amount"] = value
+    if "due_at" in payload:
+        value = payload.get("due_at")
+        if value is None:
+            balance.pop("dueAt", None)
+        else:
+            balance["dueAt"] = _date_only_iso8601(value)
+    _mark_entity_actor(balance, payload, create=False)
+    return target
+
+
+def delete_deposit_balance(snapshot: dict, balance_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    balances = _ensure_list(target, "depositBalances")
+    idx, balance = _find_by_sync_id(balances, balance_id, expected_prefix="depbal")
+    _assert_actor_can_modify(balance, payload or {})
+    balances.pop(idx)
+    return target
+
+
+def complete_deposit_balance(
+    snapshot: dict, balance_id: str, payload: dict,
+) -> tuple[dict, str, str]:
+    """補尾款:建立真實交易(類型/類別/專案/商家沿用訂金交易)並把 balance
+    翻成 completed。回傳 (snapshot, balance_id, 新交易 syncId)。amount 沒帶就
+    用 balance 上登記的金額,兩者都沒有 → 400(MOZE:金額未定要補上實際金額
+    才能入帳)。`account_id` 可覆寫扣款帳戶(轉帳覆寫轉出帳戶)。"""
+    target = ensure_snapshot_v2(snapshot)
+    balances = _ensure_list(target, "depositBalances")
+    _, balance = _find_by_sync_id(balances, balance_id, expected_prefix="depbal")
+    _assert_actor_can_modify(balance, payload)
+    if balance.get("status") == "completed":
+        raise ValueError("write validation failed: deposit balance already completed")
+    items = _ensure_list(target, "items")
+    source = _find_source_tx(items, str(balance.get("sourceTxId") or ""))
+    amount = _to_optional_float(payload.get("amount"))
+    if amount is None:
+        amount = _to_optional_float(balance.get("amount"))
+    if amount is None or amount <= 0:
+        raise ValueError("write validation failed: amount must be > 0")
+
+    snake = {
+        "categoryId": "category_id", "categoryName": "category_name",
+        "categoryKind": "category_kind", "accountId": "account_id",
+        "accountName": "account_name", "fromAccountId": "from_account_id",
+        "fromAccountName": "from_account_name", "toAccountId": "to_account_id",
+        "toAccountName": "to_account_name", "projectId": "project_id",
+        "merchant": "merchant", "currencyCode": "currency_code",
+    }
+    tx_payload: dict[str, object] = {
+        "tx_type": source.get("type"),
+        "amount": amount,
+        "happened_at": payload.get("happened_at"),
+        "note": payload.get("note"),
+        "deferred_posting_at": payload.get("deferred_posting_at"),
+        # 沿用訂金交易的收支旗標(例如使用者把訂金設為不計入收支)。
+        "exclude_from_stats": bool(source.get("excludeFromStats")),
+        "exclude_from_budget": bool(source.get("excludeFromBudget")),
+    }
+    for wire, key in snake.items():
+        if source.get(wire) is not None:
+            tx_payload[key] = source.get(wire)
+    new_account_id = payload.get("account_id")
+    if new_account_id:
+        accounts = _ensure_list(target, "accounts")
+        acc = next(
+            (a for a in accounts if isinstance(a, dict) and a.get("syncId") == new_account_id),
+            None,
+        )
+        if acc is None:
+            raise ValueError("write validation failed: account not found")
+        if source.get("type") == "transfer":
+            if "fromAccountId" in tx_payload or "from_account_id" in tx_payload:
+                tx_payload["from_account_id"] = new_account_id
+                tx_payload["from_account_name"] = acc.get("name")
+            if source.get("accountId") is not None:
+                tx_payload["account_id"] = new_account_id
+                tx_payload["account_name"] = acc.get("name")
+        else:
+            tx_payload["account_id"] = new_account_id
+            tx_payload["account_name"] = acc.get("name")
+    # 帶上 actor 標記,讓新交易的 createdByUserId 與共享帳本權限判斷一致。
+    for key, value in payload.items():
+        if isinstance(key, str) and key.startswith("__actor"):
+            tx_payload[key] = value
+    # create_transaction 內部會 ensure_snapshot_v2(deepcopy)——取它回傳的新
+    # snapshot 當 target,並重新取得 balance 參考(舊參考指向被丟棄的副本)。
+    target, new_tx_id = create_transaction(target, tx_payload)
+    balances = _ensure_list(target, "depositBalances")
+    _, balance = _find_by_sync_id(balances, balance_id, expected_prefix="depbal")
+    balance["status"] = "completed"
+    balance["completedTxId"] = new_tx_id
+    balance["amount"] = amount
+    _mark_entity_actor(balance, payload, create=False)
+    return target, balance_id, new_tx_id
 
 
 # ============================================================================

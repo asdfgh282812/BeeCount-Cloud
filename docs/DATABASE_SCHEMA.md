@@ -455,6 +455,23 @@
 
 索引：`ix_read_debt_user_id`、`ix_read_debt_ledger_due(ledger_id, due_at)`
 
+### `read_deposit_balance_projection` — 訂金尾款追蹤表（ReadDepositBalanceProjection）
+對齊 MOZE「訂金尾款追蹤」：替一筆訂金交易（支出/轉帳）登記尾款。**尾款補上前不是交易**，只是這張表的一列，所以不進任何統計/餘額/預算；補上時才建立真實交易（類別/專案/商家/帳戶沿用 `source_tx_sync_id` 指向的訂金交易）並把 `status` 翻成 completed。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| ledger_id | String(36) | FK→ledgers.id (CASCADE), PK(複合) | 所屬帳本 |
+| sync_id | String(255) | PK(複合) | 尾款同步 ID（`depbal_` 前綴） |
+| user_id | String(36) | FK→users.id (CASCADE), index | 所屬使用者 |
+| source_tx_sync_id | String(255) | default "" | 訂金交易 syncId（一筆訂金最多一筆尾款） |
+| amount | Float | nullable | 尾款金額；null = 金額未定，補上時才填實際金額 |
+| due_at | DateTime | nullable | 預計付尾款日（純日期，UTC 零點）；null = 日期未定 |
+| status | String(16) | default "pending" | pending（待補）/completed（已補上） |
+| completed_tx_sync_id | String(255) | nullable | 補上後新建的尾款交易 syncId |
+| source_change_id | BigInteger | default 0 | 診斷用：來源同步事件 ID |
+
+索引：`ix_read_deposit_balance_user_id`、`ix_read_deposit_balance_ledger_due(ledger_id, due_at)`、`ix_read_deposit_balance_source_tx(ledger_id, source_tx_sync_id)`。刪訂金 → 連帶刪尾款；刪已補上的尾款交易 → 連帶刪該筆記錄（`_cascade_delete_deposit_balances` / `snapshot_mutator.delete_transaction`）。
+
 ### `read_project_projection` — 專案表（ReadProjectProjection）
 使用者自訂的「專案」分組（例如「日本旅遊」「裝修工程」），可設專案預算，與 `read_budget_projection` 邏輯完全獨立。花費彙總不落庫，讀取時從交易的 `project_sync_id` 反查即時加總。
 

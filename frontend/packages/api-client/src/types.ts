@@ -2312,3 +2312,47 @@ export type InvestmentSettings = {
   stockEnabled?: boolean
   settlementAccountId?: string
 }
+
+// ────────── 訂金尾款追蹤 (Deposit balances，doc.moze.app/record/deposit) ──────────
+
+export type DepositBalanceStatus = 'pending' | 'completed'
+
+/** 訂金尾款追蹤:`source_tx_id` = 訂金交易;pending 時尾款不是交易(不進統計/餘額),
+ *  補上後 `completed_tx_id` 指向新建的尾款交易。amount / due_at 皆可為 null = 未定。
+ *  `source_*` 是 server 讀路徑從訂金交易補上的摘要,訂金交易已不在時全為 null。 */
+export type ReadDepositBalance = {
+  id: string
+  source_tx_id: string
+  amount: number | null
+  due_at: string | null
+  status: DepositBalanceStatus
+  completed_tx_id: string | null
+  source_type?: string | null
+  source_amount?: number | null
+  source_happened_at?: string | null
+  source_merchant?: string | null
+  source_note?: string | null
+  source_category_name?: string | null
+}
+
+/** `due_at` 是純日期語意:送 `YYYY-MM-DDT00:00:00Z`(同 debt due_at)。 */
+export type DepositBalanceCreatePayload = {
+  source_tx_id: string
+  amount?: number | null
+  due_at?: string | null
+}
+
+/** key 不出現 = 不變;傳 null = 清空(改回未定)。只能改還沒補上的尾款。 */
+export type DepositBalanceUpdatePayload = {
+  amount?: number | null
+  due_at?: string | null
+}
+
+/** 補尾款:amount 沒給就用尾款登記的金額,兩者都沒有 → 400。 */
+export type DepositBalanceCompletePayload = {
+  amount?: number | null
+  account_id?: string | null
+  happened_at?: string | null
+  deferred_posting_at?: string | null
+  note?: string | null
+}

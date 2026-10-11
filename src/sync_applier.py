@@ -50,6 +50,7 @@ from .models import (
     ReadBudgetProjection,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadDepositBalanceProjection,
     ReadStockTradeProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -73,7 +74,7 @@ INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
     "installment_period", "debt", "tx_template", "card_reward_rule",
-    "project", "project_category_budget", "stock_trade",
+    "project", "project_category_budget", "stock_trade", "deposit_balance",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -334,6 +335,16 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("installmentNo", "installment_no"),
         ("installmentGroupId", "installment_group_id"),
     ]),
+    # 訂金尾款追蹤(對齊 App entity_serializer.dart::serializeDepositBalance;
+    # wire key 是字串契約,兩端逐字對照)。
+    "deposit_balance": _MergeSpec(ReadDepositBalanceProjection, [
+        ("syncId", "sync_id"),
+        ("sourceTxId", "source_tx_sync_id"),
+        ("amount", "amount"),
+        ("dueAt", "due_at", _isoformat_or_none),
+        ("status", "status"),
+        ("completedTxId", "completed_tx_sync_id"),
+    ]),
     # 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。對齊 App
     # lib/cloud/sync/entity_serializer.dart::serializeStockTrade。
     "stock_trade": _MergeSpec(ReadStockTradeProjection, [
@@ -484,6 +495,7 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
+    "deposit_balance": projection.upsert_deposit_balance,
     "project": projection.upsert_project,
     "project_category_budget": projection.upsert_project_category_budget,
     "tx_template": projection.upsert_tx_template,
@@ -607,6 +619,13 @@ def _delete_debt(db: Session, ledger_id: str, sync_id: str, user_id: str) -> Non
     )
 
 
+def _delete_deposit_balance(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_deposit_balance(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="deposit_balance", entity_sync_id=sync_id,
+    )
+
+
 def _delete_project(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     projection.delete_project(db, ledger_id=ledger_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -670,6 +689,7 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "installment_plan": _delete_installment_plan,
     "installment_period": _delete_installment_period,
     "debt": _delete_debt,
+    "deposit_balance": _delete_deposit_balance,
     "project": _delete_project,
     "project_category_budget": _delete_project_category_budget,
     "tx_template": _delete_tx_template,

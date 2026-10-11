@@ -2,21 +2,29 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
+  completeDepositBalance,
   deleteInstallmentPlan,
   deleteTransaction,
   fetchCardRewardRules,
+  fetchReadDepositBalances,
   fetchWorkspaceAccounts,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   refundInstallmentPeriod,
+  type DepositBalanceCompletePayload,
   type ReadCardRewardRule,
+  type ReadDepositBalance,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
-import { ConfirmDialog } from '@beecount/web-features'
+import {
+  ConfirmDialog,
+  DepositBalanceCompleteDialog,
+  findDepositBalanceLink,
+} from '@beecount/web-features'
 
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
@@ -87,6 +95,13 @@ export function GlobalEntityDialogs() {
   // 出这笔交易勾选过的那几条。规则一定挂在这笔交易自己的帐户上(写入校验
   // `_assert_reward_rules_valid` 保证),不需要跨卡查。
   const [txRewardRules, setTxRewardRules] = useState<ReadCardRewardRule[]>([])
+
+  // 訂金尾款追蹤:交易詳情要顯示「這筆是訂金/尾款」並提供「補尾款」,所以 tx
+  // 打開時拉一次該帳本的尾款清單(用 source_tx_id / completed_tx_id 比對,不
+  // 在交易 read model 上加欄位)。只有 expense/transfer 才可能有。
+  const [txDepositBalances, setTxDepositBalances] = useState<ReadDepositBalance[]>([])
+  const [depositCompleteTarget, setDepositCompleteTarget] = useState<ReadDepositBalance | null>(null)
+  const [depositCompleteAccounts, setDepositCompleteAccounts] = useState<WorkspaceAccount[]>([])
 
   // §2.6:分期交易的退款发起点 —— 先问「只退这一期」还是「整笔退款」。
   // step === 'confirmWhole' 时展示第二个 destructive 二次确认(删整个计划
@@ -179,6 +194,74 @@ export function GlobalEntityDialogs() {
       cancelled = true
     }
   }, [tx, token])
+
+  const loadTxDepositBalances = useCallback(
+    async (target: WorkspaceTransaction | null) => {
+      if (!target || (target.tx_type !== 'expense' && target.tx_type !== 'transfer')) {
+        setTxDepositBalances([])
+        return
+      }
+      try {
+        setTxDepositBalances(await fetchReadDepositBalances(token, target.ledger_id))
+      } catch {
+        setTxDepositBalances([])
+      }
+    },
+    [token],
+  )
+  useEffect(() => {
+    let cancelled = false
+    if (!tx || (tx.tx_type !== 'expense' && tx.tx_type !== 'transfer')) {
+      setTxDepositBalances([])
+      return
+    }
+    fetchReadDepositBalances(token, tx.ledger_id)
+      .then((rows) => {
+        if (!cancelled) setTxDepositBalances(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxDepositBalances([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tx, token])
+  const txDepositLink = tx ? findDepositBalanceLink(txDepositBalances, tx.id) : null
+  const txIsLedgerOwner = tx
+    ? ledgers.find((l) => l.ledger_id === tx.ledger_id)?.role === 'owner'
+    : false
+
+  // 補尾款:開對話框前先拉該帳本帳戶(扣款帳戶選擇);送出後 server 同一次
+  // 寫入建立真實交易,之後重拉尾款清單讓詳情列從「補尾款」變成「查看尾款交易」。
+  const handleOpenCompleteDeposit = useCallback(
+    (balance: ReadDepositBalance) => {
+      setDepositCompleteTarget(balance)
+      if (tx) {
+        void fetchWorkspaceAccounts(token, { ledgerId: tx.ledger_id, limit: 500 })
+          .then((rows) => setDepositCompleteAccounts(rows.filter((a) => !a.hidden)))
+          .catch(() => undefined)
+      }
+    },
+    [tx, token],
+  )
+  const handleCompleteDeposit = useCallback(
+    async (balance: ReadDepositBalance, payload: DepositBalanceCompletePayload): Promise<boolean> => {
+      if (!tx) return false
+      const ledgerId = tx.ledger_id
+      try {
+        await retryOnConflict(ledgerId, (base) =>
+          completeDepositBalance(token, ledgerId, balance.id, base, payload),
+        )
+        toast.success(t('depositBalance.notice.completed'), t('notice.success'))
+        await loadTxDepositBalances(tx)
+        return true
+      } catch (err) {
+        toast.error(localizeError(err, t), t('notice.error'))
+        return false
+      }
+    },
+    [tx, token, retryOnConflict, toast, t, loadTxDepositBalances],
+  )
 
   // 转帐「≈折算金额」显示用(2026-09-18):详情弹窗没有现成的完整帐户清单
   // 缓存(不像 TransactionsPanel 那样已经手上有 accounts prop),只在打开
@@ -725,6 +808,14 @@ export function GlobalEntityDialogs() {
         accountCurrencyByName={txAccountCurrencyByName}
         ledgerBaseCurrency={tx ? ledgers.find((l) => l.ledger_id === tx.ledger_id)?.currency : undefined}
         onDelete={handleDeleteTx}
+        depositLink={txDepositLink}
+        onCompleteDeposit={txIsLedgerOwner ? handleOpenCompleteDeposit : undefined}
+      />
+      <DepositBalanceCompleteDialog
+        balance={depositCompleteTarget}
+        accounts={depositCompleteAccounts}
+        onClose={() => setDepositCompleteTarget(null)}
+        onSubmit={handleCompleteDeposit}
       />
       <ConfirmDialog
         open={Boolean(pendingDeleteTx)}

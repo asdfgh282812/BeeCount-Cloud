@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 16
+            assert len(rows) == 17
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 16
+            assert len(rows2) == 17
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 16
+        assert len(rows) == 17
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -406,6 +406,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "refresh_token_retention",
             "recurring_materializer",
             "debt_reminders",
+            "deposit_balance_reminders",
             "debt_unsettled_counterparties",
             "card_due_reminders",
             "transfer_rule_materialization",

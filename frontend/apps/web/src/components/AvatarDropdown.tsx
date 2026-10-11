@@ -10,6 +10,7 @@ import {
   Database,
   FileStack,
   HandCoins,
+  Hourglass,
   CandlestickChart,
   Info,
   Key,
@@ -165,6 +166,13 @@ export function AvatarDropdown({
             onClick={() => onNavigate('debts')}
           >
             {t('nav.debts')}
+          </MenuButton>
+          <MenuButton
+            icon={Hourglass}
+            active={currentSection === 'deposit-balances'}
+            onClick={() => onNavigate('deposit-balances')}
+          >
+            {t('nav.depositBalances')}
           </MenuButton>
           <MenuButton
             icon={CandlestickChart}

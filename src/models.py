@@ -1420,6 +1420,52 @@ Index(
 )
 
 
+class ReadDepositBalanceProjection(Base):
+    """訂金尾款追蹤(對齊 doc.moze.app/record/deposit)。ledger-scoped,PK=
+    (ledger_id, sync_id),跟 debt 同款。尾款在補上之前只是這張表的一列,**不是
+    交易**——所以完全不進統計/餘額/預算,不必改任何既有統計 SQL;補上時才建立
+    真實交易(類別/專案/商家/帳戶沿用 `source_tx_sync_id` 指向的訂金交易),
+    並把 status 翻成 completed、寫 `completed_tx_sync_id`。
+
+    `amount`、`due_at` 皆可為 null(MOZE:金額/日期都可以「未定」,之後補)。
+    `due_at` 是**純日期**語意(使用者選的是某一天),wire 一律
+    `YYYY-MM-DDT00:00:00Z`,跟 card_reward_rule 的 starts_at/ends_at 同款。"""
+
+    __tablename__ = "read_deposit_balance_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # 訂金交易 syncId(存 syncId 字串,不存跨裝置不穩定的本地 id)。
+    source_tx_sync_id: Mapped[str] = mapped_column(String(255), default="")
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'pending'(待補)/ 'completed'(已補上,成為一般記錄)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    completed_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_deposit_balance_user_id",
+    ReadDepositBalanceProjection.user_id,
+)
+Index(
+    "ix_read_deposit_balance_ledger_due",
+    ReadDepositBalanceProjection.ledger_id,
+    ReadDepositBalanceProjection.due_at,
+)
+Index(
+    "ix_read_deposit_balance_source_tx",
+    ReadDepositBalanceProjection.ledger_id,
+    ReadDepositBalanceProjection.source_tx_sync_id,
+)
+
+
 class ReadStockTradeProjection(Base):
     """股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。ledger-scoped,
     PK=(ledger_id, sync_id),跟 debt 同款。

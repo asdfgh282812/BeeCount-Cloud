@@ -143,6 +143,24 @@ export type TxForm = {
    *  轉入側折損面板的顯示/隱藏,不影響 expense/income 既有的 fee_enabled
    *  行為。 */
   discount_enabled: boolean
+  /** 訂金尾款追蹤(doc.moze.app/record/deposit):只在 expense/transfer、且不是
+   *  週期性/分期交易時可開。尾款是另一個實體(不是 TxPayload 欄位),交易存好後
+   *  由呼叫方另外呼叫 create/update/deleteDepositBalance(見
+   *  apps/web `lib/depositBalanceSync.ts`)。 */
+  deposit_enabled: boolean
+  /** 尾款金額(字串綁 input),空字串 = 未定。 */
+  deposit_amount: string
+  /** 尾款預計日期 `YYYY-MM-DD`(純日期),空字串 = 未定。 */
+  deposit_due_at: string
+  /** 編輯既有訂金交易時,它已有的尾款 id;'' = 還沒有。 */
+  deposit_balance_id: string
+  /** 既有尾款狀態;completed 時整區唯讀(補上後不能再改/關)。 */
+  deposit_status: '' | 'pending' | 'completed'
+  /** 開啟表單當下的「金額|日期」快照,存檔時據此判斷尾款有沒有被改過,
+   *  沒改就不送多餘的 PATCH。 */
+  deposit_original: string
+  /** 這筆交易不能有尾款:週期性/分期產生的交易,或本身就是已補上的尾款交易。 */
+  deposit_blocked: boolean
 }
 
 /** 手續費/折扣(2026-08 使用者需求)換算總額的公式,跟後端
@@ -522,6 +540,13 @@ export const txDefaults = (): TxForm => ({
   discount_amount: '',
   discount_label: '',
   discount_enabled: false,
+  deposit_enabled: false,
+  deposit_amount: '',
+  deposit_due_at: '',
+  deposit_balance_id: '',
+  deposit_status: '',
+  deposit_original: '',
+  deposit_blocked: false,
 })
 
 export const accountDefaults = (): AccountForm => ({

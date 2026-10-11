@@ -100,6 +100,9 @@ const InstallmentPlansPage = lazy(() =>
 const DebtsPage = lazy(() =>
   import('./pages/sections/DebtsPage').then((m) => ({ default: m.DebtsPage })),
 )
+const DepositBalancesPage = lazy(() =>
+  import('./pages/sections/DepositBalancesPage').then((m) => ({ default: m.DepositBalancesPage })),
+)
 const RealizedPnlPage = lazy(() =>
   import('./pages/sections/RealizedPnlPage').then((m) => ({ default: m.RealizedPnlPage })),
 )
@@ -339,6 +342,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <DebtsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="deposit-balances"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <DepositBalancesPage />
             </Suspense>
           }
         />

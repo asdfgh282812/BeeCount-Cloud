@@ -21,6 +21,7 @@ import type {
   ReadCategory,
   ReadCategorySuggestions,
   ReadDebt,
+  ReadDepositBalance,
   ReadInstallmentPeriod,
   ReadInstallmentPlan,
   ReadLedger,
@@ -329,6 +330,18 @@ export async function fetchReadDebts(
 ): Promise<ReadDebt[]> {
   return authedGet<ReadDebt[]>(
     `/read/ledgers/${encodeURIComponent(ledgerId)}/debts`,
+    token,
+  )
+}
+
+/** 訂金尾款追蹤列表(doc.moze.app/record/deposit)。含 pending 與 completed,
+ *  前端自己分組排序。 */
+export async function fetchReadDepositBalances(
+  token: string,
+  ledgerId: string,
+): Promise<ReadDepositBalance[]> {
+  return authedGet<ReadDepositBalance[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/deposit-balances`,
     token,
   )
 }

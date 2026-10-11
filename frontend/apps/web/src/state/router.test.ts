@@ -50,6 +50,22 @@ expect(parseRoute('/app/workspace/transactions')).toEqual({
     expect(routePath({ kind: 'app', ledgerId: '', section: 'investments' })).toBe('/app/investments')
   })
 
+  it('round-trips the deposit balances section (訂金尾款追蹤)', () => {
+    expect(parseRoute('/app/deposit-balances')).toEqual({
+      kind: 'app',
+      ledgerId: '',
+      section: 'deposit-balances'
+    })
+    expect(parseRoute('/app/deposit-balances/')).toEqual({
+      kind: 'app',
+      ledgerId: '',
+      section: 'deposit-balances'
+    })
+    expect(routePath({ kind: 'app', ledgerId: '', section: 'deposit-balances' })).toBe(
+      '/app/deposit-balances'
+    )
+  })
+
   it('round-trips the comparison report section', () => {
     expect(parseRoute('/app/comparison-report')).toEqual({
       kind: 'app',

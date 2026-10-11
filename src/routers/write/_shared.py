@@ -47,6 +47,7 @@ from ...models import (
     LedgerMember,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadDepositBalanceProjection,
     ReadStockTradeProjection,
     ReadProjectProjection,
     ReadRecurringRuleProjection,
@@ -219,6 +220,7 @@ _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "installment_plan": projection.upsert_installment_plan,
     "installment_period": projection.upsert_installment_period,
     "debt": projection.upsert_debt,
+    "deposit_balance": projection.upsert_deposit_balance,
     "project": projection.upsert_project,
     "project_category_budget": projection.upsert_project_category_budget,
     "tx_template": projection.upsert_tx_template,
@@ -231,6 +233,7 @@ _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "installment_plan": projection.delete_installment_plan,
     "installment_period": projection.delete_installment_period,
     "debt": projection.delete_debt,
+    "deposit_balance": projection.delete_deposit_balance,
     "project": projection.delete_project,
     "project_category_budget": projection.delete_project_category_budget,
     "tx_template": projection.delete_tx_template,
@@ -516,6 +519,10 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("debts") or [], next_snapshot.get("debts") or [],
                       "debt", emitted_ids)
+    # 訂金尾款(引用 transaction 的 sourceTxId/completedTxId)排在交易之後。
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("depositBalances") or [], next_snapshot.get("depositBalances") or [],
+                      "deposit_balance", emitted_ids)
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("projects") or [], next_snapshot.get("projects") or [],
                       "project", emitted_ids)
@@ -1143,6 +1150,46 @@ def _cascade_delete_linked_stock_trades(
         )
         db.flush()
         projection.delete_stock_trade(db, ledger_id=ledger.id, sync_id=trade_id)
+
+
+def _cascade_delete_deposit_balances(
+    db: Session,
+    *,
+    ledger: Ledger,
+    tx_id: str,
+    now: datetime,
+    device_id: str,
+    current_user: User,
+) -> None:
+    """訂金尾款追蹤:刪一筆交易時,連帶刪掉指向它的尾款記錄——被刪的是訂金
+    (`source_tx_sync_id`)→ 尾款一併刪(MOZE:取消訂位、訂金退回);被刪的是
+    已補上的尾款交易(`completed_tx_sync_id`)→ 該筆 balance 一併刪。批量刪除
+    路徑的同款邏輯在 `snapshot_mutator.delete_transaction`;App 端對應改動見
+    `LocalRepository.deleteTransaction`。"""
+    balance_ids = db.scalars(
+        select(ReadDepositBalanceProjection.sync_id).where(
+            ReadDepositBalanceProjection.ledger_id == ledger.id,
+            (ReadDepositBalanceProjection.source_tx_sync_id == tx_id)
+            | (ReadDepositBalanceProjection.completed_tx_sync_id == tx_id),
+        )
+    ).all()
+    for balance_id in balance_ids:
+        db.add(
+            SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                scope="ledger",
+                entity_type="deposit_balance",
+                entity_sync_id=balance_id,
+                action="delete",
+                payload_json={},
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+        )
+        db.flush()
+        projection.delete_deposit_balance(db, ledger_id=ledger.id, sync_id=balance_id)
 
 
 def _assert_project_exists(
@@ -1944,6 +1991,10 @@ async def _commit_write_fast_tx(
                 db, ledger=ledger, tx_id=tx_id, now=now,
                 device_id=device_id, current_user=current_user,
             )
+            _cascade_delete_deposit_balances(
+                db, ledger=ledger, tx_id=tx_id, now=now,
+                device_id=device_id, current_user=current_user,
+            )
         else:
             # 退款(§2.6):显式改 refund_of_id(非空)时才查重 —— 没传该 key
             # (exclude_unset)代表这次 PATCH 不动这个字段,不用重新校验;排除
@@ -2392,7 +2443,7 @@ async def _commit_write(
         for _k in (
             "items", "accounts", "categories", "tags", "budgets",
             "recurringRules", "installmentPlans", "installmentPeriods",
-            "debts", "txTemplates", "projectCategoryBudgets", "stockTrades",
+            "debts", "depositBalances", "txTemplates", "projectCategoryBudgets", "stockTrades",
         ):
             arr = snapshot.get(_k)
             if isinstance(arr, list):
@@ -2962,8 +3013,10 @@ __all__ = [
     'WriteDebtCreateRequest',
     'WriteStockTradeCreateRequest',
     'WriteStockTradeUpdateRequest',
+    'ReadDepositBalanceProjection',
     'ReadStockTradeProjection',
     '_cascade_delete_linked_stock_trades',
+    '_cascade_delete_deposit_balances',
     'ReadTxSplitProjection',
     '_assert_debt_not_from_split',
     '_debt_has_repayments',

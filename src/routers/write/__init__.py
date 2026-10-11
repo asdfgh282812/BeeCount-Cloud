@@ -20,6 +20,7 @@ from . import (
     categories,
     debts,
     debts_rename_counterparty,
+    deposit_balances,
     exchange_rate_overrides,
     installment_plans,
     ledgers,
@@ -48,6 +49,7 @@ router.include_router(recurring_rules.router)
 router.include_router(installment_plans.router)
 router.include_router(debts.router)
 router.include_router(debts_rename_counterparty.router)
+router.include_router(deposit_balances.router)
 router.include_router(projects.router)
 router.include_router(project_category_budgets.router)
 router.include_router(tx_templates.router)

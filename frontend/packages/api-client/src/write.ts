@@ -15,6 +15,9 @@ import type {
   DebtRenameCounterpartyPayload,
   DebtRenameCounterpartyResponse,
   DebtUpdatePayload,
+  DepositBalanceCompletePayload,
+  DepositBalanceCreatePayload,
+  DepositBalanceUpdatePayload,
   InstallmentEarlyRepayPayload,
   InstallmentPayoffPayload,
   InstallmentPeriodRefundPayload,
@@ -676,6 +679,67 @@ export async function deleteDebt(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/debts/${encodeURIComponent(debtId)}`,
     token,
     { base_change_id: baseChangeId },
+  )
+}
+
+/** 訂金尾款追蹤(doc.moze.app/record/deposit):替已存在的訂金交易
+ *  (支出/轉帳,非週期/分期)登記尾款。同一筆交易只能有一筆。 */
+export async function createDepositBalance(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: DepositBalanceCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/deposit-balances`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+    idempotencyKey,
+  )
+}
+
+/** 只能改還沒補上的尾款;key 出現才改,null = 清空。 */
+export async function updateDepositBalance(
+  token: string,
+  ledgerId: string,
+  balanceId: string,
+  baseChangeId: number,
+  payload: DepositBalanceUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/deposit-balances/${encodeURIComponent(balanceId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
+  )
+}
+
+/** 刪除尾款追蹤:pending 時訂金交易保留;已補上時只刪追蹤列,尾款交易保留。 */
+export async function deleteDepositBalance(
+  token: string,
+  ledgerId: string,
+  balanceId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/deposit-balances/${encodeURIComponent(balanceId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** 補尾款:同一次寫入建立真實交易(類型/類別/專案/商家沿用訂金交易)並把尾款翻成 completed。 */
+export async function completeDepositBalance(
+  token: string,
+  ledgerId: string,
+  balanceId: string,
+  baseChangeId: number,
+  payload: DepositBalanceCompletePayload,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/deposit-balances/${encodeURIComponent(balanceId)}/complete`,
+    token,
+    { base_change_id: baseChangeId, ...payload },
   )
 }
 

@@ -1174,6 +1174,28 @@ class ReadInstallmentPeriodOut(BaseModel):
     refunded_at: datetime | None = None
 
 
+DepositBalanceStatus = Literal["pending", "completed"]
+
+
+class ReadDepositBalanceOut(BaseModel):
+    """訂金尾款追蹤只讀視圖。`source_tx_id` = 訂金交易;補上後
+    `completed_tx_id` 指向新建的尾款交易。"""
+    id: str
+    source_tx_id: str
+    amount: float | None = None
+    due_at: datetime | None = None
+    status: DepositBalanceStatus = "pending"
+    completed_tx_id: str | None = None
+    # 訂金交易摘要(讀路徑從 read_tx_projection 補上,給待補尾款清單/明細頁
+    # 顯示「訂金多少、哪個商家」用;訂金交易已不在 = 全為 None)。
+    source_type: str | None = None
+    source_amount: float | None = None
+    source_happened_at: datetime | None = None
+    source_merchant: str | None = None
+    source_note: str | None = None
+    source_category_name: str | None = None
+
+
 class ReadDebtRepaymentOut(BaseModel):
     """借還款追蹤(§2.5 Phase 3):某笔欠款收到的一笔还款/收款摘要,给詳情頁
     「還款記錄」清單用,跟 §2.12.3 的 ReadTxRefundSummaryOut 是同一种模式。"""
@@ -2177,6 +2199,33 @@ class WriteInstallmentPeriodRefundRequest(WriteBaseRequest):
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
     happened_at: datetime | None = None
+
+
+class WriteDepositBalanceCreateRequest(WriteBaseRequest):
+    """訂金尾款追蹤(doc.moze.app/record/deposit):替一筆已存在的訂金交易
+    (支出/轉帳)登記尾款。`amount`/`due_at` 皆可不給 = 未定(之後 PATCH 補);
+    `due_at` 只取日期。同一筆交易只能有一筆尾款。"""
+    source_tx_id: str = Field(min_length=1)
+    amount: float | None = Field(default=None, gt=0)
+    due_at: datetime | None = None
+
+
+class WriteDepositBalanceUpdateRequest(WriteBaseRequest):
+    """只能改還沒補上的尾款的 amount/due_at;key 不出現 = 不變,傳 null = 清空
+    (改回未定),同 due_at/refund_of_id 的「以 key 是否出現判斷」語意。"""
+    amount: float | None = Field(default=None, gt=0)
+    due_at: datetime | None = None
+
+
+class WriteDepositBalanceCompleteRequest(WriteBaseRequest):
+    """補尾款:一次寫入內建立真實交易(類型/類別/專案/商家沿用訂金交易)並把
+    尾款翻成 completed。`amount` 沒給就用尾款上登記的金額,兩者都沒有 → 400。
+    `account_id` 可覆寫扣款帳戶;`deferred_posting_at` = 延後入帳日。"""
+    amount: float | None = Field(default=None, gt=0)
+    account_id: str | None = None
+    happened_at: datetime | None = None
+    deferred_posting_at: datetime | None = None
+    note: str | None = None
 
 
 class WriteDebtCreateRequest(WriteBaseRequest):

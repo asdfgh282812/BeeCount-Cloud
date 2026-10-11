@@ -4,6 +4,7 @@ import {
   resolveApiUrl,
   type AttachmentRef,
   type ReadCardRewardRule,
+  type ReadDepositBalance,
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
@@ -16,8 +17,15 @@ import {
   DialogTitle,
   useT,
 } from '@beecount/ui'
-import { buildTagColorMap, TagChip, transferConversionDisplay } from '@beecount/web-features'
-import { Briefcase, Calendar, ChevronLeft, ChevronRight, Copy, Edit3, Gift, HandCoins, Hash, ImageOff, Receipt, RotateCcw, Store, Tag, Trash2, User, Wallet, X } from 'lucide-react'
+import {
+  buildTagColorMap,
+  depositBalanceTotal,
+  depositDateFromWire,
+  TagChip,
+  transferConversionDisplay,
+  type DepositBalanceLink,
+} from '@beecount/web-features'
+import { Briefcase, Calendar, ChevronLeft, ChevronRight, Copy, Edit3, Gift, HandCoins, Hash, Hourglass, ImageOff, Receipt, RotateCcw, Store, Tag, Trash2, User, Wallet, X } from 'lucide-react'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
@@ -57,6 +65,12 @@ interface Props {
    *  跟 onEdit/onRefund/onDuplicate 同款慣例——只負責觸發,實際的二次確認
    *  + API 呼叫由呼叫端(GlobalEntityDialogs)處理。不傳 → 隱藏刪除按鈕。 */
   onDelete?: (tx: WorkspaceTransaction) => void
+  /** 訂金尾款追蹤:這筆交易在該帳本尾款清單裡的角色(訂金交易 / 已補上的尾款
+   *  交易),由呼叫端用 source_tx_id / completed_tx_id 比對得出;null/undefined =
+   *  與尾款無關,不顯示這一列。 */
+  depositLink?: DepositBalanceLink | null
+  /** 點「補尾款」(只在 pending 且呼叫端傳了才顯示;server 寫入是 owner-only)。 */
+  onCompleteDeposit?: (balance: ReadDepositBalance) => void
 }
 
 /**
@@ -85,6 +99,8 @@ export function TransactionDetailDialog({
   accountCurrencyByName,
   ledgerBaseCurrency,
   onDelete,
+  depositLink,
+  onCompleteDeposit,
 }: Props) {
   const t = useT()
 
@@ -391,6 +407,79 @@ export function TransactionDetailDialog({
                           ? ` · ${t(`debts.direction.${tx.debt_direction}`)}`
                           : ''}
                       </span>
+                    )
+                  }
+                />
+              ) : null}
+              {/* 訂金尾款追蹤(doc.moze.app/record/deposit):訂金交易顯示尾款
+                  金額/預計日期/交易總計與「補尾款」;已補上的尾款交易顯示它是
+                  哪筆訂金的尾款,可跳去訂金交易。 */}
+              {depositLink ? (
+                <DetailRow
+                  icon={<Hourglass className="h-4 w-4" />}
+                  label={t('depositBalance.detail.title')}
+                  value={
+                    depositLink.role === 'source' ? (
+                      <div className="space-y-0.5" data-testid="tx-detail-deposit">
+                        <div>
+                          {t('depositBalance.detail.balanceAmount')}{' '}
+                          {depositLink.balance.amount != null
+                            ? formatMoney(depositLink.balance.amount)
+                            : t('depositBalance.row.undetermined')}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {t('depositBalance.detail.dueAt')}{' '}
+                          {depositDateFromWire(depositLink.balance.due_at) ||
+                            t('depositBalance.row.undetermined')}
+                        </div>
+                        {depositLink.balance.amount != null ? (
+                          <div className="text-muted-foreground">
+                            {t('depositBalance.detail.total')}{' '}
+                            {formatMoney(tx.amount + depositLink.balance.amount)}
+                          </div>
+                        ) : null}
+                        {depositLink.balance.status === 'pending' ? (
+                          onCompleteDeposit ? (
+                            <Button
+                              size="sm"
+                              className="mt-1"
+                              data-testid="tx-detail-deposit-complete"
+                              onClick={() => onCompleteDeposit(depositLink.balance)}
+                            >
+                              {t('depositBalance.action.complete')}
+                            </Button>
+                          ) : null
+                        ) : depositLink.balance.completed_tx_id && onJumpToTx ? (
+                          <button
+                            type="button"
+                            onClick={() => onJumpToTx(depositLink.balance.completed_tx_id!)}
+                            className="mt-1 text-primary underline-offset-2 hover:underline"
+                          >
+                            {t('depositBalance.action.viewCompleted')}
+                          </button>
+                        ) : (
+                          <div className="text-muted-foreground">
+                            {t('depositBalance.row.completedBadge')}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-0.5" data-testid="tx-detail-deposit">
+                        <div>{t('depositBalance.detail.isBalanceOf')}</div>
+                        <div className="text-muted-foreground">
+                          {t('depositBalance.detail.total')}{' '}
+                          {formatMoney(depositBalanceTotal(depositLink.balance))}
+                        </div>
+                        {onJumpToTx ? (
+                          <button
+                            type="button"
+                            onClick={() => onJumpToTx(depositLink.balance.source_tx_id)}
+                            className="mt-1 text-primary underline-offset-2 hover:underline"
+                          >
+                            {t('depositBalance.action.viewDeposit')}
+                          </button>
+                        ) : null}
+                      </div>
                     )
                   }
                 />
@@ -705,6 +794,11 @@ function DetailRow({
       </div>
     </div>
   )
+}
+
+/** 尾款/總計金額顯示:最多兩位小數、千分位。 */
+function formatMoney(value: number): string {
+  return Number(value.toFixed(2)).toLocaleString()
 }
 
 function formatDateTime(value: string | null | undefined): string {

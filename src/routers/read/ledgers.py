@@ -1829,6 +1829,64 @@ def _aware_utc(dt: datetime | None) -> datetime | None:
 
 
 @router.get(
+    "/ledgers/{ledger_external_id}/deposit-balances",
+    response_model=list[ReadDepositBalanceOut],
+)
+def list_deposit_balances(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadDepositBalanceOut]:
+    """訂金尾款追蹤只讀列表。待補的(pending)排前面、日期近的在前、未定
+    日期排最後;訂金交易的摘要欄位從 read_tx_projection 補上。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db, user_id=current_user.id, ledger_external_id=ledger_external_id, is_admin=is_admin,
+    )
+    rows = db.scalars(
+        select(ReadDepositBalanceProjection).where(
+            ReadDepositBalanceProjection.ledger_id == ledger.id,
+        ).order_by(
+            ReadDepositBalanceProjection.status.desc(),  # 'pending' > 'completed'
+            ReadDepositBalanceProjection.due_at.asc().nulls_last(),
+        )
+    ).all()
+    if not rows:
+        return []
+    source_ids = [r.source_tx_sync_id for r in rows if r.source_tx_sync_id]
+    sources = {
+        t.sync_id: t
+        for t in db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.sync_id.in_(source_ids),
+            )
+        ).all()
+    } if source_ids else {}
+    out: list[ReadDepositBalanceOut] = []
+    for row in rows:
+        src = sources.get(row.source_tx_sync_id)
+        out.append(
+            ReadDepositBalanceOut(
+                id=row.sync_id,
+                source_tx_id=row.source_tx_sync_id,
+                amount=row.amount,
+                due_at=_aware_utc(row.due_at),
+                status=cast("Any", row.status if row.status in ("pending", "completed") else "pending"),
+                completed_tx_id=row.completed_tx_sync_id,
+                source_type=src.tx_type if src else None,
+                source_amount=src.amount if src else None,
+                source_happened_at=_aware_utc(src.happened_at) if src else None,
+                source_merchant=src.merchant if src else None,
+                source_note=src.note if src else None,
+                source_category_name=src.category_name if src else None,
+            )
+        )
+    return out
+
+
+@router.get(
     "/ledgers/{ledger_external_id}/debts",
     response_model=list[ReadDebtOut],
 )

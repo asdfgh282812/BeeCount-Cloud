@@ -57,7 +57,7 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src (僅單元測試)
 3. **`ledger_snapshot` (JSON 快照)**: `/sync/full` 採懶加載 (Lazy Build) 模式從 Projection 即時構建。**新程式碼請勿主動寫入 `ledger_snapshot`**。
 
 ### 實體作用域 (Scope)
-* **Ledger-Scoped**: 包含 Transaction, Category, Budget, Debt, RecurringRule, InstallmentPlan, TxTemplate, DeferredPosting 等（PK 帶有 `ledger_id`）。
+* **Ledger-Scoped**: 包含 Transaction, Category, Budget, Debt, DepositBalance, RecurringRule, InstallmentPlan, TxTemplate, DeferredPosting 等（PK 帶有 `ledger_id`）。
 * **User-Global**: 包含 UserAccountProjection, UserTagProjection, UserCategoryProjection, CardRewardRule 等（PK 為 `(user_id, sync_id)`，跨帳本共享）。
 
 ---

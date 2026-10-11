@@ -185,6 +185,10 @@ type TransactionsPanelProps = {
    *  按 ledger role === 'owner' 算好再传进来(對齊 DebtsPage.tsx 的
    *  canManage 判斷),不在這個 panel 內部重新猜權限。 */
   canCreateDebt?: boolean
+  /** 訂金尾款追蹤:能不能在表單裡建立/修改/關閉尾款(server 寫入是 owner-only,
+   *  由呼叫方按 ledger role === 'owner' 算好傳入)。已補上的尾款不論權限都會以
+   *  唯讀文字顯示。 */
+  canManageDepositBalance?: boolean
   /** 記帳「應收」「應付」分頁(App v68 MOZE 化):傳了才顯示這兩個分頁(新增
    *  時、且 canCreateDebt)。送出 `POST .../debts`,server 一次建立欠款、起點
    *  交易與分期排程。成功回傳 true(對話框會關閉),失敗由呼叫方自行提示。 */
@@ -424,6 +428,7 @@ export function TransactionsPanel({
   tags,
   debts = [],
   canCreateDebt = false,
+  canManageDepositBalance = false,
   onCreateDebtEntry,
   projects = [],
   onCreateProject,
@@ -1774,6 +1779,77 @@ export function TransactionsPanel({
               />
             </div>
 
+            {/* 訂金尾款追蹤(doc.moze.app/record/deposit):expense/transfer 且不是
+                週期性/分期交易時可開。尾款補上前不是交易(不進統計/餘額),金額與
+                日期都可以「未定」;補上後整區改成唯讀文字。尾款是獨立實體,存檔時
+                由呼叫方另外同步(apps/web lib/depositBalanceSync.ts)。 */}
+            {(form.tx_type === 'expense' || form.tx_type === 'transfer') &&
+            !form.deposit_blocked &&
+            !form.recurring_enabled &&
+            !form.installment_enabled &&
+            (canManageDepositBalance || form.deposit_status === 'completed') ? (
+              <div className="space-y-1 md:col-span-2">
+                {form.deposit_status === 'completed' ? (
+                  <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                    {t('depositBalance.form.completedReadonly')}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">{t('depositBalance.form.toggle')}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {t('depositBalance.form.hint')}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        data-testid="tx-form-deposit-toggle"
+                        aria-checked={form.deposit_enabled}
+                        aria-label={t('depositBalance.form.toggle') as string}
+                        onClick={() => onFormChange({ ...form, deposit_enabled: !form.deposit_enabled })}
+                        className={`relative ml-3 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                          form.deposit_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                            form.deposit_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    {form.deposit_enabled ? (
+                      <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label>{t('depositBalance.form.amount')}</Label>
+                          <AmountInput
+                            data-testid="tx-form-deposit-amount"
+                            value={form.deposit_amount}
+                            onChange={(next) => onFormChange({ ...form, deposit_amount: next })}
+                            placeholder={t('depositBalance.form.amountPlaceholder') as string}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>{t('depositBalance.form.dueAt')}</Label>
+                          <DatePicker
+                            value={form.deposit_due_at}
+                            onChange={(next) => onFormChange({ ...form, deposit_due_at: next })}
+                            clearable
+                            placeholder={t('depositBalance.form.dueAtPlaceholder') as string}
+                          />
+                        </div>
+                        <p className="text-[11px] text-muted-foreground md:col-span-2">
+                          {t('depositBalance.form.undeterminedHint')}
+                        </p>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
+
             {/* 退款(§2.6 / §2.12.3):發起入口已搬到交易明細頁的「退款」按鈕
                 (TransactionDetailDialog),這裡不再提供手動挑選退款對象的
                 下拉——編輯既有退款交易時 `form.refund_of_id` 原樣保留,只是
@@ -1795,7 +1871,9 @@ export function TransactionsPanel({
                       onFormChange({
                         ...form,
                         recurring_enabled: !form.recurring_enabled,
-                        installment_enabled: false
+                        installment_enabled: false,
+                        // 週期性收支不能同時是訂金交易(尾款只掛一次性交易)。
+                        deposit_enabled: false
                       })
                     }
                     className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
@@ -1927,7 +2005,8 @@ export function TransactionsPanel({
                       onFormChange({
                         ...form,
                         installment_enabled: !form.installment_enabled,
-                        recurring_enabled: false
+                        recurring_enabled: false,
+                        deposit_enabled: false
                       })
                     }
                     className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${

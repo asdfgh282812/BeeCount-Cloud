@@ -20,6 +20,7 @@ from .models import (
     ReadBudgetProjection,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadDepositBalanceProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadProjectCategoryBudgetProjection,
@@ -727,6 +728,32 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             d["originTxId"] = origin_tx_sid
         debts.append(d)
 
+    # 訂金尾款追蹤:upsert_deposit_balance 是整列覆蓋,所有欄位都要帶上,
+    # 否則 Web 改一筆尾款的金額會把日期/補上狀態沖掉。
+    deposit_balances: list[dict[str, Any]] = []
+    for (sid, source_tx_sid, amount, due_at, status, completed_tx_sid) in db.execute(
+        select(
+            ReadDepositBalanceProjection.sync_id,
+            ReadDepositBalanceProjection.source_tx_sync_id,
+            ReadDepositBalanceProjection.amount,
+            ReadDepositBalanceProjection.due_at,
+            ReadDepositBalanceProjection.status,
+            ReadDepositBalanceProjection.completed_tx_sync_id,
+        ).where(ReadDepositBalanceProjection.ledger_id == ledger_id)
+    ).all():
+        b: dict[str, Any] = {
+            "syncId": sid,
+            "sourceTxId": source_tx_sid,
+            "status": status or "pending",
+        }
+        if amount is not None:
+            b["amount"] = amount
+        if due_at is not None:
+            b["dueAt"] = _to_iso_utc(due_at)
+        if completed_tx_sid:
+            b["completedTxId"] = completed_tx_sid
+        deposit_balances.append(b)
+
     # 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。必須涵蓋
     # ReadStockTradeProjection 全部欄位——upsert_stock_trade 是整列覆蓋,
     # 漏選的欄位在 web 編輯時會被 diff-emit 沖成 NULL。
@@ -1016,6 +1043,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "installmentPlans": installment_plans,
         "installmentPeriods": installment_periods,
         "debts": debts,
+        "depositBalances": deposit_balances,
         "projects": projects,
         "projectCategoryBudgets": project_category_budgets,
         "txTemplates": tx_templates,

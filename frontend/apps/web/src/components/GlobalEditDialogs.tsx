@@ -47,6 +47,7 @@ import {
   pickRandomTagColor,
   TransactionsPanel,
   txDefaults,
+  validateDepositForm,
   type CategoryForm,
   type TxForm,
 } from '@beecount/web-features'
@@ -57,6 +58,11 @@ import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
 import { localizeError } from '../i18n/errors'
 import { onOpenEditCategory, onOpenEditTx, onOpenNewTx } from '../lib/txDialogEvents'
+import {
+  loadDepositFormPatch,
+  savedTxId,
+  syncDepositBalanceAfterSave,
+} from '../lib/depositBalanceSync'
 import { buildRecurringUpdateFromPayload, type RecurringUpdateFromSource } from '../lib/recurringUpdateFrom'
 
 /** Phase 24:週期性收支差異化編輯的上下文——由 onOpenEditTx 的
@@ -198,6 +204,9 @@ export function GlobalEditDialogs() {
     ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
   // 專案(Phase 13):新建專案同样是 owner-only 的 `POST .../projects`。
   const editTxCanManageProjects =
+    ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
+  // 訂金尾款追蹤:建立/修改/刪除尾款是 owner-only 的 write endpoint。
+  const editTxCanManageDeposit =
     ledgers.find((l) => l.ledger_id === editTxLedgerId)?.role === 'owner'
 
   const loadRefsForLedger = useCallback(
@@ -365,6 +374,17 @@ export function GlobalEditDialogs() {
           ? { ruleId: tx.recurring_rule_id, mode: options.recurringEditMode }
           : null,
       )
+      // 訂金尾款追蹤:週期性/分期產生的交易不能有尾款;其餘先查它在尾款追蹤裡
+      // 的角色(訂金交易 → 帶出尾款;已補上的尾款交易 → 不能再掛尾款)。
+      const depositBlocked = Boolean(tx.recurring_rule_id || tx.installment_plan_id)
+      const depositPatch = depositBlocked
+        ? {}
+        : await loadDepositFormPatch({
+            token,
+            ledgerId,
+            txId: tx.id,
+            txType: tx.tx_type,
+          })
       setEditTxForm({
         ...txDefaults(),
         editingId: tx.id,
@@ -430,12 +450,14 @@ export function GlobalEditDialogs() {
         // 拆帳(§2.4):回显既有 splits,让用户能直接在明细页编辑分类拆分。
         split_enabled: Boolean(tx.has_splits) && (tx.splits?.length || 0) >= 2,
         splits: Boolean(tx.has_splits) ? txSplitFormItemsFromRead(tx.splits) : [],
+        deposit_blocked: depositBlocked,
+        ...depositPatch,
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
       setEditTxOpen(true)
     })
-  }, [loadRefsForLedger, writableLedgers])
+  }, [loadRefsForLedger, writableLedgers, token])
 
   // 监听全局 openNewTx 事件 — CmdK / CalendarPage / 任意页 dispatch 都接住,
   // 不再要求触发方先 navigate 到 transactions 再 dispatch。
@@ -619,6 +641,12 @@ export function GlobalEditDialogs() {
     // 交易不能拆帳",这里同步在前端挡,避免用户填完一堆 split 行才被拒。
     if (editTxForm.split_enabled && editTxForm.refund_of_id.trim()) {
       notifyError(new Error(t('transactions.error.splitRefundNotSupported')))
+      return false
+    }
+    // 訂金尾款追蹤:有填尾款金額就必須是正數(留空 = 未定)。
+    const depositError = validateDepositForm(editTxForm)
+    if (depositError) {
+      notifyError(new Error(t(depositError)))
       return false
     }
     // 帳戶必選(需求 #9,Phase 11):同 TransactionsPage.onSaveTransaction ——
@@ -871,6 +899,7 @@ export function GlobalEditDialogs() {
       ...currencyFields
     }
 
+    let savedMeta: { entity_id: string | null } | null = null
     try {
       if (installmentPayload) {
         await retryOnConflict(ledgerId, (base) =>
@@ -927,7 +956,7 @@ export function GlobalEditDialogs() {
         )
         notifySuccess(t('notice.txUpdated'))
       } else {
-        await retryOnConflict(ledgerId, (base) =>
+        savedMeta = await retryOnConflict(ledgerId, (base) =>
           createTransaction(token, ledgerId, base, payload),
         )
         notifySuccess(t('notice.txCreated'))
@@ -958,6 +987,25 @@ export function GlobalEditDialogs() {
             toast.error(t('transactions.error.debtCreateFailed'), t('notice.error'))
           }
         }
+      }
+      // 訂金尾款追蹤:同 TransactionsPage.tsx 的 onSaveTransaction——尾款是獨立
+      // 實體,交易存好後另外同步(非原子,v1 可接受),失敗只提示、不回滾交易。
+      const depositSyncError = await syncDepositBalanceAfterSave({
+        token,
+        ledgerId,
+        txId: savedTxId(editTxForm, savedMeta),
+        form: editTxForm,
+        retryOnConflict,
+      })
+      if (depositSyncError) {
+        notifyError(
+          new Error(
+            t('depositBalance.error.syncFailed').replace(
+              '{message}',
+              localizeError(depositSyncError, t),
+            ),
+          ),
+        )
       }
       return true
     } catch (err) {
@@ -1097,6 +1145,7 @@ export function GlobalEditDialogs() {
       tags={editTxTags}
       debts={editTxDebts}
       canCreateDebt={editTxCanCreateDebt}
+      canManageDepositBalance={editTxCanManageDeposit}
       onCreateDebtEntry={handleCreateDebtEntry}
       projects={editTxProjects}
       onCreateProject={editTxCanManageProjects ? onCreateTxProject : undefined}

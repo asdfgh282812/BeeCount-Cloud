@@ -107,7 +107,7 @@ export function NotificationBell() {
     return Boolean(
       payload.debtId || payload.txId || payload.installmentPlanId ||
         payload.recurringRuleId || payload.accountId || payload.counterpartyName ||
-        payload.pendingDividendId,
+        payload.pendingDividendId || payload.depositBalanceId,
     )
   }
 
@@ -130,6 +130,12 @@ export function NotificationBell() {
     const accountId = typeof payload.accountId === 'string' ? payload.accountId : null
     const counterpartyName = typeof payload.counterpartyName === 'string' ? payload.counterpartyName : null
 
+    // 訂金尾款到期/逾期提醒(depositBalanceId)→ 待完成交易頁並高亮該筆。
+    if (typeof payload.depositBalanceId === 'string' && payload.depositBalanceId) {
+      navigate(`/app/deposit-balances?highlight=${encodeURIComponent(payload.depositBalanceId)}`)
+      setDetailItem(null)
+      return
+    }
     // 股利待確認(category="dividend",股票持股 Phase 2)→ 投資頁的待確認股利區塊。
     // 要排在 accountId 前面:payload 也帶了投資理財帳戶 id。
     if (payload.pendingDividendId !== undefined && payload.pendingDividendId !== null) {

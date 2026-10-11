@@ -28,6 +28,7 @@ from .models import (
     ReadBudgetProjection,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadDepositBalanceProjection,
     ReadStockTradeProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
@@ -834,6 +835,39 @@ def upsert_debt(
 
 def delete_debt(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadDebtProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_deposit_balance(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """訂金尾款追蹤(ReadDepositBalanceProjection)。整列覆蓋——amount/dueAt/
+    completedTxId 都是「null 也有意義」的欄位(金額/日期未定、尚未補上),
+    mobile 端恆發這些 key,缺鍵一律視為 null。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    status = _as_str(payload.get("status"))
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "source_tx_sync_id": _as_str(payload.get("sourceTxId")) or "",
+        "amount": _as_float_or_none(payload.get("amount")),
+        "due_at": _parse_happened_at(payload.get("dueAt")) if payload.get("dueAt") else None,
+        "status": "completed" if status == "completed" else "pending",
+        "completed_tx_sync_id": _as_str(payload.get("completedTxId")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadDepositBalanceProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_deposit_balance(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadDepositBalanceProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def upsert_stock_trade(
