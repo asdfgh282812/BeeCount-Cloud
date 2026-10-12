@@ -405,3 +405,201 @@ def test_template_scoped_to_own_ledger_only():
         assert len(tpl_b) == 1 and tpl_b[0]["name"] == "B範本"
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# v2(alembic 0072):欄位對齊記帳表單 + 使用次數記憶
+# ---------------------------------------------------------------------------
+
+
+def test_v2_fields_round_trip_and_partial_patch_keeps_them():
+    client, _TS, token, hdr, ledger_id, cat_food, acc_cash = _setup("tpl9@example.com")
+    try:
+        res = _create_template(
+            client, hdr, ledger_id, token,
+            name="加油", amount=0, category_id=cat_food, account_id=acc_cash,
+            merchant="中油", currency_code="CNY",
+            fee_amount=2.0, fee_label="刷卡費", discount_amount=1.0, discount_label="會員折",
+            exclude_from_stats=True, exclude_from_budget=True,
+        )
+        assert res.status_code == 200, res.text
+        template_id = res.json()["entity_id"]
+
+        t = _templates(client, hdr, ledger_id)[0]
+        assert t["amount"] == 0
+        assert t["merchant"] == "中油"
+        assert t["currency_code"] == "CNY"
+        assert t["fee_amount"] == 2.0 and t["fee_label"] == "刷卡費"
+        assert t["discount_amount"] == 1.0 and t["discount_label"] == "會員折"
+        assert t["exclude_from_stats"] is True and t["exclude_from_budget"] is True
+        assert t["usage_count"] == 0 and t["last_used_at"] is None
+
+        # 只改 note:靠 snapshot_builder 基線帶出所有 v2 欄位,其餘不能被洗掉
+        base = _latest_change_id(client, token, ledger_id)
+        upd = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{template_id}",
+            headers=hdr,
+            json={"base_change_id": base, "note": "92 無鉛"},
+        )
+        assert upd.status_code == 200, upd.text
+        t = _templates(client, hdr, ledger_id)[0]
+        assert t["note"] == "92 無鉛"
+        assert t["merchant"] == "中油"
+        assert t["fee_amount"] == 2.0 and t["discount_label"] == "會員折"
+        assert t["exclude_from_stats"] is True
+
+        # 顯式清空 merchant / 費用
+        base = _latest_change_id(client, token, ledger_id)
+        upd = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{template_id}",
+            headers=hdr,
+            json={"base_change_id": base, "merchant": None, "fee_amount": None, "exclude_from_stats": False},
+        )
+        assert upd.status_code == 200, upd.text
+        t = _templates(client, hdr, ledger_id)[0]
+        assert t["merchant"] is None
+        assert t["fee_amount"] is None
+        assert t["exclude_from_stats"] is False
+        assert t["exclude_from_budget"] is True
+    finally:
+        client.close()
+
+
+def test_template_name_must_be_unique():
+    client, _TS, token, hdr, ledger_id, cat_food, acc_cash = _setup("tpl10@example.com")
+    try:
+        assert _create_template(client, hdr, ledger_id, token, name="拿鐵").status_code == 200
+        dup = _create_template(client, hdr, ledger_id, token, name=" 拿鐵 ")
+        assert dup.status_code >= 400, dup.text
+        other = _create_template(client, hdr, ledger_id, token, name="麥香魚")
+        assert other.status_code == 200
+        other_id = other.json()["entity_id"]
+
+        # 改名成既有名稱被擋;改成自己的名稱(不變)不算重名
+        base = _latest_change_id(client, token, ledger_id)
+        clash = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{other_id}",
+            headers=hdr, json={"base_change_id": base, "name": "拿鐵"},
+        )
+        assert clash.status_code >= 400, clash.text
+        same = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{other_id}",
+            headers=hdr, json={"base_change_id": base, "name": "麥香魚", "amount": 50},
+        )
+        assert same.status_code == 200, same.text
+    finally:
+        client.close()
+
+
+def test_apply_zero_amount_template_requires_amount():
+    client, _TS, token, hdr, ledger_id, cat_food, acc_cash = _setup("tpl11@example.com")
+    try:
+        res = _create_template(
+            client, hdr, ledger_id, token, name="加油", amount=0,
+            category_id=cat_food, account_id=acc_cash,
+        )
+        template_id = res.json()["entity_id"]
+        base = _latest_change_id(client, token, ledger_id)
+        url = f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{template_id}/apply"
+
+        missing = client.post(url, headers=hdr, json={"base_change_id": base, "happened_at": _iso()})
+        assert missing.status_code == 400, missing.text
+        assert _transactions(client, hdr, ledger_id) == []
+
+        ok = client.post(
+            url, headers=hdr, json={"base_change_id": base, "happened_at": _iso(), "amount": 800},
+        )
+        assert ok.status_code == 200, ok.text
+        assert _transactions(client, hdr, ledger_id)[0]["amount"] == 800
+    finally:
+        client.close()
+
+
+def test_apply_carries_v2_fields_and_recomputes_fee_discount():
+    client, _TS, token, hdr, ledger_id, cat_food, acc_cash = _setup("tpl12@example.com")
+    try:
+        res = _create_template(
+            client, hdr, ledger_id, token,
+            name="午餐", amount=100.0, category_id=cat_food, account_id=acc_cash,
+            merchant="便當店", fee_amount=10.0, discount_amount=5.0,
+            exclude_from_budget=True,
+        )
+        template_id = res.json()["entity_id"]
+        base = _latest_change_id(client, token, ledger_id)
+        apply_res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{template_id}/apply",
+            headers=hdr, json={"base_change_id": base, "happened_at": _iso()},
+        )
+        assert apply_res.status_code == 200, apply_res.text
+        tx = _transactions(client, hdr, ledger_id)[0]
+        assert tx["merchant"] == "便當店"
+        assert tx["amount"] == 105.0  # 100 + 10 - 5,expense 公式
+        assert tx["exclude_from_budget"] is True
+    finally:
+        client.close()
+
+
+def test_apply_bumps_usage_count_and_last_used_at_atomically():
+    client, _TS, token, hdr, ledger_id, cat_food, acc_cash = _setup("tpl13@example.com")
+    try:
+        res = _create_template(
+            client, hdr, ledger_id, token, name="早餐", amount=15.0,
+            category_id=cat_food, account_id=acc_cash,
+        )
+        template_id = res.json()["entity_id"]
+        url = f"/api/v1/write/ledgers/{ledger_id}/tx-templates/{template_id}/apply"
+        body = None
+        for i in range(2):
+            base = _latest_change_id(client, token, ledger_id)
+            body = {"base_change_id": base, "happened_at": _iso()}
+            r = client.post(url, headers={**hdr, "Idempotency-Key": f"k{i}"}, json=body)
+            assert r.status_code == 200, r.text
+        # 同一個 Idempotency-Key + 同內容重送 = replay,不能重複累加
+        replay = client.post(url, headers={**hdr, "Idempotency-Key": "k1"}, json=body)
+        assert replay.status_code == 200, replay.text
+
+        t = _templates(client, hdr, ledger_id)[0]
+        assert t["usage_count"] == 2
+        assert t["last_used_at"] is not None
+        assert len(_transactions(client, hdr, ledger_id)) == 2
+    finally:
+        client.close()
+
+
+def test_mobile_push_template_v2_fields_and_usage_keeps_max():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "tpl14@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_TPL14"
+        _seed_ledger(client, app_token, device, ledger_id)
+        hdr = {"Authorization": f"Bearer {app_token}"}
+        sync_id = "tpl_v2push"
+        _push(client, hdr, ledger_id, "tx_template", sync_id, {
+            "syncId": sync_id, "name": "拿鐵", "txType": "expense", "amount": 0,
+            "merchant": "星巴克", "feeAmount": 3.0, "excludeFromStats": True,
+            "rewardRuleIds": ["r1", "r2"], "usageCount": 5,
+            "lastUsedAt": "2026-10-10T08:00:00Z",
+        }, device_id=device)
+        # 落後裝置推較小的 usageCount + 較舊的 lastUsedAt,且不帶其它欄位
+        _push(client, hdr, ledger_id, "tx_template", sync_id, {
+            "syncId": sync_id, "usageCount": 3, "lastUsedAt": "2026-10-01T08:00:00Z",
+        }, device_id=device)
+
+        db = TS()
+        try:
+            row = db.scalar(
+                select(ReadTxTemplateProjection).where(ReadTxTemplateProjection.sync_id == sync_id)
+            )
+            assert row is not None
+            assert row.merchant == "星巴克"
+            assert row.fee_amount == 3.0
+            assert row.exclude_from_stats is True
+            assert row.reward_rule_sync_ids_json == '["r1", "r2"]'
+            assert row.amount == 0
+            assert row.usage_count == 5
+            assert row.last_used_at.replace(tzinfo=timezone.utc).isoformat().startswith("2026-10-10T08:00")
+        finally:
+            db.close()
+    finally:
+        client.close()

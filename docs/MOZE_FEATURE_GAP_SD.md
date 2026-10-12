@@ -307,6 +307,18 @@ Moze: [record/refund.md](https://doc.moze.app/record/refund.md)
 寫權限。範本排序(`sort_order`)API/DB 層已就緒但 web UI 沒做拖拽排序
 UI。mobile 端仍待排期。
 
+**✅ v2(2026-10-12,alembic `0072_tx_template_v2`;App v72 同步上線)**：
+欄位對齊 App 記帳表單——新增 `merchant`/`project_sync_id`/`currency_code`/
+`to_amount`/`fee_amount`+`fee_label`/`discount_amount`+`discount_label`/
+`exclude_from_stats`/`exclude_from_budget`/`reward_rule_sync_ids_json`；
+`amount` 放寬為 ≥ 0(0 = 套用時再填，套用端點沒給金額回 400)；範本名稱同帳本內
+唯一(建立/改名時檢查，不分大小寫)。「記憶」：`usage_count`/`last_used_at`，
+`apply` 端點在同一個 DB transaction 內累加並寫 `tx_template` SyncChange
+(`_commit_create_tx_fast(extra_in_txn=...)`)，`/sync/push` merge 取較大次數、較晚時間
+(`sync_applier._keep_max_template_usage`)。web 範本表單/清單(搜尋、常用/手動排序)
+同步改版。App 端說明與設計決定見 BeeCount repo 的
+`docs/changes/2026-10-12-tx-templates.md`。
+
 Moze: [record/template.md](https://doc.moze.app/record/template.md)、
 [shortcuts/template-entry.md](https://doc.moze.app/shortcuts/template-entry.md)
 

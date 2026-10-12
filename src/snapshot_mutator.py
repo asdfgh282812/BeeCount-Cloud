@@ -2470,16 +2470,59 @@ def delete_project_category_budget(snapshot: dict, budget_id: str, payload: dict
 # ============================================================================
 
 
+# 範本 v2(alembic 0072)新增的「純文字 / 數字 / 布林」欄位:request key → snapshot key。
+_TX_TEMPLATE_STR_FIELDS = (
+    ("merchant", "merchant"),
+    ("project_id", "projectId"),
+    ("currency_code", "currencyCode"),
+    ("fee_label", "feeLabel"),
+    ("discount_label", "discountLabel"),
+)
+_TX_TEMPLATE_NUM_FIELDS = (
+    ("to_amount", "toAmount"),
+    ("fee_amount", "feeAmount"),
+    ("discount_amount", "discountAmount"),
+)
+_TX_TEMPLATE_BOOL_FIELDS = (
+    ("exclude_from_stats", "excludeFromStats"),
+    ("exclude_from_budget", "excludeFromBudget"),
+)
+_TX_TEMPLATE_ID_LIST_FIELDS = (
+    ("tag_ids", "tagIds"),
+    ("reward_rule_ids", "rewardRuleIds"),
+)
+
+
+def _assert_tx_template_name_unique(templates: list, name: str, *, except_sync_id: str | None = None) -> None:
+    """MOZE:範本名稱必須獨一無二(套用時靠名稱挑)。比對 strip 後的字串、不分大小寫。"""
+    key = name.strip().casefold()
+    for tpl in templates:
+        if except_sync_id is not None and tpl.get("syncId") == except_sync_id:
+            continue
+        if str(tpl.get("name") or "").strip().casefold() == key:
+            raise ValueError("write validation failed: template name already exists")
+
+
+def _clean_id_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(v).strip() for v in raw if str(v).strip()]
+
+
 def create_tx_template(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     templates = _ensure_list(target, "txTemplates")
     name = _normalize_name(payload.get("name"))
+    _assert_tx_template_name_unique(templates, name)
     tx_type = str(payload.get("tx_type") or "expense")
     if tx_type not in {"expense", "income", "transfer"}:
         raise ValueError("write validation failed: invalid transaction type")
+    # 0 = 套用時再填金額(v2 放寬,v1 要求 > 0)。
     amount = _to_optional_float(payload.get("amount"))
-    if amount is None or amount <= 0:
-        raise ValueError("write validation failed: amount must be > 0")
+    if amount is None:
+        amount = 0.0
+    if amount < 0:
+        raise ValueError("write validation failed: amount must be >= 0")
     sync_id = _new_sync_id("tpl")
     template: dict[str, object] = {
         "syncId": sync_id,
@@ -2487,6 +2530,7 @@ def create_tx_template(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "txType": tx_type,
         "amount": amount,
         "sortOrder": _to_optional_int(payload.get("sort_order")) or 0,
+        "usageCount": 0,
     }
     if payload.get("note") is not None:
         template["note"] = str(payload.get("note"))
@@ -2498,11 +2542,21 @@ def create_tx_template(snapshot: dict, payload: dict) -> tuple[dict, str]:
         template["fromAccountId"] = str(payload.get("from_account_id"))
     if payload.get("to_account_id") is not None:
         template["toAccountId"] = str(payload.get("to_account_id"))
-    tag_ids_raw = payload.get("tag_ids")
-    if isinstance(tag_ids_raw, list):
-        tag_ids = [str(v).strip() for v in tag_ids_raw if str(v).strip()]
-        if tag_ids:
-            template["tagIds"] = tag_ids
+    for req_key, snapshot_key in _TX_TEMPLATE_STR_FIELDS:
+        value = payload.get(req_key)
+        if value is not None and str(value).strip():
+            template[snapshot_key] = str(value).strip()
+    for req_key, snapshot_key in _TX_TEMPLATE_NUM_FIELDS:
+        num = _to_optional_float(payload.get(req_key))
+        if num is not None:
+            template[snapshot_key] = num
+    for req_key, snapshot_key in _TX_TEMPLATE_BOOL_FIELDS:
+        if payload.get(req_key):
+            template[snapshot_key] = True
+    for req_key, snapshot_key in _TX_TEMPLATE_ID_LIST_FIELDS:
+        ids = _clean_id_list(payload.get(req_key))
+        if ids:
+            template[snapshot_key] = ids
     _mark_entity_actor(template, payload, create=True)
     templates.append(template)
     return target, sync_id
@@ -2514,7 +2568,11 @@ def update_tx_template(snapshot: dict, template_id: str, payload: dict) -> dict:
     _, template = _find_by_sync_id(templates, template_id, expected_prefix="tpl")
     _assert_actor_can_modify(template, payload)
     if "name" in payload:
-        template["name"] = _normalize_name(payload.get("name"))
+        new_name = _normalize_name(payload.get("name"))
+        # 只在名稱真的變了才檢查唯一:v1 時代 Web 沒擋重名,舊資料別因為改別的欄位被拒。
+        if new_name.casefold() != str(template.get("name") or "").strip().casefold():
+            _assert_tx_template_name_unique(templates, new_name, except_sync_id=template_id)
+        template["name"] = new_name
     if "tx_type" in payload:
         tx_type = str(payload.get("tx_type") or "")
         if tx_type not in {"expense", "income", "transfer"}:
@@ -2522,8 +2580,8 @@ def update_tx_template(snapshot: dict, template_id: str, payload: dict) -> dict:
         template["txType"] = tx_type
     if "amount" in payload:
         amount = _to_optional_float(payload.get("amount"))
-        if amount is None or amount <= 0:
-            raise ValueError("write validation failed: amount must be > 0")
+        if amount is None or amount < 0:
+            raise ValueError("write validation failed: amount must be >= 0")
         template["amount"] = amount
     if "sort_order" in payload and payload.get("sort_order") is not None:
         template["sortOrder"] = _to_optional_int(payload.get("sort_order")) or 0
@@ -2533,6 +2591,7 @@ def update_tx_template(snapshot: dict, template_id: str, payload: dict) -> dict:
         ("account_id", "accountId"),
         ("from_account_id", "fromAccountId"),
         ("to_account_id", "toAccountId"),
+        *_TX_TEMPLATE_STR_FIELDS,
     ):
         if req_key in payload:
             value = payload.get(req_key)
@@ -2540,16 +2599,26 @@ def update_tx_template(snapshot: dict, template_id: str, payload: dict) -> dict:
                 template.pop(snapshot_key, None)
             else:
                 template[snapshot_key] = str(value)
-    if "tag_ids" in payload:
-        raw = payload.get("tag_ids")
-        if isinstance(raw, list):
-            tag_ids = [str(v).strip() for v in raw if str(v).strip()]
-            if tag_ids:
-                template["tagIds"] = tag_ids
+    for req_key, snapshot_key in _TX_TEMPLATE_NUM_FIELDS:
+        if req_key in payload:
+            num = _to_optional_float(payload.get(req_key))
+            if num is None:
+                template.pop(snapshot_key, None)
             else:
-                template.pop("tagIds", None)
-        elif raw is None:
-            template.pop("tagIds", None)
+                template[snapshot_key] = num
+    for req_key, snapshot_key in _TX_TEMPLATE_BOOL_FIELDS:
+        if req_key in payload:
+            if payload.get(req_key):
+                template[snapshot_key] = True
+            else:
+                template.pop(snapshot_key, None)
+    for req_key, snapshot_key in _TX_TEMPLATE_ID_LIST_FIELDS:
+        if req_key in payload:
+            ids = _clean_id_list(payload.get(req_key))
+            if ids:
+                template[snapshot_key] = ids
+            else:
+                template.pop(snapshot_key, None)
     _mark_entity_actor(template, payload, create=False)
     return target
 

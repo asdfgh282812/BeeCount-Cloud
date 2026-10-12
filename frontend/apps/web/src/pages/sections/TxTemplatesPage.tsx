@@ -4,14 +4,21 @@ import {
   applyTxTemplate,
   createTxTemplate,
   deleteTxTemplate,
+  fetchCardRewardRules,
+  fetchReadProjects,
   fetchReadTxTemplates,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
+  fetchWorkspaceTags,
   updateTxTemplate,
   type ReadAccount,
+  type ReadCardRewardRule,
+  type ReadProject,
   type ReadTxTemplate,
   type TxTemplateApplyPayload,
+  type TxTemplateCreatePayload,
   type WorkspaceCategory,
+  type WorkspaceTag,
 } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beecount/ui'
 import { TxTemplatesPanel, txTemplateDefaults, type TxTemplateForm } from '@beecount/web-features'
@@ -45,6 +52,9 @@ export function TxTemplatesPage() {
   const [templates, setTemplates] = usePageCache<ReadTxTemplate[]>(`txTemplates:${bucket}:rows`, [])
   const [categories, setCategories] = usePageCache<WorkspaceCategory[]>('txTemplates:categories', [])
   const [accounts, setAccounts] = usePageCache<ReadAccount[]>(`txTemplates:${bucket}:accounts`, [])
+  const [tags, setTags] = usePageCache<WorkspaceTag[]>('txTemplates:tags', [])
+  const [projects, setProjects] = usePageCache<ReadProject[]>(`txTemplates:${bucket}:projects`, [])
+  const [rewardRules, setRewardRules] = useState<ReadCardRewardRule[]>([])
   const [form, setForm] = useState<TxTemplateForm>(txTemplateDefaults())
 
   const notifyError = useCallback(
@@ -63,18 +73,22 @@ export function TxTemplatesPage() {
       return
     }
     try {
-      const [r, c, a] = await Promise.all([
+      const [r, c, a, tg, pj] = await Promise.all([
         fetchReadTxTemplates(token, activeLedgerId),
         fetchWorkspaceCategories(token, {}),
         fetchWorkspaceAccounts(token, { limit: 500 }),
+        fetchWorkspaceTags(token, { limit: 500 }),
+        fetchReadProjects(token, activeLedgerId),
       ])
       setTemplates(r)
       setCategories(c)
       setAccounts(a)
+      setTags(tg)
+      setProjects(pj)
     } catch (err) {
       notifyError(err)
     }
-    // setTemplates / setCategories / setAccounts 来自 usePageCache,引用稳定
+    // setTemplates / setCategories / setAccounts / setTags / setProjects 来自 usePageCache,引用稳定
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeLedgerId, notifyError])
 
@@ -93,15 +107,69 @@ export function TxTemplatesPage() {
     if (ids.length > 0) ensureLoadedMany(ids)
   }, [categories, ensureLoadedMany])
 
+  // 表單選到信用卡支出帳戶時,抓該卡名下的回饋規則給「紅利回饋規則」勾選。
+  useEffect(() => {
+    const account = accounts.find((row) => row.id === form.account_id)
+    if (!activeLedgerId || form.tx_type !== 'expense' || account?.account_type !== 'credit_card') {
+      setRewardRules([])
+      return
+    }
+    let cancelled = false
+    fetchCardRewardRules(token, activeLedgerId, account.id)
+      .then((rows) => {
+        if (!cancelled) setRewardRules(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setRewardRules([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, activeLedgerId, accounts, form.account_id, form.tx_type])
+
   const canManage = Boolean(activeLedgerId) && currentLedger?.role === 'owner'
+
+  /** 表單 → API payload(create/update 共用;update 靠 null 清空欄位)。 */
+  const buildPayload = (): TxTemplateCreatePayload => {
+    const isTransfer = form.tx_type === 'transfer'
+    const num = (raw: string): number | null => {
+      const trimmed = raw.trim()
+      if (!trimmed) return null
+      const n = Number(trimmed)
+      return Number.isFinite(n) ? n : null
+    }
+    return {
+      name: form.name.trim(),
+      tx_type: form.tx_type,
+      amount: num(form.amount) ?? 0,
+      note: form.note || null,
+      merchant: form.merchant.trim() || null,
+      category_id: isTransfer ? null : form.category_id || null,
+      account_id: isTransfer ? null : form.account_id || null,
+      from_account_id: isTransfer ? form.from_account_id || null : null,
+      to_account_id: isTransfer ? form.to_account_id || null : null,
+      tag_ids: form.tag_ids,
+      project_id: isTransfer ? null : form.project_id || null,
+      currency_code: isTransfer ? null : form.currency_code || null,
+      to_amount: isTransfer ? num(form.to_amount) : null,
+      fee_amount: num(form.fee_amount),
+      fee_label: form.fee_label.trim() || null,
+      discount_amount: num(form.discount_amount),
+      discount_label: form.discount_label.trim() || null,
+      exclude_from_stats: isTransfer ? false : form.exclude_from_stats,
+      exclude_from_budget: form.tx_type === 'expense' ? form.exclude_from_budget : false,
+      reward_rule_ids: form.tx_type === 'expense' ? form.reward_rule_ids : [],
+    }
+  }
 
   const onSubmit = async (): Promise<boolean> => {
     if (!activeLedgerId) {
       toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
       return false
     }
-    const amount = Number((form.amount || '').toString().trim())
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amountRaw = (form.amount || '').toString().trim()
+    // 金額可留空(= 套用時再填),但填了就必須是 >= 0 的數字。
+    if (amountRaw !== '' && (!Number.isFinite(Number(amountRaw)) || Number(amountRaw) < 0)) {
       toast.error(t('recurringRules.error.amountInvalid'), t('notice.error'))
       return false
     }
@@ -116,30 +184,12 @@ export function TxTemplatesPage() {
     try {
       if (form.editingId) {
         await retryOnConflict(activeLedgerId, (base) =>
-          updateTxTemplate(token, activeLedgerId, form.editingId!, base, {
-            name: form.name.trim(),
-            tx_type: form.tx_type,
-            amount,
-            note: form.note || null,
-            category_id: form.tx_type === 'transfer' ? null : form.category_id || null,
-            account_id: form.tx_type === 'transfer' ? null : form.account_id || null,
-            from_account_id: form.tx_type === 'transfer' ? form.from_account_id || null : null,
-            to_account_id: form.tx_type === 'transfer' ? form.to_account_id || null : null,
-          }),
+          updateTxTemplate(token, activeLedgerId, form.editingId!, base, buildPayload()),
         )
         notifySuccess(t('txTemplates.notice.updated'))
       } else {
         await retryOnConflict(activeLedgerId, (base) =>
-          createTxTemplate(token, activeLedgerId, base, {
-            name: form.name.trim(),
-            tx_type: form.tx_type,
-            amount,
-            note: form.note || null,
-            category_id: form.tx_type === 'transfer' ? null : form.category_id || null,
-            account_id: form.tx_type === 'transfer' ? null : form.account_id || null,
-            from_account_id: form.tx_type === 'transfer' ? form.from_account_id || null : null,
-            to_account_id: form.tx_type === 'transfer' ? form.to_account_id || null : null,
-          }),
+          createTxTemplate(token, activeLedgerId, base, buildPayload()),
         )
         notifySuccess(t('txTemplates.notice.created'))
       }
@@ -194,6 +244,9 @@ export function TxTemplatesPage() {
             templates={templates}
             categories={categories}
             accounts={accounts}
+            tags={tags}
+            projects={projects}
+            rewardRules={rewardRules}
             iconPreviewUrlByFileId={iconPreviewByFileId}
             currency={currency}
             form={form}

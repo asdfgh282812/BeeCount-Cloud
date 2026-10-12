@@ -2259,6 +2259,7 @@ export type ReadTxTemplate = {
   id: string
   name: string
   tx_type: 'expense' | 'income' | 'transfer' | string
+  /** 0 = 套用時再填金額(例如加油)。 */
   amount: number
   note?: string | null
   category_id?: string | null
@@ -2271,6 +2272,22 @@ export type ReadTxTemplate = {
   to_account_name?: string | null
   tag_ids: string[]
   sort_order: number
+  // v2(alembic 0072):欄位對齊 App 記帳表單。
+  merchant?: string | null
+  project_id?: string | null
+  project_name?: string | null
+  currency_code?: string | null
+  to_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  exclude_from_stats?: boolean
+  exclude_from_budget?: boolean
+  reward_rule_ids?: string[]
+  /** 「記憶」:套用次數 + 最近套用時間(ISO),清單依此排「常用」。 */
+  usage_count?: number
+  last_used_at?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -2279,6 +2296,7 @@ export type ReadTxTemplate = {
 export type TxTemplateCreatePayload = {
   name: string
   tx_type: 'expense' | 'income' | 'transfer'
+  /** 0 = 套用時再填金額。 */
   amount: number
   note?: string | null
   category_id?: string | null
@@ -2287,26 +2305,28 @@ export type TxTemplateCreatePayload = {
   to_account_id?: string | null
   tag_ids?: string[] | null
   sort_order?: number | null
+  merchant?: string | null
+  project_id?: string | null
+  currency_code?: string | null
+  to_amount?: number | null
+  fee_amount?: number | null
+  fee_label?: string | null
+  discount_amount?: number | null
+  discount_label?: string | null
+  exclude_from_stats?: boolean
+  exclude_from_budget?: boolean
+  reward_rule_ids?: string[] | null
 }
 
-export type TxTemplateUpdatePayload = {
-  name?: string
-  tx_type?: 'expense' | 'income' | 'transfer'
-  amount?: number
-  note?: string | null
-  category_id?: string | null
-  account_id?: string | null
-  from_account_id?: string | null
-  to_account_id?: string | null
-  tag_ids?: string[] | null
-  sort_order?: number | null
-}
+export type TxTemplateUpdatePayload = Partial<TxTemplateCreatePayload>
 
-/** 把範本內容套成一筆新交易;`amount`/`note` 可選擇性覆蓋範本预设值。 */
+/** 把範本內容套成一筆新交易;`amount`/`note` 可選擇性覆蓋範本预设值。
+ *  `native_amount`:範本帶外幣時,用戶端按匯率算好的本位幣金額(server 不查匯率)。 */
 export type TxTemplateApplyPayload = {
   happened_at: string
   amount?: number | null
   note?: string | null
+  native_amount?: number | null
 }
 
 

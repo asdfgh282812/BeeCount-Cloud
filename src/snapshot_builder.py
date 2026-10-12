@@ -928,11 +928,26 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadTxTemplateProjection.to_account_sync_id,
         ReadTxTemplateProjection.tag_sync_ids_json,
         ReadTxTemplateProjection.sort_order,
+        ReadTxTemplateProjection.merchant,
+        ReadTxTemplateProjection.project_sync_id,
+        ReadTxTemplateProjection.currency_code,
+        ReadTxTemplateProjection.to_amount,
+        ReadTxTemplateProjection.fee_amount,
+        ReadTxTemplateProjection.fee_label,
+        ReadTxTemplateProjection.discount_amount,
+        ReadTxTemplateProjection.discount_label,
+        ReadTxTemplateProjection.exclude_from_stats,
+        ReadTxTemplateProjection.exclude_from_budget,
+        ReadTxTemplateProjection.reward_rule_sync_ids_json,
+        ReadTxTemplateProjection.usage_count,
+        ReadTxTemplateProjection.last_used_at,
     ).where(ReadTxTemplateProjection.ledger_id == ledger_id).order_by(
         ReadTxTemplateProjection.sort_order.asc(),
     )
     for (sid, name, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
-         tag_ids_json, sort_order) in db.execute(tpl_stmt).all():
+         tag_ids_json, sort_order, merchant, project_sid, currency_code, to_amount,
+         fee_amount, fee_label, discount_amount, discount_label, exclude_stats,
+         exclude_budget, reward_ids_json, usage_count, last_used_at) in db.execute(tpl_stmt).all():
         tpl: dict[str, Any] = {
             "syncId": sid,
             "name": name,
@@ -957,6 +972,38 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                     tpl["tagIds"] = tag_ids
             except json.JSONDecodeError:
                 pass
+        # v2(alembic 0072)欄位:漏了這段的話連續 update 會讀到缺欄位的基線,
+        # PATCH 一個欄位就把其餘新欄位靜默洗掉。
+        if merchant:
+            tpl["merchant"] = merchant
+        if project_sid:
+            tpl["projectId"] = project_sid
+        if currency_code:
+            tpl["currencyCode"] = currency_code
+        if to_amount is not None:
+            tpl["toAmount"] = to_amount
+        if fee_amount is not None:
+            tpl["feeAmount"] = fee_amount
+        if fee_label:
+            tpl["feeLabel"] = fee_label
+        if discount_amount is not None:
+            tpl["discountAmount"] = discount_amount
+        if discount_label:
+            tpl["discountLabel"] = discount_label
+        if exclude_stats:
+            tpl["excludeFromStats"] = True
+        if exclude_budget:
+            tpl["excludeFromBudget"] = True
+        if reward_ids_json:
+            try:
+                reward_ids = json.loads(reward_ids_json)
+                if isinstance(reward_ids, list) and reward_ids:
+                    tpl["rewardRuleIds"] = reward_ids
+            except json.JSONDecodeError:
+                pass
+        tpl["usageCount"] = int(usage_count or 0)
+        if last_used_at is not None:
+            tpl["lastUsedAt"] = last_used_at.isoformat()
         tx_templates.append(tpl)
 
     # 信用卡紅利回饋規則(§2.9.5 Phase 4.5)—— user-global,同 accounts 按

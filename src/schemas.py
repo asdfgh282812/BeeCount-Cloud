@@ -1413,6 +1413,22 @@ class ReadTxTemplateOut(BaseModel):
     to_account_name: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
     sort_order: int = 0
+    # v2(alembic 0072):欄位對齊 App 記帳表單。amount=0 = 套用時再填。
+    merchant: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    currency_code: str | None = None
+    to_amount: float | None = None
+    fee_amount: float | None = None
+    fee_label: str | None = None
+    discount_amount: float | None = None
+    discount_label: str | None = None
+    exclude_from_stats: bool = False
+    exclude_from_budget: bool = False
+    reward_rule_ids: list[str] = Field(default_factory=list)
+    # 「記憶」:套用次數 + 最近套用時間(ISO),清單依此排「常用」。
+    usage_count: int = 0
+    last_used_at: datetime | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -2487,7 +2503,8 @@ class WriteCardRewardManualPayoutRequest(WriteBaseRequest):
 class WriteTxTemplateCreateRequest(WriteBaseRequest):
     name: str = Field(min_length=1, max_length=255)
     tx_type: CategoryKind = "expense"
-    amount: float = Field(gt=0)
+    # 0 = 套用時再填金額(例如加油每次不同);v1 要求 > 0,v2 放寬。
+    amount: float = Field(default=0, ge=0)
     note: str | None = None
     category_id: str | None = None
     account_id: str | None = None
@@ -2495,12 +2512,24 @@ class WriteTxTemplateCreateRequest(WriteBaseRequest):
     to_account_id: str | None = None
     tag_ids: list[str] | None = None
     sort_order: int | None = None
+    # v2(alembic 0072):欄位對齊 App 記帳表單。
+    merchant: str | None = None
+    project_id: str | None = None
+    currency_code: str | None = None
+    to_amount: float | None = Field(default=None, gt=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
+    exclude_from_stats: bool = False
+    exclude_from_budget: bool = False
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteTxTemplateUpdateRequest(WriteBaseRequest):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     tx_type: CategoryKind | None = None
-    amount: float | None = Field(default=None, gt=0)
+    amount: float | None = Field(default=None, ge=0)
     note: str | None = None
     category_id: str | None = None
     account_id: str | None = None
@@ -2508,6 +2537,17 @@ class WriteTxTemplateUpdateRequest(WriteBaseRequest):
     to_account_id: str | None = None
     tag_ids: list[str] | None = None
     sort_order: int | None = None
+    merchant: str | None = None
+    project_id: str | None = None
+    currency_code: str | None = None
+    to_amount: float | None = Field(default=None, gt=0)
+    fee_amount: float | None = Field(default=None, ge=0)
+    fee_label: str | None = None
+    discount_amount: float | None = Field(default=None, ge=0)
+    discount_label: str | None = None
+    exclude_from_stats: bool | None = None
+    exclude_from_budget: bool | None = None
+    reward_rule_ids: list[str] | None = None
 
 
 class WriteTxTemplateApplyRequest(WriteBaseRequest):
@@ -2516,6 +2556,8 @@ class WriteTxTemplateApplyRequest(WriteBaseRequest):
     happened_at: datetime
     amount: float | None = Field(default=None, gt=0)
     note: str | None = None
+    # 範本帶外幣 currency_code 時,用戶端按匯率算好的本位幣金額(server 不查匯率)。
+    native_amount: float | None = Field(default=None, gt=0)
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):

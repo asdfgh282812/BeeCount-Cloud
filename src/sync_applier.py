@@ -39,6 +39,7 @@ account / category / tag 是 user-global 实体,name 变了之后 ReadTxProjecti
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from sqlalchemy import delete as sa_delete, select
@@ -411,6 +412,21 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("toAccountId", "to_account_sync_id"),
         ("tagIds", "tag_sync_ids_json", _json_loads_safe),
         ("sortOrder", "sort_order"),
+        # v2(alembic 0072):欄位對齊記帳表單 + 使用次數記憶。key 名跟 transaction
+        # spec 同名欄位一致(App entity_serializer 照這份寫)。
+        ("merchant", "merchant"),
+        ("projectId", "project_sync_id"),
+        ("currencyCode", "currency_code"),
+        ("toAmount", "to_amount"),
+        ("feeAmount", "fee_amount"),
+        ("feeLabel", "fee_label"),
+        ("discountAmount", "discount_amount"),
+        ("discountLabel", "discount_label"),
+        ("excludeFromStats", "exclude_from_stats"),
+        ("excludeFromBudget", "exclude_from_budget"),
+        ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
+        ("usageCount", "usage_count"),
+        ("lastUsedAt", "last_used_at", _isoformat_or_none),
     ]),
     "transaction": _MergeSpec(ReadTxProjection, [
         ("syncId", "sync_id"),
@@ -870,6 +886,34 @@ def _sync_to_amount_after_merge(existing, payload: dict, merged: dict) -> dict:
     return merged
 
 
+def _keep_max_template_usage(existing, merged: dict) -> dict:
+    """交易範本「記憶」(0072):usageCount / lastUsedAt 是只增不減的統計值。
+    多裝置各自累加後 push,若照一般 LWW 會讓落後裝置的舊值蓋掉較大的值,
+    所以取較大的次數、較晚的時間(次數仍可能因併發少算幾次,排序用途可接受)。"""
+    try:
+        old_count = int(getattr(existing, "usage_count", 0) or 0)
+        new_count = int(merged.get("usageCount") or 0)
+    except (TypeError, ValueError):
+        old_count, new_count = 0, 0
+    merged["usageCount"] = max(old_count, new_count)
+    old_used = getattr(existing, "last_used_at", None)
+    new_used_raw = merged.get("lastUsedAt")
+    if old_used is not None:
+        try:
+            new_used = (
+                datetime.fromisoformat(str(new_used_raw).replace("Z", "+00:00"))
+                if new_used_raw else None
+            )
+        except ValueError:
+            new_used = None
+        if new_used is not None and new_used.tzinfo is None:
+            new_used = new_used.replace(tzinfo=timezone.utc)
+        old_cmp = old_used if old_used.tzinfo is not None else old_used.replace(tzinfo=timezone.utc)
+        if new_used is None or old_cmp > new_used:
+            merged["lastUsedAt"] = old_cmp.isoformat()
+    return merged
+
+
 def merge_with_existing(
     db: Session,
     entity_type: str,
@@ -896,6 +940,8 @@ def merge_with_existing(
     if entity_type == "transaction":
         merged = _sync_native_amount_after_merge(existing, payload, merged)
         merged = _sync_to_amount_after_merge(existing, payload, merged)
+    elif entity_type == "tx_template":
+        merged = _keep_max_template_usage(existing, merged)
     return merged
 
 

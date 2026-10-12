@@ -2864,6 +2864,11 @@ def list_tx_templates(
         .where(UserAccountProjection.user_id == current_user.id)
     ).all()
     acc_name_by_sync = {r.sync_id: (r.name or "").strip() for r in acc_rows}
+    project_rows = db.execute(
+        select(ReadProjectProjection.sync_id, ReadProjectProjection.name)
+        .where(ReadProjectProjection.ledger_id == ledger.id)
+    ).all()
+    project_name_by_sync = {r.sync_id: (r.name or "").strip() for r in project_rows}
 
     rows = db.scalars(
         select(ReadTxTemplateProjection).where(
@@ -2878,6 +2883,14 @@ def list_tx_templates(
                 parsed = json.loads(row.tag_sync_ids_json)
                 if isinstance(parsed, list):
                     tag_ids = [str(v) for v in parsed]
+            except json.JSONDecodeError:
+                pass
+        reward_rule_ids: list[str] = []
+        if row.reward_rule_sync_ids_json:
+            try:
+                parsed_rules = json.loads(row.reward_rule_sync_ids_json)
+                if isinstance(parsed_rules, list):
+                    reward_rule_ids = [str(v) for v in parsed_rules]
             except json.JSONDecodeError:
                 pass
         out.append(
@@ -2897,6 +2910,20 @@ def list_tx_templates(
                 to_account_name=acc_name_by_sync.get(row.to_account_sync_id) if row.to_account_sync_id else None,
                 tag_ids=tag_ids,
                 sort_order=int(row.sort_order or 0),
+                merchant=row.merchant,
+                project_id=row.project_sync_id,
+                project_name=project_name_by_sync.get(row.project_sync_id) if row.project_sync_id else None,
+                currency_code=row.currency_code,
+                to_amount=row.to_amount,
+                fee_amount=row.fee_amount,
+                fee_label=row.fee_label,
+                discount_amount=row.discount_amount,
+                discount_label=row.discount_label,
+                exclude_from_stats=bool(row.exclude_from_stats),
+                exclude_from_budget=bool(row.exclude_from_budget),
+                reward_rule_ids=reward_rule_ids,
+                usage_count=int(row.usage_count or 0),
+                last_used_at=row.last_used_at,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

@@ -1649,8 +1649,13 @@ async def _commit_create_tx_fast(
     device_id: str,
     audit_action: str,
     mutate_payload: dict,
+    extra_in_txn: Callable[[Session, datetime, str], None] | None = None,
 ) -> WriteCommitMeta:
     """Fast path:新建单笔 tx,跳过全量 snapshot build(issue #31 A1b)。
+
+    `extra_in_txn(db, now, tx_id)`:選用,在同一個 DB transaction 內、交易投影
+    寫完後呼叫(範本套用用它原子地累加 usage_count,見 write/tx_templates.py)。
+    idempotency replay 時整個 `_core` 的寫入段不會執行,所以不會重複累加。
 
     create 不需要 diff 全表 —— 新行就是唯一变更。snapshot_mutator.create_transaction
     不依赖现有 items / tx_index,所以用空的最小 snapshot 跑它产出规范化 item,直接
@@ -1781,6 +1786,8 @@ async def _commit_create_tx_fast(
                 actor_payload=mutate_payload, now=now,
                 device_id=device_id, current_user=current_user,
             )
+        if extra_in_txn is not None:
+            extra_in_txn(db, now, tx_id)
 
         if refund_of_id:
             # 信用卡回饋沖銷(2026-08-04 使用者反馈):这笔退款如果冲抵了一笔

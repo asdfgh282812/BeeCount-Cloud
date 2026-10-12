@@ -1009,6 +1009,7 @@ def upsert_tx_template(
     if sync_id is None:
         return
     tag_ids = payload.get("tagIds")
+    reward_rule_ids = payload.get("rewardRuleIds")
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
@@ -1023,9 +1024,82 @@ def upsert_tx_template(
         "to_account_sync_id": _as_str(payload.get("toAccountId")),
         "tag_sync_ids_json": json.dumps(tag_ids) if isinstance(tag_ids, list) else None,
         "sort_order": _as_int(payload.get("sortOrder"), default=0),
+        # v2(alembic 0072):對齊 App 記帳表單的欄位 + 使用次數記憶。
+        "merchant": _as_str(payload.get("merchant")),
+        "project_sync_id": _as_str(payload.get("projectId")),
+        "currency_code": _as_str(payload.get("currencyCode")),
+        "to_amount": _as_float_or_none(payload.get("toAmount")),
+        "fee_amount": _as_float_or_none(payload.get("feeAmount")),
+        "fee_label": _as_str(payload.get("feeLabel")),
+        "discount_amount": _as_float_or_none(payload.get("discountAmount")),
+        "discount_label": _as_str(payload.get("discountLabel")),
+        "exclude_from_stats": _as_bool(payload.get("excludeFromStats"), default=False),
+        "exclude_from_budget": _as_bool(payload.get("excludeFromBudget"), default=False),
+        "reward_rule_sync_ids_json": (
+            json.dumps(reward_rule_ids) if isinstance(reward_rule_ids, list) and reward_rule_ids else None
+        ),
+        "usage_count": _as_int(payload.get("usageCount"), default=0),
+        "last_used_at": (
+            _parse_happened_at(payload.get("lastUsedAt")) if payload.get("lastUsedAt") else None
+        ),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadTxTemplateProjection, ("ledger_id", "sync_id"), values)
+
+
+def tx_template_row_to_payload(row: ReadTxTemplateProjection) -> dict[str, Any]:
+    """projection row → wire payload(camelCase,跟 snapshot_builder 的 txTemplates
+    項目同形)。server 端自己改範本欄位(套用時累加 usage_count)要寫 SyncChange +
+    `upsert_tx_template` 時用——upsert 是整列覆寫,payload 必須是完整的。"""
+
+    def _ids(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return [str(v) for v in parsed] if isinstance(parsed, list) else []
+
+    payload: dict[str, Any] = {
+        "syncId": row.sync_id,
+        "name": row.name or "",
+        "txType": row.tx_type or "expense",
+        "amount": float(row.amount or 0),
+        "sortOrder": int(row.sort_order or 0),
+        "usageCount": int(row.usage_count or 0),
+    }
+    optional: dict[str, Any] = {
+        "note": row.note,
+        "categoryId": row.category_sync_id,
+        "accountId": row.account_sync_id,
+        "fromAccountId": row.from_account_sync_id,
+        "toAccountId": row.to_account_sync_id,
+        "merchant": row.merchant,
+        "projectId": row.project_sync_id,
+        "currencyCode": row.currency_code,
+        "toAmount": row.to_amount,
+        "feeAmount": row.fee_amount,
+        "feeLabel": row.fee_label,
+        "discountAmount": row.discount_amount,
+        "discountLabel": row.discount_label,
+    }
+    for key, value in optional.items():
+        if value is not None and value != "":
+            payload[key] = value
+    if row.exclude_from_stats:
+        payload["excludeFromStats"] = True
+    if row.exclude_from_budget:
+        payload["excludeFromBudget"] = True
+    tag_ids = _ids(row.tag_sync_ids_json)
+    if tag_ids:
+        payload["tagIds"] = tag_ids
+    reward_ids = _ids(row.reward_rule_sync_ids_json)
+    if reward_ids:
+        payload["rewardRuleIds"] = reward_ids
+    if row.last_used_at is not None:
+        payload["lastUsedAt"] = row.last_used_at.isoformat()
+    return payload
 
 
 def delete_tx_template(db: Session, *, ledger_id: str, sync_id: str) -> None:

@@ -1669,6 +1669,30 @@ class ReadTxTemplateProjection(Base):
     to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # v2(alembic 0072,2026-10-12):欄位對齊 App 記帳表單。amount=0 代表「套用時
+    # 再填金額」(例如加油);其餘 nullable 欄位 NULL = 不帶這個值。
+    merchant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    discount_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exclude_from_stats: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    exclude_from_budget: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    reward_rule_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 「記憶」:套用次數 + 最近套用時間,清單依此排「常用」。
+    usage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

@@ -481,8 +481,10 @@ export type TxTemplateForm = {
   editingId: string | null
   name: string
   tx_type: 'expense' | 'income' | 'transfer'
+  /** 空字串 / 0 = 套用時再填金額。 */
   amount: string
   note: string
+  merchant: string
   category_id: string
   category_name: string
   account_id: string
@@ -491,6 +493,21 @@ export type TxTemplateForm = {
   from_account_name: string
   to_account_id: string
   to_account_name: string
+  /** 標籤 syncId 清單(跟 server `tag_ids` 對齊)。 */
+  tag_ids: string[]
+  project_id: string
+  project_name: string
+  /** 空字串 = 帳本本位幣。 */
+  currency_code: string
+  /** 跨幣別轉帳的轉入金額。 */
+  to_amount: string
+  fee_amount: string
+  fee_label: string
+  discount_amount: string
+  discount_label: string
+  exclude_from_stats: boolean
+  exclude_from_budget: boolean
+  reward_rule_ids: string[]
   sort_order: string
 }
 
@@ -742,6 +759,7 @@ export const txTemplateDefaults = (): TxTemplateForm => ({
   tx_type: 'expense',
   amount: '',
   note: '',
+  merchant: '',
   category_id: '',
   category_name: '',
   account_id: '',
@@ -750,6 +768,18 @@ export const txTemplateDefaults = (): TxTemplateForm => ({
   from_account_name: '',
   to_account_id: '',
   to_account_name: '',
+  tag_ids: [],
+  project_id: '',
+  project_name: '',
+  currency_code: '',
+  to_amount: '',
+  fee_amount: '',
+  fee_label: '',
+  discount_amount: '',
+  discount_label: '',
+  exclude_from_stats: false,
+  exclude_from_budget: false,
+  reward_rule_ids: [],
   sort_order: '0',
 })
 
