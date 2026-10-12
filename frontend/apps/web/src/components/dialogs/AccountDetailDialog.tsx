@@ -61,6 +61,7 @@ import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { localizeError } from '../../i18n/errors'
+import { BillingCycleAdjustDialog } from './BillingCycleAdjustDialog'
 import { jwtUserId } from '../../state/jwt'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialogEvents'
@@ -709,6 +710,21 @@ function AccountCardInfo({
   const paymentDueDay = showsBillingFields
     ? (billing.isBillingChild ? billing.summary?.payment_due_day ?? null : account.payment_due_day)
     : null
+  // 彈性結帳日(2026-10-12):繳款期限可能是「結帳日後第 N 天」;子卡一律看主帳戶(summary)的設定。
+  const paymentDueMode = showsBillingFields
+    ? (billing.isBillingChild ? billing.summary?.payment_due_mode ?? null : account.payment_due_mode ?? null)
+    : null
+  const dueIsDaysAfter = paymentDueMode === 'days_after_closing'
+  // 結帳日/繳款期限可能被假日順延或單期調整,倒數天數優先用 server 算出的實際日期(summary),
+  // 沒有 summary(還在載入/不是 billing root)才退回「每月幾號」的粗算。
+  const nextBillingEnd = billing.summary?.open_cycle_end ? billing.summary.open_cycle_end.slice(0, 10) : null
+  const nextDueDate = (() => {
+    const s = billing.summary
+    if (!s) return null
+    const today = todayIso()
+    const closed = s.due_date.slice(0, 10)
+    return closed >= today ? closed : s.open_cycle_due_date.slice(0, 10)
+  })()
 
   // 信用卡已用额度 = -balance(余额为负表示欠款),剩余额度 = limit - used。
   // 这是粗略估算 — 没考虑账单周期,只看终身累计。但作为"大致还能刷多少"
@@ -770,15 +786,29 @@ function AccountCardInfo({
             <CardInfoItem
               label={t('detail.account.billingDay')}
               value={t('detail.account.dayOfMonth', { day: billingDay })}
-              hint={t('detail.account.daysUntil', { days: daysUntilDay(billingDay) })}
+              hint={t('detail.account.daysUntil', {
+                days: nextBillingEnd ? daysUntilIso(nextBillingEnd) : daysUntilDay(billingDay)
+              })}
             />
           ) : null}
           {paymentDueDay ? (
             <CardInfoItem
               label={t('detail.account.paymentDueDay')}
-              value={t('detail.account.dayOfMonth', { day: paymentDueDay })}
-              hint={t('detail.account.daysUntil', { days: daysUntilDay(paymentDueDay) })}
-              urgent={daysUntilDay(paymentDueDay) <= 3}
+              value={
+                dueIsDaysAfter
+                  ? t('detail.account.dueDaysAfterClosing', { days: paymentDueDay })
+                  : t('detail.account.dayOfMonth', { day: paymentDueDay })
+              }
+              hint={
+                dueIsDaysAfter && !nextDueDate
+                  ? undefined
+                  : t('detail.account.daysUntil', {
+                      days: nextDueDate ? daysUntilIso(nextDueDate) : daysUntilDay(paymentDueDay)
+                    })
+              }
+              urgent={
+                (nextDueDate ? daysUntilIso(nextDueDate) : dueIsDaysAfter ? 99 : daysUntilDay(paymentDueDay)) <= 3
+              }
             />
           ) : null}
         </div>
@@ -826,6 +856,21 @@ function CardInfoItem({
  * 目标日号超过当月最大天数(比如 31 号但 2 月)按当月最后一天兜底,跟
  * mobile 端 AccountDetailPage 算法对齐。
  */
+function todayIso(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** `yyyy-MM-dd` 距今天幾天(今天 = 0,已過 = 負數夾到 0)。 */
+function daysUntilIso(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number)
+  if (!y || !m || !d) return 0
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const target = new Date(y, m - 1, d)
+  return Math.max(0, Math.round((target.getTime() - today.getTime()) / 86400000))
+}
+
 function daysUntilDay(targetDay: number): number {
   if (!Number.isFinite(targetDay) || targetDay < 1 || targetDay > 31) return 0
   const now = new Date()
@@ -898,6 +943,8 @@ function CreditCardBillingSection({
   const [paying, setPaying] = useState(false)
 
   const [installOpen, setInstallOpen] = useState(false)
+  // 調整本期結帳日(2026-10-12,MOZE 對標)
+  const [adjustOpen, setAdjustOpen] = useState(false)
 
   // 繳費來源帳戶記憶功能(2026-08 使用者反饋 #5):per-user + per-卡(billing
   // Account,子卡時是它掛靠的主帳戶)各記一個,不同卡常用不同的繳費來源。
@@ -1181,8 +1228,34 @@ function CreditCardBillingSection({
         >
           {t('cardBilling.setupInstallment')}
         </button>
+        {summary.period_cycle_month_key && token && activeLedgerId && billing.billingAccountId ? (
+          <button
+            type="button"
+            className={`rounded-md border px-2.5 py-1 font-medium hover:bg-muted/50 ${
+              summary.period_cycle_adjusted
+                ? 'border-primary/50 text-primary'
+                : 'border-border text-muted-foreground'
+            }`}
+            onClick={() => setAdjustOpen(true)}
+          >
+            {t('cardBilling.adjustCycle.button')}
+          </button>
+        ) : null}
       </div>
         </>
+      ) : null}
+
+      {adjustOpen && token && activeLedgerId && billing.billingAccountId ? (
+        <BillingCycleAdjustDialog
+          open={adjustOpen}
+          onClose={() => setAdjustOpen(false)}
+          summary={summary}
+          token={token}
+          ledgerId={activeLedgerId}
+          billingAccountId={billing.billingAccountId}
+          retryOnConflict={retryOnConflict}
+          onChanged={() => billing.reload()}
+        />
       ) : null}
 
       <Dialog open={payOpen} onOpenChange={setPayOpen}>

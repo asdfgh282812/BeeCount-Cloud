@@ -263,6 +263,9 @@ export function AccountsPage() {
       payment_due_day: row.payment_due_day !== null && row.payment_due_day !== undefined
         ? String(row.payment_due_day)
         : '',
+      billing_holiday_rule: row.billing_holiday_rule ?? '',
+      billing_holiday_region: row.billing_holiday_region ?? '',
+      payment_due_mode: row.payment_due_mode ?? '',
       bank_name: row.bank_name ?? '',
       card_last_four: row.card_last_four ?? '',
       parent_account_id: row.parent_account_id ?? '',
@@ -352,6 +355,21 @@ export function AccountsPage() {
         credit_limit: hasBillingFields ? creditLimitNum : null,
         billing_day: hasBillingFields ? billingDayNum : null,
         payment_due_day: hasBillingFields ? paymentDueDayNum : null,
+        // 彈性結帳日(2026-10-12):沒設結帳日就沒有「遇非工作日」可言;規則關閉時地區一併清空。
+        // 繳款期限方式 'fixed_day' 等同預設,存 null。server 在結帳日/規則/地區實際改變時
+        // 會重設既有的單期結帳日覆寫(整包帶 billing_day 但值沒變不會誤重設)。
+        billing_holiday_rule:
+          hasBillingFields && billingDayNum !== null && form.billing_holiday_rule
+            ? (form.billing_holiday_rule as 'postpone' | 'advance')
+            : null,
+        billing_holiday_region:
+          hasBillingFields && billingDayNum !== null && form.billing_holiday_rule
+            ? form.billing_holiday_region || 'TW'
+            : null,
+        payment_due_mode:
+          hasBillingFields && form.payment_due_mode === 'days_after_closing'
+            ? ('days_after_closing' as const)
+            : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
         // 掛靠主帳戶(§2.9 Phase 4,前端擴充至 bank_card):credit_card /

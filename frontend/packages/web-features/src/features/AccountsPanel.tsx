@@ -44,6 +44,7 @@ import { AvatarCropDialog, type AvatarCropSource } from '../components/AvatarCro
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { ConvertedRounding } from '../lib/convertedRounding'
 import type { AccountForm } from '../forms'
+import { BILLING_HOLIDAY_REGIONS } from '../lib/billingAdjust'
 import { accountDefaults } from '../forms'
 import {
   accountBalance,
@@ -1175,6 +1176,9 @@ export function AccountsPanel({
                       next.credit_limit = ''
                       next.billing_day = ''
                       next.payment_due_day = ''
+                      next.billing_holiday_rule = ''
+                      next.billing_holiday_region = ''
+                      next.payment_due_mode = ''
                     }
                     // 离开 credit_card / bank_card → 清空「掛靠主帳戶」选择
                     // (信用卡与银行账户都可以掛靠群組)。
@@ -1292,7 +1296,11 @@ export function AccountsPanel({
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label>{t('accounts.field.paymentDueDay')}</Label>
+                    <Label>
+                      {form.payment_due_mode === 'days_after_closing'
+                        ? t('accounts.field.paymentDueDaysAfter')
+                        : t('accounts.field.paymentDueDay')}
+                    </Label>
                     <Input
                       type="number"
                       inputMode="numeric"
@@ -1303,6 +1311,120 @@ export function AccountsPanel({
                       onChange={(e) => onFormChange({ ...form, payment_due_day: e.target.value })}
                     />
                   </div>
+                </div>
+
+                {/* 彈性結帳日 + 繳款期限方式(2026-10-12,MOZE 對標):
+                    doc.moze.app/prepare/account/settings#flexible-closing-date。
+                    算法在 server `services/billing_schedule.py`,跟 App 同一套。 */}
+                <div className="space-y-2">
+                  <Label>{t('accounts.field.paymentDueMode')}</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {(['fixed_day', 'days_after_closing'] as const).map((mode) => {
+                      const active = (form.payment_due_mode || 'fixed_day') === mode
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() =>
+                            onFormChange({
+                              ...form,
+                              payment_due_mode: mode === 'fixed_day' ? '' : mode,
+                            })
+                          }
+                          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                            active
+                              ? 'border-primary bg-primary/10 text-primary'
+                              : 'border-border text-muted-foreground hover:bg-muted/50'
+                          }`}
+                        >
+                          {t(`accounts.paymentDueMode.${mode}`)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-md border border-border/60 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="min-w-0 pr-3">
+                      <p className="text-sm font-medium">{t('accounts.billingHoliday.title')}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t('accounts.billingHoliday.hint')}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={!!form.billing_holiday_rule}
+                      aria-label={t('accounts.billingHoliday.title') as string}
+                      onClick={() =>
+                        onFormChange({
+                          ...form,
+                          billing_holiday_rule: form.billing_holiday_rule ? '' : 'postpone',
+                          billing_holiday_region: form.billing_holiday_region || 'TW',
+                        })
+                      }
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                        form.billing_holiday_rule ? 'bg-primary' : 'bg-muted-foreground/30'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          form.billing_holiday_rule ? 'translate-x-[18px]' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  {form.billing_holiday_rule ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label>{t('accounts.billingHoliday.direction')}</Label>
+                        <Select
+                          value={form.billing_holiday_rule}
+                          onValueChange={(value) =>
+                            onFormChange({ ...form, billing_holiday_rule: value })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="postpone">
+                              {t('accounts.billingHoliday.postpone')}
+                            </SelectItem>
+                            <SelectItem value="advance">
+                              {t('accounts.billingHoliday.advance')}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>{t('accounts.billingHoliday.region')}</Label>
+                        <Select
+                          value={form.billing_holiday_region || 'TW'}
+                          onValueChange={(value) =>
+                            onFormChange({ ...form, billing_holiday_region: value })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BILLING_HOLIDAY_REGIONS.map((code) => (
+                              <SelectItem key={code} value={code}>
+                                {t(`accounts.billingHoliday.region.${code}`)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  ) : null}
+                  {form.editingId ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      {t('accounts.billingHoliday.resetsAdjustments')}
+                    </p>
+                  ) : null}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {form.account_type === 'account_group'
@@ -1396,6 +1518,9 @@ export function AccountsPanel({
                         credit_limit: '',
                         billing_day: '',
                         payment_due_day: '',
+                        billing_holiday_rule: '',
+                        billing_holiday_region: '',
+                        payment_due_mode: '',
                       })
                     } else {
                       onFormChange({ ...form, parent_account_id: parentId })

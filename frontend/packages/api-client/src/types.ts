@@ -340,8 +340,18 @@ export type ReadAccount = {
   credit_limit?: number | null
   /** 账单日(1-31),仅 credit_card。 */
   billing_day?: number | null
-  /** 还款日(1-31),仅 credit_card。 */
+  /** 还款日(1-31),仅 credit_card。`payment_due_mode = 'days_after_closing'` 时是
+   *  「結帳日後第 N 天」的 N。 */
   payment_due_day?: number | null
+  /** 彈性結帳日(2026-10-12,MOZE 對標):結帳日遇非工作日(週末 + 該地區放假日)
+   *  延後 `postpone` / 提前 `advance`;null = 不調整。 */
+  billing_holiday_rule?: 'postpone' | 'advance' | null
+  /** 假日地區 TW/CN/HK/JP/KR/US;null = 只看週末。 */
+  billing_holiday_region?: string | null
+  /** 繳款期限方式:`fixed_day`(每月固定日,null 同義)/`days_after_closing`。 */
+  payment_due_mode?: 'fixed_day' | 'days_after_closing' | null
+  /** 單期結帳日覆寫 `{yyyy-MM: yyyy-MM-dd}`,key = 該期原定結帳日所在年月。 */
+  billing_cycle_overrides?: Record<string, string> | null
   /** 开户行,bank_card / credit_card 元信息。 */
   bank_name?: string | null
   /** 卡号后四位,bank_card / credit_card。 */
@@ -971,6 +981,12 @@ export type AccountPayload = {
   credit_limit?: number | null
   billing_day?: number | null
   payment_due_day?: number | null
+  /** 彈性結帳日(2026-10-12)。update 時沒帶 = 不改;帶 null / {} = 清空。結帳日、規則或地區
+   *  實際改變時,server 會一併重設既有的單期覆寫(除非同一請求帶了新的覆寫)。 */
+  billing_holiday_rule?: 'postpone' | 'advance' | null
+  billing_holiday_region?: string | null
+  payment_due_mode?: 'fixed_day' | 'days_after_closing' | null
+  billing_cycle_overrides?: Record<string, string> | null
   bank_name?: string | null
   card_last_four?: string | null
   /** 主帳戶(合併帳單,§2.9 Phase 4):子卡挂靠的主卡 id。update 传空字串
@@ -1013,6 +1029,11 @@ export type AccountBillingSummary = {
   account_name: string
   billing_day: number
   payment_due_day: number
+  /** 彈性結帳日(2026-10-12):顯示「結帳日後第 N 天」與單期調整用。 */
+  billing_holiday_rule?: 'postpone' | 'advance' | null
+  billing_holiday_region?: string | null
+  payment_due_mode?: 'fixed_day' | 'days_after_closing' | null
+  billing_cycle_overrides?: Record<string, string> | null
   member_account_ids: string[]
   members: AccountBillingMember[]
   cycle_start: string
@@ -1037,6 +1058,12 @@ export type AccountBillingSummary = {
   period_remaining_due: number
   period_has_older: boolean
   period_has_newer: boolean
+  /** 「調整本期結帳日」:這期單期覆寫的 key(原定結帳日所在年月)、預設結帳日(套假日規則、
+   *  不含覆寫)、是否已調整、下一期實際結帳日(新結帳日必須早於它)。 */
+  period_cycle_month_key?: string | null
+  period_default_cycle_end?: string | null
+  period_cycle_adjusted?: boolean
+  period_next_cycle_end?: string | null
   period_installment_active_count: number
   period_installment_paid_periods: number | null
   period_installment_periods: number | null

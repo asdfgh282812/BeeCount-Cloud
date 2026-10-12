@@ -278,8 +278,15 @@ export type AccountForm = {
   credit_limit: string
   /** 账单日(1-31),仅 account_group。空字符串 / NaN = 未填。 */
   billing_day: string
-  /** 还款日(1-31),仅 account_group。 */
+  /** 还款日(1-31),仅 account_group。`payment_due_mode = 'days_after_closing'` 時是 N 天。 */
   payment_due_day: string
+  /** 彈性結帳日(2026-10-12,MOZE 對標):'' = 不調整,'postpone' / 'advance' = 結帳日遇
+   *  非工作日延後/提前。 */
+  billing_holiday_rule: string
+  /** 假日地區 TW/CN/HK/JP/KR/US;'' = 還沒選(開啟規則時預設 TW)。 */
+  billing_holiday_region: string
+  /** 繳款期限方式:'' / 'fixed_day' = 每月固定日,'days_after_closing' = 結帳日後第 N 天。 */
+  payment_due_mode: string
   /** 开户行,bank_card / credit_card / account_group 元信息。 */
   bank_name: string
   /** 卡号后四位,bank_card / credit_card / account_group 元信息。 */
@@ -560,6 +567,9 @@ export const accountDefaults = (): AccountForm => ({
   credit_limit: '',
   billing_day: '',
   payment_due_day: '',
+  billing_holiday_rule: '',
+  billing_holiday_region: '',
+  payment_due_mode: '',
   bank_name: '',
   card_last_four: '',
   parent_account_id: '',
