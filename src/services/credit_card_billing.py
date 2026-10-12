@@ -28,7 +28,7 @@ from ..models import (
     ReadTxProjection,
     UserAccountProjection,
 )
-from . import credit_card
+from . import billing_schedule, credit_card
 from .business_time import business_date_end_utc, business_date_start_utc, business_today
 from .deferred_posting import attribution_date_expr
 
@@ -293,17 +293,18 @@ def compute_group_billing(
     窗口的資訊性數字,不影響 `remaining_due`。`per_child_remaining_due`
     是card-payment 分攤要用的每個子帳戶各自應繳金額(下限 0,溢繳不會讓
     某個子帳戶顯示負數,超出的部分算整組層級的溢繳)。"""
-    billing_day = group.billing_day
-    payment_due_day = group.payment_due_day
-    assert billing_day is not None and payment_due_day is not None
+    # 彈性結帳日(2026-10-12):結帳日遇非工作日順延/提前、單期覆寫、繳款期限模式都在
+    # `BillingSchedule` 裡(`services/billing_schedule.py`),沒設這些時跟舊算法完全相同。
+    schedule = billing_schedule.schedule_from_account(group, db=db)
+    assert schedule is not None and schedule.payment_due_day is not None
 
     member_ids = billing_member_ids(group, children)
 
     today = business_today(now)
-    cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, billing_day)
-    due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
-    open_start, open_end = credit_card.billing_cycle_containing(today, billing_day)
-    open_due = credit_card.due_date_for_cycle_end(open_end, payment_due_day)
+    cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, schedule)
+    due_date = credit_card.due_date_for_cycle_end(cycle_end, schedule)
+    open_start, open_end = credit_card.billing_cycle_containing(today, schedule)
+    open_due = credit_card.due_date_for_cycle_end(open_end, schedule)
 
     # 下界用結帳日「當天結束」當排除點:結帳日整天都算進「已結束的上一期」,
     # 不能被誤判進這一期。上界同理用 cycle_end 當天結束當 inclusive 上界。
@@ -514,6 +515,11 @@ class CyclePeriodBilling(TypedDict):
     has_older: bool
     has_newer: bool
     per_member_new_spend: dict[str, float]
+    # 「調整本期結帳日」(2026-10-12):這一期的覆寫 key、預設結帳日、是否已調整、下一期結帳日。
+    cycle_month_key: str
+    default_cycle_end: date
+    cycle_adjusted: bool
+    next_cycle_end: date
 
 
 def compute_cycle_period_billing(
@@ -554,16 +560,15 @@ def compute_cycle_period_billing(
     不能為負,溢繳的部分只在 `compute_group_billing` 的全局終身餘額——即
     彈窗最上方「目前應繳」那個可以顯示負數的欄位——才看得到,不會讓某一期
     的帳單顯示"負的應繳"這種不直覺的數字)。"""
-    billing_day = group.billing_day
-    payment_due_day = group.payment_due_day
-    assert billing_day is not None and payment_due_day is not None
+    schedule = billing_schedule.schedule_from_account(group, db=db)
+    assert schedule is not None and schedule.payment_due_day is not None
     member_ids = billing_member_ids(group, children)
 
     today = business_today(now)
-    base_start, base_end = credit_card.most_recently_closed_cycle(today, billing_day)
-    cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, billing_day, cycle_offset)
-    due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
-    _open_start, open_end = credit_card.billing_cycle_containing(today, billing_day)
+    base_start, base_end = credit_card.most_recently_closed_cycle(today, schedule)
+    cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, schedule, cycle_offset)
+    due_date = credit_card.due_date_for_cycle_end(cycle_end, schedule)
+    _open_start, open_end = credit_card.billing_cycle_containing(today, schedule)
 
     cycle_start_dt = date_to_utc_dt(cycle_start, end_of_day=True)
     cycle_end_dt = date_to_utc_dt(cycle_end, end_of_day=True)
@@ -693,6 +698,7 @@ def compute_cycle_period_billing(
     paid_in_cycle = round(total_due - remaining_due, 2)
 
     has_newer = cycle_end < open_end
+    cycle_info = billing_schedule.cycle_info(schedule, cycle_end)
     earliest = db.scalar(
         select(func.min(ReadTxProjection.happened_at)).where(
             ReadTxProjection.ledger_id == ledger_id,
@@ -715,6 +721,10 @@ def compute_cycle_period_billing(
         "has_older": has_older,
         "has_newer": has_newer,
         "per_member_new_spend": {k: round(v, 2) for k, v in per_member_new_spend.items()},
+        "cycle_month_key": cycle_info["month_key"],
+        "default_cycle_end": cycle_info["default_end"],
+        "cycle_adjusted": cycle_info["adjusted"],
+        "next_cycle_end": cycle_info["next_end"],
     }
 
 

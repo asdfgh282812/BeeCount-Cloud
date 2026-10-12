@@ -792,6 +792,14 @@ class UserAccountProjection(Base):
     credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 彈性結帳日(2026-10-12,MOZE 對標,alembic 0070;算法見 services/billing_schedule.py):
+    # 結帳日遇非工作日 postpone/advance + 假日地區;繳款期限模式 fixed_day(NULL 同義)/
+    # days_after_closing(此時 payment_due_day 的語意是「結帳日後第 N 天」);單期結帳日覆寫
+    # `{"yyyy-MM": "yyyy-MM-dd"}`(key = 該期原定結帳日所在年月)。全部 nullable,NULL = 沒有任何調整。
+    billing_holiday_rule: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    billing_holiday_region: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    payment_due_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    billing_cycle_overrides_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # 主帳戶(合併帳單,§2.9 Phase 4 MOZE_FEATURE_GAP_SD.md):自我參照,附卡/

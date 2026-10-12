@@ -696,6 +696,13 @@ class ReadAccountOut(BaseModel):
     credit_limit: float | None = None
     billing_day: int | None = None
     payment_due_day: int | None = None
+    # 彈性結帳日(2026-10-12,MOZE 對標):結帳日遇非工作日 postpone/advance + 假日地區;繳款期限
+    # 模式 fixed_day / days_after_closing(此時 payment_due_day 是「結帳日後第 N 天」);單期結帳日
+    # 覆寫 {yyyy-MM: yyyy-MM-dd}(key = 該期原定結帳日所在年月)。None = 沒有任何調整。
+    billing_holiday_rule: str | None = None
+    billing_holiday_region: str | None = None
+    payment_due_mode: str | None = None
+    billing_cycle_overrides: dict[str, str] | None = None
     bank_name: str | None = None
     card_last_four: str | None = None
     # 主帳戶(合併帳單,§2.9 Phase 4):子卡的 sync_id 指向主卡,None=沒有主卡。
@@ -767,6 +774,11 @@ class ReadAccountBillingSummaryOut(BaseModel):
     account_name: str
     billing_day: int
     payment_due_day: int
+    # 彈性結帳日(2026-10-12):前端顯示「結帳日後第 N 天」與「已套用假日順延」用。
+    billing_holiday_rule: str | None = None
+    billing_holiday_region: str | None = None
+    payment_due_mode: str | None = None
+    billing_cycle_overrides: dict[str, str] | None = None
     member_account_ids: list[str]
     members: list[ReadAccountBillingMemberOut]
     # 最近一次已結束的帳單週期(目前應繳金額對應的那一期)。
@@ -801,6 +813,12 @@ class ReadAccountBillingSummaryOut(BaseModel):
     period_remaining_due: float
     period_has_older: bool
     period_has_newer: bool
+    # 「調整本期結帳日」(2026-10-12):這一期單期覆寫的 key(原定結帳日所在年月)、預設結帳日
+    # (套假日規則、不含覆寫)、是否已調整、下一期實際結帳日(新結帳日必須早於它)。
+    period_cycle_month_key: str | None = None
+    period_default_cycle_end: datetime | None = None
+    period_cycle_adjusted: bool = False
+    period_next_cycle_end: datetime | None = None
     # 帳單分期(2026-08-04 使用者反饋補上,對齊 Moze 參考截圖)。0 = 沒有
     # 進行中的分期(前端顯示「---」);1 = 附帶 paid_periods/periods 顯示
     # 進度;>1 = 只顯示筆數,見 credit_card_billing.compute_installment_
@@ -1901,6 +1919,11 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     credit_limit: float | None = None
     billing_day: int | None = Field(default=None, ge=1, le=31)
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    # 彈性結帳日(2026-10-12):值域在 snapshot_mutator 校驗;None/空字串 = 無調整。
+    billing_holiday_rule: str | None = None
+    billing_holiday_region: str | None = None
+    payment_due_mode: str | None = None
+    billing_cycle_overrides: dict[str, str] | None = None
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
     # 主帳戶(合併帳單,§2.9 Phase 4):新建一般不设,子卡后续用 PATCH 挂靠。
@@ -1934,6 +1957,12 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     credit_limit: float | None = None
     billing_day: int | None = Field(default=None, ge=1, le=31)
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    # 彈性結帳日(2026-10-12):PATCH exclude_unset——沒帶 = 不改;帶 null/空字串/{} = 清空。
+    # 結帳日、假日規則或地區實際改變時,既有的單期覆寫會一併重設(除非同一請求帶了新的覆寫)。
+    billing_holiday_rule: str | None = None
+    billing_holiday_region: str | None = None
+    payment_due_mode: str | None = None
+    billing_cycle_overrides: dict[str, str] | None = None
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
     # 主帳戶(合併帳單,§2.9 Phase 4):None = 不改;空字串 = 解除掛靠。

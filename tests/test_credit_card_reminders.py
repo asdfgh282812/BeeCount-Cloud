@@ -282,3 +282,39 @@ def test_no_reminder_for_group_without_children():
         assert sent == 0
     finally:
         app.dependency_overrides.clear()
+
+
+def test_due_soon_uses_days_after_closing_mode():
+    """彈性結帳日(2026-10-12):繳款期限模式 days_after_closing 時,due_date = 實際結帳日 + N 天,
+    `payment_due_day` 是 N 而不是每月幾號。結帳日 2 天前、N=9 → 到期日 = 今天 + 7 → due_soon。"""
+    client, TS = _make_client()
+    try:
+        email = "ccr-flex1@t.com"
+        tok = _login(client, email, device_id="d-app", client_type="app")
+        hdr_app = {"Authorization": f"Bearer {tok}"}
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=2)).day
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+        # 花費要落在「已結束的那個帳單週期」內,見 test_due_soon_and_due_today_reminders 的說明。
+        _push(client, hdr_app, "lgrf1", "ledger", "lgrf1",
+              {"syncId": "lgrf1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgrf1", "account", "acc-group",
+              {"syncId": "acc-group", "name": "主帳戶", "type": "account_group", "currency": "CNY",
+               "billingDay": billing_day, "paymentDueDay": 9, "paymentDueMode": "days_after_closing"},
+              device_id="d-app")
+        _push(client, hdr_app, "lgrf1", "account", "acc-card",
+              {"syncId": "acc-card", "name": "卡", "type": "credit_card", "currency": "CNY",
+               "parentAccountId": "acc-group"}, device_id="d-app")
+        _push(client, hdr_app, "lgrf1", "transaction", "tx-spend",
+              {"syncId": "tx-spend", "type": "expense", "amount": 100.0,
+               "happenedAt": _iso(datetime.combine(cycle_start, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)),
+               "accountId": "acc-card", "accountName": "卡"}, device_id="d-app")
+
+        with TS() as db:
+            sent = credit_card_reminders.send_due_card_reminders(db, now=now)
+            db.commit()
+        assert sent == 1
+        notifs = _notifications_for(TS, email)
+        assert [n.payload_json["kind"] for n in notifs] == ["due_soon"]
+    finally:
+        app.dependency_overrides.clear()

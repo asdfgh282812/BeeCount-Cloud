@@ -17,6 +17,7 @@ from ...stats_amount import debt_split_total, stats_amount_expr
 from ...models import ExchangeRateCache, UserExchangeRateProjection
 from datetime import date as _date_type
 
+from ...services import billing_schedule
 from ...services.business_time import (
     business_date_end_utc,
     business_date_start_utc,
@@ -856,6 +857,7 @@ async def list_workspace_accounts(
                 credit_limit=acct.credit_limit,
                 billing_day=acct.billing_day,
                 payment_due_day=acct.payment_due_day,
+                **billing_schedule.account_read_fields(acct),
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
                 parent_account_id=acct.parent_account_id,

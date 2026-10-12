@@ -45,7 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Notification, ReadTxProjection, UserAccountProjection
-from . import credit_card, credit_card_billing
+from . import billing_schedule, credit_card, credit_card_billing
 from . import notifications as notification_service
 from .business_time import business_today
 from .recurring_materializer import compute_account_balance, emit_tx, new_sync_id
@@ -109,8 +109,10 @@ def materialize_due_card_autopay(db: Session, *, now: datetime | None = None) ->
     skipped = 0
     for group in roots:
         assert group.billing_day is not None and group.payment_due_day is not None
-        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, group.billing_day)
-        due_date = credit_card.due_date_for_cycle_end(cycle_end, group.payment_due_day)
+        schedule = billing_schedule.schedule_from_account(group, db=db)
+        assert schedule is not None
+        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, schedule)
+        due_date = credit_card.due_date_for_cycle_end(cycle_end, schedule)
         if today < due_date:
             continue  # 还没到繳款截止日,不提前扣款
 

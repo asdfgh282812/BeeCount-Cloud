@@ -15,6 +15,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .services.billing_schedule import normalize_overrides
+
 from .models import (
     Ledger,
     ReadBudgetProjection,
@@ -263,6 +265,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.credit_limit,
         UserAccountProjection.billing_day,
         UserAccountProjection.payment_due_day,
+        UserAccountProjection.billing_holiday_rule,
+        UserAccountProjection.billing_holiday_region,
+        UserAccountProjection.payment_due_mode,
+        UserAccountProjection.billing_cycle_overrides_json,
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
         UserAccountProjection.parent_account_id,
@@ -286,6 +292,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         credit_limit,
         billing_day,
         payment_due_day,
+        billing_holiday_rule,
+        billing_holiday_region,
+        payment_due_mode,
+        billing_cycle_overrides_json,
         bank_name,
         card_last_four,
         parent_account_id,
@@ -314,6 +324,17 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["billingDay"] = billing_day
         if payment_due_day is not None:
             acc["paymentDueDay"] = payment_due_day
+        # 彈性結帳日(2026-10-12):同 billingDay「有值才帶 key」。漏選的話 web 改帳戶名時
+        # diff-emit 重建的基線缺這些 key,upsert 會把使用者的設定靜默清成 None。
+        if billing_holiday_rule:
+            acc["billingHolidayRule"] = billing_holiday_rule
+        if billing_holiday_region:
+            acc["billingHolidayRegion"] = billing_holiday_region
+        if payment_due_mode:
+            acc["paymentDueMode"] = payment_due_mode
+        overrides = normalize_overrides(billing_cycle_overrides_json)
+        if overrides:
+            acc["billingCycleOverrides"] = overrides
         if bank_name:
             acc["bankName"] = bank_name
         if card_last_four:

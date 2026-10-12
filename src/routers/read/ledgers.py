@@ -9,6 +9,8 @@ from datetime import date, datetime, timezone
 from sqlalchemy import false as sa_false
 
 from ...models import CardRewardPayout
+from ...services import billing_schedule
+from ...services.billing_schedule import BillingSchedule
 from ...services.business_time import business_today, to_business_date
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 from ...stats_amount import stats_amount_expr
@@ -498,6 +500,7 @@ def list_accounts(
             credit_limit=row.credit_limit,
             billing_day=row.billing_day,
             payment_due_day=row.payment_due_day,
+            **billing_schedule.account_read_fields(row),
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
             parent_account_id=row.parent_account_id,
@@ -613,13 +616,19 @@ def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
-def _require_credit_card_schedule(account: UserAccountProjection) -> tuple[int, int]:
+def _require_credit_card_schedule(
+    account: UserAccountProjection, db: Session | None = None,
+) -> BillingSchedule:
+    """帳單排程(結帳日 + 彈性結帳日設定 + 繳款期限);沒設結帳日/繳款日 → 400。傳 `db` 時才會
+    讀節日資料(結帳日遇假日順延/提前);只做校驗的呼叫端可以不傳。"""
     if account.billing_day is None or account.payment_due_day is None:
         raise HTTPException(
             status_code=400,
             detail="account has no billing_day/payment_due_day configured",
         )
-    return account.billing_day, account.payment_due_day
+    schedule = billing_schedule.schedule_from_account(account, db=db)
+    assert schedule is not None  # billing_day 已確認非 None
+    return schedule
 
 
 def _require_billing_root(account: UserAccountProjection) -> None:
@@ -677,7 +686,7 @@ def get_account_billing_summary(
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     _require_billing_root(account)
-    billing_day, payment_due_day = _require_credit_card_schedule(account)
+    schedule = _require_credit_card_schedule(account, db)
 
     children = credit_card_billing.resolve_billing_children(db, account=account)
     member_ids = [row.sync_id for row in children]
@@ -719,8 +728,12 @@ def get_account_billing_summary(
     return ReadAccountBillingSummaryOut(
         account_id=account.sync_id,
         account_name=account.name or "",
-        billing_day=billing_day,
-        payment_due_day=payment_due_day,
+        billing_day=schedule.billing_day,
+        payment_due_day=schedule.payment_due_day,
+        billing_holiday_rule=schedule.holiday_rule,
+        billing_holiday_region=schedule.region,
+        payment_due_mode=schedule.due_mode,
+        billing_cycle_overrides=dict(schedule.overrides) or None,
         member_account_ids=member_ids,
         members=members_out,
         cycle_start=_date_to_utc_dt(billing["cycle_start"]),
@@ -745,6 +758,10 @@ def get_account_billing_summary(
         period_remaining_due=period["remaining_due"],
         period_has_older=period["has_older"],
         period_has_newer=period["has_newer"],
+        period_cycle_month_key=period["cycle_month_key"],
+        period_default_cycle_end=_date_to_utc_dt(period["default_cycle_end"]),
+        period_cycle_adjusted=period["cycle_adjusted"],
+        period_next_cycle_end=_date_to_utc_dt(period["next_cycle_end"]),
         period_installment_active_count=installment_summary["active_count"],
         period_installment_paid_periods=installment_summary["paid_periods"],
         period_installment_periods=installment_summary["periods"],
@@ -784,13 +801,13 @@ def list_account_billing_periods(
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     _require_billing_root(account)
-    billing_day, _payment_due_day = _require_credit_card_schedule(account)
+    schedule = _require_credit_card_schedule(account, db)
 
     children = credit_card_billing.resolve_billing_children(db, account=account)
     member_ids = credit_card_billing.billing_member_ids(account, children)
 
     now = datetime.now(timezone.utc)
-    base_start, base_end = credit_card.most_recently_closed_cycle(business_today(now), billing_day)
+    base_start, base_end = credit_card.most_recently_closed_cycle(business_today(now), schedule)
 
     earliest = db.scalar(
         select(func.min(ReadTxProjection.happened_at)).where(
@@ -810,7 +827,7 @@ def list_account_billing_periods(
     if earliest_date is not None:
         while oldest_offset > -600:
             cycle_start, _cycle_end = credit_card.shift_cycle(
-                base_start, base_end, billing_day, oldest_offset,
+                base_start, base_end, schedule, oldest_offset,
             )
             if cycle_start <= earliest_date:
                 break
@@ -818,7 +835,7 @@ def list_account_billing_periods(
 
     periods = []
     for offset in range(1, oldest_offset - 1, -1):
-        cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, billing_day, offset)
+        cycle_start, cycle_end = credit_card.shift_cycle(base_start, base_end, schedule, offset)
         periods.append(
             ReadBillingPeriodOptionOut(
                 offset=offset,
@@ -856,10 +873,10 @@ def get_account_interest_free_suggestion(
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     _require_billing_root(account)
-    billing_day, payment_due_day = _require_credit_card_schedule(account)
+    schedule = _require_credit_card_schedule(account, db)
 
     now = datetime.now(timezone.utc)
-    suggestion = credit_card.interest_free_suggestion(business_today(now), billing_day, payment_due_day)
+    suggestion = credit_card.interest_free_suggestion(business_today(now), schedule)
     return ReadInterestFreeSuggestionOut(
         account_id=account.sync_id,
         as_of=now,

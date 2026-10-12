@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from .category_kinds import CATEGORY_KINDS
+from .services import billing_schedule
 from .services.securities.trade_fees import stock_gross
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,11 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     ("credit_limit", "creditLimit", "float"),
     ("billing_day", "billingDay", "int"),
     ("payment_due_day", "paymentDueDay", "int"),
+    # 彈性結帳日(2026-10-12,MOZE 對標,alembic 0070):值域在 `_apply_account_optional_fields`
+    # 末段校驗(postpone/advance、地區、fixed_day/days_after_closing)。
+    ("billing_holiday_rule", "billingHolidayRule", "str"),
+    ("billing_holiday_region", "billingHolidayRegion", "str"),
+    ("payment_due_mode", "paymentDueMode", "str"),
     ("bank_name", "bankName", "str"),
     ("card_last_four", "cardLastFour", "str"),
     # 主帳戶(合併帳單,§2.9 Phase 4):子卡指向主卡 syncId;空字串/None=解除掛靠。
@@ -192,12 +198,64 @@ def _assert_valid_auto_pay_source(
         )
 
 
+def _apply_flexible_billing_fields(account: dict, payload: dict, before: tuple) -> None:
+    """彈性結帳日(2026-10-12)的值域校驗 + 單期覆寫物件。純量三欄已由映射表寫進 `account`,
+    這裡只擋不合法的值(Web / API 直接呼叫時不能塞任意字串進 sync payload);覆寫是
+    `{yyyy-MM: yyyy-MM-dd}` 物件,整包取代,清空時寫 `{}`(不 pop——pop 掉 key 的話 diff-emit
+    出去的 payload 缺鍵,sync merge 會把舊值補回來,清空就失效了)。"""
+    if "billing_holiday_rule" in payload:
+        rule = account.get("billingHolidayRule")
+        if rule is not None and rule not in billing_schedule.HOLIDAY_RULES:
+            raise ValueError("write validation failed: billing_holiday_rule must be postpone or advance")
+    if "billing_holiday_region" in payload:
+        raw_region = account.get("billingHolidayRegion")
+        if raw_region is not None:
+            region_code = str(raw_region).upper()
+            if region_code not in billing_schedule.HOLIDAY_REGIONS:
+                raise ValueError("write validation failed: billing_holiday_region is not a supported region")
+            account["billingHolidayRegion"] = region_code
+    if "payment_due_mode" in payload:
+        mode = account.get("paymentDueMode")
+        if mode is not None and mode not in billing_schedule.DUE_MODES:
+            raise ValueError(
+                "write validation failed: payment_due_mode must be fixed_day or days_after_closing"
+            )
+    if "billing_cycle_overrides" in payload:
+        raw = payload.get("billing_cycle_overrides")
+        if raw is None:
+            account["billingCycleOverrides"] = {}
+        elif isinstance(raw, dict):
+            cleaned = billing_schedule.normalize_overrides(raw)
+            if len(cleaned) != len(raw):
+                raise ValueError(
+                    "write validation failed: billing_cycle_overrides must be {yyyy-MM: yyyy-MM-dd}"
+                )
+            account["billingCycleOverrides"] = cleaned
+        else:
+            raise ValueError("write validation failed: billing_cycle_overrides must be an object")
+    # 結帳日、假日規則或地區**實際變了** → 先前個別調整的結帳日已經沒有意義(MOZE 同款行為),
+    # 除非這次請求本身明確帶了新的覆寫。只比對值有沒有變:編輯表單常常整包帶 billing_day,
+    # 值沒變就不能把使用者調整過的期數重設掉。
+    after = (
+        account.get("billingDay"),
+        account.get("billingHolidayRule"),
+        account.get("billingHolidayRegion"),
+    )
+    if after != before and "billing_cycle_overrides" not in payload and account.get("billingCycleOverrides"):
+        account["billingCycleOverrides"] = {}
+
+
 def _apply_account_optional_fields(account: dict, payload: dict) -> None:
     """payload 里如果带这些 key 就写到 snapshot,空字符串 / None 视作 null。
 
     update 路径调用同一函数:`payload` 不带某 key → 保留原值。带 key 但 value
     是 None / 空串 → 显式清空(对应 mobile 编辑时把 note 清掉的场景)。
     """
+    before = (
+        account.get("billingDay"),
+        account.get("billingHolidayRule"),
+        account.get("billingHolidayRegion"),
+    )
     for payload_key, snapshot_key, kind in _ACCOUNT_OPTIONAL_FIELD_MAP:
         if payload_key not in payload:
             continue
@@ -212,6 +270,7 @@ def _apply_account_optional_fields(account: dict, payload: dict) -> None:
             account[snapshot_key] = bool(raw) if raw is not None else False
         else:
             account[snapshot_key] = _to_optional_str(raw)
+    _apply_flexible_billing_fields(account, payload, before)
     # 股票持股(2026-09-28):投資理財帳戶費用設定是整包物件,不走上面的純量
     # 映射表。帶 key 且是 dict → 整包取代;帶 key 但 None/非 dict → 清空。
     if "investment_settings" in payload:

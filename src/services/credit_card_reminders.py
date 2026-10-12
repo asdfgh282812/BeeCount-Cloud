@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Notification, ReadTxProjection, UserAccountProjection
-from . import credit_card, credit_card_billing
+from . import billing_schedule, credit_card, credit_card_billing
 from . import notifications as notification_service
 from .business_time import business_today
 
@@ -90,8 +90,11 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
         # WHERE 已经过滤了 billing_day/payment_due_day IS NOT NULL,mypy 推
         # 不出这层窄化,这里断言一下让类型检查过。
         assert group.billing_day is not None and group.payment_due_day is not None
-        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, group.billing_day)
-        due_date = credit_card.due_date_for_cycle_end(cycle_end, group.payment_due_day)
+        # 彈性結帳日(2026-10-12):結算/到期提醒跟著「實際」結帳日與繳款期限走。
+        schedule = billing_schedule.schedule_from_account(group, db=db)
+        assert schedule is not None
+        cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, schedule)
+        due_date = credit_card.due_date_for_cycle_end(cycle_end, schedule)
 
         kind: str | None = None
         if today == cycle_end + timedelta(days=1):

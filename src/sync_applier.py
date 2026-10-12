@@ -145,6 +145,12 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("creditLimit", "credit_limit"),
         ("billingDay", "billing_day"),
         ("paymentDueDay", "payment_due_day"),
+        # 彈性結帳日(2026-10-12,alembic 0070):缺鍵時 _merge_from_spec 從 existing 行補齊,
+        # 舊 App 只改名字不會把這四個欄位沖掉;空字串/空物件 = 明確清空。
+        ("billingHolidayRule", "billing_holiday_rule"),
+        ("billingHolidayRegion", "billing_holiday_region"),
+        ("paymentDueMode", "payment_due_mode"),
+        ("billingCycleOverrides", "billing_cycle_overrides_json", _json_loads_safe),
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
         # 主帳戶(合併帳單,§2.9 Phase 4 MOZE_FEATURE_GAP_SD.md):子卡指向主卡

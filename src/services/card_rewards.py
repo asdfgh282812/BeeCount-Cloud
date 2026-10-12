@@ -49,7 +49,8 @@ from ..models import (
     UserCategoryProjection,
 )
 from ..sync_applier import apply_user_change_to_projection
-from . import credit_card
+from . import billing_schedule, credit_card
+from .billing_schedule import BillingSchedule
 from .business_time import (
     business_date_end_utc,
     business_date_start_utc,
@@ -259,15 +260,18 @@ def _shift_calendar_month(month_start: date, months: int) -> date:
 
 def resolve_billing_schedule(
     db: Session, *, account: UserAccountProjection,
-) -> tuple[int, int] | None:
+) -> BillingSchedule | None:
     """`interval == "billing_cycle"` 的規則要用哪個結帳日 —— 優先用帳戶
     自己的 `billing_day`/`payment_due_day`(獨立信用卡,或帳戶本身就是
     account_group);沒有的話(掛靠群組的子卡,§2.9 群組模型下 billing_day
     只設在群組身上,見 `credit_card_billing`)回頭查它掛靠的群組。兩者都
     沒有就回傳 None,呼叫端據此把該規則標成 `no_billing_schedule`,不拋
-    例外中斷其它規則的計算。"""
+    例外中斷其它規則的計算。
+
+    回傳 `BillingSchedule`(結帳日 + 彈性結帳日設定:假日順延/提前、單期覆寫 + 繳款期限),
+    紅利回饋的「帳單週期」要跟帳單頁看到的是同一期。"""
     if account.billing_day is not None and account.payment_due_day is not None:
-        return account.billing_day, account.payment_due_day
+        return billing_schedule.schedule_from_account(account, db=db)
     if account.parent_account_id:
         parent = db.scalar(
             select(UserAccountProjection).where(
@@ -276,7 +280,7 @@ def resolve_billing_schedule(
             )
         )
         if parent is not None and parent.billing_day is not None and parent.payment_due_day is not None:
-            return parent.billing_day, parent.payment_due_day
+            return billing_schedule.schedule_from_account(parent, db=db)
     return None
 
 
@@ -327,10 +331,9 @@ def _resolve_period(
         schedule = resolve_billing_schedule(db, account=account)
         if schedule is None:
             return None
-        billing_day, _payment_due_day = schedule
-        start, end = credit_card.billing_cycle_containing(now, billing_day)
+        start, end = credit_card.billing_cycle_containing(now, schedule)
         if period_offset:
-            start, end = credit_card.shift_cycle(start, end, billing_day, period_offset)
+            start, end = credit_card.shift_cycle(start, end, schedule, period_offset)
         return start, end
     # calendar_month —— 不需要 billing_day,永遠可算。
     month_start, month_end = _calendar_month_containing(now)
@@ -390,18 +393,16 @@ def _resolve_periods(
     if rule.interval == "billing_cycle":
         if schedule is None:
             return []
-        billing_day, _payment_due_day = schedule
-        start, end = credit_card.billing_cycle_containing(now, billing_day)
+        start, end = credit_card.billing_cycle_containing(now, schedule)
         if period_offset:
-            start, end = credit_card.shift_cycle(start, end, billing_day, period_offset)
+            start, end = credit_card.shift_cycle(start, end, schedule, period_offset)
         return [(start, end)]
 
     # calendar_month
     if schedule is not None:
-        billing_day, _payment_due_day = schedule
-        cycle_start, cycle_end = credit_card.billing_cycle_containing(now, billing_day)
+        cycle_start, cycle_end = credit_card.billing_cycle_containing(now, schedule)
         if period_offset:
-            cycle_start, cycle_end = credit_card.shift_cycle(cycle_start, cycle_end, billing_day, period_offset)
+            cycle_start, cycle_end = credit_card.shift_cycle(cycle_start, cycle_end, schedule, period_offset)
         # cycle_start 是排除邊界(`_qualifying_transactions` 用
         # `happened_at > cycle_start`),真正算進這期的第一天是
         # cycle_start + 1 天,用它來判斷「這個視窗實際觸及哪些自然月」,

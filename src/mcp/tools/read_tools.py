@@ -31,6 +31,7 @@ from ...models import (
 # 复用 read 端的唯一权威"软删除"判定 —— 保证 MCP 与 web/mobile 账本可见性口径
 # 一致(issue #31)。read._shared 不依赖 mcp,无循环 import。
 from ...routers.read._shared import _is_ledger_deleted
+from ...services import billing_schedule
 from ...stats_amount import stats_amount, stats_amount_expr
 
 
@@ -253,6 +254,9 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
                 "credit_limit": float(r.credit_limit) if r.credit_limit is not None else None,
                 "billing_day": r.billing_day,
                 "payment_due_day": r.payment_due_day,
+                # 彈性結帳日(2026-10-12):payment_due_mode = days_after_closing 時
+                # payment_due_day 是「結帳日後第 N 天」。
+                **billing_schedule.account_read_fields(r),
             }
             for r in sorted(
                 seen.values(),

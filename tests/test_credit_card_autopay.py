@@ -158,7 +158,8 @@ def test_autopay_executes_full_payment_when_due_and_balance_sufficient():
         billing_day = (now.date() - timedelta(days=10)).day
         cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
         # 让 due_date 落在今天或今天以前(已到期)
-        payment_due_day = cycle_start.day
+        # 結帳日隔天繳款:繳款日必須嚴格晚於結帳日(跟 App 一致),今天是結帳日後 10 天所以已到期
+        payment_due_day = (cycle_end + timedelta(days=1)).day
         due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
         assert due_date <= now.date(), "test setup: due date must already have arrived"
 
@@ -202,7 +203,8 @@ def test_autopay_skips_and_notifies_when_balance_insufficient_then_retries():
         now = datetime.now(timezone.utc)
         billing_day = (now.date() - timedelta(days=10)).day
         cycle_start, cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
-        payment_due_day = cycle_start.day
+        # 結帳日隔天繳款:繳款日必須嚴格晚於結帳日(跟 App 一致),今天是結帳日後 10 天所以已到期
+        payment_due_day = (cycle_end + timedelta(days=1)).day
         due_date = credit_card.due_date_for_cycle_end(cycle_end, payment_due_day)
         assert due_date <= now.date()
 

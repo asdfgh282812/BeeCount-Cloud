@@ -21,6 +21,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from .services.billing_schedule import encode_overrides, normalize_overrides
 from .stats_amount import debt_split_total
 from .models import (
     AttachmentFile,
@@ -520,6 +521,14 @@ def upsert_account(
         "credit_limit": _opt_float(payload.get("creditLimit")),
         "billing_day": _opt_int(payload.get("billingDay")),
         "payment_due_day": _opt_int(payload.get("paymentDueDay")),
+        # 彈性結帳日(2026-10-12,alembic 0070)。_as_str 已把空字串視為 None;覆寫經
+        # normalize 過濾壞資料,空物件落 None。
+        "billing_holiday_rule": _as_str(payload.get("billingHolidayRule")),
+        "billing_holiday_region": _as_str(payload.get("billingHolidayRegion")),
+        "payment_due_mode": _as_str(payload.get("paymentDueMode")),
+        "billing_cycle_overrides_json": encode_overrides(
+            normalize_overrides(payload.get("billingCycleOverrides"))
+        ),
         "bank_name": _as_str(payload.get("bankName")),
         "card_last_four": _as_str(payload.get("cardLastFour")),
         # 主帳戶(合併帳單,§2.9 Phase 4):子卡指向主卡的 sync_id。
