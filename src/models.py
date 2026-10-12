@@ -140,6 +140,16 @@ class RefreshToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # 輪替寬限(routers/auth.py::refresh 的 `_resolve_rotation_grace`,alembic 0071):
+    # - `replaced_by_id`:這把 token 被輪替成哪一把(下一代)。
+    # - `revoke_reason`:`rotated` = 用戶端拿它來 refresh 過(真的用掉了);
+    #   `superseded` = 從沒被用戶端出示過、因寬限重發而作廢;NULL = 登出 / 撤銷
+    #   裝置 / 管理員重設密碼等「硬撤銷」(或 0071 之前的舊資料)。
+    # 用戶端 refresh 的回應若在路上遺失(App 被系統凍結在請求途中、網路中斷),
+    # 手上只剩已被輪替的舊 token;只要它後代都還沒被用戶端用過,就允許再換一次,
+    # 不讓使用者被登出。
+    replaced_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class PersonalAccessToken(Base):

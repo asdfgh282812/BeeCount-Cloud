@@ -107,18 +107,52 @@ def _run_mcp_log_retention(db: Session) -> dict:
 
 
 def _run_refresh_token_retention(db: Session) -> dict:
-    from sqlalchemy import delete, or_
+    from sqlalchemy import and_, delete, or_
+    from sqlalchemy.orm import aliased
 
     cutoff = _now() - timedelta(days=_REFRESH_TOKEN_RETENTION_DAYS)
+    # 被輪替掉的舊 token 要留著,refresh 的輪替寬限(routers/auth.py
+    # `_resolve_rotation_grace`)才找得回它 —— 只有它的下一代已經被用戶端
+    # 用過(rotated)、被硬撤銷,或下一代整列已不在時,這把才確定再也用不到。
+    # 下一代還沒用過 / 只是 superseded 的,留到自然過期(expires_at)。
+    child = aliased(RefreshToken)
+    dead_rotated_query = (
+        select(RefreshToken.id)
+        .outerjoin(child, child.id == RefreshToken.replaced_by_id)
+        .where(
+            RefreshToken.replaced_by_id.is_not(None),
+            RefreshToken.revoked_at < cutoff,
+            or_(
+                child.id.is_(None),
+                and_(
+                    child.revoked_at.is_not(None),
+                    or_(child.revoke_reason.is_(None), child.revoke_reason != "superseded"),
+                ),
+            ),
+        )
+    )
     result = db.execute(
         delete(RefreshToken).where(
             or_(
                 RefreshToken.expires_at < cutoff,
-                RefreshToken.revoked_at < cutoff,
+                and_(
+                    RefreshToken.revoked_at < cutoff,
+                    RefreshToken.replaced_by_id.is_(None),
+                ),
             )
         )
     )
     deleted = result.rowcount or 0
+    # 刪掉一代後,指向它的上一代也跟著變成「下一代不在」→ 一路往前收,
+    # 輪替鏈通常只有幾代,設個上限避免異常資料無限迴圈。
+    for _ in range(32):
+        dead_ids = db.scalars(dead_rotated_query).all()
+        if not dead_ids:
+            break
+        for start in range(0, len(dead_ids), 500):
+            chunk = dead_ids[start : start + 500]
+            result = db.execute(delete(RefreshToken).where(RefreshToken.id.in_(chunk)))
+            deleted += result.rowcount or 0
     return {"deleted": deleted}
 
 

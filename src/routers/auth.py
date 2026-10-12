@@ -155,6 +155,7 @@ def _issue_tokens(
     *,
     client_type: str,
     scopes: list[str] | None = None,
+    refresh_token_id: str | None = None,
 ) -> AuthTokenResponse:
     target_scopes = scopes or _resolve_scopes(client_type)
     access_token, expires_in = create_access_token(
@@ -170,6 +171,7 @@ def _issue_tokens(
 
     db.add(
         RefreshToken(
+            id=refresh_token_id or str(uuid4()),
             user_id=user.id,
             device_id=device.id,
             token_hash=hash_token(refresh_token),
@@ -341,10 +343,16 @@ def refresh(
         select(RefreshToken).where(
             RefreshToken.token_hash == token_h,
             RefreshToken.user_id == user_id,
-            RefreshToken.revoked_at.is_(None),
             RefreshToken.expires_at > now,
         )
     )
+    # 已被輪替過的舊 token:只有「後代都還沒被用戶端用過」時才放行(見
+    # _resolve_rotation_grace);放行時作廢的是那把沒人用過的後代,不是它。
+    superseded_row: RefreshToken | None = None
+    if token_row is not None and token_row.revoked_at is not None:
+        superseded_row = _resolve_rotation_grace(db, token_row, now)
+        if superseded_row is None:
+            token_row = None
     if not token_row:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -365,6 +373,10 @@ def refresh(
     )
     if device and device.revoked_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device revoked")
+    if device is None and token_row.device_id:
+        # token 綁的裝置列被整個刪掉了(直接從資料庫移除)—— 跟撤銷裝置一樣
+        # 視為登出,不要再默默補建一台 "Unknown Device" 讓它繼續登入。
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device removed")
     if device is None:
         device = _upsert_device(
             db,
@@ -379,22 +391,73 @@ def refresh(
         if request.client:
             device.last_ip = request.client.host
 
-    token_row.revoked_at = now
+    new_token_id = str(uuid4())
+    if superseded_row is None:
+        token_row.revoked_at = now
+        token_row.revoke_reason = _REVOKE_ROTATED
+        token_row.replaced_by_id = new_token_id
+    else:
+        superseded_row.revoked_at = now
+        superseded_row.revoke_reason = _REVOKE_SUPERSEDED
+        superseded_row.replaced_by_id = new_token_id
     token_response = _issue_tokens(
         db,
         user,
         device,
         client_type=client_type,
         scopes=scopes,
+        refresh_token_id=new_token_id,
     )
     db.commit()
     logger.info(
-        "auth.refresh user=%s device=%s client_type=%s",
+        "auth.refresh user=%s device=%s client_type=%s grace=%s",
         user.id,
         device.id if device else None,
         client_type,
+        superseded_row is not None,
     )
     return token_response
+
+
+_REVOKE_ROTATED = "rotated"
+_REVOKE_SUPERSEDED = "superseded"
+_ROTATION_GRACE_MAX_HOPS = 32
+
+
+def _resolve_rotation_grace(
+    db: Session, token_row: RefreshToken, now: datetime
+) -> RefreshToken | None:
+    """已撤銷的 refresh token 能不能再換一次。可以的話回傳要作廢的那把後代。
+
+    server 每次 refresh 都輪替(舊的撤銷、發新的)。如果回應在路上遺失 ——
+    App 掛後台時被 iOS 凍結在請求途中、背景任務時間到被系統砍掉、網路中斷,或
+    App 前景與背景 isolate 同時拿同一把去刷新 —— 用戶端手上只剩舊 token,
+    舊實作下一次 refresh 必定 401、使用者被迫重新登入。
+
+    沿著 `replaced_by_id` 往後找:中間只能是 `superseded`(從沒被用戶端出示過)
+    的列,終點必須是還沒撤銷、沒過期的 token —— 代表用戶端從沒拿到/用過任何
+    後代,這把舊 token 仍是它手上最新的憑證,放行並作廢那把沒人用過的終點。
+    只要任何後代被用戶端用過(`rotated`)、或鏈上遇到硬撤銷(登出 / 撤銷裝置 /
+    重設密碼,revoke_reason 為 NULL)就拒絕 —— 這些情況本來就該登出。
+    """
+    if token_row.revoke_reason != _REVOKE_ROTATED or not token_row.replaced_by_id:
+        return None
+    next_id: str | None = token_row.replaced_by_id
+    for _ in range(_ROTATION_GRACE_MAX_HOPS):
+        if not next_id:
+            return None
+        child = db.get(RefreshToken, next_id)
+        if child is None or child.user_id != token_row.user_id:
+            return None
+        if child.revoked_at is None:
+            expires_at = child.expires_at
+            if expires_at.tzinfo is None:  # SQLite 讀回來是 naive(實際存的是 UTC)
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            return child if expires_at > now else None
+        if child.revoke_reason != _REVOKE_SUPERSEDED:
+            return None
+        next_id = child.replaced_by_id
+    return None
 
 
 @router.post("/logout")

@@ -88,8 +88,12 @@
 | expires_at | DateTime | not null, index | 過期時間 |
 | revoked_at | DateTime | nullable, index | 撤銷時間，null=尚未撤銷 |
 | created_at | DateTime | default 建立時 | 建立時間 |
+| replaced_by_id | String(36) | nullable | 被輪替成哪一把（下一代的 id），null=沒被輪替過（0071） |
+| revoke_reason | String(16) | nullable | `rotated`=用戶端拿它 refresh 過；`superseded`=從沒被出示、因輪替寬限重發而作廢；null=登出／撤銷裝置／重設密碼等硬撤銷（0071） |
 
-每次 `/auth/refresh` 都會 rotate（舊列標 `revoked_at`、新增一列新的），舊列本身不會被刪除。`refresh_token_retention` 排程 job（`services/scheduled_jobs.py`，預設 24 小時一次）會清掉失效（已撤銷或已過期）超過 2 天的舊列，`expires_at`/`revoked_at` 的 index 就是給這個排程查詢用的。
+每次 `/auth/refresh` 都會 rotate（舊列標 `revoked_at` + `revoke_reason='rotated'` + `replaced_by_id`、新增一列新的）。**輪替寬限**：refresh 回應若在路上遺失（App 被系統凍結在請求途中、背景任務被砍、網路中斷），用戶端拿已輪替的舊 token 再來時，只要沿 `replaced_by_id` 往後的後代都沒被用戶端用過（中間只有 `superseded`、終點還沒撤銷），就再發一組並把那個沒人用過的終點標成 `superseded`（`routers/auth.py::_resolve_rotation_grace`）；鏈上遇到 `rotated` 或硬撤銷一律 401。另外 token 綁的裝置列被整個刪掉時，refresh 回 401（`Device removed`），不再自動補建裝置。
+
+`refresh_token_retention` 排程 job（`services/scheduled_jobs.py`，預設 24 小時一次）會清掉過期超過 2 天的列、硬撤銷超過 2 天的列，以及「下一代已被用過／被硬撤銷／已不存在」且撤銷超過 2 天的輪替舊列（一路往前收）；下一代還沒被用過的輪替舊列會留到自然過期，寬限才找得回它。`expires_at`/`revoked_at` 的 index 就是給這個排程查詢用的。
 
 ### `personal_access_tokens` — 個人存取權杖（PersonalAccessToken）
 專供外部 LLM 客戶端（如 Claude Desktop、Cursor、Cline）透過 MCP 協定存取帳本資料使用的長效權杖，與一般登入 access/refresh token 完全獨立、可單獨撤銷。
