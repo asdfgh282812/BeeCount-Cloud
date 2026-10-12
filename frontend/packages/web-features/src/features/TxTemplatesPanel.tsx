@@ -504,7 +504,7 @@ export function TxTemplatesPanel({
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {form.editingId ? t('txTemplates.button.update') : t('txTemplates.button.create')}
+              {form.editingId ? t('txTemplates.dialog.edit') : t('txTemplates.button.create')}
             </DialogTitle>
           </DialogHeader>
           <div className="grid max-h-[70vh] gap-3 overflow-y-auto pr-1 md:grid-cols-2">
@@ -552,7 +552,7 @@ export function TxTemplatesPanel({
             </div>
 
             <div className="space-y-1">
-              <Label>{t('budgets.field.amount')}</Label>
+              <Label>{t('txTemplates.field.amount')}</Label>
               <Input
                 type="number"
                 inputMode="decimal"
@@ -640,7 +640,7 @@ export function TxTemplatesPanel({
             </div>
 
             <PickerButton
-              label={t('tags.title')}
+              label={t('txTemplates.field.tags')}
               value={selectedTagNames.join('、')}
               placeholder={t('transactions.placeholder.tags')}
               onClick={() => setTagPickerOpen(true)}
@@ -763,12 +763,12 @@ export function TxTemplatesPanel({
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label>{t('recurringRules.field.nextRunAt')}</Label>
+              <Label>{t('txTemplates.apply.happenedAt')}</Label>
               <DateTimePicker value={applyAt} onChange={(next) => setApplyAt(next)} />
             </div>
             <div className="space-y-1">
               <Label>
-                {t('budgets.field.amount')}
+                {t('txTemplates.field.amount')}
                 {applyTarget && applyTarget.amount <= 0 ? (
                   <span className="ml-1 text-xs text-destructive">{t('txTemplates.apply.amountRequired')}</span>
                 ) : null}
