@@ -2,6 +2,7 @@ name: release
 
 # push 到 main 分支:自动 build + push :latest 到 GHCR(免测试,快速,给自己的
 # NAS/服务器 docker compose pull 用)。
+# feat/v4-dev 分支:手动 Run workflow,更新 :4.0.0-dev(不覆盖 :latest)。
 # 打 tag(如 1.6.3):额外跑一次后端/前端测试 + 生成 GitHub Release,再 build
 # 该版本号的镜像(同时覆盖 :latest)。
 #
@@ -96,8 +97,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            version="${{ github.ref_name }}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
+          elif [[ "$GITHUB_REF" == "refs/heads/feat/v4-dev" ]]; then
+            version="4.0.0-dev-$(git rev-parse --short HEAD)"
           else
             version="main-$(git rev-parse --short HEAD)"
           fi
@@ -138,6 +141,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.ALIAS_IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=4.0.0-dev,enable=${{ github.ref == 'refs/heads/feat/v4-dev' }}
             type=semver,pattern={{version}}
             type=sha,prefix=,format=short
           labels: |

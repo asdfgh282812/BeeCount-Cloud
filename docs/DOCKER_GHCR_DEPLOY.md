@@ -25,10 +25,45 @@ ghcr.io/asdfgh282812/tallycheck-cloud:latest   ← 4.0 起同一份映像的別�
 你的伺服器 / NAS(容器啟動,不需要在本機/伺服器上跑任何 build)
 ```
 
-- **push 到 `main`**:自動 build 並推 `:latest`(+ `:sha-xxxxxxx`),**不跑測試**,求快,幾分鐘內映像就緒。
+- **push 到 `main`**:自動 build 並推 `:latest`(+ `:xxxxxxx`,commit SHA 前 7 碼),**不跑測試**,求快,幾分鐘內映像就緒。
+- **4.0 開發分支 `feat/v4-dev`**:手動執行 `release` workflow,推送固定的 `:4.0.0-dev` 與 commit SHA 標籤;不更新 `:latest`,也不建立 GitHub Release。操作方式見下方 1.1。
 - **打版本 tag**(如 `1.6.3`,格式 `x.y.z`,不用加 `v` 前綴,跟現有 tag 慣例一致):額外先跑一次後端 `pytest` + 前端 `tsc` 檢查,通過才 build,同時推 `:1.6.3` 和 `:latest`,並自動建立 GitHub Release。想要「正式版」有測試把關時才需要打 tag,平常改完直接 push main 就能拿到新映像。
 - 進度可在 GitHub repo 的 **Actions** 分頁看;完成後映像會出現在 repo 的 **Packages** 分頁。
 - **兩個映像名稱(4.0 起)**:每次建置都會把**同一份**映像、同一組 tag 同時推到 `beecount-cloud`(原名)和 `tallycheck-cloud`(帳好嗎 / TallyCheck 新名稱)。兩者內容完全相同,`docker-compose.yml` 的 `image:` 用哪一個都可以;既有部署繼續用 `beecount-cloud` 不需要改任何東西。4.x 中期才會正式遷移到新名稱。
+
+### 1.1 部署 4.0.0 dev
+
+先將要部署的提交 push 到 `feat/v4-dev`,再到 GitHub **Actions → release → Run workflow**,分支選 **`feat/v4-dev`** 後執行。也可以使用 GitHub CLI:
+
+```bash
+gh workflow run release.yml \
+  --repo asdfgh282812/BeeCount-Cloud \
+  --ref feat/v4-dev
+```
+
+此分支維持手動建置,每次 push 不會自動消耗 Actions 分鐘數。Dockerfile 會將 Web 前端與後端一起打包;建置成功後,以下兩個映像都會更新為該次版本:
+
+```text
+ghcr.io/asdfgh282812/beecount-cloud:4.0.0-dev
+ghcr.io/asdfgh282812/tallycheck-cloud:4.0.0-dev
+```
+
+將部署機器 `docker-compose.yml` 的 `image:` 改成其中一個:
+
+```yaml
+image: ghcr.io/asdfgh282812/beecount-cloud:4.0.0-dev
+```
+
+等待 Actions 建置成功,再於部署目錄執行:
+
+```bash
+docker compose pull beecount-cloud
+docker compose up -d beecount-cloud
+```
+
+之後每次更新都使用相同的 `image:` 和指令。Web 與 API 的版本號會顯示 `4.0.0-dev-<sha>`,便於確認部署的提交;若要固定某次建置,可改用 Actions **Docker metadata** 步驟列出的 commit SHA 標籤。
+
+若另架測試站,使用獨立的 Compose 部署目錄、port 與資料目錄;容器啟動會自動執行 Alembic migration,避免與正式站共用資料庫。登入等環境變數沿用第 3 節設定,`4.0.0-dev` 映像標籤不會自動切換 `APP_ENV`。
 
 ## 2. 一次性前置設定
 
