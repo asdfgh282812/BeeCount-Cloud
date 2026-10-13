@@ -243,7 +243,7 @@ export function CurrencySelectorTrigger({
         type="button"
         onClick={() => setOpen(true)}
         className={[
-          'flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40',
+          'bc-glass-control flex h-10 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors hover:text-primary',
           className || '',
         ]
           .filter(Boolean)

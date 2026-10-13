@@ -335,6 +335,33 @@
   --glass-panel-alpha: .95;
   --glass-blur: 26px;
 }
+/* 小型操作元件共用材質；滑塊不加第二層 backdrop-filter。 */
+.bc-glass-control, .bc-glass-segment {
+  --glass-control-tint: transparent;
+  background: linear-gradient(135deg, rgba(255,255,255,.08), transparent 55%),
+    linear-gradient(var(--glass-control-tint), var(--glass-control-tint)),
+    rgba(var(--glass-rgb), var(--glass-alpha));
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-rim), inset 1px 0 0 var(--glass-rim);
+}
+.bc-glass-control {
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+}
+.bc-glass-primary { --glass-control-tint: hsl(var(--primary) / .90); }
+.bc-glass-secondary, .bc-glass-choice[aria-pressed='true'] {
+  --glass-control-tint: hsl(var(--primary) / .20);
+  color: hsl(var(--primary-strong));
+}
+.bc-glass-danger { --glass-control-tint: hsl(var(--destructive) / .90); }
+.bc-glass-choice { color: hsl(var(--foreground)); }
+.bc-glass-choice[aria-pressed='true'] { font-weight: 600; color: hsl(var(--primary-strong)); }
+.bc-glass-segment {
+  --glass-control-tint: hsl(var(--primary) / .08);
+  background-color: rgba(var(--glass-rgb), var(--glass-panel-alpha));
+  box-shadow: inset 0 1px 0 var(--glass-rim), 0 1px 5px var(--glass-shadow);
+}
+.bc-glass-control:disabled { -webkit-backdrop-filter: none; backdrop-filter: none; }
 .bc-glass, .bc-glass-panel {
   background: linear-gradient(135deg, rgba(255,255,255,.08), transparent 55%), rgba(var(--glass-rgb), var(--glass-alpha));
   -webkit-backdrop-filter: blur(var(--glass-blur));
@@ -356,12 +383,23 @@
 }
 :root[data-reduce-motion='true'] .bc-glass-thumb { transition: none; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
-  .bc-glass, .bc-glass-panel, .bc-glass-thumb {
+  .bc-glass, .bc-glass-panel, .bc-glass-thumb, .bc-glass-control, .bc-glass-segment {
     background: rgb(var(--glass-rgb));
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+  .bc-glass-control, .bc-glass-segment {
+    background: linear-gradient(var(--glass-control-tint), var(--glass-control-tint)), rgb(var(--glass-rgb));
+    border-color: hsl(var(--foreground) / .45);
+  }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .bc-glass, .bc-glass-panel, .bc-glass-thumb { background: rgb(var(--glass-rgb)); }
+  .bc-glass-control, .bc-glass-segment {
+    background: linear-gradient(var(--glass-control-tint), var(--glass-control-tint)), rgb(var(--glass-rgb));
+  }
+}
+@media (forced-colors: active) {
+  .bc-glass-control, .bc-glass-segment { background: ButtonFace; color: ButtonText; border-color: ButtonText; }
+  .bc-glass-choice[aria-pressed='true'], .bc-glass-segment { border: 2px solid Highlight; }
 }

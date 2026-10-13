@@ -1303,7 +1303,7 @@ export function TransactionsPanel({
                   <button
                     type="button"
                     onClick={() => onFormChange({ ...form, fee_enabled: true })}
-                    className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                    className="bc-glass-control flex h-5 w-5 items-center justify-center rounded-full text-xs text-muted-foreground hover:text-foreground"
                     title={t('transactions.field.feeDiscountToggle')}
                   >
                     +
@@ -1528,7 +1528,7 @@ export function TransactionsPanel({
                       <button
                         type="button"
                         onClick={() => onFormChange({ ...form, discount_enabled: true })}
-                        className="flex h-5 w-5 items-center justify-center rounded-full border border-input text-xs text-muted-foreground hover:bg-accent/40"
+                        className="bc-glass-control flex h-5 w-5 items-center justify-center rounded-full text-xs text-muted-foreground hover:text-foreground"
                         title={t('transactions.field.feeDiscountToggle')}
                       >
                         +

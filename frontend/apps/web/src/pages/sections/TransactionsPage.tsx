@@ -24,6 +24,7 @@ import { CheckSquare, Download, SlidersHorizontal } from 'lucide-react'
 import {
   useToast,
   Button,
+  GlassChoice,
   Card,
   CardContent,
   CardHeader,
@@ -3060,33 +3061,23 @@ export function TransactionsPage() {
                     txFilterApplied.dateFrom === preset.range.dateFrom &&
                     txFilterApplied.dateTo === preset.range.dateTo
                   return (
-                    <button
+                    <GlassChoice
                       key={preset.key}
                       type="button"
                       aria-pressed={active}
                       onClick={() => applyTxQuickDateRange(preset.range)}
-                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                        active
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground hover:bg-muted/70'
-                      }`}
                     >
                       {preset.label}
-                    </button>
+                    </GlassChoice>
                   )
                 })}
-                <button
+                <GlassChoice
                   type="button"
                   aria-pressed={!txFilterApplied.dateFrom && !txFilterApplied.dateTo}
                   onClick={() => applyTxQuickDateRange(null)}
-                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                    !txFilterApplied.dateFrom && !txFilterApplied.dateTo
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:bg-muted/70'
-                  }`}
                 >
                   {t('transactions.quickDate.all')}
-                </button>
+                </GlassChoice>
               </div>
               {selectionMode ? (
                 <SelectionToolbar
