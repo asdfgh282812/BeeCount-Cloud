@@ -74,7 +74,7 @@ export async function verifyTwoFA(params: {
       code: params.code,
       client_type: 'web',
       device_id: params.device_id || undefined,
-      device_name: 'BeeCount Web',
+      device_name: 'TallyCheck Web',
       platform: 'web',
       app_version: params.client_info.app_version,
       os_version: params.client_info.os_version,

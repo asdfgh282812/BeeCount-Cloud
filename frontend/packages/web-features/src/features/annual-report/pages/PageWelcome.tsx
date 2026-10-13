@@ -43,7 +43,7 @@ export function PageWelcome({ data }: { data: AnnualReportData }) {
           transition={{ duration: 0.7, ease: 'easeOut' }}
           className="mb-2 text-xs uppercase tracking-[0.4em] text-white/55"
         >
-          BeeCount Year in Review
+          TallyCheck Year in Review
         </motion.div>
         <motion.div
           initial={{ opacity: 0, scale: 0.85 }}

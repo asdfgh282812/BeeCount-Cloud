@@ -400,7 +400,7 @@ export async function downloadImportTemplate(
   const disposition = response.headers.get('Content-Disposition') || ''
   const filename =
     parseSimpleFilenameFromDisposition(disposition) ||
-    `beecount-${options.entityType}-template.${options.format}`
+    `tallycheck-${options.entityType}-template.${options.format}`
   const blob = await response.blob()
   const objectUrl = URL.createObjectURL(blob)
   try {

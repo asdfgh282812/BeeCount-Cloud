@@ -1,4 +1,4 @@
-export const WEB_APP_NAME = 'BeeCount Web Console'
+export const WEB_APP_NAME = 'TallyCheck Web Console'
 
 export * from './lib/cn'
 export * from './locale/LanguageToggle'

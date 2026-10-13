@@ -1,7 +1,7 @@
 import { Check } from 'lucide-react'
 
 import { useT } from '../locale/LocaleProvider'
-import { PRIMARY_COLOR_PRESETS } from './primary-color-script'
+import { onColorHex, PRIMARY_COLOR_PRESETS } from './primary-color-script'
 import { usePrimaryColor } from './PrimaryColorProvider'
 
 interface Props {
@@ -35,7 +35,10 @@ export function PrimaryColorPicker({ allowCustom = true, className }: Props) {
               }`}
               style={{ background: preset }}
             >
-              {selected ? <Check className="h-4 w-4 text-white drop-shadow" /> : null}
+              {selected ? (
+                // 勾勾顏色依底色亮度挑白 / 墨綠黑(同 App onColor),淺色色票上才看得到。
+                <Check className="h-4 w-4 drop-shadow" style={{ color: onColorHex(preset) }} />
+              ) : null}
             </button>
           )
         })}

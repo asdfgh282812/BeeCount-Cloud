@@ -125,7 +125,7 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
 
   return (
     <div className="sticky top-0 z-50 px-2 pb-2 pt-[calc(0.75rem_+_env(safe-area-inset-top))] md:px-6 md:pt-[calc(1rem_+_env(safe-area-inset-top))]">
-      <header className="card px-2 md:px-5">
+      <header className="card bc-static px-2 md:px-5">
         <div className="flex h-14 items-center justify-between gap-2 md:gap-3">
           <div className="flex min-w-0 items-center gap-1.5 md:gap-2.5">
             <button
@@ -136,12 +136,12 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
             >
               <img alt={t('shell.appName')} className="h-7 w-7 shrink-0 md:h-8 md:w-8" src="/branding/logo.svg" />
               <div className="flex flex-col leading-none md:flex-row md:items-baseline md:gap-1.5 md:leading-tight">
-                <p className="whitespace-nowrap text-[13px] font-bold text-foreground md:text-[15px]">
+                <p className="whitespace-nowrap font-display text-[13px] font-normal text-foreground md:text-[15px]">
                   {t('shell.appName')}
                 </p>
                 <span
                   className="mt-0.5 font-mono text-[9px] text-muted-foreground/70 md:mt-0 md:text-[10px]"
-                  title={`BeeCount Cloud v${__APP_VERSION__}`}
+                  title={`${t('shell.appName')} Cloud v${__APP_VERSION__}`}
                 >
                   v{__APP_VERSION__}
                 </span>

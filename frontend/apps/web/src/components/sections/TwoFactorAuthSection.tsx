@@ -358,7 +358,7 @@ function SetupDialog({
                 onClick={() => {
                   const blob = new Blob(
                     [
-                      `BeeCount Recovery Codes\nGenerated: ${new Date().toISOString()}\n\n${recoveryCodes.join(
+                      `TallyCheck Recovery Codes\nGenerated: ${new Date().toISOString()}\n\n${recoveryCodes.join(
                         '\n'
                       )}\n`
                     ],
@@ -367,7 +367,7 @@ function SetupDialog({
                   const url = URL.createObjectURL(blob)
                   const a = document.createElement('a')
                   a.href = url
-                  a.download = 'beecount-recovery-codes.txt'
+                  a.download = 'tallycheck-recovery-codes.txt'
                   a.click()
                   URL.revokeObjectURL(url)
                 }}

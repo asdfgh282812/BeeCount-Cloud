@@ -1,4 +1,4 @@
-/* BeeCount Web service worker
+/* 帳好嗎 TallyCheck Web service worker
  *
  * 仅做"网络优先 + 静态资源兜底"，不尝试离线完整运行 —— 账本数据强依赖
  * 后端。主要价值：
@@ -12,7 +12,13 @@
  * API 请求（/api/*）绕过 SW —— 直接去网络，避免缓存 token/敏感数据。
  */
 
-const CACHE_VERSION = 'beecount-web-v2'
+// 快取名稱前綴 `beecount-` 在 4.0 改名後刻意保留(見 App repo
+// docs/roadmap/4.0.0/01-rebrand.md §3),只遞增版本號。
+// v3(2026-10-13):換上帳好嗎新 logo / icon。靜態資源是 cache 優先、不重新驗證,
+// 不換版本號的話舊使用者會一直看到快取裡的蜜蜂 logo;activate 會刪掉 v2。
+// 標題字型 /fonts/TallyCheckRounded-Regular.woff2(~1.2MB)刻意不放進 PRECACHE,
+// 第一次用到時才由下面的 cache 優先邏輯存起來;之後若換字型檔,要改檔名或再遞增版本。
+const CACHE_VERSION = 'beecount-web-v3'
 const SHARE_CACHE = 'beecount-share-target-v1'
 const PRECACHE = ['/', '/index.html', '/manifest.webmanifest', '/branding/logo.svg']
 

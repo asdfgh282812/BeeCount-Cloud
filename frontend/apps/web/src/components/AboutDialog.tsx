@@ -21,7 +21,7 @@ import {
 } from '@beecount/ui'
 
 /**
- * 「关于 BeeCount」弹窗 —— 之前的「更新日志」+「GitHub 仓库」两条菜单合一。
+ * 「关于帳好嗎」弹窗 —— 之前的「更新日志」+「GitHub 仓库」两条菜单合一。
  *
  * 信息层级:
  *   1. 顶部:版本对比头(当前 vs latest release,有更新弹升级 CTA)
@@ -31,12 +31,20 @@ import {
  * 数据源仍是 GitHub REST `GET /repos/.../releases?per_page=10&page=N`,匿名调
  * 用,公开仓够用(60/h/IP 限额)。release body 用本地极简 markdown renderer。
  *
+ *   4. 底部:来源声明(上游授权要求保留版权与作者资讯,不可删除)
+ *
  * 当前版本走 env var `VITE_APP_VERSION`(CI 构建时从 git tag 注入)。
+ *
+ * 4.0 改名帳好嗎後,倉庫連結改指向本 fork(asdfgh282812),repo 名稱沿用
+ * BeeCount-*(改名不改 repo,見 App repo docs/roadmap/4.0.0/01-rebrand.md)。
  */
 
-const REPO_OWNER = 'TNT-Likely'
+const REPO_OWNER = 'asdfgh282812'
 const REPO_CLOUD = 'BeeCount-Cloud' // 本仓 → release / changelog 数据源
-const REPO_APP = 'BeeCount'
+const REPO_APP = 'BeeCount-main'
+/** 授權條款(上游 sunxiao 的自訂授權 v1.0,原封不動保留),跟 App 關於頁
+ *  `WebsiteUrls.licenseUrl` 同一個連結。 */
+const LICENSE_URL = `https://github.com/${REPO_OWNER}/${REPO_APP}/blob/main/LICENSE`
 const DOCS_SITE_URL = 'https://beecount-manual.pages.dev/docs/intro'
 const GITHUB_API_BASE = `https://api.github.com/repos/${REPO_OWNER}/${REPO_CLOUD}`
 const GITHUB_RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_CLOUD}/releases`
@@ -425,7 +433,32 @@ export function AboutDialog({ open, onOpenChange }: Props) {
             )}
           </div>
         </div>
+
+        <UpstreamNotice />
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * 来源声明:帳好嗎以 BeeCount 为基础修改,依上游授权条款必须保留原始版权
+ * 声明与作者资讯(© 2024-2026 sunxiao / TNT-Likely),并附授权条款连结。
+ * 文案跟 App 关于页 `aboutUpstreamNotice` 相同。见 App repo
+ * docs/roadmap/4.0.0/01-rebrand.md §1。不要删除。关于弹窗与登录页底部共用。
+ */
+export function UpstreamNotice({ className = '' }: { className?: string }) {
+  const t = useT()
+  return (
+    <p className={`text-center text-[11px] leading-relaxed text-muted-foreground ${className}`}>
+      {t('about.upstreamNotice')}{' '}
+      <a
+        href={LICENSE_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="whitespace-nowrap text-primary underline-offset-2 hover:underline"
+      >
+        {t('about.viewLicense')}
+      </a>
+    </p>
   )
 }

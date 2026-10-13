@@ -226,7 +226,7 @@ export function ImportPage() {
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-lg font-semibold">{t('import.pageTitle')}</h1>
+        <h1 className="font-display text-lg font-normal">{t('import.pageTitle')}</h1>
       </div>
 
       {/* entity type 切換(2026-08 新增)—— 三種各自獨立,切換即重置暫存狀態。 */}

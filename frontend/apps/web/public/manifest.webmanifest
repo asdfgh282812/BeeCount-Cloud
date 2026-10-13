@@ -1,17 +1,17 @@
 {
   "id": "/?source=pwa",
-  "name": "蜜蜂記帳",
-  "short_name": "蜜蜂記帳",
-  "description": "自部署的个人记账云 · 移动端 / 网页端实时同步",
-  "lang": "zh-CN",
+  "name": "帳好嗎 TallyCheck",
+  "short_name": "帳好嗎",
+  "description": "帳好嗎 TallyCheck Cloud:自架的個人記帳雲 · 手機 / 網頁即時同步",
+  "lang": "zh-TW",
   "dir": "ltr",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],
   "orientation": "any",
-  "background_color": "#000000",
-  "theme_color": "#F59E0B",
+  "background_color": "#FFF8EC",
+  "theme_color": "#2E9E66",
   "categories": ["finance", "productivity", "utilities"],
   "launch_handler": {
     "client_mode": ["focus-existing", "auto"]
@@ -42,17 +42,23 @@
       "purpose": "any"
     },
     {
-      "src": "/branding/icon-512.png",
+      "src": "/branding/icon-maskable-512.png",
       "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/branding/icon-maskable-192.png",
+      "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     }
   ],
   "shortcuts": [
     {
-      "name": "记一笔",
-      "short_name": "记账",
-      "description": "快速新建一笔交易",
+      "name": "記一筆",
+      "short_name": "記帳",
+      "description": "快速新增一筆交易",
       "url": "/app/transactions?action=quick-add&source=shortcut",
       "icons": [
         {
@@ -63,7 +69,7 @@
       ]
     },
     {
-      "name": "今日账单",
+      "name": "今日帳單",
       "short_name": "今日",
       "description": "查看今天的所有交易",
       "url": "/app/transactions?range=today&source=shortcut",
@@ -76,9 +82,9 @@
       ]
     },
     {
-      "name": "本月预算",
-      "short_name": "预算",
-      "description": "查看本月预算执行情况",
+      "name": "本月預算",
+      "short_name": "預算",
+      "description": "查看本月預算執行情況",
       "url": "/app/budgets?source=shortcut",
       "icons": [
         {

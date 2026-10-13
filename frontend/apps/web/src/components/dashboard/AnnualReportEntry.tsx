@@ -136,7 +136,7 @@ export function AnnualReportLauncher({ open, onClose, initialYear }: AnnualRepor
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="mb-1 text-base font-semibold text-foreground">
-          {t(TKEY.entryBannerTitle).replace(/^🐝\s*/, '')}
+          {t(TKEY.entryBannerTitle).replace(/^(🌱|🐝)\s*/u, '')}
         </h3>
         <p className="mb-5 text-xs text-muted-foreground">{t(TKEY.entryBannerSubtitle)}</p>
 

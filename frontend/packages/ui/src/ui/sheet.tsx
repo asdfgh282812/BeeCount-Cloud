@@ -69,7 +69,7 @@ function SheetTitle({
   className,
   ...props
 }: React.ComponentPropsWithoutRef<typeof SheetPrimitive.Title>) {
-  return <SheetPrimitive.Title className={cn('text-lg font-semibold text-foreground', className)} {...props} />
+  return <SheetPrimitive.Title className={cn('font-display text-lg font-normal text-foreground', className)} {...props} />
 }
 
 function SheetDescription({

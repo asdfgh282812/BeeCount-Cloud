@@ -792,7 +792,7 @@ export async function downloadWorkspaceTransactionsCsv(
   const filename =
     parseFilenameFromDisposition(disposition) ||
     options.fallbackFilename ||
-    'beecount-export.csv'
+    'tallycheck-export.csv'
 
   const blob = await response.blob()
   const objectUrl = URL.createObjectURL(blob)

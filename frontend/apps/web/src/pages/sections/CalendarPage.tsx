@@ -390,7 +390,7 @@ export function CalendarPage() {
       {/* 顶部 toolbar — prev/today/next 合并成 pill 组,月份字号加大 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-xl font-bold tracking-tight">{monthLabel}</h1>
+          <h1 className="font-display text-xl font-normal tracking-tight">{monthLabel}</h1>
           {loadingMonth && (
             <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
           )}

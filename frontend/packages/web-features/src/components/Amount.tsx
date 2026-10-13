@@ -112,6 +112,15 @@ export function Amount({
     .filter(Boolean)
     .join(' ')
 
+  // 數字變更時淡入(4.0 Web 動態規範,App repo docs/roadmap/4.0.0/03-ui-motion-redesign.md §5):
+  // 只在「顯示字串真的變了」之後才掛 `bc-amount-fade`,首次渲染不動(整頁載入時
+  // 一片金額同時閃很吵)。換 key 讓同一個 span 重新掛載、動畫每次重跑;
+  // prefers-reduced-motion 由 styles.css 關掉。StrictMode 的二次渲染看到的是
+  // 同一個字串,不會重複遞增。
+  const fade = useRef({ text, version: 0 })
+  if (fade.current.text !== text) fade.current = { text, version: fade.current.version + 1 }
+  const changed = fade.current.version > 0
+
   // "上下翻页":只在显式开启 + 允许动效 + 是有限数值时启用,否则渲染静态文本。
   const reduceMotion = useReducedMotion()
   const numeric = typeof value === 'number' && Number.isFinite(value)
@@ -124,7 +133,11 @@ export function Amount({
       </span>
     )
   }
-  return <span className={classes}>{text}</span>
+  return (
+    <span key={fade.current.version} className={changed ? `${classes} bc-amount-fade` : classes}>
+      {text}
+    </span>
+  )
 }
 
 // 屏幕阅读器读完整终值;逐位滚动的可见部分全部 aria-hidden。

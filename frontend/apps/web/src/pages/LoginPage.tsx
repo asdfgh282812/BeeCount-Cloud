@@ -23,6 +23,7 @@ import {
   ThemeToggle,
   useT
 } from '@beecount/ui'
+import { UpstreamNotice } from '../components/AboutDialog'
 import { localizeError } from '../i18n/errors'
 
 const HINT_DISMISSED_KEY = 'login_initial_password_hint_dismissed'
@@ -150,11 +151,11 @@ export function LoginPage({ onLoggedIn, ssoRedirectPath = '/app/overview' }: Log
             <div className="flex items-center gap-3">
               <img src="/branding/logo.svg" alt={t('shell.appName')} className="h-12 w-12" />
               <div>
-                <div className="text-2xl font-bold">{t('app.brand')}</div>
+                <div className="font-display text-2xl font-normal">{t('app.brand')}</div>
                 <div className="text-sm text-muted-foreground">{t('app.subtitle')}</div>
               </div>
             </div>
-            <h1 className="text-4xl font-bold leading-tight tracking-tight">
+            <h1 className="font-display text-4xl font-normal leading-tight tracking-tight">
               <span className="bg-gradient-to-br from-primary to-primary/60 bg-clip-text text-transparent">
                 {t('login.heroHighlight')}
               </span>
@@ -197,7 +198,7 @@ export function LoginPage({ onLoggedIn, ssoRedirectPath = '/app/overview' }: Log
               <div className="mb-6 flex items-center gap-3 lg:hidden">
                 <img src="/branding/logo.svg" alt="" className="h-10 w-10" />
                 <div>
-                  <div className="text-lg font-bold">{t('app.brand')}</div>
+                  <div className="font-display text-lg font-normal">{t('app.brand')}</div>
                   <div className="text-xs text-muted-foreground">{t('app.subtitle')}</div>
                 </div>
               </div>
@@ -205,7 +206,7 @@ export function LoginPage({ onLoggedIn, ssoRedirectPath = '/app/overview' }: Log
                 <div className="inline-flex w-fit rounded-full border border-primary/35 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                   {t('app.brand')}
                 </div>
-                <h2 className="mt-2 text-2xl font-bold">{t('login.title')}</h2>
+                <h2 className="mt-2 font-display text-2xl font-normal">{t('login.title')}</h2>
               </div>
 
               {ssoStatus === null ? (
@@ -302,6 +303,8 @@ export function LoginPage({ onLoggedIn, ssoRedirectPath = '/app/overview' }: Log
                 </Alert>
               )}
             </div>
+            {/* 頁尾來源聲明(上游授權要求,跟 App 關於頁同一段文字) */}
+            <UpstreamNotice className="mt-4 px-2" />
           </div>
         </div>
       </div>

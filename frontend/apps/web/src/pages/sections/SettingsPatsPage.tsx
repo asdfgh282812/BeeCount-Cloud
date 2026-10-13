@@ -195,7 +195,7 @@ export function SettingsPatsPage() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <KeyRound className="h-5 w-5 text-muted-foreground" />
-              <h2 className="text-base font-semibold">{t('settings.pats.title')}</h2>
+              <h2 className="font-display text-base font-normal">{t('settings.pats.title')}</h2>
               <span className="hidden text-xs text-muted-foreground sm:inline">
                 {t('settings.pats.subtitleShort')}
               </span>
@@ -567,7 +567,7 @@ function CallHistoryCard() {
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <History className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-base font-semibold">{t('settings.mcpCalls.title')}</h2>
+            <h2 className="font-display text-base font-normal">{t('settings.mcpCalls.title')}</h2>
             <span className="hidden text-xs text-muted-foreground sm:inline">
               {t('settings.mcpCalls.subtitleShort')}
             </span>

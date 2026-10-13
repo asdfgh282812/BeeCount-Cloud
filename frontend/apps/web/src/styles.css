@@ -2,57 +2,113 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 標題用圓體(App repo docs/roadmap/4.0.0/03-ui-motion-redesign.md §2.2:標題用圓體、
+   內文維持系統字)。字型檔是 jf open 粉圓 2.1 的子集(Big5 常用字 + App/Web 介面字 +
+   ASCII),OFL 規定修改版不能沿用保留字型名,所以改名「TallyCheck Rounded」——
+   CSS family 名稱與檔名都不要寫回原名。授權:/fonts/OFL-TallyCheckRounded.txt、
+   repo 根目錄 THIRD-PARTY-NOTICES.md。只有 400 一種字重,用的地方一律 font-normal。 */
+@font-face {
+  font-family: 'TallyCheck Rounded';
+  src: url('/fonts/TallyCheckRounded-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
+  /*
+   * 4.0「田間帳本」設計 token —— 色碼跟 App `lib/styles/tokens.dart` 的
+   * `BeePalette` / `BeeTokens` 完全一致(App repo docs/roadmap/4.0.0/02-brand-identity.md §4、
+   * 03-ui-motion-redesign.md §5)。對照表見 docs/changes/2026-10-13-v4-web-rebrand-tokens.md。
+   * 一律是 `H S% L%`(不帶 hsl() 包裝),tailwind 用 `hsl(var(--x) / <alpha>)` 取。
+   */
   :root {
-    --background: 210 25% 97%;
-    --foreground: 220 20% 16%;
-    --card: 0 0% 100%;
-    --card-foreground: 216 23% 18%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 216 23% 18%;
-    --primary: 38 92% 52%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 43 95% 92%;
-    --secondary-foreground: 216 23% 18%;
-    --muted: 220 20% 94%;
-    --muted-foreground: 220 9% 45%;
-    /* accent 跟随 primary 色相:primary-color-script.ts 会动态设
-       --accent-light;这里用 fallback 兜底(JS 还没跑到的首帧)。 */
-    --accent: var(--accent-light, 38 80% 90%);
-    --accent-foreground: 216 23% 18%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 220 16% 88%;
-    --input: 220 16% 88%;
-    --ring: 38 92% 52%;
-    --radius: 0.75rem;
-    --shadow: 38 40% 28%;
+    --background: 38 100% 96.3%; /* 米白 rice #FFF8EC */
+    --foreground: 147 15.1% 14.3%; /* 墨綠黑 ink #1F2A24 */
+    --card: 0 0% 100%; /* paper #FFFFFF */
+    --card-foreground: 147 15.1% 14.3%;
+    --popover: 0 0% 100%; /* surfaceElevated(亮)= paper */
+    --popover-foreground: 147 15.1% 14.3%;
+    /* primary 由 primary-color-script.ts 依使用者主色算好 --primary-light / -dark
+       等變數寫在 <html style>;這裡的 fallback = 預設新芽綠(JS 還沒跑到的首幀)。 */
+    --primary: var(--primary-light, 150 54.9% 40%); /* 新芽綠 sprout #2E9E66 */
+    --primary-foreground: var(--primary-foreground-light, 0 0% 100%);
+    --primary-soft: var(--primary-soft-light, 145 43.6% 92.4%); /* 嫩芽綠 #E3F4EA */
+    --primary-strong: var(--primary-strong-light, 152 59.3% 33.7%); /* 深芽綠 #23895A */
+    --secondary: 40 39.6% 89.6%; /* paper3 #EFE8DA(chip 底) */
+    --secondary-foreground: 147 15.1% 14.3%;
+    --muted: 40 48.4% 93.9%; /* paper2 #F7F2E8(次級底、輸入框) */
+    --muted-foreground: 146 8.1% 38.8%; /* 灰綠 ink2 #5B6B62 */
+    /* accent = 全站 hover 底(`hover:bg-accent/40`),跟隨主色色相,見 primary-color-script */
+    --accent: var(--accent-light, 150 80% 90%);
+    --accent-foreground: 147 15.1% 14.3%;
+    --destructive: 8 74.5% 60%; /* 珊瑚紅 coral #E5604D */
+    --destructive-foreground: 0 0% 100%;
+    --border: 40 31.3% 86.9%; /* 米灰 line #E8E1D3 */
+    --border-strong: 40 31.3% 86.9%; /* borderStrong(亮)= line */
+    --input: 40 31.3% 86.9%;
+    --ring: var(--primary);
+    /* 品牌點綴色(不跟隨主題色) */
+    --harvest: 37 90% 60.8%; /* 收成金 #F5B041 */
+    --harvest-strong: 36 75.7% 48.4%; /* 熟金 #D98E1E */
+    --harvest-foreground: 147 15.1% 14.3%;
+    --info: 206 73.7% 62.7%; /* 晴空藍 sky #5AA9E6 */
+    --success: 142 70.6% 45.3%; /* #22C55E */
+    --warning: 38 92.1% 50.2%; /* #F59E0B */
+    /* 圓角階梯 = App `BeeRadius`;--radius 保留給 shadcn 相容(= md) */
+    --radius-xs: 6px;
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 20px;
+    --radius-xl: 28px;
+    --radius: var(--radius-md);
+    /* 層次 = App `BeeElevation`:亮色用暖棕陰影(shadowWarm #5A4630),不用純黑 */
+    --shadow: 31 30.4% 27.1%;
+    --elevation-1: 0 2px 10px hsl(var(--shadow) / 0.06);
+    --elevation-2: 0 4px 16px hsl(var(--shadow) / 0.09);
+    --elevation-3: 0 8px 24px hsl(var(--shadow) / 0.12);
   }
 
   .dark {
-    --background: 220 16% 8%;
-    --foreground: 210 40% 98%;
-    --card: 220 15% 11%;
-    --card-foreground: 210 40% 98%;
-    --popover: 0 0% 12%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 43 96% 56%;
-    --primary-foreground: 0 0% 10%;
-    --secondary: 220 13% 19%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 218 16% 14%;
-    --muted-foreground: 217 10% 65%;
-    --accent: var(--accent-dark, 40 85% 22%);
+    --background: 150 10% 7.8%; /* night #121614(帶綠的深色,不是純黑) */
+    --foreground: 132 17.2% 94.3%; /* inkDark #EEF3EF */
+    --card: 150 10% 11.8%; /* night1 #1B211E */
+    --card-foreground: 132 17.2% 94.3%;
+    --popover: 146 9.1% 15.1%; /* surfaceElevated(暗)= night2 #232A26 */
+    --popover-foreground: 132 17.2% 94.3%;
+    /* 預設新芽綠在暗色是 #4CC788(App BeeTheme.primaryFor);自選色兩組相同 */
+    --primary: var(--primary-dark, 149 52.3% 53.9%);
+    --primary-foreground: var(--primary-foreground-dark, 147 15.1% 14.3%);
+    --primary-soft: var(--primary-soft-dark, 149 28.2% 20.2%);
+    --primary-strong: var(--primary-strong-dark, 149 52.3% 59.9%);
+    --secondary: 147 9.7% 18.2%; /* night3 #2A332E */
+    --secondary-foreground: 132 17.2% 94.3%;
+    --muted: 146 9.1% 15.1%; /* night2 #232A26 */
+    --muted-foreground: 145 10.7% 65.3%; /* ink2Dark #9DB0A5 */
+    --accent: var(--accent-dark, 150 80% 90%);
     /* accent 亮/暗统一用浅色底(见 primary-color-script),foreground 深色文字。
        另:当前代码里已不再用 `text-accent-foreground`(交互 hover 统一走 bg-primary/15
        text-primary),这个变量只给将来未预见的使用场景作兜底。 */
-    --accent-foreground: 216 23% 18%;
-    --destructive: 0 74% 58%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 17% 23%;
-    --input: 217 17% 23%;
-    --ring: 43 96% 56%;
-    --shadow: 215 70% 2%;
+    --accent-foreground: 147 15.1% 14.3%;
+    --destructive: 8 81.7% 67.8%; /* coralDark #F07C6A */
+    --destructive-foreground: 147 15.1% 14.3%; /* onColor(#F07C6A)= 墨綠黑 */
+    /* 4.0 起暗色邊框改用中性的 lineDark,不再帶主色(主色換綠後會跟收入色混在一起) */
+    --border: 147 9.7% 18.2%; /* lineDark #2A332E */
+    --border-strong: 147 9.4% 22.9%; /* night4 #35403A */
+    --input: 147 9.4% 22.9%;
+    --ring: var(--primary);
+    --harvest: 38 90.6% 66.5%; /* harvestDark #F7BE5C */
+    --harvest-strong: 37 90% 60.8%; /* 暗色的 accentStrong = harvest */
+    --harvest-foreground: 147 15.1% 14.3%;
+    --info: 207 79.3% 71.6%; /* skyDark #7DBDF0 */
+    --success: 158 64.4% 51.6%; /* #34D399 */
+    --warning: 43 96.4% 56.3%; /* #FBBF24 */
+    /* 暗色不用陰影(App BeeElevation:黑底上看不見,只會讓邊緣發糊),層次改由
+       亮一階的底色 + 細邊表達 */
+    --shadow: 150 20% 2%;
+    --elevation-1: 0 0 0 0 transparent;
+    --elevation-2: 0 0 0 0 transparent;
+    --elevation-3: 0 0 0 0 transparent;
   }
 
   /* 收支颜色方案：跟随 mobile incomeExpenseColorSchemeProvider。默认 red =
@@ -61,25 +117,42 @@
      默认（未设置 data 属性）走 "red" 分支，跟 mobile 默认一致。 */
   :root,
   html[data-income-color="red"] {
-    --income-rgb: 239 68 68;   /* rose-500  */
-    --expense-rgb: 16 185 129; /* emerald-500 */
+    --income-rgb: 229 96 77;   /* 珊瑚紅 coral #E5604D(App BeeTokens.error) */
+    --expense-rgb: 34 197 94;  /* App BeeTokens.success #22C55E */
   }
   html[data-income-color="green"] {
-    --income-rgb: 16 185 129;
-    --expense-rgb: 239 68 68;
+    --income-rgb: 34 197 94;
+    --expense-rgb: 229 96 77;
+  }
+  /* 暗色用 App 的暗色語意色(coralDark #F07C6A / success #34D399) */
+  html.dark:not([data-income-color="green"]) {
+    --income-rgb: 240 124 106;
+    --expense-rgb: 52 211 153;
+  }
+  html.dark[data-income-color="green"] {
+    --income-rgb: 52 211 153;
+    --expense-rgb: 240 124 106;
   }
 
   /* 股票漲跌色:獨立於收支配色(台股習慣紅漲綠跌,但收支是紅支出綠收入)。
      對應 appearance.stock_up_is_red,AppShell 設 <html data-stock-color="red|green">。
-     預設(未設定)= 紅漲綠跌。 */
+     預設(未設定)= 紅漲綠跌。色碼跟收支一樣用 App 語意色。 */
   :root,
   html[data-stock-color="red"] {
-    --stock-up-rgb: 239 68 68;
-    --stock-down-rgb: 16 185 129;
+    --stock-up-rgb: 229 96 77;
+    --stock-down-rgb: 34 197 94;
   }
   html[data-stock-color="green"] {
-    --stock-up-rgb: 16 185 129;
-    --stock-down-rgb: 239 68 68;
+    --stock-up-rgb: 34 197 94;
+    --stock-down-rgb: 229 96 77;
+  }
+  html.dark:not([data-stock-color="green"]) {
+    --stock-up-rgb: 240 124 106;
+    --stock-down-rgb: 52 211 153;
+  }
+  html.dark[data-stock-color="green"] {
+    --stock-up-rgb: 52 211 153;
+    --stock-down-rgb: 240 124 106;
   }
 
   * {
@@ -88,26 +161,36 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    /* 內文跟 App 一樣用平台系統字 */
     font-family:
-      'Sora',
-      'Avenir Next',
-      'SF Pro Text',
-      'PingFang SC',
-      'Noto Sans CJK SC',
+      system-ui,
+      -apple-system,
       'Segoe UI',
+      'PingFang TC',
+      'Noto Sans TC',
+      'Microsoft JhengHei',
       sans-serif;
+  }
+
+  /* 圓體只有 400 一種字重:就算呼叫端另外帶了 font-semibold / font-bold,也不要讓
+     瀏覽器假粗體(會糊成一團),維持原字重。 */
+  .font-display {
+    font-synthesis: none;
   }
 }
 
 @layer components {
+  /* 卡片:亮色 = 白卡 + BeeElevation 1 階暖色陰影;暗色 = night1 + 一圈細邊、
+     不用陰影(App BeeElevation)。圓角 = BeeRadius.lg(卡片統一 20)。 */
   .card {
-    @apply rounded-xl border border-border/60 bg-card shadow-[0_1px_0_hsl(var(--border)/0.35)];
+    @apply rounded-xl border border-border/60 bg-card;
+    box-shadow: var(--elevation-1);
   }
 
   .bc-panel {
-    @apply rounded-2xl border border-border/70 bg-card/95 shadow-sm;
+    @apply rounded-2xl border border-border/70 bg-card/95;
     box-shadow:
-      0 8px 24px -18px hsl(var(--shadow) / 0.55),
+      var(--elevation-1),
       0 1px 0 0 hsl(var(--primary) / 0.08) inset;
   }
 
@@ -121,7 +204,33 @@
 
   .bc-glass {
     @apply border border-border/70 bg-card;
-    box-shadow: 0 10px 30px -18px hsl(var(--shadow) / 0.45);
+    box-shadow: var(--elevation-1);
+  }
+
+  /* 卡片 hover 的層次變化(03 §5 Web 只做兩種動態之一):亮色陰影升到 2 階,
+     暗色邊框亮一階。刻意**不位移**(transform 會讓卡片變成新的 stacking context /
+     containing block,卡片裡非 portal 的下拉選單會被蓋住)。只在真的有滑鼠的裝置
+     上生效,觸控裝置點一下不會卡在 hover 態。`.bc-static` 用來關掉(例如頁首)。 */
+  .card,
+  .bc-panel,
+  .bc-glass {
+    transition:
+      box-shadow 200ms cubic-bezier(0.2, 0, 0, 1),
+      border-color 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* 選擇器包在 :where() 裡,特異度只剩 :hover 的 (0,1,0):蓋得過上面 .card 本身的
+     邊框/陰影,但蓋不過頁面上另外寫的 utility(例如刻意給的 border-primary/40)。 */
+  @media (hover: hover) {
+    :where(.card, .bc-glass):where(:not(.bc-static)):hover {
+      border-color: hsl(var(--border-strong));
+      box-shadow: var(--elevation-2);
+    }
+    :where(.bc-panel):where(:not(.bc-static)):hover {
+      border-color: hsl(var(--border-strong));
+      box-shadow:
+        var(--elevation-2),
+        0 1px 0 0 hsl(var(--primary) / 0.08) inset;
+    }
   }
 
   .bc-hero-border {
@@ -170,5 +279,32 @@
 @media (prefers-reduced-motion: reduce) {
   .bee-rise-in {
     animation: none;
+  }
+}
+
+/* ===== 金額變更淡入(03 §5 Web 只做兩種動態之二) =====
+   `<Amount>` 顯示的字串變了才掛上(首次渲染不淡入,列表載入時不會整片閃),
+   key 換掉讓動畫每次重跑。 */
+.bc-amount-fade {
+  animation: bc-amount-fade 280ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes bc-amount-fade {
+  from {
+    opacity: 0.15;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bc-amount-fade {
+    animation: none;
+  }
+  .card,
+  .bc-panel,
+  .bc-glass {
+    transition: none;
   }
 }

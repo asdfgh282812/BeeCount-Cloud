@@ -113,7 +113,7 @@ export async function login(email: string, password: string): Promise<LoginRespo
       password,
       client_type: 'web',
       device_id: existingDeviceId,
-      device_name: 'BeeCount Web',
+      device_name: 'TallyCheck Web',
       platform: 'web',
       app_version: info.app_version,
       os_version: info.os_version,
@@ -149,7 +149,7 @@ export function buildSsoLoginUrl(redirectPath: string = '/app/overview'): string
   const params = new URLSearchParams()
   params.set('redirect', redirectPath)
   if (existingDeviceId) params.set('device_id', existingDeviceId)
-  params.set('device_name', 'BeeCount Web')
+  params.set('device_name', 'TallyCheck Web')
   params.set('platform', 'web')
   if (info.app_version) params.set('app_version', info.app_version)
   params.set('os_version', info.os_version)

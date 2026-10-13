@@ -1,6 +1,6 @@
 # 第三方组件声明 / Third-Party Notices
 
-本仓库源码**不包含（vendor）任何第三方库的源代码**。所有第三方依赖在构建/部署时由包管理器（pip / pnpm）从官方源获取，各自按其原始开源协议授权，与本项目的 [LICENSE](LICENSE)（双许可）相互独立。使用、部署或基于本项目二次开发时，请一并遵守下列组件各自的协议。
+本仓库源码**不包含（vendor）任何第三方库的源代码**（唯一例外是 Web 面板的标题字型档，见文末「随仓库分发的资源」）。所有第三方依赖在构建/部署时由包管理器（pip / pnpm）从官方源获取，各自按其原始开源协议授权，与本项目的 [LICENSE](LICENSE)（双许可）相互独立。使用、部署或基于本项目二次开发时，请一并遵守下列组件各自的协议。
 
 > 下表为**直接依赖**及其上游申明的协议（截至 2026-07 整理，以各包发布页为准）。完整含传递依赖的清单可随时用 `pip-licenses`（后端）/ `pnpm licenses list`（前端）生成。
 
@@ -50,6 +50,19 @@ psycopg（PostgreSQL 驱动）采用 LGPL-3.0 协议。本项目**未修改** ps
 | tailwindcss / postcss / autoprefixer（构建期） | MIT |
 | vite / vitest（构建期） | MIT |
 | typescript（构建期） | Apache-2.0 |
+
+## 随仓库分发的资源 / Bundled assets
+
+唯一的例外是 Web 面板标题用的圆体字型——它是**修改过的字型档**，直接放在仓库里随前端一起分发：
+
+| 档案 | 来源 | 协议 |
+|---|---|---|
+| `frontend/apps/web/public/fonts/TallyCheckRounded-Regular.woff2` | 以 [jf open 粉圓（jf open huninn）2.1](https://github.com/justfont/open-huninn-font) 为基础取子集（Big5 常用字 + App／Web 介面用字 + ASCII 与标点），只有 Regular 一种字重 | SIL Open Font License 1.1，全文见 `frontend/apps/web/public/fonts/OFL-TallyCheckRounded.txt` |
+
+- jf open 粉圓 © 2020-2024 justfont，保留字型名称 “open huninn”、“huninn”；其拉丁字母部分来自 Varela Round（© 2011-2016 The Varela Round Project Authors，保留字型名称 “Varela”、“Varela Round”），汉字部分衍生自 Kosugi Maru（© 2010 MOTOYA CO.,LTD.，Apache-2.0）。
+- OFL 规定修改版不得沿用保留字型名称，所以子集版改名为 **TallyCheck Rounded**（CSS `font-family` 与档名都用这个名字）。字型档本身仍依 OFL 1.1 授权，不受本项目 LICENSE 约束；可以自由使用、修改、再分发，但不得单独贩售字型档。
+
+**English**: The only vendored asset is the Web panel's heading font `TallyCheckRounded-Regular.woff2`, a subset (Big5 common characters + App/Web UI strings + ASCII) of jf open huninn 2.1 by justfont (Latin glyphs from Varela Round, Hanzi derived from Kosugi Maru). It is licensed under the SIL Open Font License 1.1 (full text in `frontend/apps/web/public/fonts/OFL-TallyCheckRounded.txt`). Because OFL reserves the names "open huninn"/"huninn"/"Varela"/"Varela Round" for modified versions, the subset is renamed "TallyCheck Rounded". The font stays under OFL 1.1, independent of this project's LICENSE.
 
 ---
 

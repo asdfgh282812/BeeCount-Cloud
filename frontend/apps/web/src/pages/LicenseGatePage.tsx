@@ -39,13 +39,13 @@ export function LicenseGatePage({ token, status, onActivated, onLogout }: Props)
         <div className="w-full space-y-6 rounded-2xl border border-border/60 bg-card/90 p-8 shadow-xl backdrop-blur-md">
           <div className="flex items-center gap-3">
             <img src="/branding/logo.svg" alt={t('shell.appName')} className="h-10 w-10" />
-            <div className="text-lg font-semibold">{t('app.brand')}</div>
+            <div className="font-display text-lg font-normal">{t('app.brand')}</div>
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <ShieldAlert className="h-5 w-5 text-primary" />
-              <h1 className="text-xl font-bold">{t('license.gate.title')}</h1>
+              <h1 className="font-display text-xl font-normal">{t('license.gate.title')}</h1>
             </div>
             <p className="text-sm text-muted-foreground">{t('license.gate.desc')}</p>
             {expired ? (

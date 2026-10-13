@@ -61,7 +61,7 @@ export function PosterDialog({ data, open, onClose, url }: PosterDialogProps) {
       })
       const a = document.createElement('a')
       a.href = dataUrl
-      a.download = `beecount-${data.year}-${data.ledgerName.replace(/\s+/g, '-')}.png`
+      a.download = `tallycheck-${data.year}-${data.ledgerName.replace(/\s+/g, '-')}.png`
       a.click()
     } catch (e) {
       console.error('[poster] download failed', e)
@@ -107,10 +107,10 @@ export function PosterDialog({ data, open, onClose, url }: PosterDialogProps) {
                 <Card p={pal('cover')}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="text-xl">🐝</span>
+                      <span className="text-xl">🌱</span>
                       <div className="flex flex-col leading-tight">
                         <span className="text-[10px] font-semibold uppercase tracking-widest text-white/70">
-                          BeeCount Year in Review
+                          TallyCheck Year in Review
                         </span>
                         <span className="text-xs text-white/60">{data.ledgerName}</span>
                       </div>
@@ -259,7 +259,7 @@ export function PosterDialog({ data, open, onClose, url }: PosterDialogProps) {
                   <div className="flex flex-col">
                     <span className="text-[10px] font-medium uppercase tracking-widest text-white/45">Powered by</span>
                     <span className="text-sm font-bold" style={{ color: pal('finale').accent }}>
-                      BeeCount
+                      {t('shell.appName')}
                     </span>
                     <span className="mt-0.5 text-[10px] text-white/45">{link.replace(/^https?:\/\//, '')}</span>
                   </div>
