@@ -1,4 +1,10 @@
 const zhTW = {
+  'transactions.schedule.label': '交易方式',
+  'transactions.schedule.normal': '一般',
+  'transactions.schedule.recurring': '週期',
+  'transactions.schedule.installment': '分期',
+  'transactions.schedule.deposit': '訂金',
+  'transactions.schedule.dragHint': '點選或按住左右拖動，放開後切換。',
   'profile.glass.title': 'Liquid Glass',
   'profile.glass.desc': '導覽列與浮動元件的玻璃材質',
   'profile.glass.clear': '清透',

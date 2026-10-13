@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  GlassSegmented,
   Label,
   Pagination,
   Select,
@@ -940,6 +941,17 @@ export function TransactionsPanel({
     })
   }
 
+  const depositModeAvailable =
+    (form.tx_type === 'expense' || form.tx_type === 'transfer') &&
+    !form.deposit_blocked && canManageDepositBalance && form.deposit_status !== 'completed'
+  const scheduleOptions = [
+    { value: 'normal', label: t('transactions.schedule.normal') as string },
+    ...(!form.editingId ? [{ value: 'recurring', label: t('transactions.schedule.recurring') as string }] : []),
+    ...(!form.editingId && form.tx_type === 'expense'
+      ? [{ value: 'installment', label: t('transactions.schedule.installment') as string }] : []),
+    ...(depositModeAvailable ? [{ value: 'deposit', label: t('transactions.schedule.deposit') as string }] : [])
+  ]
+
   const colCount = 8 + (showCreatorColumn ? 1 : 0) + (showLedgerColumn ? 1 : 0)
 
   return (
@@ -1779,6 +1791,22 @@ export function TransactionsPanel({
               />
             </div>
 
+            {scheduleOptions.length > 1 ? (
+              <div className="space-y-1 md:col-span-2">
+                <GlassSegmented
+                  label={t('transactions.schedule.label') as string}
+                  value={form.recurring_enabled ? 'recurring' : form.installment_enabled ? 'installment' : form.deposit_enabled ? 'deposit' : 'normal'}
+                  options={scheduleOptions}
+                  onValueChange={(mode) => onFormChange({ ...form,
+                    recurring_enabled: mode === 'recurring',
+                    installment_enabled: mode === 'installment',
+                    deposit_enabled: mode === 'deposit'
+                  })}
+                />
+                <p className="text-xs text-muted-foreground">{t('transactions.schedule.dragHint')}</p>
+              </div>
+            ) : null}
+
             {/* 訂金尾款追蹤(doc.moze.app/record/deposit):expense/transfer 且不是
                 週期性/分期交易時可開。尾款補上前不是交易(不進統計/餘額),金額與
                 日期都可以「未定」;補上後整區改成唯讀文字。尾款是獨立實體,存檔時
@@ -1787,7 +1815,7 @@ export function TransactionsPanel({
             !form.deposit_blocked &&
             !form.recurring_enabled &&
             !form.installment_enabled &&
-            (canManageDepositBalance || form.deposit_status === 'completed') ? (
+            ((form.deposit_enabled && canManageDepositBalance) || form.deposit_status === 'completed') ? (
               <div className="space-y-1 md:col-span-2">
                 {form.deposit_status === 'completed' ? (
                   <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
@@ -1795,31 +1823,7 @@ export function TransactionsPanel({
                   </div>
                 ) : (
                   <>
-                    <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">{t('depositBalance.form.toggle')}</p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {t('depositBalance.form.hint')}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        data-testid="tx-form-deposit-toggle"
-                        aria-checked={form.deposit_enabled}
-                        aria-label={t('depositBalance.form.toggle') as string}
-                        onClick={() => onFormChange({ ...form, deposit_enabled: !form.deposit_enabled })}
-                        className={`relative ml-3 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
-                          form.deposit_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                            form.deposit_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
-                          }`}
-                        />
-                      </button>
-                    </div>
+                    <p className="text-[11px] text-muted-foreground">{t('depositBalance.form.hint')}</p>
                     {form.deposit_enabled ? (
                       <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
                         <div className="space-y-1">
@@ -1858,35 +1862,8 @@ export function TransactionsPanel({
             {/* Phase 1.5(§2.12.1/§2.12.2):建交易当下顺便设成週期性收支/
                 分期付款起点。只在新建(非编辑)时显示,两者互斥(挂在同一笔
                 amount/happened_at 上,语意冲突);分期只对 expense 有意义。 */}
-            {!form.editingId ? (
+            {!form.editingId && form.recurring_enabled ? (
               <div className="space-y-1 md:col-span-2">
-                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-sm font-medium">{t('transactions.toggle.recurring')}</p>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.recurring_enabled}
-                    aria-label={t('transactions.toggle.recurring') as string}
-                    onClick={() =>
-                      onFormChange({
-                        ...form,
-                        recurring_enabled: !form.recurring_enabled,
-                        installment_enabled: false,
-                        // 週期性收支不能同時是訂金交易(尾款只掛一次性交易)。
-                        deposit_enabled: false
-                      })
-                    }
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
-                      form.recurring_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                        form.recurring_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
-                      }`}
-                    />
-                  </button>
-                </div>
                 {form.recurring_enabled ? (
                   <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
                     <div className="space-y-1">
@@ -1992,34 +1969,8 @@ export function TransactionsPanel({
               </div>
             ) : null}
 
-            {!form.editingId && form.tx_type === 'expense' ? (
+            {!form.editingId && form.tx_type === 'expense' && form.installment_enabled ? (
               <div className="space-y-1 md:col-span-2">
-                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-sm font-medium">{t('transactions.toggle.installment')}</p>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.installment_enabled}
-                    aria-label={t('transactions.toggle.installment') as string}
-                    onClick={() =>
-                      onFormChange({
-                        ...form,
-                        installment_enabled: !form.installment_enabled,
-                        recurring_enabled: false,
-                        deposit_enabled: false
-                      })
-                    }
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
-                      form.installment_enabled ? 'bg-primary' : 'bg-muted-foreground/30'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                        form.installment_enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
-                      }`}
-                    />
-                  </button>
-                </div>
                 {form.installment_enabled ? (
                   <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/10 p-3 md:grid-cols-2">
                     <div className="space-y-1">

@@ -1,4 +1,10 @@
 const en = {
+  'transactions.schedule.label': 'Transaction mode',
+  'transactions.schedule.normal': 'Normal',
+  'transactions.schedule.recurring': 'Recurring',
+  'transactions.schedule.installment': 'Installment',
+  'transactions.schedule.deposit': 'Deposit',
+  'transactions.schedule.dragHint': 'Tap or press and drag sideways. Release to switch.',
   'profile.glass.title': 'Liquid Glass',
   'profile.glass.desc': 'Glass materials for navigation and floating controls',
   'profile.glass.clear': 'Clear',

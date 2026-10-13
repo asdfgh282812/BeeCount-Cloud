@@ -1,4 +1,10 @@
 const zhCN = {
+  'transactions.schedule.label': '交易方式',
+  'transactions.schedule.normal': '一般',
+  'transactions.schedule.recurring': '周期',
+  'transactions.schedule.installment': '分期',
+  'transactions.schedule.deposit': '订金',
+  'transactions.schedule.dragHint': '点击或按住左右拖动，松开后切换。',
   'profile.glass.title': 'Liquid Glass',
   'profile.glass.desc': '导航栏与浮动组件的玻璃材质',
   'profile.glass.clear': '清透',
