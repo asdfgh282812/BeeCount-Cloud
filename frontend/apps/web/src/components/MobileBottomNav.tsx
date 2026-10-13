@@ -30,27 +30,32 @@ export function MobileBottomNav({ activeSection, onNavigate }: Props) {
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 backdrop-blur-md md:hidden"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      className="bc-glass fixed inset-x-4 bottom-3 z-40 rounded-full md:hidden"
+      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}
     >
-      <div className="mx-auto flex max-w-3xl items-stretch">
+      <div className="relative mx-auto flex max-w-3xl items-stretch p-1">
+        <span
+          className="bc-glass-thumb pointer-events-none absolute bottom-1 top-1 rounded-full"
+          style={{
+            width: 'calc((100% - 8px) / 5)',
+            left: '4px',
+            transform: `translateX(${Math.max(0, tabs.findIndex((tab) => tab.section === activeSection)) * 100}%)`,
+            opacity: tabs.some((tab) => tab.section === activeSection) ? 1 : 0,
+          }}
+          aria-hidden
+        />
         {tabs.map(({ section, label, Icon }) => {
           const active = activeSection === section
           return (
             <button
               key={section}
               type="button"
+              aria-current={active ? 'page' : undefined}
               onClick={() => onNavigate(section)}
               className={`relative flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] transition-colors ${
                 active ? 'text-primary' : 'text-muted-foreground'
               }`}
             >
-              {active ? (
-                <span
-                  className="absolute inset-x-6 top-0 h-[2px] rounded-full bg-primary"
-                  aria-hidden
-                />
-              ) : null}
               <Icon className={`h-5 w-5 ${active ? 'text-primary' : ''}`} />
               <span className="font-medium">{label}</span>
             </button>

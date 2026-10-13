@@ -1,4 +1,9 @@
 const zhCN = {
+  'profile.glass.title': 'Liquid Glass',
+  'profile.glass.desc': '导航栏与浮动组件的玻璃材质',
+  'profile.glass.clear': '清透',
+  'profile.glass.balanced': '平衡',
+  'profile.glass.tinted': '厚雾',
   'app.brand': '帳好嗎 Cloud 控制台',
   'app.subtitle': '远端数据模式 · 多设备同步',
 

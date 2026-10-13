@@ -125,7 +125,7 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
 
   return (
     <div className="sticky top-0 z-50 px-2 pb-2 pt-[calc(0.75rem_+_env(safe-area-inset-top))] md:px-6 md:pt-[calc(1rem_+_env(safe-area-inset-top))]">
-      <header className="card bc-static px-2 md:px-5">
+      <header className="bc-glass rounded-[28px] px-2 md:px-5">
         <div className="flex h-14 items-center justify-between gap-2 md:gap-3">
           <div className="flex min-w-0 items-center gap-1.5 md:gap-2.5">
             <button

@@ -46,6 +46,8 @@ import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
 import { SettingsLicenseSection } from './SettingsLicenseSection'
 import { SettingsSwipeSmartSection } from './SettingsSwipeSmartSection'
+import { GlassStyleSetting } from '../GlassStyleSetting'
+import { resolveGlassStyle } from '../../lib/glassStyle'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
 const DISPLAY_NAME_MAX = 60
@@ -429,6 +431,11 @@ export function SettingsProfileAppearanceSection() {
           <CardTitle>{t('profile.sync.title')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <GlassStyleSetting
+            value={resolveGlassStyle(appearance.glass_style)}
+            disabled={appearanceSaving}
+            onChange={(value) => void saveAppearance({ glass_style: value })}
+          />
           {/* 收支配色:可点 toggle —— web 改后 server 广播 profile_change,
               mobile 端 sync_engine 监听到自动拉新 */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">

@@ -1,4 +1,9 @@
 const en = {
+  'profile.glass.title': 'Liquid Glass',
+  'profile.glass.desc': 'Glass materials for navigation and floating controls',
+  'profile.glass.clear': 'Clear',
+  'profile.glass.balanced': 'Balanced',
+  'profile.glass.tinted': 'Frosted',
   'app.brand': 'TallyCheck Cloud Console',
   'app.subtitle': 'Remote-first bookkeeping with multi-device sync',
 

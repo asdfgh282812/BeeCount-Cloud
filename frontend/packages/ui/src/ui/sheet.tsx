@@ -21,12 +21,12 @@ function SheetOverlay({
 }
 
 const sheetVariants = cva(
-  'fixed z-50 gap-4 bg-card p-6 shadow-soft transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300',
+  'bc-glass-panel fixed z-50 gap-4 p-6 transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300',
   {
     variants: {
       side: {
         top: 'inset-x-0 top-0 border-b border-border',
-        bottom: 'inset-x-0 bottom-0 border-t border-border',
+        bottom: 'inset-x-0 bottom-0 rounded-t-[28px] border-t border-border',
         left: 'inset-y-0 left-0 h-full w-3/4 border-r border-border sm:max-w-sm',
         right: 'inset-y-0 right-0 h-full w-3/4 border-l border-border sm:max-w-sm'
       }

@@ -39,6 +39,10 @@ export type TwoFARegenerateResponse = {
 }
 
 export type ProfileAppearance = {
+  /** App／Web 共用材質：缺鍵預設清透，不修改既有主色。 */
+  glass_style?: 'clear' | 'balanced' | 'tinted'
+  /** App 的減少動畫偏好；Web 導覽滑塊也尊重此設定。 */
+  reduce_motion?: boolean
   /** 顶部皮肤 id:'none' | 'aurora' | 'mountains' | … 详见 mobile kHeaderSkins */
   header_skin?: string
   /** 紧凑金额显示(万/亿) */

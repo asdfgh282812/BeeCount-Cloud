@@ -308,3 +308,60 @@
     transition: none;
   }
 }
+
+/* Liquid Glass 操作層；參數與 App BeeGlassTokens 一致。 */
+:root {
+  --glass-rgb: 255, 255, 255;
+  --glass-alpha: .24;
+  --glass-panel-alpha: .66;
+  --glass-blur: 12px;
+  --glass-rim: rgba(255, 255, 255, .85);
+  --glass-edge: rgba(90, 70, 48, .12);
+  --glass-shadow: rgba(90, 70, 48, .17);
+}
+:root.dark {
+  --glass-rgb: 35, 42, 38;
+  --glass-rim: rgba(255, 255, 255, .26);
+  --glass-edge: rgba(255, 255, 255, .09);
+  --glass-shadow: rgba(18, 22, 20, .32);
+}
+:root[data-glass-style='balanced'] {
+  --glass-alpha: .54;
+  --glass-panel-alpha: .83;
+  --glass-blur: 20px;
+}
+:root[data-glass-style='tinted'] {
+  --glass-alpha: .87;
+  --glass-panel-alpha: .95;
+  --glass-blur: 26px;
+}
+.bc-glass, .bc-glass-panel {
+  background: linear-gradient(135deg, rgba(255,255,255,.08), transparent 55%), rgba(var(--glass-rgb), var(--glass-alpha));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-rim), inset 1px 0 0 var(--glass-rim), 0 5px 17px var(--glass-shadow);
+}
+.bc-glass-panel {
+  background-color: rgba(var(--glass-rgb), var(--glass-panel-alpha));
+}
+.bc-glass-thumb {
+  background: rgba(var(--glass-rgb), var(--glass-alpha));
+  box-shadow: inset 0 1px 0 var(--glass-rim), 0 1px 5px var(--glass-shadow);
+  border: 1px solid var(--glass-edge);
+  transition: transform 280ms cubic-bezier(.2,.8,.2,1), opacity 150ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bc-glass-thumb { transition: none; }
+}
+:root[data-reduce-motion='true'] .bc-glass-thumb { transition: none; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  .bc-glass, .bc-glass-panel, .bc-glass-thumb {
+    background: rgb(var(--glass-rgb));
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .bc-glass, .bc-glass-panel, .bc-glass-thumb { background: rgb(var(--glass-rgb)); }
+}

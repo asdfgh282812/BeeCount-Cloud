@@ -1,4 +1,9 @@
 const zhTW = {
+  'profile.glass.title': 'Liquid Glass',
+  'profile.glass.desc': '導覽列與浮動元件的玻璃材質',
+  'profile.glass.clear': '清透',
+  'profile.glass.balanced': '平衡',
+  'profile.glass.tinted': '厚霧',
   'app.brand': '帳好嗎 Cloud 控制台',
   'app.subtitle': '遠端資料模式 · 多裝置同步',
 

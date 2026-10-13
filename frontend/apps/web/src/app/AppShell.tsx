@@ -23,6 +23,7 @@ import { GlobalSharedLedgerDialogs } from '../components/GlobalSharedLedgerDialo
 import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
+import { applyGlassStyle } from '../lib/glassStyle'
 import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
 import { AuthProvider } from '../context/AuthContext'
 import { LedgersProvider } from '../context/LedgersContext'
@@ -185,6 +186,11 @@ export function AppShell({ token, onLogout }: Props) {
   // 见 profile.appearance 整包下行(refreshProfile / profile_change 都会更新
   // profileMe,这里只是把值转给 web-features 的 context,不用另外订阅事件)。
   const categoryIconStyle = profileMe?.appearance?.category_icon_style === 'cute' ? 'cute' : 'material'
+
+  useEffect(() => {
+    applyGlassStyle(profileMe?.appearance?.glass_style)
+    document.documentElement.dataset.reduceMotion = profileMe?.appearance?.reduce_motion ? 'true' : 'false'
+  }, [profileMe?.appearance?.glass_style, profileMe?.appearance?.reduce_motion])
 
   // 節日主題:主要國家的節日當天暫時換主題色 + 頁首徽章(見 useFestivalTheme)
   const { locale } = useLocale()
