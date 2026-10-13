@@ -1,15 +1,17 @@
-# BeeCount Cloud MCP Server
+# TallyCheck Cloud MCP Server
 
-Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your BeeCount ledger data via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
+> TallyCheck Cloud is based on BeeCount Cloud. The `beecount` key in the config examples below is just the name you give this server in your MCP client — keeping the old name doesn't affect anything, and you can rename it to `tallycheck` if you prefer.
+
+Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your TallyCheck ledger data via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 
 ---
 
 ## What it is
 
-MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 19 tools:
+MCP is Anthropic's open standard for LLM tool integration. TallyCheck Cloud ships a built-in MCP server exposing 19 tools:
 
 - **13 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger` / `list_stock_holdings` / `get_stock_realized_pnl`
-- **6 write tools** — `create_transaction` / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
+- **6 write tools** — `create_transaction` / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let TallyCheck's own AI parse free-form text)
 
 Inside your favourite LLM client you can just say:
 
@@ -19,15 +21,15 @@ Inside your favourite LLM client you can just say:
 >
 > "Log this for me: I just bought a bottle of water at the convenience store for 3.50."
 
-The LLM picks the right tool, no need to open BeeCount. Transactions created via MCP are automatically tagged `MCP` to distinguish them from the mobile "AI bookkeeping" flow.
+The LLM picks the right tool, no need to open TallyCheck. Transactions created via MCP are automatically tagged `MCP` to distinguish them from the mobile "AI bookkeeping" flow.
 
 ---
 
 ## Setup
 
-### 1. Create a PAT in BeeCount Cloud Web
+### 1. Create a PAT in TallyCheck Cloud Web
 
-1. Log into the BeeCount Cloud web console
+1. Log into the TallyCheck Cloud web console
 2. Avatar dropdown → **Settings → Developer** (`/app/settings/developer`)
 3. Click **New token**:
    - **Name** — a label, e.g. `Claude Desktop`
@@ -39,11 +41,11 @@ The LLM picks the right tool, no need to open BeeCount. Transactions created via
 
 ### 2. Configure the LLM client
 
-BeeCount Cloud's MCP uses **Streamable HTTP** (a single endpoint): your deployment URL plus `/api/v1/mcp`.
+TallyCheck Cloud's MCP uses **Streamable HTTP** (a single endpoint): your deployment URL plus `/api/v1/mcp`.
 
 > Replace the placeholders below:
 >
-> - `https://your-domain.com` → your BeeCount Cloud URL (can also be `http://192.168.x.x:8080`, Tailscale, etc.)
+> - `https://your-domain.com` → your TallyCheck Cloud URL (can also be `http://192.168.x.x:8080`, Tailscale, etc.)
 > - `bcmcp_xxx...` → the PAT plaintext from step 1
 
 **Recommended: clients that speak Streamable HTTP natively connect directly, no `mcp-remote` needed.** For example, Claude Code:
@@ -82,7 +84,7 @@ Config file:
 
 > On macOS Claude Desktop doesn't inherit the shell PATH. If `npx` isn't found, use `/opt/homebrew/bin/npx` (Apple Silicon) or `/usr/local/bin/npx` (Intel).
 
-Fully quit Claude Desktop (`Cmd+Q`) and relaunch — the 🔌 "BeeCount" indicator in the bottom-left means it's connected.
+Fully quit Claude Desktop (`Cmd+Q`) and relaunch — the 🔌 "beecount" indicator (the name you gave it in the config) in the bottom-left means it's connected.
 
 #### Cursor
 
@@ -231,7 +233,7 @@ PAT and access tokens are strictly partitioned: **PATs only work against `/api/v
 
 **Q: `parse_and_create_from_text` returns `AI_NO_CHAT_PROVIDER`**
 
-- You need to configure an AI provider (GLM / OpenAI / etc.) in the web settings first. This tool uses BeeCount's own AI to parse natural language — different from the LLM client's AI.
+- You need to configure an AI provider (GLM / OpenAI / etc.) in the web settings first. This tool uses TallyCheck's own AI to parse natural language — different from the LLM client's AI.
 
 **Q: Which ledger does MCP use when I have multiple?**
 

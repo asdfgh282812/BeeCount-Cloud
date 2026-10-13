@@ -1,4 +1,4 @@
-# BeeCount-Cloud Dockerfile
+# BeeCount-Cloud Dockerfile(帳好嗎 Cloud / TallyCheck Cloud;repo 与 image 名称 4.0 维持 beecount-cloud)
 # 多阶段构建：frontend (pnpm + Vite) + Python (FastAPI + Alembic)
 
 # ===== Stage 1: frontend 构建 =====
@@ -27,10 +27,21 @@ RUN pnpm -C apps/web build
 # 从 BeeCount-Website 拉构建好的 RAG 索引(由 Website CI 维护)。
 # Website 在 docs 改动时已经 build 好 sqlite 提交回 main,Cloud 这边只 cp。
 # 详见 .docs/web-cmdk-ai-doc-search.md。
+# 4.0(帳好嗎 / TallyCheck)起优先拉自己的 fork 手册站。fork 还没有建好索引
+# (没有 data/ 或里面是空的)时退回上游 TNT-Likely 的索引——内容是蜜蜂记账品牌,
+# 但 AI prompt 已要求回答时一律称帳好嗎(src/services/ai/prompts.py),总比文档
+# Q&A 整个没资料好。fork 补上索引后自动改用 fork,不用再改这里。
+# 两边都拉不到时 mkdir -p 保证后面 COPY 不会让 build 失败,只是 A1 文档 Q&A 降级。
 FROM alpine/git:latest AS docs-index-fetcher
-ARG DOCS_INDEX_REPO=https://github.com/TNT-Likely/BeeCount-Website.git
+ARG DOCS_INDEX_REPO=https://github.com/asdfgh282812/BeeCount-Website.git
+ARG DOCS_INDEX_FALLBACK_REPO=https://github.com/TNT-Likely/BeeCount-Website.git
 ARG DOCS_INDEX_BRANCH=main
-RUN git clone --depth 1 --branch ${DOCS_INDEX_BRANCH} ${DOCS_INDEX_REPO} /website || \
+RUN git clone --depth 1 --branch ${DOCS_INDEX_BRANCH} ${DOCS_INDEX_REPO} /website || true; \
+    if [ -z "$(ls -A /website/data 2>/dev/null)" ]; then \
+      echo "fork 没有 docs index,退回上游 ${DOCS_INDEX_FALLBACK_REPO}"; \
+      rm -rf /website; \
+      git clone --depth 1 --branch ${DOCS_INDEX_BRANCH} ${DOCS_INDEX_FALLBACK_REPO} /website || true; \
+    fi; \
     mkdir -p /website/data
 RUN ls /website/data 2>/dev/null || echo 'no docs index found (Website CI 未跑或 repo private,A1 文档 Q&A 将降级)'
 

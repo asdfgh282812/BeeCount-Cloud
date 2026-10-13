@@ -122,7 +122,7 @@ def _resolve_write_ledger(
     if not live:
         return None, {
             "status": "no_ledger",
-            "message": "You have no ledger yet. Create one in BeeCount first.",
+            "message": "You have no ledger yet. Create one in TallyCheck first.",
         }
     if len(live) == 1:
         return live[0], None

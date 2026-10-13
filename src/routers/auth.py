@@ -689,7 +689,7 @@ def sso_callback(
         db,
         user.id,
         state_payload.get("device_id"),
-        state_payload.get("device_name") or "BeeCount Web",
+        state_payload.get("device_name") or "TallyCheck Web",
         state_payload.get("platform") or "web",
         app_version=state_payload.get("app_version"),
         os_version=state_payload.get("os_version"),

@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# BeeCount Cloud —— AI 助手 / 開發者指南
+# 帳好嗎 Cloud / TallyCheck Cloud（原 BeeCount Cloud）—— AI 助手 / 開發者指南
+
+> 4.0 起產品改名為**帳好嗎 Cloud（zh）/ TallyCheck Cloud（en）**，是 sunxiao / TNT-Likely 的 BeeCount Cloud 的 fork。**只有使用者看得到的文字換成新名字**（`APP_NAME`、OpenAPI 標題、MCP server 名稱、TOTP issuer 預設、AI 助手 prompt、下載檔名…）；**程式碼識別字一律保留 BeeCount**：`beecount://auth-callback` SSO scheme、UUIDv5 seed `beecount:stock_dca:*`、授權碼前綴 `BC-`、Prometheus 指標 `beecount_*`、logger 名稱 `beecount.*`、DB / docker volume / image 名稱 `beecount-cloud`、匯入格式代碼 `"beecount"`、`BeeCountParser` 等類別名、所有 API / wire 欄位名。改任何東西前先看 App repo 的 `docs/roadmap/4.0.0/01-rebrand.md` §3 與本 repo 的 `docs/changes/2026-10-13-v4-rebrand-cloud.md`。`LICENSE` / `LICENSE_EN` 是上游作者的自訂授權 v1.0（不是 BSL），不可修改。
 
 本文件旨在提供 AI 編碼助手 (Claude Code / Copilot 等) 與新進開發者快速定位與開發規範指引，包含**常用指令**、**架構契約**與**避免 Bug 的標準作業流程 (SOP)**。
 

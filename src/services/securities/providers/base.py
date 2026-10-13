@@ -6,7 +6,7 @@ from datetime import date, datetime
 import httpx
 
 # Yahoo 對沒有 User-Agent 的請求會回 429/403。
-USER_AGENT = "Mozilla/5.0 (compatible; BeeCountCloud/1.0; +https://github.com/TNT-Likely/BeeCount)"
+USER_AGENT = "Mozilla/5.0 (compatible; TallyCheck-Cloud/1.0; +https://github.com/asdfgh282812/BeeCount-Cloud)"
 TIMEOUT = httpx.Timeout(10.0)
 
 

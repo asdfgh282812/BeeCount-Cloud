@@ -1,5 +1,7 @@
 # Docker 部署教學(GHCR 自動建置版)
 
+> 帳好嗎 Cloud(TallyCheck Cloud)以 BeeCount Cloud 為基礎修改;repo、image、容器、資料庫等識別名稱仍沿用 `beecount`。
+>
 > 本文件說明「這個 fork」(`asdfgh282812/BeeCount-Cloud`)專屬的部署方式:
 > **建置完全交給 GitHub Actions,你只負責 `docker compose pull` + `up -d`**,
 > 跟 [`SwipeSmart`](https://github.com/asdfgh282812/SwipeSmart) 的「NAS 直接部署」是同一套模式。
@@ -17,6 +19,7 @@ GitHub Actions(.github/workflows/release.yml)
    │  build + push 映像
    ▼
 ghcr.io/asdfgh282812/beecount-cloud:latest
+ghcr.io/asdfgh282812/tallycheck-cloud:latest   ← 4.0 起同一份映像的別名
    │  docker compose pull
    ▼
 你的伺服器 / NAS(容器啟動,不需要在本機/伺服器上跑任何 build)
@@ -25,6 +28,7 @@ ghcr.io/asdfgh282812/beecount-cloud:latest
 - **push 到 `main`**:自動 build 並推 `:latest`(+ `:sha-xxxxxxx`),**不跑測試**,求快,幾分鐘內映像就緒。
 - **打版本 tag**(如 `1.6.3`,格式 `x.y.z`,不用加 `v` 前綴,跟現有 tag 慣例一致):額外先跑一次後端 `pytest` + 前端 `tsc` 檢查,通過才 build,同時推 `:1.6.3` 和 `:latest`,並自動建立 GitHub Release。想要「正式版」有測試把關時才需要打 tag,平常改完直接 push main 就能拿到新映像。
 - 進度可在 GitHub repo 的 **Actions** 分頁看;完成後映像會出現在 repo 的 **Packages** 分頁。
+- **兩個映像名稱(4.0 起)**:每次建置都會把**同一份**映像、同一組 tag 同時推到 `beecount-cloud`(原名)和 `tallycheck-cloud`(帳好嗎 / TallyCheck 新名稱)。兩者內容完全相同,`docker-compose.yml` 的 `image:` 用哪一個都可以;既有部署繼續用 `beecount-cloud` 不需要改任何東西。4.x 中期才會正式遷移到新名稱。
 
 ## 2. 一次性前置設定
 
@@ -44,6 +48,7 @@ GitHub 對「fork 來的 repo」預設會把 Actions 整個關掉,跟 workflow �
 
 1. 到 GitHub → 你的 repo(`asdfgh282812/BeeCount-Cloud`)→ 右側 **Packages** → 點進 `beecount-cloud`
 2. **Package settings** → **Change visibility** → 設成 **Public**
+3. 4.0 起多了 `tallycheck-cloud` 這個 package(第一次建置後才會出現),一樣照 1~2 設成 Public;只用 `beecount-cloud` 的話可以不管它。
 
 設成 Public 之後,伺服器端 `docker compose pull` **不需要登入**就能拉。映像裡不含任何密鑰(密鑰都是 runtime 環境變數),設 Public 是安全的。
 
@@ -184,7 +189,7 @@ docker compose logs beecount-cloud | grep -A 10 "初次启动"
 看到類似:
 
 ```
- BeeCount Cloud — 初次启动,已自动创建管理员账号:
+ TallyCheck Cloud(帳好嗎 Cloud)— 初次启动,已自动创建管理员账号:
 
    邮箱:    owner@example.com
    密码:    FIDodUnwprkw1zUi
@@ -203,7 +208,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Alembic migration 會在容器啟動時自動跑,不需要手動介入。想固定用某個正式版本號(而不是永遠追 `:latest`),把 `image` 改成 `ghcr.io/asdfgh282812/beecount-cloud:1.6.3` 這種明確 tag 即可。
+Alembic migration 會在容器啟動時自動跑,不需要手動介入。想固定用某個正式版本號(而不是永遠追 `:latest`),把 `image` 改成 `ghcr.io/asdfgh282812/beecount-cloud:1.6.3`(或 `ghcr.io/asdfgh282812/tallycheck-cloud:1.6.3`)這種明確 tag 即可。
 
 可以用 Synology「工作排程器」/ cron 排一個腳本定期跑上面兩行做到自動更新;或手動執行。
 

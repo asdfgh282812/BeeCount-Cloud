@@ -90,7 +90,7 @@ def test_setup_returns_secret_and_qr() -> None:
         body = _setup_2fa(client, token["access_token"])
         assert "secret" in body and len(body["secret"]) >= 16
         assert body["qr_code_uri"].startswith("otpauth://totp/")
-        assert "BeeCount" in body["qr_code_uri"]
+        assert "TallyCheck" in body["qr_code_uri"]
         assert body["expires_in"] == 300
     finally:
         app.dependency_overrides.clear()

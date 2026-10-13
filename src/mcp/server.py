@@ -1,4 +1,4 @@
-"""BeeCount Cloud MCP server — 注册所有 20 个 tool,导出 ASGI app。
+"""TallyCheck Cloud(帳好嗎 Cloud,原 BeeCount Cloud)MCP server — 注册所有 20 个 tool,导出 ASGI app。
 
 设计:.docs/mcp-server-design.md。
 
@@ -164,8 +164,11 @@ async def _logged_call(
 # 挂在 BeeCount-Cloud 的 FastAPI 后面(反代 / 自定义域名 / docker 内网,
 # Host header 是任意值),保护一开必报 421/500。这层校验跟我们的 PAT
 # Bearer + CORS 是重叠的,关掉,把 host/origin 校验留给上游反代。
+# server name 只出现在 MCP initialize 回应的 serverInfo.name(纯显示用),
+# 客户端是用使用者自己在设定档取的 key 识别 server,tool 名称也不带它,
+# 所以 4.0 改名直接换成新品牌名不影响既有连线。
 mcp = FastMCP(
-    "BeeCount Cloud",
+    "TallyCheck Cloud",
     # Streamable HTTP transport:无状态(适合反代 / 无粘性负载均衡)+ 单次
     # JSON 响应(纯 request-response 的 tool 调用不需要 server 主动推流)。
     stateless_http=True,
@@ -183,7 +186,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 async def list_ledgers(ctx: Context) -> list[dict[str, Any]]:
-    """List all ledgers for the authenticated BeeCount user.
+    """List all ledgers for the authenticated TallyCheck user.
 
     Returns each ledger's id (external_id), name, currency, and created_at.
     Use the returned id when calling other tools that take ledger_id.
@@ -513,10 +516,10 @@ async def update_budget(ctx: Context, budget_id: str, amount: float) -> dict[str
 async def parse_and_create_from_text(
     ctx: Context, text: str, ledger_id: str | None = None
 ) -> dict[str, Any]:
-    """Have BeeCount AI parse free-form natural-language text into a transaction.
+    """Have TallyCheck AI parse free-form natural-language text into a transaction.
 
     Useful when the user gives a sentence like "上午星巴克花了 38" and you want
-    BeeCount's own AI prompt + ledger context to do the heavy lifting. Requires
+    TallyCheck's own AI prompt + ledger context to do the heavy lifting. Requires
     the user to have configured an AI chat provider in their profile.
     """
     kw = {"text": text, "ledger_id": ledger_id}

@@ -45,13 +45,13 @@ def generate_totp_secret() -> str:
 def build_otpauth_uri(secret: str, account_label: str) -> str:
     """拼 otpauth://totp/<issuer>:<email>?secret=...&issuer=<issuer>[&image=<url>]
 
-    - issuer 来自 settings.totp_issuer_name(默认 "BeeCount",自托管用户可改)
+    - issuer 来自 settings.totp_issuer_name(默认 "TallyCheck",自托管用户可改)
     - image 来自 settings.totp_image_url(可选;Microsoft Authenticator 等支持)
 
     account_label 通常是用户邮箱;authenticator app 显示为 "<issuer>: foo@bar"。
     """
     settings = get_settings()
-    issuer_name = settings.totp_issuer_name or "BeeCount"
+    issuer_name = settings.totp_issuer_name or "TallyCheck"
     issuer = quote(issuer_name, safe="")
     label = quote(f"{issuer_name}:{account_label}", safe="")
     params = [

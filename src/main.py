@@ -75,12 +75,12 @@ from .version import __version__ as _beecount_cloud_version, APP_NAME as _beecou
 app = FastAPI(
     title=settings.app_name,
     version=_beecount_cloud_version,
-    description="BeeCount Cloud v1 API",
+    description="TallyCheck Cloud (帳好嗎 Cloud) v1 API — based on BeeCount Cloud",
 )
 
 
 # 公开版本接口:mobile / web UI 都会调用它,在设置区或 header 展示
-# "BeeCount Cloud vX.Y.Z"。不需要认证 —— 版本号不敏感,且 mobile 未登录
+# "TallyCheck Cloud vX.Y.Z"(name 来自 version.APP_NAME,纯显示用)。不需要认证 —— 版本号不敏感,且 mobile 未登录
 # 状态下(登录页)也可能想告诉用户 server 版本。
 @app.get(f"{settings.api_prefix}/version")
 def public_version() -> dict:
@@ -148,7 +148,7 @@ def oauth_protected_resource_metadata(request: _Request, _resource_path: str = "
         "resource": resource,
         "authorization_servers": [],
         "bearer_methods_supported": ["header"],
-        "resource_documentation": "https://github.com/TNT-Likely/BeeCount-Cloud/blob/main/docs/MCP.md",
+        "resource_documentation": "https://github.com/asdfgh282812/BeeCount-Cloud/blob/main/docs/MCP.md",
     }
 
 

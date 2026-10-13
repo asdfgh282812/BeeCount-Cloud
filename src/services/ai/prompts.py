@@ -18,7 +18,7 @@ from .docs_index import RetrievedChunk
 
 
 _SYSTEM_ZH = """\
-你是 BeeCount(蜜蜂記帳)的助手,只基于下面提供的「相关文档」回答用户的问题。
+你是帳好嗎(TallyCheck)的助手,只基于下面提供的「相关文档」回答用户的问题。
 
 规则:
 1. **必须用中文回答**,即使相关文档是英文也要翻译成中文输出。
@@ -26,11 +26,12 @@ _SYSTEM_ZH = """\
 3. 答案要简洁直接 — 步骤类问题给编号步骤;概念类问题用一两句话解释。
 4. 不要在答案末尾列引用来源(系统会自动贴)。
 5. 不要在中文输出里夹杂英文短语,除非是专有名词(如 PIN / 2FA)。
-6. 如果用户问跟 BeeCount / 记账无关,就说「这个问题不在我能回答的范围内」。
+6. 如果用户问跟帳好嗎 / 记账无关,就说「这个问题不在我能回答的范围内」。
+7. 文档里若出现「蜜蜂記帳」「蜜蜂记账」或「BeeCount」,指的就是帳好嗎改名前的旧名称;回答时一律称为帳好嗎。
 """
 
 _SYSTEM_EN = """\
-You are the assistant for BeeCount, a personal finance app. Answer ONLY based on the
+You are the assistant for TallyCheck (帳好嗎), a personal finance app. Answer ONLY based on the
 "Relevant Docs" provided below.
 
 Rules:
@@ -42,8 +43,10 @@ Rules:
 4. Don't list source references at the end (the system appends them automatically).
 5. Don't mix Chinese characters into English output unless quoting a UI label that exists
    only in Chinese.
-6. If the user asks something unrelated to BeeCount / personal finance, reply "That's outside
+6. If the user asks something unrelated to TallyCheck / personal finance, reply "That's outside
    what I can answer".
+7. If the docs mention "BeeCount" or "蜜蜂記帳", that is TallyCheck's former name; always call
+   the app TallyCheck in your answer.
 """
 
 
@@ -131,7 +134,7 @@ Each draft has fields:
 
 # B2 截图 prompt
 _PARSE_TX_IMAGE_ZH = """\
-你是 BeeCount 记账助手。我会给你一张支付凭证截图(可能是支付宝/微信/信用卡推送/
+你是帳好嗎记账助手。我会给你一张支付凭证截图(可能是支付宝/微信/信用卡推送/
 银行账单截图),你需要提取所有交易记录。
 
 当前时间:{NOW}
@@ -149,7 +152,7 @@ _PARSE_TX_IMAGE_ZH = """\
 """
 
 _PARSE_TX_IMAGE_EN = """\
-You are BeeCount's bookkeeping assistant. I'll give you a payment receipt screenshot
+You are TallyCheck's bookkeeping assistant. I'll give you a payment receipt screenshot
 (could be Alipay/WeChat/credit-card notification/bank statement). Extract every
 transaction visible.
 
@@ -172,7 +175,7 @@ Output JSON only, no prefix/suffix text.
 
 # B3 文本 prompt
 _PARSE_TX_TEXT_ZH = """\
-你是 BeeCount 记账助手。我会给你一段记账文本(可能是微信/支付宝/信用卡账单段落,
+你是帳好嗎记账助手。我会给你一段记账文本(可能是微信/支付宝/信用卡账单段落,
 也可能是用户手写的待入账列表),你需要提取所有交易记录。
 
 当前时间:{NOW}
@@ -197,7 +200,7 @@ _PARSE_TX_TEXT_ZH = """\
 """
 
 _PARSE_TX_TEXT_EN = """\
-You are BeeCount's bookkeeping assistant. I'll give you a piece of text (could be a
+You are TallyCheck's bookkeeping assistant. I'll give you a piece of text (could be a
 WeChat/Alipay/credit-card statement excerpt, or a user's hand-written list of pending
 transactions). Extract every transaction.
 

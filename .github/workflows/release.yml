@@ -8,6 +8,11 @@ name: release
 # 镜像推到 GHCR(ghcr.io/<owner>/<repo>,全小写),用 workflow 内建的
 # GITHUB_TOKEN 登入,不需要另外申请/设定任何 secrets。第一次 push 后记得到
 # repo 的 Packages 页面把 package 设成 Public,这样部署端 pull 不用登入。
+#
+# 4.0 改名(帳好嗎 / TallyCheck,B6 定案):同一份 image 同时推两个名字——
+#   - ghcr.io/<owner>/beecount-cloud   (原本的名字,继续推,既有部署不用改)
+#   - ghcr.io/<owner>/tallycheck-cloud (新别名,内容完全相同,4.x 中期再正式迁移)
+# tallycheck-cloud 第一次推上去后,一样要到 Packages 页面设成 Public。
 
 on:
   push:
@@ -39,7 +44,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set lowercase image name
-        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+        run: |
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "ALIAS_IMAGE_NAME=${GITHUB_REPOSITORY_OWNER,,}/tallycheck-cloud" >> "$GITHUB_ENV"
 
       - name: Setup Python
         if: startsWith(github.ref, 'refs/tags/')
@@ -125,13 +132,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 同一组 tag 套用到两个 image 名称(原名 + tallycheck-cloud 别名)
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.ALIAS_IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=sha,prefix=,format=short
           labels: |
-            org.opencontainers.image.title=BeeCount-Cloud
+            org.opencontainers.image.title=TallyCheck Cloud
+            org.opencontainers.image.description=帳好嗎 Cloud / TallyCheck Cloud — self-hosted sync server + web console, based on BeeCount Cloud
             org.opencontainers.image.version=${{ steps.vars.outputs.version }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
 
@@ -176,7 +187,7 @@ jobs:
           COMMITS_ESCAPED=$(echo "$COMMITS" | sed 's/\*/\\*/g; s/_/\\_/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g')
           COMMITS_ENCODED=$(echo "$COMMITS_ESCAPED" | sed 's/$/%0A/g' | tr -d '\n')
 
-          MESSAGE="🐝 *BeeCount-Cloud ${TAG}* 发布%0A%0A"
+          MESSAGE="🌱 *TallyCheck Cloud (帳好嗎 Cloud) ${TAG}* 发布%0A%0A"
           MESSAGE="${MESSAGE}🔗 [查看完整说明](${RELEASE_URL})%0A%0A"
           MESSAGE="${MESSAGE}*变更内容*:%0A${COMMITS_ENCODED}"
 

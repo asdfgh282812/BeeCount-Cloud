@@ -1,21 +1,30 @@
-# BeeCount Cloud &nbsp; [English](./README.en.md)
+# 帳好嗎 Cloud（TallyCheck Cloud） &nbsp; [English](./README.en.md)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
-[![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-custom%20v1.0-blue)](./LICENSE)
 
-**[BeeCount(蜜蜂記帳)](https://github.com/TNT-Likely/BeeCount) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
+**[帳好嗎（TallyCheck）](https://github.com/asdfgh282812/BeeCount-main) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
 
-![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
+> 帳好嗎 Cloud 是以 [BeeCount Cloud](https://github.com/TNT-Likely/BeeCount-Cloud)（© 2024-2026 sunxiao / TNT-Likely）为基础修改的开源软件，依原授权条款发布。程序代码、Docker image、数据库、环境变量等**识别名称仍沿用 `beecount`**（例如 `beecount-cloud` 容器、`beecount.db`），升级时不需要改任何部署设定。
 
-> 🤖 **新:用 LLM 直接管理账本** — BeeCount Cloud 内置 [MCP](https://count.beejz.com/docs/mcp) server,在 Claude Desktop / Cursor / Cline 里跟 LLM 自然语言对话就能查询交易、记账、改预算。👉 **[查看 MCP 文档](https://count.beejz.com/docs/mcp)**
+![帳好嗎 Cloud Web 控制台](./docs/screenshot-zh.png)
+
+> 🤖 **新:用 LLM 直接管理账本** — 帳好嗎 Cloud 内置 [MCP](https://beecount-manual.pages.dev/docs/more/mcp) server,在 Claude Desktop / Cursor / Cline 里跟 LLM 自然语言对话就能查询交易、记账、改预算。👉 **[查看 MCP 文档](https://beecount-manual.pages.dev/docs/more/mcp)**
+
+### 4.0 改名须知（原 BeeCount Cloud）
+
+- **对外名称**:服务端显示名称(`/api/v1/version`、OpenAPI 标题、MCP server 名称、首次启动横幅)改为 `TallyCheck Cloud`。若你的 `.env` 里写死了 `APP_NAME=BeeCount Cloud`,OpenAPI 标题会继续显示旧名,可自行改成 `APP_NAME=TallyCheck Cloud`。
+- **两步验证(2FA)**:TOTP issuer 默认值由 `BeeCount` 改为 `TallyCheck`。**只影响之后新绑定的装置**;已经加进 Google Authenticator / 1Password 等验证器的旧项目仍显示「BeeCount」,验证码照常可用,想统一名称可在验证器里自行改名。想维持旧名称,设 `TOTP_ISSUER_NAME=BeeCount` 即可。
+- **Docker image**:原本的 `ghcr.io/asdfgh282812/beecount-cloud` 继续发布,既有部署不用改;4.0 起同一份 image 也以 **`ghcr.io/asdfgh282812/tallycheck-cloud`** 发布(内容、tag 完全相同,可任选其一)。容器 / volume / 数据库名称维持 `beecount`。
+- **不会变的东西**:SSO 回调 `beecount://auth-callback`、授权码前缀 `BC-`、Prometheus 指标 `beecount_*`、API 字段名称、导入格式代码 `beecount` 都维持原样,旧版 App 与新版 App 都能照常连线。
 
 ---
 
-## 🤔 为什么选 BeeCount Cloud
+## 🤔 为什么选帳好嗎 Cloud
 
 ### vs 其他自托管账本
 
-| 项 | BeeCount Cloud | Firefly III | Actual Budget | Maybe Finance |
+| 项 | 帳好嗎 Cloud | Firefly III | Actual Budget | Maybe Finance |
 |---|---|---|---|---|
 | 移动端原生 App | ✅ iOS + Android | ❌ Web only | ⚠️ 仅 Web PWA | ❌ Web only |
 | 实时多端同步 | ✅ WebSocket 秒级 | ❌ 无 | ⚠️ 文件同步 | ❌ 无 |
@@ -91,7 +100,7 @@
 ### 关键特性
 
 - **rclone 多远端 fan-out** — 一份备份并行推到多个远端做冗余,任何一家挂了都还有
-- **AES-256 加密 zip** — 备份文件是标准的密码加密 zip,**用户从对象存储下载下来双击 → macOS Archive Utility / 7-Zip / Keka / WinRAR 自动弹密码框 → 解开**(脱离 BeeCount 服务也能恢复)
+- **AES-256 加密 zip** — 备份文件是标准的密码加密 zip,**用户从对象存储下载下来双击 → macOS Archive Utility / 7-Zip / Keka / WinRAR 自动弹密码框 → 解开**(脱离帳好嗎 Cloud 服务也能恢复)
 - **APScheduler cron 调度** — 标准 cron 表达式,时区跟随容器 `TZ`
 - **保留期清理** — 保留最近 N 天,旧的自动删,`keep_at_least=1` 防误配
 - **Web 三标签页**:
@@ -108,7 +117,7 @@
 
 ### 灾难恢复
 
-只要你有 .zip 文件 + 口令,任何系统、任何标准解压工具都能解开备份,不依赖 BeeCount 服务存在。
+只要你有 .zip 文件 + 口令,任何系统、任何标准解压工具都能解开备份,不依赖帳好嗎 Cloud 服务存在。
 
 ---
 
@@ -123,6 +132,8 @@
 ## 🚀 Docker Compose 部署
 
 预构建镜像 [`sunxiao0721/beecount-cloud`](https://hub.docker.com/r/sunxiao0721/beecount-cloud) 一体化打包 FastAPI 后端 + Web 控制台 — 单容器 + 一个数据卷,搞定。
+
+> 帳好嗎 Cloud(本 fork)的 image 发布在 GHCR:`ghcr.io/asdfgh282812/beecount-cloud`,以及内容相同的别名 `ghcr.io/asdfgh282812/tallycheck-cloud`(二选一,把下方 `image:` 换掉即可),详见 [docs/DOCKER_GHCR_DEPLOY.md](./docs/DOCKER_GHCR_DEPLOY.md)。
 
 ### 1) 新建 `docker-compose.yml`
 
@@ -158,7 +169,7 @@ docker compose logs beecount-cloud | grep -A 10 "初次启动"
 看到类似:
 
 ```
- BeeCount Cloud — 初次启动,已自动创建管理员账号:
+ TallyCheck Cloud(帳好嗎 Cloud)— 初次启动,已自动创建管理员账号:
 
    邮箱:    owner@example.com
    密码:    FIDodUnwprkw1zUi
@@ -167,7 +178,7 @@ docker compose logs beecount-cloud | grep -A 10 "初次启动"
 拿这个账号:
 
 - 浏览器访问 `http://<你的服务器 IP>:8869` 即可用 **Web 管理端**
-- App 里选「BeeCount Cloud」,填服务器地址 + 上面账号登录
+- App 里选「帳好嗎 Cloud」(旧版 App 显示为「BeeCount Cloud」),填服务器地址 + 上面账号登录
 
 ### 3) 升级
 
@@ -231,9 +242,9 @@ alembic upgrade head && uvicorn server:app --host 0.0.0.0 --port 8080
 
 ## 📱 移动端 App 接入
 
-安装 [BeeCount](https://github.com/TNT-Likely/BeeCount) App(iOS / Android),然后在 App 中:
+安装 [帳好嗎（TallyCheck）](https://github.com/asdfgh282812/BeeCount-main) App(iOS / Android),然后在 App 中:
 
-1. 设置 → 云服务 → BeeCount Cloud
+1. 设置 → 云服务 → 帳好嗎 Cloud(旧版 App 为 BeeCount Cloud)
 2. 填写服务器地址(如 `https://your-domain.com`)和登录凭证
 3. 开启同步 — 首次同步会把本地已有数据推送到云端
 
@@ -323,7 +334,7 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 ## 📄 许可证
 
-本项目采用 **商业源代码许可证(Business Source License,BSL)**。
+本项目沿用上游作者 sunxiao(TNT-Likely)的 **BeeCount Cloud 软件许可协议 v1.0**(自订授权,不是 BSL),原文见 [LICENSE](./LICENSE) / [LICENSE_EN](./LICENSE_EN)。
 
 | 用途 | 许可 |
 |---|---|
@@ -334,17 +345,21 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 **什么算商业使用**:
 
-- 把 BeeCount Cloud 作为商业 SaaS 提供给客户
+- 把帳好嗎 Cloud / BeeCount Cloud 作为商业 SaaS 提供给客户
 - 在盈利性组织中部署使用
 - 基于本软件提供付费云服务
 - 转售或集成到付费产品里
 
-如需商业授权,请通过 [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues) 联系。详见 [LICENSE](./LICENSE)。
+如需商业授权,请向原作者通过 [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues) 联系。详见 [LICENSE](./LICENSE)。
 
 ---
 
 ## 🔗 相关链接
 
-- 移动端 App: <https://github.com/TNT-Likely/BeeCount>
-- Docker Hub: <https://hub.docker.com/r/sunxiao0721/beecount-cloud>
-- 问题反馈: <https://github.com/TNT-Likely/BeeCount-Cloud/issues>
+- 帳好嗎 App: <https://github.com/asdfgh282812/BeeCount-main>
+- 帳好嗎 Cloud 原始码: <https://github.com/asdfgh282812/BeeCount-Cloud>
+- 使用手册: <https://beecount-manual.pages.dev>
+- GHCR image: `ghcr.io/asdfgh282812/beecount-cloud`(别名 `ghcr.io/asdfgh282812/tallycheck-cloud`)
+- 上游 BeeCount App: <https://github.com/TNT-Likely/BeeCount>
+- 上游 BeeCount Cloud: <https://github.com/TNT-Likely/BeeCount-Cloud>
+- 上游 Docker Hub: <https://hub.docker.com/r/sunxiao0721/beecount-cloud>

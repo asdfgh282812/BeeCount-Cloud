@@ -1,5 +1,7 @@
 # 部署指南 (Deployment Guide)
 
+> 適用於帳好嗎 Cloud(TallyCheck Cloud,以 BeeCount Cloud 為基礎修改)。下方的 `beecount_data`、`beecount.db` 等是識別名稱,4.0 改名後維持不變。fork 專屬的 GHCR 映像(`beecount-cloud` 與別名 `tallycheck-cloud`)見 [`DOCKER_GHCR_DEPLOY.md`](./DOCKER_GHCR_DEPLOY.md)。
+
 ## 1) 預設配置：SQLite 單一容器 (Default: SQLite single container)
 
 ```bash
@@ -43,6 +45,7 @@ SQLite 備份命令：
 - 首次啟動時，系統會自動產生 32 位元組的 `JWT_SECRET` 並存入 `/data/.jwt_secret`；若希望自行管理密鑰，可透過環境變數進行覆寫。
 - 請將 API 部署於自建的反向代理伺服器（如 Caddy / Nginx / Traefik / Cloudflare）並啟用 TLS 加密。
 - 請確保 `/data` 存放於持久化儲存設備中 — 資料庫、附件、備份檔以及 JWT 密鑰皆存放於此。
+- **兩步驟驗證 (2FA) 的顯示名稱：** `TOTP_ISSUER_NAME` 決定使用者在 Google Authenticator 等驗證器 App 裡看到的名稱，預設 `TallyCheck`（4.0 之前是 `BeeCount`）。這個值只在**綁定當下**寫進 QR code，所以改名只影響之後新綁定的裝置；已經綁好的項目仍顯示舊名稱、驗證碼照常可用，使用者可以在驗證器裡自行改名。想維持舊名稱可設 `TOTP_ISSUER_NAME=BeeCount`。
 
 ## 5) App 權限範圍疑難排解 (App scope troubleshooting)
 

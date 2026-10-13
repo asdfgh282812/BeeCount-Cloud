@@ -1,4 +1,4 @@
-"""BeeCount Cloud 服务端版本号。
+"""帳好嗎 Cloud / TallyCheck Cloud(基于 BeeCount Cloud)服务端版本号。
 
 单点定义,供 FastAPI app metadata / `/version` 公开端点 /发版 tag 等复用。
 mobile + web 都会在 UI 上展示这个数值,方便用户一眼判断 server 跑的哪版。
@@ -17,4 +17,5 @@ import os
 _FALLBACK_VERSION = "1.0.0"
 __version__ = (os.environ.get("APP_VERSION") or _FALLBACK_VERSION).strip()
 
-APP_NAME = "BeeCount Cloud"
+# 对外显示名称(4.0 改名;代码识别字仍沿用 BeeCount,见 docs/changes/2026-10-13-v4-rebrand-cloud.md)。
+APP_NAME = "TallyCheck Cloud"

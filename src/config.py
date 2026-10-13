@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "BeeCount Cloud"
+    app_name: str = "TallyCheck Cloud"
     app_env: str = "development"
     api_prefix: str = "/api/v1"
     web_static_dir: str = "/app/static"
@@ -102,9 +102,11 @@ class Settings(BaseSettings):
     strict_base_change_id: bool = Field(default=False, alias="STRICT_BASE_CHANGE_ID")
 
     # ===== 2FA(TOTP)=====
-    # authenticator app 扫描 QR 后展示的"账号名"前缀。默认 "BeeCount",
-    # 自托管用户可以改成自己的品牌(如 "蜜蜂記帳云" / "MyAcme")。
-    totp_issuer_name: str = Field(default="BeeCount", alias="TOTP_ISSUER_NAME")
+    # authenticator app 扫描 QR 后展示的"账号名"前缀。默认 "TallyCheck"
+    # (4.0 改名前是 "BeeCount";只影响之后新绑定的装置,已加进 authenticator
+    # 的旧项目仍显示旧名称,使用者可在 authenticator 里自己改名)。
+    # 自托管用户可以改成自己的品牌(如 "帳好嗎" / "MyAcme")。
+    totp_issuer_name: str = Field(default="TallyCheck", alias="TOTP_ISSUER_NAME")
     # otpauth URI 上挂的 image= 参数,部分 authenticator app(Microsoft Authenticator
     # 等)会取这个 URL 显示账号 logo。需要是公网可访问的 https PNG/SVG。
     # 空字符串 = 不附加 image 参数。Google Authenticator 不支持这个参数。

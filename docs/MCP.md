@@ -1,15 +1,17 @@
-# BeeCount Cloud MCP Server
+# 帳好嗎 Cloud(TallyCheck Cloud)MCP Server
 
-让 LLM(Claude Desktop / Cursor / Cline 等)通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 直接读写你的 BeeCount 账本数据。
+> 帳好嗎 Cloud 以 BeeCount Cloud 为基础修改。下方设定范例里的 `beecount` 只是你在 MCP 客户端里给这个 server 取的名字,沿用旧名不影响连线,想改成 `tallycheck` 也可以。
+
+让 LLM(Claude Desktop / Cursor / Cline 等)通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 直接读写你的帳好嗎账本数据。
 
 ---
 
 ## 是什么
 
-MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 20 个 tool:
+MCP 是 Anthropic 推出的 LLM-工具集成协议。帳好嗎 Cloud 内置一个 MCP server,把账本能力暴露成 20 个 tool:
 
 - **13 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger` / `list_stock_holdings` / `get_stock_realized_pnl`
-- **7 个 write tool**:`create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
+- **7 个 write tool**:`create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让帳好嗎 AI 解析自然语言)
 
 跟 LLM 聊天时可以这样说:
 
@@ -19,15 +21,15 @@ MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个
 >
 > "我说一句话你帮我记一笔:刚才在便利店买了瓶水 3 块 5。"
 
-LLM 自动调对应 tool,你不用打开 BeeCount。MCP 创建的交易会自动打上 `MCP` 标签,跟手机端"AI 记账"区分。
+LLM 自动调对应 tool,你不用打开帳好嗎。MCP 创建的交易会自动打上 `MCP` 标签,跟手机端"AI 记账"区分。
 
 ---
 
 ## 启用步骤
 
-### 1. 在 BeeCount Cloud Web 创建 PAT
+### 1. 在帳好嗎 Cloud Web 创建 PAT
 
-1. 登录 BeeCount Cloud Web Console
+1. 登录帳好嗎 Cloud Web Console
 2. 头像下拉 → **设置 → 开发者**(`/app/settings/developer`)
 3. 点 **新建 Token**:
    - **名称**:给这个 token 起个名,例如 `Claude Desktop`(后续在列表识别用)
@@ -39,11 +41,11 @@ LLM 自动调对应 tool,你不用打开 BeeCount。MCP 创建的交易会自动
 
 ### 2. 在 LLM 客户端配置
 
-BeeCount Cloud 的 MCP 用 **Streamable HTTP**(单端点),端点是部署地址加 `/api/v1/mcp`。
+帳好嗎 Cloud 的 MCP 用 **Streamable HTTP**(单端点),端点是部署地址加 `/api/v1/mcp`。
 
 > 下面统一把占位符替换成真实值:
 >
-> - `https://your-domain.com` → BeeCount Cloud 部署地址(也可以是 `http://192.168.x.x:8080` 等内网/Tailscale 地址)
+> - `https://your-domain.com` → 帳好嗎 Cloud 部署地址(也可以是 `http://192.168.x.x:8080` 等内网/Tailscale 地址)
 > - `bcmcp_xxx...` → 上一步生成的 PAT 明文
 
 **推荐:原生支持 Streamable HTTP 的客户端直连,无需 `mcp-remote`。** 例如 Claude Code:
@@ -82,7 +84,7 @@ claude mcp add --transport http beecount https://your-domain.com/api/v1/mcp \
 
 > macOS 上 Claude Desktop 默认不读用户 shell PATH;如果 `npx` 找不到,把 `command` 改成 `/opt/homebrew/bin/npx`(Apple Silicon)或 `/usr/local/bin/npx`(Intel)。
 
-完全退出 Claude Desktop(`Cmd+Q`)再启动,左下角出现 🔌 "BeeCount" 即连上。
+完全退出 Claude Desktop(`Cmd+Q`)再启动,左下角出现 🔌 "beecount"(你在设定里取的名字)即连上。
 
 #### Cursor
 
@@ -230,7 +232,7 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp`**,所有其�
 
 **问:`parse_and_create_from_text` 报 `AI_NO_CHAT_PROVIDER`**
 
-- 需要先在 Web 设置页配 AI provider(GLM / OpenAI 等)。这个 tool 是让 BeeCount 自己的 AI 解析,跟 LLM 客户端的 AI 不同
+- 需要先在 Web 设置页配 AI provider(GLM / OpenAI 等)。这个 tool 是让帳好嗎自己的 AI 解析,跟 LLM 客户端的 AI 不同
 
 **问:多账本时 MCP 调哪个**
 

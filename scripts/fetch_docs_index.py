@@ -27,7 +27,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-DEFAULT_REMOTE = "https://github.com/TNT-Likely/BeeCount-Website.git"
+# 4.0 起改拉自己的 fork 手册站(帳好嗎 / TallyCheck 品牌);上游是 TNT-Likely/BeeCount-Website。
+DEFAULT_REMOTE = "https://github.com/asdfgh282812/BeeCount-Website.git"
 
 
 def _copy_data(source_data_dir: Path) -> int:

@@ -1,21 +1,30 @@
-# BeeCount Cloud &nbsp; [中文](./README.md)
+# TallyCheck Cloud (帳好嗎 Cloud) &nbsp; [中文](./README.md)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
-[![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-custom%20v1.0-blue)](./LICENSE_EN)
 
-**Self-hosted sync cloud for the [BeeCount](https://github.com/TNT-Likely/BeeCount) personal accounting app.** Keep iOS / Android / Web books on one ledger you fully own — no ads, no subscription, no third-party lock-in.
+**Self-hosted sync cloud for the [TallyCheck (帳好嗎)](https://github.com/asdfgh282812/BeeCount-main) personal accounting app.** Keep iOS / Android / Web books on one ledger you fully own — no ads, no subscription, no third-party lock-in.
 
-![BeeCount Cloud Web console](./docs/screenshot-en.png)
+> TallyCheck Cloud is a modified fork of [BeeCount Cloud](https://github.com/TNT-Likely/BeeCount-Cloud) (© 2024-2026 sunxiao / TNT-Likely), released under the original license terms. Code identifiers, Docker image, database and environment variable names **still use `beecount`** (e.g. the `beecount-cloud` container, `beecount.db`), so upgrading needs no deployment changes.
 
-> 🤖 **New: drive your ledger from an LLM** — BeeCount Cloud ships a built-in [MCP](https://count.beejz.com/en/docs/mcp) server. Query transactions, log expenses, tweak budgets right inside Claude Desktop / Cursor / Cline. 👉 **[Read the MCP docs](https://count.beejz.com/en/docs/mcp)**
+![TallyCheck Cloud Web console](./docs/screenshot-en.png)
+
+> 🤖 **New: drive your ledger from an LLM** — TallyCheck Cloud ships a built-in [MCP](https://beecount-manual.pages.dev/docs/more/mcp) server. Query transactions, log expenses, tweak budgets right inside Claude Desktop / Cursor / Cline. 👉 **[Read the MCP docs](https://beecount-manual.pages.dev/docs/more/mcp)** (the manual is in Traditional Chinese for now)
+
+### 4.0 rename notes (formerly BeeCount Cloud)
+
+- **Display name**: the server's display name (`/api/v1/version`, OpenAPI title, MCP server name, first-launch banner) is now `TallyCheck Cloud`. If your `.env` pins `APP_NAME=BeeCount Cloud`, the OpenAPI title keeps the old name until you change it to `APP_NAME=TallyCheck Cloud`.
+- **Two-factor auth (2FA)**: the default TOTP issuer changes from `BeeCount` to `TallyCheck`. **This only affects devices bound from now on** — entries already in Google Authenticator / 1Password etc. keep showing "BeeCount" and keep working; rename them in your authenticator if you like. Set `TOTP_ISSUER_NAME=BeeCount` to keep the old issuer.
+- **Docker image**: `ghcr.io/asdfgh282812/beecount-cloud` keeps being published, so existing deployments need no change. Starting with 4.0 the identical image is also published as **`ghcr.io/asdfgh282812/tallycheck-cloud`** (same content and tags — use either). Container / volume / database names stay `beecount`.
+- **Unchanged on purpose**: the SSO callback `beecount://auth-callback`, the `BC-` license key prefix, `beecount_*` Prometheus metrics, API field names and the `beecount` import format code all stay as they were, so both old and new App versions keep working.
 
 ---
 
-## 🤔 Why BeeCount Cloud
+## 🤔 Why TallyCheck Cloud
 
 ### vs Other Self-Hosted Ledgers
 
-| Item | BeeCount Cloud | Firefly III | Actual Budget | Maybe Finance |
+| Item | TallyCheck Cloud | Firefly III | Actual Budget | Maybe Finance |
 |---|---|---|---|---|
 | Native mobile apps | ✅ iOS + Android | ❌ Web only | ⚠️ Web PWA | ❌ Web only |
 | Real-time multi-device sync | ✅ WebSocket sub-sec | ❌ None | ⚠️ File sync | ❌ None |
@@ -91,7 +100,7 @@
 ### Highlights
 
 - **rclone multi-remote fan-out** — One backup pushed in parallel to multiple remotes for redundancy
-- **AES-256 encrypted zip** — Backup files are standard password-protected ZIP archives. **Download from your bucket, double-click → macOS Archive Utility / 7-Zip / Keka / WinRAR auto-prompts for password → extracted** (recoverable even without BeeCount service)
+- **AES-256 encrypted zip** — Backup files are standard password-protected ZIP archives. **Download from your bucket, double-click → macOS Archive Utility / 7-Zip / Keka / WinRAR auto-prompts for password → extracted** (recoverable even without the TallyCheck Cloud service)
 - **APScheduler cron** — Standard cron expressions, timezone follows container `TZ`
 - **Retention cleanup** — Keep last N days, old ones auto-deleted, `keep_at_least=1` defends against misconfiguration
 - **Web 3-tab UI**:
@@ -108,7 +117,7 @@
 
 ### Disaster Recovery
 
-As long as you have the `.zip` file + passphrase, any system, any standard archive tool can extract the backup — no dependency on BeeCount service.
+As long as you have the `.zip` file + passphrase, any system, any standard archive tool can extract the backup — no dependency on the TallyCheck Cloud service.
 
 ---
 
@@ -123,6 +132,8 @@ As long as you have the `.zip` file + passphrase, any system, any standard archi
 ## 🚀 Docker Compose Deployment
 
 The prebuilt image [`sunxiao0721/beecount-cloud`](https://hub.docker.com/r/sunxiao0721/beecount-cloud) bundles FastAPI backend + Web console — single container + one data volume.
+
+> TallyCheck Cloud (this fork) publishes its image on GHCR as `ghcr.io/asdfgh282812/beecount-cloud`, plus the identical alias `ghcr.io/asdfgh282812/tallycheck-cloud` (pick either and swap the `image:` line below). See [docs/DOCKER_GHCR_DEPLOY.md](./docs/DOCKER_GHCR_DEPLOY.md).
 
 ### 1) Create `docker-compose.yml`
 
@@ -159,7 +170,7 @@ docker compose logs beecount-cloud | grep -A 10 "first launch"
 Output similar to:
 
 ```
- BeeCount Cloud — first launch, admin account auto-created:
+ TallyCheck Cloud (帳好嗎 Cloud) — first launch, admin account auto-created:
 
    Email:    owner@example.com
    Password: FIDodUnwprkw1zUi
@@ -168,7 +179,7 @@ Output similar to:
 With this account:
 
 - Open `http://<your-server-ip>:8869` in browser → **Web admin console**
-- In the App, choose "BeeCount Cloud" and enter the server URL + credentials
+- In the App, choose "TallyCheck Cloud" ("BeeCount Cloud" in older App versions) and enter the server URL + credentials
 
 ### 3) Upgrade
 
@@ -232,9 +243,9 @@ If a migration fails (rare), the container exits with the database left at the p
 
 ## 📱 Mobile App Setup
 
-Install [BeeCount](https://github.com/TNT-Likely/BeeCount) (iOS / Android), then:
+Install [TallyCheck (帳好嗎)](https://github.com/asdfgh282812/BeeCount-main) (iOS / Android), then:
 
-1. Settings → Cloud Service → BeeCount Cloud
+1. Settings → Cloud Service → TallyCheck Cloud (BeeCount Cloud in older App versions)
 2. Enter server URL (e.g. `https://your-domain.com`) and credentials
 3. Enable sync — first sync pushes local data to cloud
 
@@ -324,7 +335,7 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 ## 📄 License
 
-This project uses the **Business Source License (BSL)**.
+This project keeps the upstream author sunxiao's (TNT-Likely) **BeeCount Cloud Software License v1.0** (a custom license, not BSL). See [LICENSE_EN](./LICENSE_EN) / [LICENSE](./LICENSE).
 
 | Use Case | License |
 |---|---|
@@ -335,17 +346,21 @@ This project uses the **Business Source License (BSL)**.
 
 **What counts as commercial use**:
 
-- Operating BeeCount Cloud as a commercial SaaS for customers
+- Operating TallyCheck Cloud / BeeCount Cloud as a commercial SaaS for customers
 - Deploying in a for-profit organization
 - Providing paid cloud services based on this software
 - Reselling or integrating into a paid product
 
-For commercial licensing, contact via [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues). See [LICENSE](./LICENSE).
+For commercial licensing, contact the original author via [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues). See [LICENSE_EN](./LICENSE_EN).
 
 ---
 
 ## 🔗 Links
 
-- Mobile App: <https://github.com/TNT-Likely/BeeCount>
-- Docker Hub: <https://hub.docker.com/r/sunxiao0721/beecount-cloud>
-- Issue Tracker: <https://github.com/TNT-Likely/BeeCount-Cloud/issues>
+- TallyCheck App: <https://github.com/asdfgh282812/BeeCount-main>
+- TallyCheck Cloud source: <https://github.com/asdfgh282812/BeeCount-Cloud>
+- User manual (Traditional Chinese): <https://beecount-manual.pages.dev>
+- GHCR image: `ghcr.io/asdfgh282812/beecount-cloud` (alias `ghcr.io/asdfgh282812/tallycheck-cloud`)
+- Upstream BeeCount App: <https://github.com/TNT-Likely/BeeCount>
+- Upstream BeeCount Cloud: <https://github.com/TNT-Likely/BeeCount-Cloud>
+- Upstream Docker Hub: <https://hub.docker.com/r/sunxiao0721/beecount-cloud>

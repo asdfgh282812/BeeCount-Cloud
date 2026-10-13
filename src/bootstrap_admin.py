@@ -63,7 +63,7 @@ def _log_credentials(email: str, password: str, persisted_at: Path | None) -> No
     lines = [
         "",
         banner,
-        " BeeCount Cloud — 初次启动,已自动创建管理员账号:",
+        " TallyCheck Cloud(帳好嗎 Cloud)— 初次启动,已自动创建管理员账号:",
         "",
         f"   邮箱:    {email}",
         f"   密码:    {password}",

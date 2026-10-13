@@ -447,7 +447,7 @@ def export_workspace_transactions_csv(
       只写 category。父类名走 LEFT JOIN user_category_projection 拿 parent_name。
     - time:`  YYYY-MM-DD HH:mm:ss  `(前后各 2 空格,App 一致,Excel 列宽好看)
     - 流式 yield_per(500),50k+ 笔 server 内存稳定
-    - 文件名:`beecount-<ledger>-<date_from>_<date_to>.csv`,中文走 RFC 5987
+    - 文件名:`tallycheck-<ledger>-<date_from>_<date_to>.csv`(4.0 改名前是 `beecount-` 开头;纯显示,导入不看文件名),中文走 RFC 5987
     """
     from urllib.parse import quote
     from sqlalchemy.orm import aliased
@@ -622,7 +622,7 @@ def export_workspace_transactions_csv(
         period_from = date_from.isoformat()[:10] if date_from else "all"
         period_to = date_to.isoformat()[:10] if date_to else "all"
         period_segment = f"{period_from}_{period_to}"
-    filename = f"beecount-{primary_name}-{period_segment}.csv"
+    filename = f"tallycheck-{primary_name}-{period_segment}.csv"
     ascii_filename = filename.encode("ascii", "replace").decode("ascii")
 
     return StreamingResponse(

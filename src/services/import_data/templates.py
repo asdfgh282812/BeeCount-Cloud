@@ -136,5 +136,5 @@ def build_template(
     headers = _HEADERS_BY_ENTITY[entity_type][lang_key]
     examples = _EXAMPLES_BY_ENTITY[entity_type][lang_key]
     body = _build_csv(headers, examples) if fmt == "csv" else _build_xlsx(headers, examples)
-    filename = f"beecount-{entity_type}-template.{fmt}"
+    filename = f"tallycheck-{entity_type}-template.{fmt}"
     return body, filename

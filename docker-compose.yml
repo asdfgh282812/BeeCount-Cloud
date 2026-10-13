@@ -43,7 +43,7 @@ services:
       # ===== 其它常用环境变量(详见 docs/DEPLOYMENT.md)=====
       # CORS_ORIGINS: "https://your-domain.com"
       # REGISTRATION_ENABLED: "false"
-      # TOTP_ISSUER_NAME: "BeeCount"
+      # TOTP_ISSUER_NAME: "TallyCheck"
 
 volumes:
   beecount_data:
