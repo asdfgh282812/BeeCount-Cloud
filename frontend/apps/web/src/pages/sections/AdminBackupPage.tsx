@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useCallback, useEffect, useState } from 'react'
 
 import {
@@ -31,8 +32,6 @@ import {
   CardTitle,
   Tabs,
   TabsContent,
-  TabsList,
-  TabsTrigger,
   useT,
   useToast,
 } from '@beecount/ui'
@@ -363,23 +362,11 @@ export function AdminBackupPage() {
       </CardHeader>
       <CardContent>
         <Tabs>
-          <TabsList>
-            <TabsTrigger active={tab === 'runs'} onClick={() => setTab('runs')}>
-              {t('backup.tab.runs')}
-            </TabsTrigger>
-            <TabsTrigger
-              active={tab === 'schedules'}
-              onClick={() => setTab('schedules')}
-            >
-              {t('backup.tab.schedules')}
-            </TabsTrigger>
-            <TabsTrigger
-              active={tab === 'remotes'}
-              onClick={() => setTab('remotes')}
-            >
-              {t('backup.tab.remotes')}
-            </TabsTrigger>
-          </TabsList>
+          <GlassSegmented label={t('backup.title') as string} value={tab}
+            options={(['runs', 'schedules', 'remotes'] as const).map((key) => ({
+              value: key, label: t(`backup.tab.${key}`)
+            }))} onValueChange={setTab}
+          />
           {tab === 'runs' ? (
             <TabsContent>
               <BackupRunsPanel

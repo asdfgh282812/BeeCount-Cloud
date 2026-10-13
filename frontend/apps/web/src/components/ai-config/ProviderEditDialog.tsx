@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
@@ -10,8 +11,6 @@ import {
   DialogTitle,
   Input,
   Label,
-  TabsList,
-  TabsTrigger,
   useT,
 } from '@beecount/ui'
 import {
@@ -208,26 +207,11 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
           {/* OpenAI-compatible / Gemini 原生 体系切换 —— 内建 provider 走专属 SDK,
               不支持切换,跟 mobile 行为一致 */}
           {!isBuiltIn ? (
-            <TabsList className="w-full">
-              <TabsTrigger
-                type="button"
-                className="flex-1 justify-center"
-                active={apiFamily === 'openai'}
-                disabled={saving}
-                onClick={() => handleFamilyChange('openai')}
-              >
-                {t('ai.editor.providers.family.openai')}
-              </TabsTrigger>
-              <TabsTrigger
-                type="button"
-                className="flex-1 justify-center"
-                active={apiFamily === 'gemini'}
-                disabled={saving}
-                onClick={() => handleFamilyChange('gemini')}
-              >
-                {t('ai.editor.providers.family.gemini')}
-              </TabsTrigger>
-            </TabsList>
+            <GlassSegmented label={t('ai.editor.providers.family.openai') as string} value={apiFamily}
+              options={(['openai', 'gemini'] as const).map((family) => ({
+                value: family, label: t(`ai.editor.providers.family.${family}`), disabled: saving
+              }))} onValueChange={handleFamilyChange}
+            />
           ) : null}
 
           <Field label={t('ai.providers.field.apiKey')} required>

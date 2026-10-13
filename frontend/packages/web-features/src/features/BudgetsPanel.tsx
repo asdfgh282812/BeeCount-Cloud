@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useMemo, useState } from 'react'
 
 import {
@@ -244,36 +245,13 @@ export function BudgetsPanel({
             {/* 类型选择 - 编辑模式锁定不可改 */}
             <div className="space-y-1">
               <Label>{t('budgets.field.type')}</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={!!form.editingId || (totalBudgetExists && form.type !== 'total')}
-                  onClick={() => onFormChange({ ...form, type: 'total' })}
-                  className={[
-                    'flex flex-col items-center gap-1 rounded-md border px-3 py-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                    form.type === 'total'
-                      ? 'border-primary/60 bg-primary/10 text-primary'
-                      : 'border-border/60 hover:bg-accent/40',
-                  ].join(' ')}
-                >
-                  <span className="material-symbols-outlined text-2xl">wallet</span>
-                  <span>{t('budgets.type.total')}</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!!form.editingId}
-                  onClick={() => onFormChange({ ...form, type: 'category' })}
-                  className={[
-                    'flex flex-col items-center gap-1 rounded-md border px-3 py-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                    form.type === 'category'
-                      ? 'border-primary/60 bg-primary/10 text-primary'
-                      : 'border-border/60 hover:bg-accent/40',
-                  ].join(' ')}
-                >
-                  <span className="material-symbols-outlined text-2xl">category</span>
-                  <span>{t('budgets.type.category')}</span>
-                </button>
-              </div>
+              <GlassSegmented className="h-16" label={t('budgets.field.type') as string} value={form.type}
+                options={(['total', 'category'] as const).map((type) => ({ value: type,
+                  disabled: !!form.editingId || (type === 'total' && totalBudgetExists && form.type !== 'total'),
+                  label: <span className="flex flex-col items-center gap-1"><span className="material-symbols-outlined text-2xl">{type === 'total' ? 'wallet' : 'category'}</span><span>{t(`budgets.type.${type}`)}</span></span>
+                }))}
+                onValueChange={(type) => onFormChange({ ...form, type })}
+              />
             </div>
 
             {/* 分类选择 - 仅 type=category */}

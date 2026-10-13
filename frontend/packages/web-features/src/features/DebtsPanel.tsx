@@ -1,3 +1,5 @@
+import { GlassChoice } from '@beecount/ui'
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useMemo, useState } from 'react'
 
 import {
@@ -282,44 +284,24 @@ export function DebtsPanel({
         </Button>
       </div>
 
-      <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist">
-        {DEBT_TABS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            data-testid={`debts-tab-${key}`}
-            aria-selected={tab === key}
-            onClick={() => {
-              setTab(key)
-              setCounterpartyFilter(null)
-            }}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              tab === key ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t(`debts.tab.${key}`)}
-            {tabCounts[key] ? <span className="ml-1 text-xs opacity-70">{tabCounts[key]}</span> : null}
-          </button>
-        ))}
-      </div>
+      <GlassSegmented semantics="tabs" label={t('nav.debts') as string} value={tab}
+        options={DEBT_TABS.map((key) => ({ value: key, testId: `debts-tab-${key}`,
+          label: <>{t(`debts.tab.${key}`)}{tabCounts[key] ? <span className="ml-1 text-xs opacity-70">{tabCounts[key]}</span> : null}</>
+        }))}
+        onValueChange={(key) => { setTab(key); setCounterpartyFilter(null) }}
+      />
 
       {counterparties.length > 1 ? (
         <div className="flex flex-wrap gap-2">
           {[null, ...counterparties].map((name) => (
-            <button
+            <GlassChoice
               key={name ?? '__all__'}
               type="button"
               onClick={() => setCounterpartyFilter(name)}
-              className={[
-                'rounded-full border px-3 py-1 text-xs transition-colors',
-                counterpartyFilter === name
-                  ? 'border-primary/60 bg-primary/10 text-primary'
-                  : 'border-border/60 text-muted-foreground hover:bg-accent/40',
-              ].join(' ')}
+              aria-pressed={counterpartyFilter === name}
             >
               {name ?? t('debts.filter.all')}
-            </button>
+            </GlassChoice>
           ))}
         </div>
       ) : null}
@@ -615,28 +597,13 @@ export function DebtsPanel({
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="flex gap-1 rounded-lg bg-muted/40 p-1 md:col-span-2" role="tablist">
-                {(['receivable', 'payable'] as const).map((dir) => (
-                  <button
-                    key={dir}
-                    type="button"
-                    role="tab"
-                    data-testid={`debts-create-${dir}`}
-                    aria-selected={createDirection === dir}
-                    onClick={() => {
-                      setCreateDirection(dir)
-                      setCreateError(null)
-                    }}
-                    className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                      createDirection === dir
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {t(`enum.txType.${dir}`)}
-                  </button>
-                ))}
-              </div>
+              <GlassSegmented className="md:col-span-2" semantics="tabs"
+                label={t('transactions.table.type') as string} value={createDirection}
+                options={(['receivable', 'payable'] as const).map((dir) => ({
+                  value: dir, label: t(`enum.txType.${dir}`), testId: `debts-create-${dir}`
+                }))}
+                onValueChange={(dir) => { setCreateDirection(dir); setCreateError(null) }}
+              />
               <DebtEntryForm
                 direction={createDirection}
                 form={createForms[createDirection]}

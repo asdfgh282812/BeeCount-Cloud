@@ -1,3 +1,4 @@
+import { GlassChoice } from '@beecount/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -1030,45 +1031,25 @@ export function TransactionsPanel({
                   樣式取代下拉選單,放在表單最上方(帳本欄位之下)。 */}
               <div className="space-y-1 md:col-span-2">
                 <Label>{t('transactions.table.type')}</Label>
-                <div
-                  className={`grid ${showDebtTabs ? 'grid-cols-5' : 'grid-cols-3'} gap-1 rounded-lg bg-muted/40 p-1`}
-                >
-                  {(['expense', 'income', 'transfer'] as const).map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      data-testid={`tx-type-${type}`}
-                      onClick={() => {
-                        if (debtMode) leaveDebtMode()
-                        applyTxType(type)
-                      }}
-                      className={`rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
-                        !debtMode && form.tx_type === type
-                          ? 'bg-background text-foreground shadow-sm'
-                          : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {t(`enum.txType.${type}`)}
-                    </button>
-                  ))}
-                  {showDebtTabs
-                    ? (['receivable', 'payable'] as const).map((kind) => (
-                        <button
-                          key={kind}
-                          type="button"
-                          data-testid={`tx-type-${kind}`}
-                          onClick={() => enterDebtMode(kind)}
-                          className={`rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
-                            debtMode === kind
-                              ? 'bg-background text-foreground shadow-sm'
-                              : 'text-muted-foreground hover:text-foreground'
-                          }`}
-                        >
-                          {t(`enum.txType.${kind}`)}
-                        </button>
-                      ))
-                    : null}
-                </div>
+                <GlassSegmented
+                  label={t('transactions.table.type') as string}
+                  value={debtMode ?? form.tx_type}
+                  options={[
+                    ...(['expense', 'income', 'transfer'] as const).map((type) => ({
+                      value: type, label: t(`enum.txType.${type}`), testId: `tx-type-${type}`
+                    })),
+                    ...(showDebtTabs ? (['receivable', 'payable'] as const).map((kind) => ({
+                      value: kind, label: t(`enum.txType.${kind}`), testId: `tx-type-${kind}`
+                    })) : [])
+                  ]}
+                  onValueChange={(type) => {
+                    if (type === 'receivable' || type === 'payable') enterDebtMode(type)
+                    else {
+                      if (debtMode) leaveDebtMode()
+                      applyTxType(type)
+                    }
+                  }}
+                />
               </div>
             {debtMode ? (
               <DebtEntryForm
@@ -1671,7 +1652,7 @@ export function TransactionsPanel({
                     .map((rule) => {
                     const checked = form.reward_rule_ids.includes(rule.id)
                     return (
-                      <button
+                      <GlassChoice
                         key={rule.id}
                         type="button"
                         onClick={() => {
@@ -1684,11 +1665,7 @@ export function TransactionsPanel({
                               : [...form.reward_rule_ids, rule.id]
                           })
                         }}
-                        className={`rounded-full border px-2.5 py-1 text-xs ${
-                          checked
-                            ? 'border-primary bg-primary/15 text-primary'
-                            : 'border-input text-muted-foreground hover:bg-accent/40'
-                        }`}
+                        aria-pressed={checked}
                       >
                         {rule.label}
                         {!rule.enabled ? (
@@ -1696,7 +1673,7 @@ export function TransactionsPanel({
                             {t('cardRewards.disabled')}
                           </span>
                         ) : null}
-                      </button>
+                      </GlassChoice>
                     )
                   })}
                 </div>
@@ -1928,7 +1905,7 @@ export function TransactionsPanel({
                           {(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const).map((key, index) => {
                             const selected = form.recurring_weekly_days.includes(index)
                             return (
-                              <button
+                              <GlassChoice
                                 key={key}
                                 type="button"
                                 onClick={() =>
@@ -1939,14 +1916,11 @@ export function TransactionsPanel({
                                       : [...form.recurring_weekly_days, index].sort()
                                   })
                                 }
-                                className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm transition-colors ${
-                                  selected
-                                    ? 'border-primary bg-primary text-primary-foreground'
-                                    : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40'
-                                }`}
+                                aria-pressed={selected}
+                                className="h-8 w-8 px-0 text-sm"
                               >
                                 {t(`recurringRules.weekday.${key}`)}
-                              </button>
+                              </GlassChoice>
                             )
                           })}
                         </div>
@@ -2430,31 +2404,20 @@ export function TransactionsPanel({
           // 拆帳欠款明細(App v67):拆帳明細的 picker 才有「支出|應收」
           // (收入是「收入|應付」)切換。已有收還款的欠款明細鎖在欠款分類。
           splitPickerIndex !== null && splitDebtKind ? (
-            <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist">
-              {[txCategoryKind, splitDebtKind].map((kind) => {
-                const locked =
-                  kind === txCategoryKind && Boolean(form.splits[splitPickerIndex]?.debt?.has_repayments)
-                return (
-                  <button
-                    key={kind}
-                    type="button"
-                    role="tab"
-                    data-testid={`split-kind-${kind}`}
-                    aria-selected={splitPickKind === kind}
-                    disabled={locked}
-                    title={locked ? (t('transactions.split.debtLocked') as string) : undefined}
-                    onClick={() => setSplitPickKind(kind)}
-                    className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                      splitPickKind === kind
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {t(`enum.txType.${kind}`)}
-                  </button>
-                )
-              })}
-            </div>
+            <GlassSegmented
+              semantics="tabs"
+              label={t('transactions.table.type') as string}
+              value={splitPickKind}
+              options={[txCategoryKind, splitDebtKind].map((kind) => ({
+                value: kind,
+                label: t(`enum.txType.${kind}`),
+                testId: `split-kind-${kind}`,
+                disabled: kind === txCategoryKind && Boolean(form.splits[splitPickerIndex]?.debt?.has_repayments),
+                title: kind === txCategoryKind && form.splits[splitPickerIndex]?.debt?.has_repayments
+                  ? t('transactions.split.debtLocked') as string : undefined
+              }))}
+              onValueChange={setSplitPickKind}
+            />
           ) : null
         }
         onSelect={(cat) => {

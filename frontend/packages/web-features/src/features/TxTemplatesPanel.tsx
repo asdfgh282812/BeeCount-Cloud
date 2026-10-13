@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useMemo, useState } from 'react'
 
 import {
@@ -359,21 +360,12 @@ export function TxTemplatesPanel({
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t('txTemplates.search.placeholder')}
           />
-          <div className="inline-flex overflow-hidden rounded-md border border-input text-xs" role="group">
-            {(['frequent', 'manual'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={sortMode === mode}
-                onClick={() => setSortMode(mode)}
-                className={`px-3 py-1.5 transition-colors ${
-                  sortMode === mode ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent/40'
-                }`}
-              >
-                {t(mode === 'frequent' ? 'txTemplates.sort.frequent' : 'txTemplates.sort.manual')}
-              </button>
-            ))}
-          </div>
+          <GlassSegmented label={t('txTemplates.sort.frequent') as string} value={sortMode}
+            className="h-9 w-auto min-w-[200px]"
+            options={(['frequent', 'manual'] as const).map((mode) => ({
+              value: mode, label: t(mode === 'frequent' ? 'txTemplates.sort.frequent' : 'txTemplates.sort.manual')
+            }))} onValueChange={setSortMode}
+          />
         </div>
       ) : null}
 

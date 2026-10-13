@@ -6,7 +6,7 @@ const en = {
   'transactions.schedule.deposit': 'Deposit',
   'transactions.schedule.dragHint': 'Tap or press and drag sideways. Release to switch.',
   'profile.glass.title': 'Liquid Glass',
-  'profile.glass.desc': 'Glass materials for navigation and floating controls',
+  'profile.glass.desc': 'Glass materials for navigation, segmented choices, and selection buttons. Press and drag segmented choices to switch.',
   'profile.glass.clear': 'Clear',
   'profile.glass.balanced': 'Balanced',
   'profile.glass.tinted': 'Frosted',

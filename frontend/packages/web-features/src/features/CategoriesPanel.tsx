@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
@@ -321,39 +322,15 @@ function CategoriesCardBody({
 
   return (
     <div className="space-y-4">
-      {/* tabs — 选中态用主题色背景 + 主题色左边框强化存在感，dark mode 下
-          原来的 bg-card 跟 bg-muted 差异太小（基本都是深灰），看不出来。 */}
-      <div className="flex gap-1 rounded-xl border border-border/50 bg-muted/30 p-1">
-        {kinds.map((k) => {
-          const active = k === activeKind
-          const label = t(`enum.txType.${k}`)
-          const count = kindCounts[k]
-          return (
-            <button
-              key={k}
-              type="button"
-              aria-selected={active}
-              className={`relative flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all ${
-                active
-                  ? 'bg-primary/15 text-primary ring-1 ring-primary/40 shadow-[0_6px_20px_-12px_hsl(var(--primary)/0.55)]'
-                  : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
-              }`}
-              onClick={() => setActiveKind(k)}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <span>{label}</span>
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none ${
-                    active ? 'bg-primary/25 text-primary' : 'bg-muted text-muted-foreground/80'
-                  }`}
-                >
-                  {count}
-                </span>
-              </span>
-            </button>
-          )
-        })}
-      </div>
+      <GlassSegmented label={t('transactions.table.type') as string} value={activeKind}
+        options={kinds.map((k) => ({ value: k,
+          label: <span className="inline-flex items-center gap-1.5">
+            <span>{t(`enum.txType.${k}`)}</span>
+            <span className="text-[10px] opacity-70">{kindCounts[k]}</span>
+          </span>
+        }))}
+        onValueChange={setActiveKind}
+      />
 
       {parents.length === 0 ? (
         <div className="py-8 text-center text-xs text-muted-foreground">

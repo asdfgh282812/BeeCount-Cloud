@@ -1,7 +1,7 @@
 import { Home, LayoutGrid, Receipt, Tag, Wallet } from 'lucide-react'
 
 import type { AppSection } from '@beecount/web-features'
-import { useT } from '@beecount/ui'
+import { GlassSegmented, useT } from '@beecount/ui'
 
 interface Props {
   activeSection: AppSection
@@ -33,35 +33,16 @@ export function MobileBottomNav({ activeSection, onNavigate }: Props) {
       className="bc-glass fixed inset-x-4 bottom-3 z-40 rounded-full md:hidden"
       style={{ bottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}
     >
-      <div className="relative mx-auto flex max-w-3xl items-stretch p-1">
-        <span
-          className="bc-glass-thumb pointer-events-none absolute bottom-1 top-1 rounded-full"
-          style={{
-            width: 'calc((100% - 8px) / 5)',
-            left: '4px',
-            transform: `translateX(${Math.max(0, tabs.findIndex((tab) => tab.section === activeSection)) * 100}%)`,
-            opacity: tabs.some((tab) => tab.section === activeSection) ? 1 : 0,
-          }}
-          aria-hidden
-        />
-        {tabs.map(({ section, label, Icon }) => {
-          const active = activeSection === section
-          return (
-            <button
-              key={section}
-              type="button"
-              aria-current={active ? 'page' : undefined}
-              onClick={() => onNavigate(section)}
-              className={`relative flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] transition-colors ${
-                active ? 'text-primary' : 'text-muted-foreground'
-              }`}
-            >
-              <Icon className={`h-5 w-5 ${active ? 'text-primary' : ''}`} />
-              <span className="font-medium">{label}</span>
-            </button>
-          )
-        })}
-      </div>
+      <GlassSegmented semantics="navigation" label={t('nav.group.bookkeeping')}
+        value={activeSection} onValueChange={onNavigate}
+        className="bc-glass-nested h-14 rounded-full [&_button]:text-[11px]"
+        options={tabs.map(({ section, label, Icon }) => ({
+          value: section, ariaLabel: label,
+          label: <span className="flex flex-col items-center justify-center gap-0.5">
+            <Icon className="h-5 w-5" /><span>{label}</span>
+          </span>
+        }))}
+      />
     </nav>
   )
 }

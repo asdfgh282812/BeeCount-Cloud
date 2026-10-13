@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useT } from '@beecount/ui'
 
 import type { DetailScope } from '../../lib/txDialogEvents'
@@ -20,30 +21,10 @@ export function DetailScopeToggle({ value, onChange, className }: Props) {
     { key: 'current', label: t('home.scope.current') },
   ]
   return (
-    <div
-      role="tablist"
-      aria-label={t('shell.allLedgers')}
-      className={`inline-flex rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs ${className || ''}`}
-    >
-      {options.map((opt) => {
-        const active = opt.key === value
-        return (
-          <button
-            key={opt.key}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.key)}
-            className={`rounded px-2.5 py-1 transition-colors ${
-              active
-                ? 'bg-background font-semibold text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
+    <GlassSegmented semantics="tabs" label={t('shell.allLedgers')} value={value}
+      className={`h-8 w-auto min-w-[180px] text-xs ${className || ''}`}
+      options={options.map((opt) => ({ value: opt.key, label: opt.label }))}
+      onValueChange={onChange}
+    />
   )
 }

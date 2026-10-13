@@ -1,3 +1,4 @@
+import { GlassChoice } from '@beecount/ui'
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
@@ -221,16 +222,14 @@ export function AllocationCard({ data }: { data: HomeStockData }) {
           {currencies.length > 1 && (
             <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
               {currencies.map((c) => (
-                <button
+                <GlassChoice
                   key={c}
                   type="button"
                   onClick={() => setPicked(c)}
-                  className={`rounded-full border px-2.5 py-0.5 text-[11px] ${
-                    c === current ? 'border-primary bg-primary/15 text-primary' : 'border-border/60 text-muted-foreground'
-                  }`}
+                  aria-pressed={c === current}
                 >
                   {c}
-                </button>
+                </GlassChoice>
               ))}
             </div>
           )}

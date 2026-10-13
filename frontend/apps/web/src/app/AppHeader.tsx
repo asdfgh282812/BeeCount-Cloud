@@ -19,6 +19,7 @@ import {
 } from '@beecount/ui'
 import { holidayName, NAV_GROUPS, type AppSection, type HolidayLite } from '@beecount/web-features'
 
+import { GlassNavigation } from '../components/GlassNavigation'
 import { AvatarDropdown } from '../components/AvatarDropdown'
 import { NotificationBell } from '../components/NotificationBell'
 import { useAuth } from '../context/AuthContext'
@@ -197,42 +198,16 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
             )}
           </div>
 
-          <nav className="hidden flex-1 items-center justify-center gap-1 md:flex">
-            {headerCoreItems.map((item) => {
-              const active = currentSection === item.key
-              return (
-                <button
-                  key={item.key}
-                  className="relative"
-                  type="button"
-                  onClick={() => goToSection(item.key)}
-                >
-                  <span
-                    className={`absolute inset-0 rounded-xl transition-all ${
-                      active
-                        ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                        : 'bg-transparent'
-                    }`}
-                  />
-                  <span
-                    className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
-                      active
-                        ? 'text-foreground'
-                        : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
-                    }`}
-                  >
-                    {t(item.labelKey)}
-                  </span>
-                </button>
-              )
-            })}
+          <nav className="hidden min-w-0 flex-1 items-center justify-center gap-1 xl:flex">
+            <GlassNavigation className="flex-1" items={headerCoreItems}
+              activeSection={currentSection} onNavigate={goToSection} />
             {headerMoreGroups.length > 0 ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
                     className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
                       moreMenuActive
-                        ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] text-foreground ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
+                        ? 'bc-glass-segment text-foreground'
                         : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                     }`}
                     aria-label={t('shell.more')}
@@ -376,6 +351,9 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
               {t('shell.ledger.empty')}
             </button>
           )}
+        </div>
+        <div className="hidden pb-3 md:block xl:hidden">
+          <GlassNavigation items={headerCoreItems} activeSection={currentSection} onNavigate={goToSection} />
         </div>
       </header>
       {/* 只在 open 时挂载 — 既保证 lazy chunk 不在首屏拉,又让组件内部

@@ -6,7 +6,7 @@ const zhCN = {
   'transactions.schedule.deposit': '订金',
   'transactions.schedule.dragHint': '点击或按住左右拖动，松开后切换。',
   'profile.glass.title': 'Liquid Glass',
-  'profile.glass.desc': '导航栏与浮动组件的玻璃材质',
+  'profile.glass.desc': '导航栏、分段选项与选择按钮共用玻璃材质；分段选项可按住放大并左右拖动切换。',
   'profile.glass.clear': '清透',
   'profile.glass.balanced': '平衡',
   'profile.glass.tinted': '厚雾',

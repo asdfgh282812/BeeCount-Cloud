@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useMemo, useState } from 'react'
 
 import {
@@ -378,17 +379,6 @@ function DebtAdvancedDialog({
     onApply(draft)
   }
 
-  const segmentClass = (active: boolean) =>
-    `flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-      active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-    }`
-  const chipClass = (active: boolean) =>
-    `rounded-full border px-3 py-1 text-sm transition-colors ${
-      active
-        ? 'border-primary/60 bg-primary/10 text-primary'
-        : 'border-border/60 text-muted-foreground hover:bg-accent/40'
-    }`
-
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
       <DialogContent className="max-w-md">
@@ -396,45 +386,25 @@ function DebtAdvancedDialog({
           <DialogTitle>{t('debtEntry.advanced')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              data-testid="debt-advanced-single"
-              aria-selected={!draft.installment}
-              className={segmentClass(!draft.installment)}
-              onClick={() => setDraft({ ...draft, installment: false, card_installment: false })}
-            >
-              {t('debtEntry.single')}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              data-testid="debt-advanced-installment"
-              aria-selected={draft.installment}
-              className={segmentClass(draft.installment)}
-              onClick={() => setDraft({ ...draft, installment: true })}
-            >
-              {t('debtEntry.installment')}
-            </button>
-          </div>
+          <GlassSegmented
+            semantics="tabs"
+            label={t('debtEntry.advanced') as string}
+            value={draft.installment ? 'installment' : 'single'}
+            options={[
+              { value: 'single', label: t('debtEntry.single'), testId: 'debt-advanced-single' },
+              { value: 'installment', label: t('debtEntry.installment'), testId: 'debt-advanced-installment' }
+            ]}
+            onValueChange={(mode) => setDraft({ ...draft, installment: mode === 'installment',
+              card_installment: mode === 'single' ? false : draft.card_installment })}
+          />
 
           <div className="space-y-2">
             <Label>{t('debtEntry.kindLabel')}</Label>
-            <div className="flex flex-wrap gap-2">
-              {kinds.map((k) => (
-                <button
-                  key={k.key}
-                  type="button"
-                  data-testid={`debt-kind-${k.key.split('.').pop()}`}
-                  className={chipClass(k.active)}
-                  onClick={() => setDraft(k.apply())}
-                >
-                  {k.active ? '✓ ' : ''}
-                  {t(k.key)}
-                </button>
-              ))}
-            </div>
+            <GlassSegmented label={t('debtEntry.kindLabel') as string}
+              value={kinds.find((k) => k.active)?.key || kinds[0].key}
+              options={kinds.map((k) => ({ value: k.key, label: t(k.key), testId: `debt-kind-${k.key.split('.').pop()}` }))}
+              onValueChange={(key) => { const kind = kinds.find((k) => k.key === key); if (kind) setDraft(kind.apply()) }}
+            />
             <p className="text-xs text-muted-foreground">{t(hintKey)}</p>
           </div>
 

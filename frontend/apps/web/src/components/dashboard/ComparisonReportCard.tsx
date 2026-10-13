@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useState } from 'react'
 
 import type { ComparisonReport, ComparisonReportMetric } from '@beecount/api-client'
@@ -128,30 +129,10 @@ function ScopeToggle({
     { key: 'year', label: t('comparison.scope.year') }
   ]
   return (
-    <div
-      role="tablist"
-      className="inline-flex rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs"
-    >
-      {options.map((opt) => {
-        const active = opt.key === value
-        return (
-          <button
-            key={opt.key}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.key)}
-            className={`rounded px-2.5 py-1 transition-colors ${
-              active
-                ? 'bg-background font-semibold text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
+    <GlassSegmented semantics="tabs" label={t('comparison.title')}
+      className="h-8 w-auto min-w-[140px]" value={value}
+      options={options.map((o) => ({ value: o.key, label: o.label }))} onValueChange={onChange}
+    />
   )
 }
 
@@ -169,30 +150,10 @@ function OffsetToggle({
     { key: 12, label: t('comparison.offset.sameMonthLastYear') }
   ]
   return (
-    <div
-      role="tablist"
-      className="inline-flex rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs"
-    >
-      {options.map((opt) => {
-        const active = opt.key === value
-        return (
-          <button
-            key={opt.key}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.key)}
-            className={`rounded px-2.5 py-1 transition-colors ${
-              active
-                ? 'bg-background font-semibold text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
+    <GlassSegmented semantics="tabs" label={t('comparison.title')}
+      className="h-8 w-auto min-w-[140px]" value={value}
+      options={options.map((o) => ({ value: o.key, label: o.label }))} onValueChange={onChange}
+    />
   )
 }
 

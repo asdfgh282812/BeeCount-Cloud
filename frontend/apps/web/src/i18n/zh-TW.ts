@@ -6,7 +6,7 @@ const zhTW = {
   'transactions.schedule.deposit': '訂金',
   'transactions.schedule.dragHint': '點選或按住左右拖動，放開後切換。',
   'profile.glass.title': 'Liquid Glass',
-  'profile.glass.desc': '導覽列與浮動元件的玻璃材質',
+  'profile.glass.desc': '導覽列、分段選項與選取按鈕共用玻璃材質；分段選項可按住放大並左右拖動切換。',
   'profile.glass.clear': '清透',
   'profile.glass.balanced': '平衡',
   'profile.glass.tinted': '厚霧',

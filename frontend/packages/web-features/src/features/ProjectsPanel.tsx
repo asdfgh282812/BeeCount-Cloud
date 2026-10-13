@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useMemo, useState } from 'react'
 
 import { BarChart3 } from 'lucide-react'
@@ -251,23 +252,10 @@ export function ProjectsPanel({
 
             <div className="space-y-1">
               <Label>{t('projects.field.periodType')}</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {PERIOD_TYPES.map((pt) => (
-                  <button
-                    key={pt}
-                    type="button"
-                    onClick={() => onFormChange({ ...form, period_type: pt })}
-                    className={[
-                      'rounded-md border px-3 py-2 text-sm transition-colors',
-                      form.period_type === pt
-                        ? 'border-primary/60 bg-primary/10 text-primary'
-                        : 'border-border/60 hover:bg-accent/40',
-                    ].join(' ')}
-                  >
-                    {t(`projects.periodType.${pt}`)}
-                  </button>
-                ))}
-              </div>
+              <GlassSegmented label={t('projects.field.periodType') as string} value={form.period_type}
+                options={PERIOD_TYPES.map((pt) => ({ value: pt, label: t(`projects.periodType.${pt}`) }))}
+                onValueChange={(pt) => onFormChange({ ...form, period_type: pt })}
+              />
             </div>
 
             {form.period_type === 'fixed' ? (
@@ -330,23 +318,10 @@ export function ProjectsPanel({
                 {t('projects.field.dailyBudgetEnabled')}
               </label>
               {form.daily_budget_enabled ? (
-                <div className="grid grid-cols-2 gap-2 pl-6">
-                  {DAILY_BUDGET_MODES.map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => onFormChange({ ...form, daily_budget_mode: mode })}
-                      className={[
-                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
-                        form.daily_budget_mode === mode
-                          ? 'border-primary/60 bg-primary/10 text-primary'
-                          : 'border-border/60 hover:bg-accent/40',
-                      ].join(' ')}
-                    >
-                      {t(`projects.dailyBudgetMode.${mode}`)}
-                    </button>
-                  ))}
-                </div>
+                <GlassSegmented label={t('projects.field.dailyBudgetEnabled') as string} value={form.daily_budget_mode}
+                options={DAILY_BUDGET_MODES.map((mode) => ({ value: mode, label: t(`projects.dailyBudgetMode.${mode}`), disabled: false }))}
+                onValueChange={(mode) => onFormChange({ ...form, daily_budget_mode: mode })}
+              />
               ) : null}
 
               <label className="flex items-center gap-2 text-sm">
@@ -768,24 +743,10 @@ function ProjectCategoryBudgetsSection({
 
             <div className="space-y-1">
               <Label>{t('projects.categoryBudgets.field.mode')}</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {CATEGORY_BUDGET_MODES.map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    disabled={mode === 'percentage' && budgetAmount == null}
-                    onClick={() => onFormChange({ ...form, mode })}
-                    className={[
-                      'rounded-md border px-3 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                      form.mode === mode
-                        ? 'border-primary/60 bg-primary/10 text-primary'
-                        : 'border-border/60 hover:bg-accent/40',
-                    ].join(' ')}
-                  >
-                    {t(`projects.categoryBudgets.mode.${mode}`)}
-                  </button>
-                ))}
-              </div>
+              <GlassSegmented label={t('projects.categoryBudgets.field.mode') as string} value={form.mode}
+                options={CATEGORY_BUDGET_MODES.map((mode) => ({ value: mode, label: t(`projects.categoryBudgets.mode.${mode}`), disabled: mode === 'percentage' && budgetAmount == null }))}
+                onValueChange={(mode) => onFormChange({ ...form, mode: mode })}
+              />
             </div>
 
             {form.mode === 'fixed' ? (

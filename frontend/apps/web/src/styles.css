@@ -348,6 +348,7 @@
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
 }
+.bc-glass-control.bc-glass-nested { -webkit-backdrop-filter: none; backdrop-filter: none; }
 .bc-glass-primary { --glass-control-tint: hsl(var(--primary) / .90); }
 .bc-glass-secondary, .bc-glass-choice[aria-pressed='true'] {
   --glass-control-tint: hsl(var(--primary) / .20);

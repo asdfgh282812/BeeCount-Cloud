@@ -1,3 +1,4 @@
+import { GlassChoice } from '@beecount/ui'
 import { useEffect, useRef, useState } from 'react'
 
 import type {
@@ -1163,19 +1164,15 @@ function CardRewardRuleFormDialog({
                   const checked = capGroupSelection.has(r.id)
                   const accName = accountNameById.get(r.account_id) || r.account_id
                   return (
-                    <button
+                    <GlassChoice
                       key={r.id}
                       type="button"
                       disabled={locked}
                       onClick={() => toggleCapGroupMember(r.id)}
-                      className={`rounded-full border px-2.5 py-1 text-[11px] disabled:opacity-50 ${
-                        checked
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-muted-foreground'
-                      }`}
+                      aria-pressed={checked}
                     >
                       {accName} - {r.label}
-                    </button>
+                    </GlassChoice>
                   )
                 })}
               </div>

@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useMemo, useState } from 'react'
 import type { MouseEvent } from 'react'
 import {
@@ -718,25 +719,10 @@ function Segmented({
   options: Array<{ key: string; label: string }>
 }) {
   return (
-    <div role="tablist" className="inline-flex h-9 items-center rounded-md border border-border/60 bg-muted/30 p-0.5 text-xs">
-      {options.map((opt) => {
-        const active = opt.key === value
-        return (
-          <button
-            key={opt.key}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.key)}
-            className={`h-full rounded px-2.5 transition-colors ${
-              active ? 'bg-background font-semibold text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
+    <GlassSegmented semantics="tabs" label={options.map((o) => o.label).join(' / ')}
+      className="h-9 w-auto min-w-[160px]" value={value}
+      options={options.map((o) => ({ value: o.key, label: o.label }))} onValueChange={onChange}
+    />
   )
 }
 

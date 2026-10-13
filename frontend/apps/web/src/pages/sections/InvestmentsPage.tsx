@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -1144,22 +1145,10 @@ export function StockTradeDialog({
         </DialogHeader>
         <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
           {!editing && (
-            <div className="flex gap-2">
-              {(['trade', 'dca'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  className={`flex-1 rounded-md border px-2.5 py-1.5 text-xs ${
-                    mode === m
-                      ? 'border-primary bg-primary/15 text-primary'
-                      : 'border-input text-muted-foreground hover:bg-accent/40'
-                  }`}
-                >
-                  {t(`investments.mode.${m}`)}
-                </button>
-              ))}
-            </div>
+            <GlassSegmented label={t('investments.mode.trade') as string} value={mode}
+              options={(['trade', 'dca'] as const).map((m) => ({ value: m, label: t(`investments.mode.${m}`) }))}
+              onValueChange={setMode}
+            />
           )}
           {isDca && <p className="text-xs text-muted-foreground">{t('investments.dca.hint')}</p>}
           <div className={`flex flex-wrap gap-2 ${isDca ? 'hidden' : ''}`}>

@@ -1,3 +1,4 @@
+import { GlassSegmented } from '@beecount/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -1318,31 +1319,13 @@ export function AccountsPanel({
                     算法在 server `services/billing_schedule.py`,跟 App 同一套。 */}
                 <div className="space-y-2">
                   <Label>{t('accounts.field.paymentDueMode')}</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {(['fixed_day', 'days_after_closing'] as const).map((mode) => {
-                      const active = (form.payment_due_mode || 'fixed_day') === mode
-                      return (
-                        <button
-                          key={mode}
-                          type="button"
-                          aria-pressed={active}
-                          onClick={() =>
-                            onFormChange({
-                              ...form,
-                              payment_due_mode: mode === 'fixed_day' ? '' : mode,
-                            })
-                          }
-                          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                            active
-                              ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border text-muted-foreground hover:bg-muted/50'
-                          }`}
-                        >
-                          {t(`accounts.paymentDueMode.${mode}`)}
-                        </button>
-                      )
-                    })}
-                  </div>
+                  <GlassSegmented label={t('accounts.field.paymentDueMode') as string}
+                    value={form.payment_due_mode || 'fixed_day'}
+                    options={(['fixed_day', 'days_after_closing'] as const).map((mode) => ({
+                      value: mode, label: t(`accounts.paymentDueMode.${mode}`)
+                    }))}
+                    onValueChange={(mode) => onFormChange({ ...form, payment_due_mode: mode === 'fixed_day' ? '' : mode })}
+                  />
                 </div>
                 <div className="space-y-2 rounded-md border border-border/60 p-3">
                   <div className="flex items-center justify-between">

@@ -1,3 +1,4 @@
+import { GlassChoice } from '@beecount/ui'
 import { useState } from 'react'
 
 import {
@@ -318,18 +319,14 @@ function ScheduleEditForm({
           <Label>{t('backup.schedule.field.cron')}</Label>
           <div className="mb-1 flex flex-wrap gap-1">
             {CRON_PRESETS.map((p) => (
-              <button
+              <GlassChoice
                 key={p.value}
                 type="button"
                 onClick={() => setCron(p.value)}
-                className={`rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
-                  cron === p.value
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-border/60 hover:bg-accent/40'
-                }`}
+                aria-pressed={cron === p.value}
               >
                 {p.label}
-              </button>
+              </GlassChoice>
             ))}
           </div>
           <Input

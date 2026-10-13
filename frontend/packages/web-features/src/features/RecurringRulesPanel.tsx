@@ -1,3 +1,4 @@
+import { GlassSegmented, GlassChoice } from '@beecount/ui'
 import { useMemo, useState } from 'react'
 
 import {
@@ -330,39 +331,15 @@ export function RecurringRulesPanel({
         </Button>
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
-        {(['all', 'general', 'stock_dca'] as const).map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setKindFilter(key)}
-            className={`rounded-full border px-2.5 py-1 text-xs ${
-              kindFilter === key
-                ? 'border-primary bg-primary/15 text-primary'
-                : 'border-input text-muted-foreground hover:bg-accent/40'
-            }`}
-          >
-            {t(`recurringRules.kindFilter.${key}`)}
-          </button>
-        ))}
-      </div>
+      <GlassSegmented label={t('recurringRules.field.kind') as string} value={kindFilter}
+        options={(['all', 'general', 'stock_dca'] as const).map((key) => ({ value: key, label: t(`recurringRules.kindFilter.${key}`) }))}
+        onValueChange={setKindFilter}
+      />
 
-      <div className="flex flex-wrap gap-1.5">
-        {RULE_STATUS_FILTERS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setStatusFilter(key)}
-            className={`rounded-full border px-2.5 py-1 text-xs ${
-              statusFilter === key
-                ? 'border-primary bg-primary/15 text-primary'
-                : 'border-input text-muted-foreground hover:bg-accent/40'
-            }`}
-          >
-            {t(`recurringRules.statusFilter.${key}`)}
-          </button>
-        ))}
-      </div>
+      <GlassSegmented label={t('recurringRules.statusFilter.all') as string} value={statusFilter}
+        options={RULE_STATUS_FILTERS.map((key) => ({ value: key, label: t(`recurringRules.statusFilter.${key}`) }))}
+        onValueChange={setStatusFilter}
+      />
 
       {filteredRules.length === 0 ? (
         <EmptyState
@@ -424,14 +401,11 @@ export function RecurringRulesPanel({
           <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
             <div className="space-y-1">
               <Label>{t('recurringRules.field.kind')}</Label>
-              <div className="flex gap-2">
-                {(['general', 'stock_dca'] as const).map((k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    disabled={!!form.editingId}
-                    onClick={() =>
-                      onFormChange({
+              <GlassSegmented label={t('recurringRules.field.kind') as string} value={form.kind}
+                options={(['general', 'stock_dca'] as const).map((k) => ({
+                  value: k, label: t(`recurringRules.kind.${k}`), disabled: !!form.editingId
+                }))}
+                onValueChange={(k) => onFormChange({
                         ...form,
                         kind: k,
                         tx_type: k === 'stock_dca' ? 'transfer' : 'expense',
@@ -448,18 +422,8 @@ export function RecurringRulesPanel({
                         to_account_name: '',
                         reward_rule_ids: [],
                         fee_enabled: false,
-                      })
-                    }
-                    className={`flex-1 rounded-md border px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${
-                      form.kind === k
-                        ? 'border-primary bg-primary/15 text-primary'
-                        : 'border-input text-muted-foreground hover:bg-accent/40'
-                    }`}
-                  >
-                    {t(`recurringRules.kind.${k}`)}
-                  </button>
-                ))}
-              </div>
+                      })}
+              />
             </div>
 
             {!isStockDca ? (
@@ -794,7 +758,7 @@ export function RecurringRulesPanel({
                   {rewardRules.map((rule) => {
                     const checked = form.reward_rule_ids.includes(rule.id)
                     return (
-                      <button
+                      <GlassChoice
                         key={rule.id}
                         type="button"
                         onClick={() =>
@@ -805,11 +769,7 @@ export function RecurringRulesPanel({
                               : [...form.reward_rule_ids, rule.id],
                           })
                         }
-                        className={`rounded-full border px-2.5 py-1 text-xs ${
-                          checked
-                            ? 'border-primary bg-primary/15 text-primary'
-                            : 'border-input text-muted-foreground hover:bg-accent/40'
-                        }`}
+                        aria-pressed={checked}
                       >
                         {rule.label}
                         {!rule.enabled ? (
@@ -817,7 +777,7 @@ export function RecurringRulesPanel({
                             {t('cardRewards.disabled')}
                           </span>
                         ) : null}
-                      </button>
+                      </GlassChoice>
                     )
                   })}
                 </div>
@@ -914,7 +874,7 @@ export function RecurringRulesPanel({
                       {(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const).map((key, index) => {
                         const selected = form.weekly_days.includes(index)
                         return (
-                          <button
+                          <GlassChoice
                             key={key}
                             type="button"
                             onClick={() =>
@@ -925,14 +885,11 @@ export function RecurringRulesPanel({
                                   : [...form.weekly_days, index].sort(),
                               })
                             }
-                            className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm transition-colors ${
-                              selected
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-border/60 bg-background text-muted-foreground hover:bg-accent/40'
-                            }`}
+                            aria-pressed={selected}
+                            className="h-8 w-8 px-0 text-sm"
                           >
                             {t(`recurringRules.weekday.${key}`)}
-                          </button>
+                          </GlassChoice>
                         )
                       })}
                     </div>
