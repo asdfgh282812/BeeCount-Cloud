@@ -14,7 +14,7 @@ export function GlassStyleSetting({ value, disabled, onChange }: Props) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="rounded-xl bg-gradient-to-br from-primary to-harvest p-1" aria-hidden>
+        <div className="rounded-xl border border-border/60 bg-gradient-to-br from-primary/35 to-harvest/35 p-1" aria-hidden>
           <div className="bc-glass flex h-9 w-9 items-center justify-center rounded-lg">
             <Layers className="h-5 w-5" />
           </div>
