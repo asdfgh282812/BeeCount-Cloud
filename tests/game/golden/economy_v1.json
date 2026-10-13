@@ -1,0 +1,745 @@
+{
+  "diligent": [
+    {
+      "week": 1,
+      "operatingNet": 1841,
+      "expansionCost": 1600,
+      "coins": 741,
+      "plots": 7,
+      "harvested": 183,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 2,
+      "operatingNet": 2261,
+      "expansionCost": 2000,
+      "coins": 1002,
+      "plots": 8,
+      "harvested": 230,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 3,
+      "operatingNet": 2855,
+      "expansionCost": 2500,
+      "coins": 1357,
+      "plots": 9,
+      "harvested": 277,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 4,
+      "operatingNet": 2770,
+      "expansionCost": 3125,
+      "coins": 1002,
+      "plots": 10,
+      "harvested": 308,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 5,
+      "operatingNet": 3117,
+      "expansionCost": 3906,
+      "coins": 213,
+      "plots": 11,
+      "harvested": 344,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 6,
+      "operatingNet": 3067,
+      "expansionCost": 0,
+      "coins": 3280,
+      "plots": 11,
+      "harvested": 382,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 7,
+      "operatingNet": 3216,
+      "expansionCost": 4883,
+      "coins": 1613,
+      "plots": 12,
+      "harvested": 367,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 8,
+      "operatingNet": 3361,
+      "expansionCost": 0,
+      "coins": 4974,
+      "plots": 12,
+      "harvested": 408,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 9,
+      "operatingNet": 4091,
+      "expansionCost": 6104,
+      "coins": 2961,
+      "plots": 13,
+      "harvested": 710,
+      "withered": 12,
+      "score": 89.411765
+    },
+    {
+      "week": 10,
+      "operatingNet": 6457,
+      "expansionCost": 7629,
+      "coins": 1789,
+      "plots": 14,
+      "harvested": 920,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 11,
+      "operatingNet": 6367,
+      "expansionCost": 0,
+      "coins": 8156,
+      "plots": 14,
+      "harvested": 975,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 12,
+      "operatingNet": 6889,
+      "expansionCost": 9537,
+      "coins": 5508,
+      "plots": 15,
+      "harvested": 986,
+      "withered": 0,
+      "score": 89.411765
+    }
+  ],
+  "ordinary": [
+    {
+      "week": 1,
+      "operatingNet": 1873,
+      "expansionCost": 1600,
+      "coins": 773,
+      "plots": 7,
+      "harvested": 144,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 2,
+      "operatingNet": 2295,
+      "expansionCost": 2000,
+      "coins": 1068,
+      "plots": 8,
+      "harvested": 213,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 3,
+      "operatingNet": 2584,
+      "expansionCost": 2500,
+      "coins": 1152,
+      "plots": 9,
+      "harvested": 234,
+      "withered": 0,
+      "score": 85.882353
+    },
+    {
+      "week": 4,
+      "operatingNet": 2900,
+      "expansionCost": 3125,
+      "coins": 927,
+      "plots": 10,
+      "harvested": 254,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 5,
+      "operatingNet": 2923,
+      "expansionCost": 0,
+      "coins": 3850,
+      "plots": 10,
+      "harvested": 311,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 6,
+      "operatingNet": 2945,
+      "expansionCost": 3906,
+      "coins": 2889,
+      "plots": 11,
+      "harvested": 288,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 7,
+      "operatingNet": 2845,
+      "expansionCost": 4883,
+      "coins": 851,
+      "plots": 12,
+      "harvested": 317,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 8,
+      "operatingNet": 3354,
+      "expansionCost": 0,
+      "coins": 4205,
+      "plots": 12,
+      "harvested": 370,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 9,
+      "operatingNet": 2571,
+      "expansionCost": 6104,
+      "coins": 672,
+      "plots": 13,
+      "harvested": 347,
+      "withered": 12,
+      "score": 89.411765
+    },
+    {
+      "week": 10,
+      "operatingNet": 3716,
+      "expansionCost": 0,
+      "coins": 4388,
+      "plots": 13,
+      "harvested": 455,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 11,
+      "operatingNet": 3473,
+      "expansionCost": 0,
+      "coins": 7861,
+      "plots": 13,
+      "harvested": 434,
+      "withered": 0,
+      "score": 89.411765
+    },
+    {
+      "week": 12,
+      "operatingNet": 3823,
+      "expansionCost": 7629,
+      "coins": 4055,
+      "plots": 14,
+      "harvested": 452,
+      "withered": 0,
+      "score": 89.411765
+    }
+  ],
+  "casual": [
+    {
+      "week": 1,
+      "operatingNet": 385,
+      "expansionCost": 0,
+      "coins": 885,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 6,
+      "score": 50.084034
+    },
+    {
+      "week": 2,
+      "operatingNet": 385,
+      "expansionCost": 0,
+      "coins": 1270,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 50.084034
+    },
+    {
+      "week": 3,
+      "operatingNet": 385,
+      "expansionCost": 0,
+      "coins": 1655,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 50.084034
+    },
+    {
+      "week": 4,
+      "operatingNet": 399,
+      "expansionCost": 0,
+      "coins": 2054,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 5,
+      "operatingNet": 399,
+      "expansionCost": 0,
+      "coins": 2453,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 6,
+      "operatingNet": 399,
+      "expansionCost": 0,
+      "coins": 2852,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 7,
+      "operatingNet": 399,
+      "expansionCost": 0,
+      "coins": 3251,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 8,
+      "operatingNet": 399,
+      "expansionCost": 0,
+      "coins": 3650,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 9,
+      "operatingNet": 423,
+      "expansionCost": 0,
+      "coins": 4073,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 10,
+      "operatingNet": 423,
+      "expansionCost": 0,
+      "coins": 4496,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 11,
+      "operatingNet": 423,
+      "expansionCost": 0,
+      "coins": 4919,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    },
+    {
+      "week": 12,
+      "operatingNet": 423,
+      "expansionCost": 0,
+      "coins": 5342,
+      "plots": 6,
+      "harvested": 0,
+      "withered": 12,
+      "score": 51.848739
+    }
+  ],
+  "fixedSixPlots": [
+    {
+      "profile": "diligent",
+      "weeks": [
+        {
+          "week": 1,
+          "operatingNet": 1841,
+          "expansionCost": 0,
+          "coins": 2341,
+          "plots": 6,
+          "harvested": 183,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 2,
+          "operatingNet": 2110,
+          "expansionCost": 0,
+          "coins": 4451,
+          "plots": 6,
+          "harvested": 201,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 3,
+          "operatingNet": 2459,
+          "expansionCost": 0,
+          "coins": 6910,
+          "plots": 6,
+          "harvested": 214,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 4,
+          "operatingNet": 2269,
+          "expansionCost": 0,
+          "coins": 9179,
+          "plots": 6,
+          "harvested": 211,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 5,
+          "operatingNet": 2373,
+          "expansionCost": 0,
+          "coins": 11552,
+          "plots": 6,
+          "harvested": 211,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 6,
+          "operatingNet": 2239,
+          "expansionCost": 0,
+          "coins": 13791,
+          "plots": 6,
+          "harvested": 213,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 7,
+          "operatingNet": 2237,
+          "expansionCost": 0,
+          "coins": 16028,
+          "plots": 6,
+          "harvested": 196,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 8,
+          "operatingNet": 2243,
+          "expansionCost": 0,
+          "coins": 18271,
+          "plots": 6,
+          "harvested": 203,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 9,
+          "operatingNet": 2622,
+          "expansionCost": 0,
+          "coins": 20893,
+          "plots": 6,
+          "harvested": 356,
+          "withered": 6,
+          "score": 89.411765
+        },
+        {
+          "week": 10,
+          "operatingNet": 3690,
+          "expansionCost": 0,
+          "coins": 24583,
+          "plots": 6,
+          "harvested": 435,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 11,
+          "operatingNet": 3357,
+          "expansionCost": 0,
+          "coins": 27940,
+          "plots": 6,
+          "harvested": 415,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 12,
+          "operatingNet": 3608,
+          "expansionCost": 0,
+          "coins": 31548,
+          "plots": 6,
+          "harvested": 423,
+          "withered": 0,
+          "score": 89.411765
+        }
+      ]
+    },
+    {
+      "profile": "ordinary",
+      "weeks": [
+        {
+          "week": 1,
+          "operatingNet": 1873,
+          "expansionCost": 0,
+          "coins": 2373,
+          "plots": 6,
+          "harvested": 144,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 2,
+          "operatingNet": 2138,
+          "expansionCost": 0,
+          "coins": 4511,
+          "plots": 6,
+          "harvested": 184,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 3,
+          "operatingNet": 2218,
+          "expansionCost": 0,
+          "coins": 6729,
+          "plots": 6,
+          "harvested": 176,
+          "withered": 0,
+          "score": 85.882353
+        },
+        {
+          "week": 4,
+          "operatingNet": 2344,
+          "expansionCost": 0,
+          "coins": 9073,
+          "plots": 6,
+          "harvested": 176,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 5,
+          "operatingNet": 2299,
+          "expansionCost": 0,
+          "coins": 11372,
+          "plots": 6,
+          "harvested": 197,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 6,
+          "operatingNet": 2153,
+          "expansionCost": 0,
+          "coins": 13525,
+          "plots": 6,
+          "harvested": 168,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 7,
+          "operatingNet": 2107,
+          "expansionCost": 0,
+          "coins": 15632,
+          "plots": 6,
+          "harvested": 175,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 8,
+          "operatingNet": 2288,
+          "expansionCost": 0,
+          "coins": 17920,
+          "plots": 6,
+          "harvested": 191,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 9,
+          "operatingNet": 1860,
+          "expansionCost": 0,
+          "coins": 19780,
+          "plots": 6,
+          "harvested": 173,
+          "withered": 6,
+          "score": 89.411765
+        },
+        {
+          "week": 10,
+          "operatingNet": 2384,
+          "expansionCost": 0,
+          "coins": 22164,
+          "plots": 6,
+          "harvested": 216,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 11,
+          "operatingNet": 2242,
+          "expansionCost": 0,
+          "coins": 24406,
+          "plots": 6,
+          "harvested": 203,
+          "withered": 0,
+          "score": 89.411765
+        },
+        {
+          "week": 12,
+          "operatingNet": 2365,
+          "expansionCost": 0,
+          "coins": 26771,
+          "plots": 6,
+          "harvested": 207,
+          "withered": 0,
+          "score": 89.411765
+        }
+      ]
+    },
+    {
+      "profile": "casual",
+      "weeks": [
+        {
+          "week": 1,
+          "operatingNet": 385,
+          "expansionCost": 0,
+          "coins": 885,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 6,
+          "score": 50.084034
+        },
+        {
+          "week": 2,
+          "operatingNet": 385,
+          "expansionCost": 0,
+          "coins": 1270,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 50.084034
+        },
+        {
+          "week": 3,
+          "operatingNet": 385,
+          "expansionCost": 0,
+          "coins": 1655,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 50.084034
+        },
+        {
+          "week": 4,
+          "operatingNet": 399,
+          "expansionCost": 0,
+          "coins": 2054,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 5,
+          "operatingNet": 399,
+          "expansionCost": 0,
+          "coins": 2453,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 6,
+          "operatingNet": 399,
+          "expansionCost": 0,
+          "coins": 2852,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 7,
+          "operatingNet": 399,
+          "expansionCost": 0,
+          "coins": 3251,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 8,
+          "operatingNet": 399,
+          "expansionCost": 0,
+          "coins": 3650,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 9,
+          "operatingNet": 423,
+          "expansionCost": 0,
+          "coins": 4073,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 10,
+          "operatingNet": 423,
+          "expansionCost": 0,
+          "coins": 4496,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 11,
+          "operatingNet": 423,
+          "expansionCost": 0,
+          "coins": 4919,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        },
+        {
+          "week": 12,
+          "operatingNet": 423,
+          "expansionCost": 0,
+          "coins": 5342,
+          "plots": 6,
+          "harvested": 0,
+          "withered": 12,
+          "score": 51.848739
+        }
+      ]
+    }
+  ]
+}

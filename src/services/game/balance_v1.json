@@ -1,0 +1,618 @@
+{
+  "version": 1,
+  "crops": [
+    {
+      "id": "bok_choy",
+      "nameZh": "小白菜",
+      "seasons": [
+        "spring"
+      ],
+      "growthHours": 6,
+      "waterNeed": "medium",
+      "light": "neutral",
+      "minYield": 4,
+      "maxYield": 6,
+      "seedPrice": 16,
+      "basePrice": 9,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 1,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "bamboo",
+      "nameZh": "竹筍",
+      "seasons": [
+        "spring"
+      ],
+      "growthHours": 20,
+      "waterNeed": "high",
+      "light": "shade",
+      "minYield": 3,
+      "maxYield": 4,
+      "seedPrice": 26,
+      "basePrice": 21,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 2,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "corn",
+      "nameZh": "玉米",
+      "seasons": [
+        "spring"
+      ],
+      "growthHours": 30,
+      "waterNeed": "medium",
+      "light": "sun",
+      "minYield": 4,
+      "maxYield": 6,
+      "seedPrice": 35,
+      "basePrice": 20,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 3,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "sunflower",
+      "nameZh": "向日葵",
+      "seasons": [
+        "spring"
+      ],
+      "growthHours": 36,
+      "waterNeed": "low",
+      "light": "sun",
+      "minYield": 2,
+      "maxYield": 3,
+      "seedPrice": 31,
+      "basePrice": 35,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 3,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 1
+    },
+    {
+      "id": "tea",
+      "nameZh": "高山茶",
+      "seasons": [
+        "spring"
+      ],
+      "growthHours": 48,
+      "waterNeed": "medium",
+      "light": "shade",
+      "minYield": 3,
+      "maxYield": 3,
+      "seedPrice": 29,
+      "basePrice": 28,
+      "harvests": 3,
+      "crossSeasons": 1,
+      "minLevel": 4,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "water_spinach",
+      "nameZh": "空心菜",
+      "seasons": [
+        "summer"
+      ],
+      "growthHours": 5,
+      "waterNeed": "high",
+      "light": "sun",
+      "minYield": 5,
+      "maxYield": 7,
+      "seedPrice": 17,
+      "basePrice": 8,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 1,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "loofah",
+      "nameZh": "絲瓜",
+      "seasons": [
+        "summer"
+      ],
+      "growthHours": 24,
+      "waterNeed": "high",
+      "light": "sun",
+      "minYield": 3,
+      "maxYield": 5,
+      "seedPrice": 27,
+      "basePrice": 19,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 2,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "watermelon",
+      "nameZh": "西瓜",
+      "seasons": [
+        "summer"
+      ],
+      "growthHours": 40,
+      "waterNeed": "high",
+      "light": "sun",
+      "minYield": 1,
+      "maxYield": 2,
+      "seedPrice": 31,
+      "basePrice": 60,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 3,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "rice",
+      "nameZh": "稻米",
+      "seasons": [
+        "summer"
+      ],
+      "growthHours": 60,
+      "waterNeed": "high",
+      "light": "sun",
+      "minYield": 8,
+      "maxYield": 10,
+      "seedPrice": 38,
+      "basePrice": 12,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 4,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "pineapple",
+      "nameZh": "鳳梨",
+      "seasons": [
+        "summer"
+      ],
+      "growthHours": 72,
+      "waterNeed": "low",
+      "light": "sun",
+      "minYield": 1,
+      "maxYield": 2,
+      "seedPrice": 52,
+      "basePrice": 100,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 5,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "radish",
+      "nameZh": "蘿蔔",
+      "seasons": [
+        "autumn"
+      ],
+      "growthHours": 12,
+      "waterNeed": "medium",
+      "light": "neutral",
+      "minYield": 4,
+      "maxYield": 6,
+      "seedPrice": 16,
+      "basePrice": 9,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 1,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "sweet_potato",
+      "nameZh": "地瓜",
+      "seasons": [
+        "autumn"
+      ],
+      "growthHours": 18,
+      "waterNeed": "low",
+      "light": "neutral",
+      "minYield": 4,
+      "maxYield": 6,
+      "seedPrice": 18,
+      "basePrice": 10,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 1,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "pumpkin",
+      "nameZh": "南瓜",
+      "seasons": [
+        "autumn"
+      ],
+      "growthHours": 36,
+      "waterNeed": "medium",
+      "light": "sun",
+      "minYield": 1,
+      "maxYield": 3,
+      "seedPrice": 34,
+      "basePrice": 48,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 2,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "persimmon",
+      "nameZh": "柿子",
+      "seasons": [
+        "autumn"
+      ],
+      "growthHours": 48,
+      "waterNeed": "low",
+      "light": "sun",
+      "minYield": 3,
+      "maxYield": 5,
+      "seedPrice": 42,
+      "basePrice": 30,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 3,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "pomelo",
+      "nameZh": "文旦",
+      "seasons": [
+        "autumn"
+      ],
+      "growthHours": 60,
+      "waterNeed": "medium",
+      "light": "sun",
+      "minYield": 2,
+      "maxYield": 4,
+      "seedPrice": 50,
+      "basePrice": 48,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 4,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "chrysanthemum",
+      "nameZh": "茼蒿",
+      "seasons": [
+        "winter"
+      ],
+      "growthHours": 8,
+      "waterNeed": "medium",
+      "light": "shade",
+      "minYield": 4,
+      "maxYield": 6,
+      "seedPrice": 16,
+      "basePrice": 9,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 1,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "cabbage",
+      "nameZh": "高麗菜",
+      "seasons": [
+        "winter"
+      ],
+      "growthHours": 24,
+      "waterNeed": "medium",
+      "light": "neutral",
+      "minYield": 2,
+      "maxYield": 3,
+      "seedPrice": 26,
+      "basePrice": 30,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 2,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "strawberry",
+      "nameZh": "草莓",
+      "seasons": [
+        "winter"
+      ],
+      "growthHours": 36,
+      "waterNeed": "high",
+      "light": "neutral",
+      "minYield": 3,
+      "maxYield": 5,
+      "seedPrice": 35,
+      "basePrice": 25,
+      "harvests": 3,
+      "crossSeasons": 0,
+      "minLevel": 3,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    },
+    {
+      "id": "mandarin",
+      "nameZh": "年柑",
+      "seasons": [
+        "winter"
+      ],
+      "growthHours": 72,
+      "waterNeed": "medium",
+      "light": "sun",
+      "minYield": 2,
+      "maxYield": 4,
+      "seedPrice": 52,
+      "basePrice": 50,
+      "harvests": 1,
+      "crossSeasons": 0,
+      "minLevel": 5,
+      "shelfLifeDays": 14,
+      "xp": 10,
+      "seedReward": 0
+    }
+  ],
+  "care": {
+    "initialMoisture": 60,
+    "waterAmount": 40,
+    "thirstThreshold": 20,
+    "wiltAfterDryHours": 12,
+    "waterLoss": {
+      "low": 2,
+      "medium": 3,
+      "high": 5
+    },
+    "hotTemperature": 32,
+    "hotLossMultiplier": 1.5,
+    "rainThreshold": 0.5,
+    "heavyRainThreshold": 15,
+    "heavyRainMultiplier": 0.7,
+    "coldTemperature": 10,
+    "coldMultiplier": 0.5,
+    "windThreshold": 62,
+    "windDamageChance": 0.1,
+    "windYieldMultiplier": 0.7,
+    "weedIntervalHours": 12,
+    "weedChance": 0.15,
+    "weedGrowthMultiplier": 0.8,
+    "pestIntervalHours": 24,
+    "pestChance": 0.08,
+    "humidPestChance": 0.2,
+    "pestYieldMultiplier": 0.8,
+    "lightFactors": {
+      "sun": [
+        1.2,
+        0.9,
+        0.6,
+        0.3
+      ],
+      "neutral": [
+        1,
+        1,
+        0.8,
+        0.6
+      ],
+      "shade": [
+        0.8,
+        1.1,
+        1,
+        0.6
+      ]
+    },
+    "dailyWater": 8,
+    "bookkeepingWater": 8,
+    "fertilizerMultiplier": 1.25,
+    "highHumidity": 80,
+    "sunnyCloudThreshold": 30,
+    "sprinklerMoisture": 60
+  },
+  "scoring": {
+    "weights": {
+      "habit": 30,
+      "control": 30,
+      "saving": 25,
+      "budget": 15
+    },
+    "newcomerControl": 0.6,
+    "minimumBaselineWeeks": 3,
+    "baselineWeeks": 8,
+    "savingDays": 28,
+    "savingTarget": 0.3,
+    "controlBreaks": [
+      0.7,
+      1,
+      1.6
+    ],
+    "controlHighSlope": 1.17,
+    "minimumControlDays": 4,
+    "suspiciousRatio": 0.2,
+    "suspiciousDays": 5,
+    "suspiciousCap": 0.5,
+    "budgetFullRatio": 0.9,
+    "budgetZeroRatio": 1.3,
+    "baseCoins": 200,
+    "coinsPerPoint": 8,
+    "maximumCoins": 1000,
+    "streakThreshold": 60,
+    "streakBonus": 0.05,
+    "maximumStreak": 5,
+    "catchUpWeeks": 4
+  },
+  "market": {
+    "offSeasonMultiplier": 1.3,
+    "stepVolatility": 0.08,
+    "meanReversion": 0.2,
+    "supplySlope": 0.15,
+    "minimumSupply": 0.6,
+    "maximumSupply": 1.1,
+    "referenceVolume": 1000,
+    "historySlots": 14,
+    "walkWindowSlots": 128
+  },
+  "turnips": {
+    "minimumBuyPrice": 90,
+    "maximumBuyPrice": 110,
+    "maximumQuantity": 400,
+    "buyStartHour": 5,
+    "buyEndHour": 12,
+    "sellSplitHour": 12,
+    "expiryHour": 5,
+    "patterns": [
+      "decreasing",
+      "fluctuating",
+      "small_spike",
+      "large_spike"
+    ],
+    "transitionWeights": [
+      [
+        25,
+        35,
+        25,
+        15
+      ],
+      [
+        25,
+        35,
+        25,
+        15
+      ],
+      [
+        30,
+        40,
+        20,
+        10
+      ],
+      [
+        35,
+        40,
+        20,
+        5
+      ]
+    ],
+    "initialWeights": [
+      25,
+      35,
+      25,
+      15
+    ],
+    "declineMin": 0.03,
+    "declineMax": 0.05,
+    "declineStart": 0.9,
+    "fluctuatingLow": [
+      0.55,
+      0.9
+    ],
+    "fluctuatingHigh": [
+      1.1,
+      1.45
+    ],
+    "smallPeak": [
+      1.4,
+      2
+    ],
+    "largePeak": [
+      2,
+      6
+    ],
+    "spikeShoulders": [
+      0.55,
+      0.8,
+      1,
+      0.8,
+      0.55
+    ]
+  },
+  "progression": {
+    "initialPlots": 6,
+    "maximumPlots": 24,
+    "initialCoins": 500,
+    "initialCapacity": 100,
+    "expansionBasePrice": 1600,
+    "expansionMultiplier": 1.25,
+    "xpPerLevel": 100,
+    "storageExpansionPrice": 800,
+    "storageExpansionQuantity": 50,
+    "cloudMigrationCoinCap": 5000,
+    "plotsPerLevel": 2
+  },
+  "items": [
+    {
+      "id": "sun_doll",
+      "price": 120,
+      "durationHours": 6,
+      "area": 9
+    },
+    {
+      "id": "rain_jar",
+      "price": 120,
+      "durationHours": 6,
+      "area": 9
+    },
+    {
+      "id": "sprinkler",
+      "price": 180,
+      "durationHours": 24,
+      "area": 9
+    },
+    {
+      "id": "grow_light",
+      "price": 60,
+      "durationHours": 8,
+      "area": 1
+    },
+    {
+      "id": "greenhouse",
+      "price": 400,
+      "durationHours": 0,
+      "area": 1
+    },
+    {
+      "id": "wind_net",
+      "price": 200,
+      "durationHours": 72,
+      "area": 24
+    },
+    {
+      "id": "fertilizer",
+      "price": 35,
+      "durationHours": 0,
+      "area": 1
+    },
+    {
+      "id": "pesticide",
+      "price": 30,
+      "durationHours": 24,
+      "area": 1
+    }
+  ]
+}

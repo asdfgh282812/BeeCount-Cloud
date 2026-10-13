@@ -1,0 +1,356 @@
+{
+  "version": 1,
+  "random": [
+    {
+      "key": "田地:1",
+      "seedHex": "8797a47988387e50",
+      "outputsHex": [
+        "9eaad6e2729a7818",
+        "46825f90d67ee673",
+        "d162a5b57acb1b2"
+      ]
+    },
+    {
+      "key": "market|radish|41473|1",
+      "seedHex": "ceddded0ef308672",
+      "outputsHex": [
+        "5ad85e82b1307e59",
+        "d1480795a9bfe399",
+        "e03ca1ec5cc39eaa"
+      ]
+    },
+    {
+      "key": "turnip|player|2026-10-11|1",
+      "seedHex": "a9df00713e8f18e2",
+      "outputsHex": [
+        "f671c2d05741d683",
+        "4945f9212976caa0",
+        "66d35413dbd452e5"
+      ]
+    }
+  ],
+  "time": [
+    {
+      "at": "2026-02-28T15:59:00Z",
+      "day": "2026-02-28",
+      "season": "winter",
+      "weekStart": "2026-02-22T16:00:00Z",
+      "marketSlot": 41025
+    },
+    {
+      "at": "2026-02-28T16:00:00Z",
+      "day": "2026-03-01",
+      "season": "spring",
+      "weekStart": "2026-02-22T16:00:00Z",
+      "marketSlot": 41025
+    },
+    {
+      "at": "2028-02-29T15:59:00Z",
+      "day": "2028-02-29",
+      "season": "winter",
+      "weekStart": "2028-02-27T16:00:00Z",
+      "marketSlot": 42487
+    },
+    {
+      "at": "2028-02-29T16:00:00Z",
+      "day": "2028-03-01",
+      "season": "spring",
+      "weekStart": "2028-02-27T16:00:00Z",
+      "marketSlot": 42487
+    },
+    {
+      "at": "2026-10-11T15:59:00Z",
+      "day": "2026-10-11",
+      "season": "autumn",
+      "weekStart": "2026-10-04T16:00:00Z",
+      "marketSlot": 41475
+    },
+    {
+      "at": "2026-10-11T16:00:00Z",
+      "day": "2026-10-12",
+      "season": "autumn",
+      "weekStart": "2026-10-11T16:00:00Z",
+      "marketSlot": 41475
+    },
+    {
+      "at": "2026-12-31T16:00:00Z",
+      "day": "2027-01-01",
+      "season": "winter",
+      "weekStart": "2026-12-27T16:00:00Z",
+      "marketSlot": 41637
+    }
+  ],
+  "growth": [
+    {
+      "name": "cloudy_hour",
+      "crop": "sweet_potato",
+      "at": "2026-10-13T02:00:00Z",
+      "to": "2026-10-13T03:00:00Z",
+      "weather": {},
+      "expected": {
+        "growth": 0.05555555555555555,
+        "moisture": 58,
+        "withered": false,
+        "dryHours": 0
+      }
+    },
+    {
+      "name": "rain_hour",
+      "crop": "radish",
+      "at": "2026-10-13T02:00:00Z",
+      "to": "2026-10-13T03:00:00Z",
+      "weather": {
+        "precipitation": 1
+      },
+      "expected": {
+        "growth": 0.06666666666666667,
+        "moisture": 100,
+        "withered": false,
+        "dryHours": 0
+      }
+    },
+    {
+      "name": "hot_sunny",
+      "crop": "sweet_potato",
+      "at": "2026-10-13T02:00:00Z",
+      "to": "2026-10-13T03:00:00Z",
+      "weather": {
+        "temperature": 33,
+        "cloud": 0
+      },
+      "expected": {
+        "growth": 0.05555555555555555,
+        "moisture": 57,
+        "withered": false,
+        "dryHours": 0
+      }
+    },
+    {
+      "name": "season_even_if_mature",
+      "crop": "radish",
+      "at": "2026-11-30T15:59:00Z",
+      "to": "2026-11-30T16:00:00Z",
+      "growth": 1,
+      "weather": {},
+      "expected": {
+        "growth": 1,
+        "moisture": 59.95,
+        "withered": true,
+        "dryHours": 0
+      }
+    },
+    {
+      "name": "clock_backwards",
+      "crop": "radish",
+      "at": "2026-10-13T02:00:00Z",
+      "to": "2026-10-13T01:00:00Z",
+      "weather": {},
+      "expected": {
+        "growth": 0,
+        "moisture": 60,
+        "withered": false,
+        "dryHours": 0
+      }
+    },
+    {
+      "name": "spring_tea_crosses_once",
+      "crop": "tea",
+      "at": "2026-05-31T15:59:00Z",
+      "to": "2026-05-31T16:00:00Z",
+      "weather": {
+        "isDay": false
+      },
+      "expected": {
+        "growth": 0.00020833333333333332,
+        "moisture": 59.95,
+        "withered": false,
+        "dryHours": 0
+      }
+    }
+  ],
+  "market": [
+    {
+      "crop": "radish",
+      "at": "2026-10-12T23:59:00Z",
+      "price": 8
+    },
+    {
+      "crop": "sweet_potato",
+      "at": "2026-10-12T23:59:00Z",
+      "price": 10
+    },
+    {
+      "crop": "radish",
+      "at": "2026-10-13T00:00:00Z",
+      "price": 9
+    },
+    {
+      "crop": "sweet_potato",
+      "at": "2026-10-13T00:00:00Z",
+      "price": 10
+    },
+    {
+      "crop": "radish",
+      "at": "2026-10-13T11:59:00Z",
+      "price": 9
+    },
+    {
+      "crop": "sweet_potato",
+      "at": "2026-10-13T11:59:00Z",
+      "price": 10
+    },
+    {
+      "crop": "radish",
+      "at": "2026-10-13T12:00:00Z",
+      "price": 9
+    },
+    {
+      "crop": "sweet_potato",
+      "at": "2026-10-13T12:00:00Z",
+      "price": 10
+    },
+    {
+      "crop": "radish",
+      "at": "2026-11-30T16:00:00Z",
+      "price": 11
+    },
+    {
+      "crop": "sweet_potato",
+      "at": "2026-11-30T16:00:00Z",
+      "price": 13
+    }
+  ],
+  "scores": [
+    {
+      "name": "no_created_at",
+      "days": 0,
+      "income": 0,
+      "expense": 700,
+      "expected": {
+        "habit": 0,
+        "control": 0,
+        "saving": null,
+        "score": 0,
+        "coins": 0,
+        "streak": 0
+      }
+    },
+    {
+      "name": "seven_days_expense_no_income",
+      "days": 7,
+      "income": 0,
+      "expense": 700,
+      "expected": {
+        "habit": 1,
+        "control": 0.6,
+        "saving": null,
+        "score": 80,
+        "coins": 882,
+        "streak": 1
+      }
+    },
+    {
+      "name": "income_only",
+      "days": 7,
+      "income": 7000,
+      "expense": 0,
+      "expected": {
+        "habit": 1,
+        "control": 1,
+        "saving": 1,
+        "score": 100,
+        "coins": 1050,
+        "streak": 1
+      }
+    },
+    {
+      "name": "income_only_streak_cap",
+      "days": 7,
+      "income": 7000,
+      "expense": 0,
+      "previousStreak": 8,
+      "expected": {
+        "habit": 1,
+        "control": 1,
+        "saving": 1,
+        "score": 100,
+        "coins": 1250,
+        "streak": 9
+      }
+    }
+  ],
+  "turnips": [
+    {
+      "player": "player",
+      "at": "2026-10-10T21:00:00Z",
+      "previousPattern": null,
+      "expected": {
+        "weekStart": "2026-10-10T21:00:00Z",
+        "pattern": "large_spike",
+        "buyPrice": 96,
+        "prices": [
+          86,
+          83,
+          79,
+          75,
+          181,
+          263,
+          329,
+          263,
+          181,
+          51,
+          48,
+          44
+        ]
+      }
+    },
+    {
+      "player": "player",
+      "at": "2026-10-10T21:00:00Z",
+      "previousPattern": "large_spike",
+      "expected": {
+        "weekStart": "2026-10-10T21:00:00Z",
+        "pattern": "large_spike",
+        "buyPrice": 96,
+        "prices": [
+          86,
+          83,
+          79,
+          75,
+          181,
+          263,
+          329,
+          263,
+          181,
+          51,
+          48,
+          44
+        ]
+      }
+    },
+    {
+      "player": "second",
+      "at": "2026-10-10T21:00:00Z",
+      "previousPattern": null,
+      "expected": {
+        "weekStart": "2026-10-10T21:00:00Z",
+        "pattern": "small_spike",
+        "buyPrice": 106,
+        "prices": [
+          95,
+          91,
+          87,
+          82,
+          77,
+          73,
+          68,
+          115,
+          168,
+          209,
+          168,
+          115
+        ]
+      }
+    }
+  ]
+}
