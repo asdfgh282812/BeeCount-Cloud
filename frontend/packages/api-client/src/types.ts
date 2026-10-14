@@ -199,6 +199,8 @@ export type ReadTransaction = {
    *  無轉帳對象,只綁 `account_id`。 */
   tx_type: 'expense' | 'income' | 'transfer' | 'adjustment'
   amount: number
+  /** 真實建立時間；舊交易 null，Web 建立由伺服器寫入，編輯不可重設。 */
+  created_at?: string | null
   happened_at: string
   /** 延後入帳(§2.10 Phase 5):這筆交易的實際入帳日與 `happened_at`(消費日)
    *  不同時填 —— 比如信用卡商戶延遲請款。對帳 / 信用卡帳單週期歸屬按

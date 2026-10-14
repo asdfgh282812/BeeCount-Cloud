@@ -584,6 +584,7 @@ class ReadTransactionOut(BaseModel):
     tx_index: int
     tx_type: str
     amount: float
+    created_at: datetime | None = None
     happened_at: datetime
     note: str | None
     # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。

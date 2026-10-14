@@ -2272,6 +2272,7 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         "type": row.tx_type,
         "amount": row.amount,
         "happenedAt": _to_iso_utc(row.happened_at),
+        "createdAt": _to_iso_utc(row.client_created_at) if row.client_created_at else None,
     }
     if row.note is not None:
         item["note"] = row.note

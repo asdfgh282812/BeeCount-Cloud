@@ -297,6 +297,7 @@ def list_workspace_transactions(
                 tx_type=row.tx_type,
                 amount=row.amount,
                 happened_at=_to_utc(row.happened_at),
+                created_at=_to_utc(row.client_created_at) if row.client_created_at else None,
                 note=row.note,
                 merchant=row.merchant,
                 category_name=row.category_name,

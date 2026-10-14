@@ -525,6 +525,7 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "type": tx_type,
         "amount": _to_float(payload.get("amount")),
         "happenedAt": _to_iso8601(payload.get("happened_at")),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     # 交易级多币种(0018):Web 币种录入显式传入才写;不传不产生 key
     # (upsert 落 NULL → 统计 COALESCE 回退,旧行为)。

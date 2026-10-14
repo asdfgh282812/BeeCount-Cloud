@@ -64,6 +64,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadTxProjection.tx_type,
         ReadTxProjection.amount,
         ReadTxProjection.happened_at,
+        ReadTxProjection.client_created_at,
         ReadTxProjection.note,
         # 商店(需求 #11,Phase 11),同样必须进 full snapshot,原因同上(漏
         # SELECT 新欄位的既有 bug 模式)。
@@ -138,7 +139,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadTxProjection.tx_index.desc(),
     )
     for row in db.execute(tx_stmt).all():
-        (sync_id, tx_type, amount, happened_at, note, merchant,
+        (sync_id, tx_type, amount, happened_at, client_created_at, note, merchant,
          cat_sid, cat_name, cat_kind,
          acc_sid, acc_name,
          from_sid, from_name,
@@ -157,6 +158,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             "type": tx_type,
             "amount": amount,
             "happenedAt": _to_iso_utc(happened_at),
+            "createdAt": _to_iso_utc(client_created_at) if client_created_at else None,
         }
         if note is not None:
             item["note"] = note

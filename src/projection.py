@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
@@ -339,12 +339,29 @@ def upsert_tx(
         )
     )
     payload_creator = _as_str(payload.get("createdByUserId"))
+    existing = db.scalar(select(ReadTxProjection).where(
+        ReadTxProjection.ledger_id == ledger_id, ReadTxProjection.sync_id == sync_id,
+    ))
+    from datetime import datetime, timezone
+    # SyncChange.updated_at 由 client 可指定，不是接收時間，不能拿它判離線寬限。
+    # 所有 projection 寫入（含 snapshot）都在首次 materialize 時記伺服器時間。
+    first_seen_at = existing.first_seen_at if existing is not None else datetime.now(timezone.utc)
+    raw_created = payload.get("createdAt")
+    client_created_at = existing.client_created_at if existing is not None else None
+    if client_created_at is None and raw_created is not None:
+        try:
+            parsed = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+            client_created_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
 
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
         "user_id": user_id,
         "tx_type": tx_type,
+        "client_created_at": client_created_at,
+        "first_seen_at": first_seen_at,
         "amount": _as_float(payload.get("amount")),
         "happened_at": _parse_happened_at(
             payload.get("happenedAt") or payload.get("happened_at")
@@ -1409,6 +1426,11 @@ def rebuild_from_snapshot(
 
     用于:alembic 回填、admin restore_backup、脏数据救急脚本。
     """
+    # 重建 projection 不能重設首次接收時間或已知的 client 建立時間。
+    timestamps = {
+        row.sync_id: (row.client_created_at, row.first_seen_at)
+        for row in db.scalars(select(ReadTxProjection).where(ReadTxProjection.ledger_id == ledger_id))
+    }
     _truncate_ledger(db, ledger_id)
 
     for item in snapshot.get("items") or []:
@@ -1420,6 +1442,13 @@ def rebuild_from_snapshot(
                 source_change_id=source_change_id,
                 payload=item,
             )
+            old = timestamps.get(str(item.get("syncId")))
+            if old is not None:
+                db.execute(update(ReadTxProjection).where(
+                    ReadTxProjection.ledger_id == ledger_id,
+                    ReadTxProjection.sync_id == str(item.get("syncId")),
+                ).values(client_created_at=old[0], first_seen_at=old[1]))
+
     for item in snapshot.get("accounts") or []:
         if isinstance(item, dict):
             upsert_account(

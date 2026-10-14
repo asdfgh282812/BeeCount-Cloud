@@ -589,6 +589,9 @@ class ReadTxProjection(Base):
     tx_type: Mapped[str] = mapped_column(String(16))
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # createdAt 是 client 建立瞬間，舊交易不回填；first_seen_at 不受編輯影響。
+    client_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 商店(需求 #11,Phase 11):選填,純展示用途,不參與任何統計/校驗。
     merchant: Mapped[str | None] = mapped_column(Text, nullable=True)

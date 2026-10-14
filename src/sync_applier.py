@@ -433,6 +433,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("type", "tx_type"),
         ("amount", "amount"),
         ("happenedAt", "happened_at", _isoformat_or_none),
+        ("createdAt", "client_created_at", _isoformat_or_none),
         ("note", "note"),
         ("merchant", "merchant"),
         ("categoryId", "category_sync_id"),
@@ -938,6 +939,8 @@ def merge_with_existing(
         return payload
     merged = _merge_from_spec(spec, existing, payload)
     if entity_type == "transaction":
+        if existing.client_created_at is not None:
+            merged["createdAt"] = _isoformat_or_none(existing.client_created_at)
         merged = _sync_native_amount_after_merge(existing, payload, merged)
         merged = _sync_to_amount_after_merge(existing, payload, merged)
     elif entity_type == "tx_template":
