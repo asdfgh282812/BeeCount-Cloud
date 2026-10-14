@@ -33,3 +33,11 @@ def test_initial_farm_balance_contract() -> None:
     assert set(json.loads((GOLDEN / "rules_v1.json").read_text())) == {
         "version", "random", "time", "growth", "market", "scores", "turnips"
     }
+
+
+def test_each_season_has_five_starter_crops_and_level_unlocks() -> None:
+    config = json.loads((ROOT / "src/services/game/balance_v1.json").read_text())
+    for season in ("spring", "summer", "autumn", "winter"):
+        stock = [crop for crop in config["crops"] if season in crop["seasons"]]
+        assert len([crop for crop in stock if crop["minLevel"] == 1]) >= 5
+        assert any(crop["minLevel"] > 1 for crop in stock)

@@ -3,9 +3,10 @@
   "crops": [
     {
       "id": "bok_choy",
-      "nameZh": "小白菜",
+      "nameZh": "萵苣",
       "seasons": [
-        "spring"
+        "spring",
+        "winter"
       ],
       "growthHours": 6,
       "waterNeed": "medium",
@@ -23,9 +24,10 @@
     },
     {
       "id": "bamboo",
-      "nameZh": "竹筍",
+      "nameZh": "竹子",
       "seasons": [
-        "spring"
+        "spring",
+        "autumn"
       ],
       "growthHours": 20,
       "waterNeed": "high",
@@ -36,7 +38,7 @@
       "basePrice": 21,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 2,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -56,16 +58,17 @@
       "basePrice": 20,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 3,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "sunflower",
-      "nameZh": "向日葵",
+      "nameZh": "胡蘿蔔",
       "seasons": [
-        "spring"
+        "spring",
+        "winter"
       ],
       "growthHours": 36,
       "waterNeed": "low",
@@ -76,16 +79,17 @@
       "basePrice": 35,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 3,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 1
     },
     {
       "id": "tea",
-      "nameZh": "高山茶",
+      "nameZh": "番茄",
       "seasons": [
-        "spring"
+        "spring",
+        "summer"
       ],
       "growthHours": 48,
       "waterNeed": "medium",
@@ -96,14 +100,14 @@
       "basePrice": 28,
       "harvests": 3,
       "crossSeasons": 1,
-      "minLevel": 4,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "water_spinach",
-      "nameZh": "空心菜",
+      "nameZh": "芹菜",
       "seasons": [
         "summer"
       ],
@@ -123,7 +127,7 @@
     },
     {
       "id": "loofah",
-      "nameZh": "絲瓜",
+      "nameZh": "茄子",
       "seasons": [
         "summer"
       ],
@@ -136,14 +140,14 @@
       "basePrice": 19,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 2,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "watermelon",
-      "nameZh": "西瓜",
+      "nameZh": "甜椒",
       "seasons": [
         "summer"
       ],
@@ -156,16 +160,17 @@
       "basePrice": 60,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 3,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "rice",
-      "nameZh": "稻米",
+      "nameZh": "小麥",
       "seasons": [
-        "summer"
+        "summer",
+        "spring"
       ],
       "growthHours": 60,
       "waterNeed": "high",
@@ -183,7 +188,7 @@
     },
     {
       "id": "pineapple",
-      "nameZh": "鳳梨",
+      "nameZh": "洋蔥",
       "seasons": [
         "summer"
       ],
@@ -196,7 +201,7 @@
       "basePrice": 100,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 5,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -223,7 +228,7 @@
     },
     {
       "id": "sweet_potato",
-      "nameZh": "地瓜",
+      "nameZh": "馬鈴薯",
       "seasons": [
         "autumn"
       ],
@@ -256,14 +261,14 @@
       "basePrice": 48,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 2,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "persimmon",
-      "nameZh": "柿子",
+      "nameZh": "甜菜根",
       "seasons": [
         "autumn"
       ],
@@ -276,14 +281,14 @@
       "basePrice": 30,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 3,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "pomelo",
-      "nameZh": "文旦",
+      "nameZh": "葡萄",
       "seasons": [
         "autumn"
       ],
@@ -303,7 +308,7 @@
     },
     {
       "id": "chrysanthemum",
-      "nameZh": "茼蒿",
+      "nameZh": "韭蔥",
       "seasons": [
         "winter"
       ],
@@ -323,7 +328,7 @@
     },
     {
       "id": "cabbage",
-      "nameZh": "高麗菜",
+      "nameZh": "花椰菜",
       "seasons": [
         "winter"
       ],
@@ -336,14 +341,14 @@
       "basePrice": 30,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 2,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "strawberry",
-      "nameZh": "草莓",
+      "nameZh": "莓果",
       "seasons": [
         "winter"
       ],
@@ -356,14 +361,14 @@
       "basePrice": 25,
       "harvests": 3,
       "crossSeasons": 0,
-      "minLevel": 3,
+      "minLevel": 1,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
     },
     {
       "id": "mandarin",
-      "nameZh": "年柑",
+      "nameZh": "青花菜",
       "seasons": [
         "winter"
       ],
