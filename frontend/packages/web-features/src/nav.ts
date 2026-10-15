@@ -7,6 +7,7 @@ export type AppSection =
   | 'tags'
   | 'projects'
   | 'comparison-report'
+  | 'farm-leaderboard'
   | 'budgets'
   | 'recurring-rules'
   | 'installment-plans'

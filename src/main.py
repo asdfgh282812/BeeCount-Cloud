@@ -25,6 +25,7 @@ from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, swipesmart, write, ws
 from .routers import admin_app_version, admin_backup, admin_broadcasts, admin_licenses, admin_scheduled_jobs, admin_security_data_source, internal_tasks, mcp_calls, two_factor
+from .routers import game as game_router
 from .routers import license as license_router
 from .routers import app_version as app_version_router
 from .routers import ai as ai_router
@@ -237,6 +238,7 @@ app.include_router(
     prefix=f"{settings.api_prefix}/import",
     tags=["import"],
 )
+app.include_router(game_router.router, prefix=f"{settings.api_prefix}/game", tags=["game"])
 app.include_router(ws.router, tags=["ws"])
 # 共享账本邀请 + 成员管理 — endpoint 内部用绝对路径(/ledgers/.../invites,/invites/...),
 # 所以 prefix 就是 api_prefix 不加额外段。

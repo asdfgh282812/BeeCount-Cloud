@@ -41,3 +41,10 @@ def test_each_season_has_five_starter_crops_and_level_unlocks() -> None:
         stock = [crop for crop in config["crops"] if season in crop["seasons"]]
         assert len([crop for crop in stock if crop["minLevel"] == 1]) >= 5
         assert any(crop["minLevel"] > 1 for crop in stock)
+
+
+def test_turnips_can_be_bought_all_sunday_with_existing_spoil_hour() -> None:
+    config = json.loads((ROOT / "src/services/game/balance_v1.json").read_text())
+    assert config["turnips"]["buyStartHour"] == 0
+    assert config["turnips"]["buyEndHour"] == 24
+    assert config["turnips"]["expiryHour"] == 5

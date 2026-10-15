@@ -2,10 +2,10 @@
 `routers/admin_scheduled_jobs.py` 契約測試。
 
 覆蓋:
-1. `ensure_default_configs` 幂等補齊 10 筆預設列(測試 DB 用
+1. `ensure_default_configs` 幂等補齊 19 筆預設列(測試 DB 用
    `Base.metadata.create_all` 建表,不會跑 migration data seed;新增的
    job_key 靠這個函式自我補齊,不需要另外寫 migration seed row)。
-2. `GET /admin/scheduled-jobs` 列出 10 筆 + admin-only 權限。
+2. `GET /admin/scheduled-jobs` 列出 19 筆 + admin-only 權限。
 3. `PATCH /admin/scheduled-jobs/{job_key}` 改 interval_seconds/enabled,
    重算 next_run_at。
 4. `POST /admin/scheduled-jobs/{job_key}/run-now` 即時回傳摘要,DB 真的有
@@ -114,7 +114,7 @@ def _seed_defaults() -> None:
         db.close()
 
 
-def test_ensure_default_configs_seeds_seven_jobs_idempotently():
+def test_ensure_default_configs_seeds_registered_jobs_idempotently():
     _client = _make_client()
     try:
         assert _TEST_SESSION is not None
@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 17
+            assert len(rows) == 19
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 17
+            assert len(rows2) == 19
         finally:
             db.close()
     finally:
@@ -148,7 +148,7 @@ def test_list_scheduled_jobs_requires_admin():
         app.dependency_overrides.clear()
 
 
-def test_list_scheduled_jobs_returns_seven_rows_for_admin():
+def test_list_scheduled_jobs_returns_registered_rows_for_admin():
     client = _make_client()
     try:
         _seed_defaults()
@@ -159,11 +159,13 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 17
+        assert len(rows) == 19
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
         assert all(row["enabled"] for row in rows)
+        assert by_key["farm_settlement_rankings"]["next_run_at"] is None
+        assert by_key["farm_weather_refresh"]["next_run_at"] is None
     finally:
         app.dependency_overrides.clear()
 
@@ -395,8 +397,8 @@ def test_run_due_jobs_only_runs_enabled_and_due_jobs():
         app.dependency_overrides.clear()
 
 
-def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
-    """鎖住 JOB_REGISTRY 的 8 個 job_key 跟預期底層函式模組的呼叫關係,
+def test_all_registered_jobs_map_to_registered_handlers_and_get_called():
+    """鎖住 JOB_REGISTRY 的 job_key 跟預期底層函式模組的呼叫關係,
     用 spy 確認 run_job 真的呼叫到對應函式(不是摘要造假)。"""
     _client = _make_client()
     try:
@@ -419,6 +421,8 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "security_dividend_sync",
             "security_dividend_detector",
             "holiday_dataset_refresh",
+            "farm_settlement_rankings",
+            "farm_weather_refresh",
         }
 
         assert _TEST_SESSION is not None
@@ -475,6 +479,8 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.holidays.dataset.refresh_dataset",
                     return_value={"version": 1, "changed_years": "-", "entries": 0},
                 ) as mock_holiday_refresh,
+                patch("src.services.game.jobs.run", return_value={"farms": 0}) as mock_farm,
+                patch("src.services.game.weather.refresh_weather", return_value={"cities": 0}) as mock_weather,
             ):
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
@@ -489,6 +495,8 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "security_dividend_sync")
                 scheduled_jobs.run_job(db, "security_dividend_detector")
                 scheduled_jobs.run_job(db, "holiday_dataset_refresh")
+                scheduled_jobs.run_job(db, "farm_settlement_rankings")
+                scheduled_jobs.run_job(db, "farm_weather_refresh")
 
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
@@ -503,6 +511,8 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             mock_dividend_sync.assert_called_once()
             mock_dividend_detect.assert_called_once()
             mock_holiday_refresh.assert_called_once()
+            mock_farm.assert_called_once()
+            mock_weather.assert_called_once()
         finally:
             db.close()
     finally:

@@ -26,6 +26,7 @@ import {
   Sparkles,
   Sun,
   Tag,
+  Trophy,
   UserPlus,
   Users,
   Wallet,
@@ -644,6 +645,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             <Item icon={<Briefcase className="h-4 w-4" />} label={t('nav.projects')} onSelect={() => goto('projects')} />
             <Item icon={<Table2 className="h-4 w-4" />} label={t('nav.comparisonReport')} onSelect={() => goto('comparison-report')} />
             <Item icon={<FileBarChart2 className="h-4 w-4" />} label={t('nav.budgets')} onSelect={() => goto('budgets')} />
+            <Item icon={<Trophy className="h-4 w-4" />} label={t('nav.farmLeaderboard')} onSelect={() => goto('farm-leaderboard')} />
             <Item icon={<BookOpen className="h-4 w-4" />} label={t('nav.ledgers')} onSelect={() => goto('ledgers')} />
             <Item icon={<Settings className="h-4 w-4" />} label={t('nav.profile')} onSelect={() => goto('settings-profile')} />
             {isAdmin && (

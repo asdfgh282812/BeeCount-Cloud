@@ -1,4 +1,6 @@
 import logging
+import json
+from ..services.game import presence as farm_presence
 
 from fastapi import APIRouter, Query, WebSocket
 from sqlalchemy import select
@@ -85,6 +87,12 @@ async def websocket_endpoint(
             # 的闲置回收(sweep_stale)判断这条连线还活着 —— 避免代理/NAT/
             # 睡眠唤醒造成的半开连线永久卡在连线池里堆积成殭屍。
             manager.touch(user_id, websocket)
+            try:
+                payload_message = json.loads(msg)
+                if isinstance(payload_message, dict) and payload_message.get("type") == "farm_presence" and SCOPE_APP_WRITE in normalized:
+                    farm_presence.update(user_id, "ws:" + str(id(websocket)), payload_message.get("state"))
+            except (ValueError, TypeError):
+                pass
             # Support client-initiated heartbeat: the client sends {"type":"ping"}
             # every ~25s and waits for a pong. If the socket is silently broken,
             # the pong won't arrive and the client's no-frames timer forces a
@@ -97,5 +105,6 @@ async def websocket_endpoint(
     except Exception:
         pass
     finally:
+        farm_presence.update(user_id, "ws:" + str(id(websocket)), "away")
         manager.disconnect(user_id, websocket)
         logger.info("ws.disconnect user=%s", user_id)

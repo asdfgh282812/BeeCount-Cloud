@@ -2046,3 +2046,6 @@ class LicenseKey(Base):
     redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+# Register farm tables for migrations, backup metadata and isolated test databases.
+from .services.game import models as game_models  # noqa: E402,F401

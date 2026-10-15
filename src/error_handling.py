@@ -146,15 +146,18 @@ def register_exception_handlers(app: FastAPI) -> None:
             maybe_message = exc.detail.get("message")
             if isinstance(maybe_message, str) and maybe_message.strip():
                 message = maybe_message
-            extra_fields = {
-                str(k): v for k, v in exc.detail.items() if k != "message"
-            }
+            extra_fields = {str(k): v for k, v in exc.detail.items() if k != "message"}
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(
                 request=request,
                 status_code=exc.status_code,
                 message=message,
+                error_code=(
+                    exc.detail.get("code")
+                    if isinstance(exc.detail, dict) and isinstance(exc.detail.get("code"), str)
+                    else None
+                ),
                 extra_fields=extra_fields,
             ),
         )

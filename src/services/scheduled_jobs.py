@@ -65,6 +65,8 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     # 節日資料(2026-10-05):每天檢查一次;11 月起會預先產生明年,內容有變才
     # 讓 dataset version +1。見 services/holidays/dataset.py。
     "holiday_dataset_refresh": (24 * 3600, False),
+    "farm_settlement_rankings": (60, False),
+    "farm_weather_refresh": (300, False),
 }
 
 
@@ -280,6 +282,16 @@ def _run_holiday_dataset_refresh(db: Session) -> dict:
     return dataset.refresh_dataset(db)
 
 
+def _run_farm_settlement_rankings(db: Session) -> dict:
+    from .game import jobs
+    return jobs.run(db)
+
+
+def _run_farm_weather_refresh(db: Session) -> dict:
+    from .game.weather import refresh_weather
+    return refresh_weather(db)
+
+
 # job_key -> (db) -> dict 摘要。`ensure_default_configs` 在每次啟動時自動補齊
 # 這裡新登記、但舊部署 DB 裡還沒有的 job_key 列(見該函式 docstring),所以
 # 新增 job 不需要另外寫 migration seed。
@@ -301,6 +313,8 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "security_dividend_sync": _run_security_dividend_sync,
     "security_dividend_detector": _run_security_dividend_detector,
     "holiday_dataset_refresh": _run_holiday_dataset_refresh,
+    "farm_settlement_rankings": _run_farm_settlement_rankings,
+    "farm_weather_refresh": _run_farm_weather_refresh,
 }
 
 

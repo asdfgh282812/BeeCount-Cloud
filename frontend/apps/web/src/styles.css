@@ -52,6 +52,13 @@
     --harvest: 37 90% 60.8%; /* 收成金 #F5B041 */
     --harvest-strong: 36 75.7% 48.4%; /* 熟金 #D98E1E */
     --harvest-foreground: 147 15.1% 14.3%;
+    /* 農場日夜色票與 App BeeTokens 對齊；由日夜決定，不受 .dark 影響。 */
+    --farm-night-blue: 231.43 72.41% 22.75%; /* #101C64 */
+    --farm-night-violet: 255.62 49.66% 28.82%; /* #38256E */
+    --farm-moonlight: 224.00 72.41% 71.57%; /* #829EEB */
+    --farm-lamp-glow: 30.71 100.00% 67.06%; /* #FFAD57 */
+    --farm-lamp-core: 46.78 100.00% 88.43%; /* #FFF2C4 */
+    --farm-lamp-wood: 279.38 23.53% 26.67%; /* #493454 */
     --info: 206 73.7% 62.7%; /* 晴空藍 sky #5AA9E6 */
     --success: 142 70.6% 45.3%; /* #22C55E */
     --warning: 38 92.1% 50.2%; /* #F59E0B */

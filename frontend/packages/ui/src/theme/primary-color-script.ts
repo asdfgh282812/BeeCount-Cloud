@@ -11,6 +11,17 @@ export const DEFAULT_PRIMARY_COLOR = '#2E9E66'
  *  `BeeTheme.primaryFor`。 */
 export const DEFAULT_PRIMARY_COLOR_DARK = '#4CC788'
 
+/** 農場夜色與 App BeePalette / styles.css --farm-* 對齊。
+ * 日夜由農場天氣決定，不跟隨介面 .dark 或使用者主色；Web 農場頁屬 M4。 */
+export const FARM_NIGHT_PALETTE = {
+  nightBlue: '#101C64',
+  nightViolet: '#38256E',
+  moonlight: '#829EEB',
+  lampGlow: '#FFAD57',
+  lampCore: '#FFF2C4',
+  lampWood: '#493454',
+} as const
+
 /**
  * 預設色板,順序與色碼對齊 App `personalize_page.dart` 的主題色清單(新芽綠第一、
  * 蜂蜜黃 #F8C91C 保留讓 3.x 老使用者選得回來),再補上 Web 3.x 的預設「蜂蜜金」

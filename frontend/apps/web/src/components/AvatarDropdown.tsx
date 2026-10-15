@@ -23,6 +23,7 @@ import {
   Smartphone,
   Sparkles,
   Sun,
+  Trophy,
   User,
   Users,
   Wallet,
@@ -201,6 +202,13 @@ export function AvatarDropdown({
             onClick={() => onNavigate('ledgers')}
           >
             {t('nav.ledgers')}
+          </MenuButton>
+          <MenuButton
+            icon={Trophy}
+            active={currentSection === 'farm-leaderboard'}
+            onClick={() => onNavigate('farm-leaderboard')}
+          >
+            {t('nav.farmLeaderboard')}
           </MenuButton>
           <MenuButton icon={Sparkles} onClick={onOpenAnnualReport}>
             {t('nav.annualReport')}
