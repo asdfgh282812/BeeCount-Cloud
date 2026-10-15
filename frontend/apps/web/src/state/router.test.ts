@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { parseRoute, routePath } from './router'
 
 describe('router path mapping', () => {
+  it('round-trips the cloud management home', () => {
+    expect(parseRoute('/app/settings/cloud')).toEqual({ kind: 'app', ledgerId: '', section: 'settings-cloud' })
+    expect(routePath({ kind: 'app', ledgerId: '', section: 'settings-cloud' })).toBe('/app/settings/cloud')
+  })
+
   it('parses login path', () => {
     expect(parseRoute('/login')).toEqual({ kind: 'login' })
     expect(parseRoute('/')).toEqual({ kind: 'login' })

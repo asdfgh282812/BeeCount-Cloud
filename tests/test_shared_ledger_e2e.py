@@ -79,6 +79,10 @@ def test_invite_accept_flow():
     assert r.status_code == 201, r.text
     code = r.json()["code"]
     assert len(code) == 6
+    # 分享連結用這台 Cloud 自己的網址,不是上游官網
+    share_url = r.json()["share_url"]
+    assert share_url.endswith(f"/invite/{code}")
+    assert "beejz.com" not in share_url
 
     r = client.post(
         f"/api/v1/invites/{code}/preview", headers=_auth(editor_token, "dev-editor")

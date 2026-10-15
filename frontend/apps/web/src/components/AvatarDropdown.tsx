@@ -1,5 +1,6 @@
 import {
   Activity,
+  Cloud,
   Archive,
   BookOpen,
   Bot,
@@ -36,6 +37,7 @@ import { useLocale, useT, useTheme } from '@beecount/ui'
 // Settings 子项的 key → icon 映射。avatarMenuItems 动态传入,根据 item.key
 // 反查对应 icon。新增 settings 子页时在这里加一行即可。
 const SETTINGS_ICONS: Record<string, LucideIcon> = {
+  'settings-cloud': Cloud,
   'settings-profile': User,
   'settings-ai': Bot,
   'settings-health': Activity,

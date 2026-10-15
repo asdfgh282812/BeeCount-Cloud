@@ -1,4 +1,4 @@
-import { CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
+import { Settings, CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
@@ -158,7 +158,8 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
               </span>
             ) : null}
             {ledgers.length > 0 ? (
-              <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
+              <div className="hidden min-w-0 items-center gap-1 md:flex">
+                <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
                 <SelectTrigger className="ml-1 hidden h-8 w-[180px] border-border/50 bg-background/60 text-xs md:flex">
                   <SelectValue placeholder={t('shell.ledger')} />
                 </SelectTrigger>
@@ -183,6 +184,17 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
                   ))}
                 </SelectContent>
               </Select>
+              <button
+                type="button"
+                className="shrink-0 rounded-lg p-2 hover:bg-muted"
+                aria-label={t('ledger.settings.title')}
+                title={t('ledger.settings.title')}
+                disabled={!activeLedgerId}
+                onClick={() => navigate(`/app/ledgers?settings=${encodeURIComponent(activeLedgerId || '')}`)}
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            </div>
             ) : (
               // 用户首次登录(自部署 admin)时还没账本,把账本选择器位置换成
               // 「+ 新建账本」CTA。点击跳 /app/ledgers?create=1,LedgersPage
@@ -318,7 +330,8 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
 
         <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
           {ledgers.length > 0 ? (
-            <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
               <SelectTrigger className="h-8 flex-1 border-border/50 bg-background/60 text-xs">
                 <SelectValue placeholder={t('shell.ledger')} />
               </SelectTrigger>
@@ -341,6 +354,17 @@ export function AppHeader({ festival = null, onOpenLogs, onOpenAbout }: Props) {
                 ))}
               </SelectContent>
             </Select>
+              <button
+                type="button"
+                className="shrink-0 rounded-lg p-2 hover:bg-muted"
+                aria-label={t('ledger.settings.title')}
+                title={t('ledger.settings.title')}
+                disabled={!activeLedgerId}
+                onClick={() => navigate(`/app/ledgers?settings=${encodeURIComponent(activeLedgerId || '')}`)}
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            </div>
           ) : (
             <button
               type="button"

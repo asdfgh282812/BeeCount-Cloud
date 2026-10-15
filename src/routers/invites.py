@@ -80,13 +80,23 @@ def _generate_invite_code() -> str:
     return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
 
 
-def _share_url_for(code: str) -> str:
+def _request_origin(request: Request) -> str:
+    """從請求推得這台 Cloud 對外的網址(支援反向代理的 X-Forwarded-*)。"""
+    headers = request.headers
+    proto = (headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (headers.get("x-forwarded-host") or headers.get("host") or request.url.netloc)
+    host = host.split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+def _share_url_for(code: str, request: Request) -> str:
     """构造可分享的短链(微信/邮件可直接发)。
 
-    域名走 settings.invite_share_origin 配置,未配置时回退到 BeeCount 官网默认。
+    優先用 settings.invite_share_origin(INVITE_SHARE_ORIGIN);沒設定時用這台 Cloud
+    自己的對外網址,不再回退到上游作者的官網(count.beejz.com)。
     """
     settings = get_settings()
-    origin = getattr(settings, "invite_share_origin", None) or "https://count.beejz.com"
+    origin = getattr(settings, "invite_share_origin", None) or _request_origin(request)
     return f"{origin.rstrip('/')}/invite/{code}"
 
 
@@ -197,6 +207,7 @@ def _active_invite_filter(stmt, now: datetime):
 def create_invite(
     ledger_external_id: str,
     req: InviteCreateRequest,
+    request: Request,
     _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -261,7 +272,7 @@ def create_invite(
         formatted_code=_format_code(code),
         target_role=req.role,
         expires_at=expires_at,
-        share_url=_share_url_for(code),
+        share_url=_share_url_for(code, request),
         created_at=now,
     )
 
@@ -272,6 +283,7 @@ def create_invite(
 )
 def list_invites(
     ledger_external_id: str,
+    request: Request,
     _scopes: set[str] = Depends(_AUTH_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -299,7 +311,7 @@ def list_invites(
             expires_at=r.expires_at,
             created_at=r.created_at,
             invited_by_user_id=r.invited_by,
-            share_url=_share_url_for(r.code),
+            share_url=_share_url_for(r.code, request),
         )
         for r in rows
     ]

@@ -7,12 +7,13 @@ import {
   updateLedgerMeta,
   type ReadLedger,
 } from '@beecount/api-client'
-import { useT, useToast } from '@beecount/ui'
+import { Button, useT, useToast } from '@beecount/ui'
 
 import { LedgerDeleteConfirmDialog } from '../../components/dialogs/LedgerDeleteConfirmDialog'
 import {
   LedgerEditDialog,
   LedgersSection,
+  LedgerSettingsPanel,
   type LedgerForm,
 } from '../../components/sections/LedgersSection'
 import { useAuth } from '../../context/AuthContext'
@@ -26,8 +27,8 @@ const defaultForm: LedgerForm = { ledger_name: '', currency: 'TWD', month_start_
  * 账本列表页 ——
  * - 顶部"新建账本"按钮 → 弹 LedgerEditDialog(mode=create),保存调
  *   createLedger,server 自动生成 ledger_id。
- * - 点账本卡片 → 弹 LedgerEditDialog(mode=edit),保存调 updateLedgerMeta;
- *   不再切 activeLedgerId 也不跳转(切账本走顶部 ledger picker)。
+ * - 點帳本卡片切換；⋯／右鍵／長按進設定，?settings= 共用同一詳細入口。
+ * - 編輯與刪除沿用既有 mutation、衝突與權限流程。
  */
 export function LedgersPage() {
   const t = useT()
@@ -67,6 +68,7 @@ export function LedgersPage() {
   }
 
   const onOpenEdit = (ledger: ReadLedger) => {
+    if (ledger.is_shared && ledger.role !== 'owner') return;
     setEditing(ledger)
     setEditForm({
       ledger_name: ledger.ledger_name || '',
@@ -150,11 +152,16 @@ export function LedgersPage() {
 
   return (
     <>
-      <LedgersSection
+      {searchParams.has('settings') ? (() => {
+        const ledger = ledgers.find((l) => l.ledger_id === searchParams.get('settings'))
+        const back = () => { const next = new URLSearchParams(searchParams); next.delete('settings'); setSearchParams(next) }
+        return ledger ? <LedgerSettingsPanel ledger={ledger} onEdit={onOpenEdit} onDelete={setPendingDelete} onBack={back} />
+          : <div className="space-y-3"><p>{t('ledger.settings.missing')}</p><Button variant="outline" onClick={back}>{t('ledger.settings.back')}</Button></div>
+      })() : <LedgersSection
         onCreate={onOpenCreate}
-        onEdit={onOpenEdit}
+        onSettings={(ledger) => { const next = new URLSearchParams(searchParams); next.set('settings', ledger.ledger_id); setSearchParams(next) }}
         onDelete={(ledger) => setPendingDelete(ledger)}
-      />
+      />}
       <LedgerEditDialog
         open={createOpen}
         mode="create"

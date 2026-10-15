@@ -17,6 +17,7 @@ export type AppSection =
   | 'realized-pnl'
   | 'tx-templates'
   | 'ledgers'
+  | 'settings-cloud'
   | 'settings-profile'
   | 'settings-appearance'
   | 'settings-health'
@@ -73,10 +74,9 @@ export const NAV_GROUPS: NavGroup[] = [
       // 个人资料 + 外观合并:两者都是"我的偏好",心智上不该分两处。
       // 保留 `settings-appearance` AppSection 是为了兼容老的分享链接,
       // AppPage 把 appearance 的 route section 也渲染同一个卡片集。
+      { key: 'settings-cloud', labelKey: 'cloud.management.title' },
       { key: 'settings-profile', labelKey: 'nav.profile' },
       { key: 'settings-ai', labelKey: 'nav.ai' },
-      { key: 'settings-health', labelKey: 'nav.health' },
-      { key: 'settings-devices', labelKey: 'nav.devices' },
       // PAT / MCP 管理 — 给 LLM 客户端发长期 token 的地方。
       { key: 'settings-developer', labelKey: 'nav.developer' }
     ]

@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom'
+import { useLedgers } from '../../context/LedgersContext'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Camera,
@@ -84,6 +86,7 @@ function pickGreeting(): { key: string; icon: LucideIcon; tone: string } {
  */
 export function SettingsProfileAppearanceSection() {
   const t = useT()
+  const { currentLedger } = useLedgers()
   const toast = useToast()
   const { token, profileMe, sessionUserId, refreshProfile } = useAuth()
   const { color: primaryColor } = usePrimaryColor()
@@ -673,6 +676,12 @@ export function SettingsProfileAppearanceSection() {
           </div>
         </CardContent>
       </Card>
+
+      {currentLedger ? <Card className="bc-panel"><CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div><p className="font-medium">{t('ledgers.field.monthStartDay')}</p>
+          <p className="text-sm text-muted-foreground">{t('ledger.settings.monthShortcut')}</p></div>
+        <Link className="rounded-lg border px-4 py-2 text-sm hover:bg-muted" to={`/app/ledgers?settings=${encodeURIComponent(currentLedger.ledger_id)}`}>{t('ledger.settings.title')}</Link>
+      </CardContent></Card> : null}
 
       {/* 汇率管理小节 —— 主币种未设置时内部渲染空态、不发请求 */}
       <SettingsExchangeRatesSection />

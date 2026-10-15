@@ -29,6 +29,7 @@ export const APP_SECTIONS: AppSection[] = [
   'tx-templates',
   'ledgers',
   'overview',
+  'settings-cloud',
   'settings-profile',
   'settings-appearance',
   'settings-ai',
@@ -67,6 +68,8 @@ function parseWorkspaceSection(parts: string[]): AppSection {
 
 function parseSettingsSection(parts: string[]): AppSection {
   switch (parts.join('/')) {
+    case 'cloud':
+      return 'settings-cloud'
     case 'profile':
       return 'settings-profile'
     case 'appearance':
@@ -126,6 +129,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'overview'
     case 'admin/users':
       return 'admin-users'
+    case 'settings/cloud':
+      return 'settings-cloud'
     case 'settings/profile':
       return 'settings-profile'
     case 'settings/appearance':
@@ -161,6 +166,8 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'budgets'
     case 'overview':
       return 'overview'
+    case 'settings/cloud':
+      return 'settings-cloud'
     case 'settings/profile':
       return 'settings-profile'
     case 'settings/appearance':
@@ -286,6 +293,8 @@ export function routePath(route: AppRoute): string {
       return '/app/ledgers'
     case 'overview':
       return '/app/overview'
+    case 'settings-cloud':
+      return '/app/settings/cloud'
     case 'settings-profile':
       return '/app/settings/profile'
     case 'settings-appearance':

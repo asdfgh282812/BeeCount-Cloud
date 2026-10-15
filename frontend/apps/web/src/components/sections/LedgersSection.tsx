@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { BarChart3, Pencil, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
+import { BarChart3, MoreHorizontal, Settings, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   Button,
   Card,
   CardContent,
@@ -33,9 +37,8 @@ import { SharedLedgerManageDialog } from '../SharedLedgerManageDialog'
 import { SharedLedgerStatsDialog } from '../SharedLedgerStatsDialog'
 
 interface Props {
-  /** 点击账本卡片(整张卡)的回调。当前实现里:打开编辑 dialog,不切换
-   *  active ledger 也不跳转 —— 切账本仍走顶部 ledger picker / 其它入口。 */
-  onEdit: (ledger: ReadLedger) => void
+  /** 設定動作使用共用詳細入口；整張卡點擊只切換帳本。 */
+  onSettings: (ledger: ReadLedger) => void
   onCreate: () => void
   /** 点删除按钮的回调 — page 端弹独立确认弹窗 + 调 deleteLedger。
    *  不传则卡片上不展示删除按钮(viewer 视角 / page 还没实现时兜底)。 */
@@ -50,9 +53,9 @@ interface Props {
  *   - 统计:tx 数 / 收入 / 支出 三栏
  *   - 底部:净值 + 最近更新时间
  *
- * 顶部右侧 "新建账本" 按钮。点击账本卡片 → 编辑 dialog。
+ * 點卡片切換帳本，⋯／右鍵／長按開情境選單。
  */
-export function LedgersSection({ onEdit, onCreate, onDelete }: Props) {
+export function LedgersSection({ onSettings, onCreate, onDelete }: Props) {
   const t = useT()
   const { ledgers, activeLedgerId } = useLedgers()
   const [joinOpen, setJoinOpen] = useState(false)
@@ -77,7 +80,7 @@ export function LedgersSection({ onEdit, onCreate, onDelete }: Props) {
         </CardHeader>
         <CardContent>
           <p className="mb-4 text-xs text-muted-foreground">
-            {t('ledgers.subtitle')}
+            {t('ledger.settings.hint')}
           </p>
           {ledgers.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('ledgers.empty')}</p>
@@ -85,7 +88,7 @@ export function LedgersSection({ onEdit, onCreate, onDelete }: Props) {
             <LedgerGrid
               ledgers={ledgers}
               activeLedgerId={activeLedgerId}
-              onEdit={onEdit}
+              onEdit={onSettings}
               onDelete={onDelete}
               onManageMembers={(l) => setManageLedger(l)}
               onOpenStats={(l) => setStatsLedger(l)}
@@ -128,6 +131,7 @@ function LedgerGrid({
 }) {
   const t = useT()
   const navigate = useNavigate()
+  const { setActiveLedgerId } = useLedgers()
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       {ledgers.map((ledger) => (
@@ -136,6 +140,7 @@ function LedgerGrid({
           ledger={ledger}
           isActive={activeLedgerId === ledger.ledger_id}
           onEdit={() => onEdit(ledger)}
+          onSwitch={() => setActiveLedgerId(ledger.ledger_id)}
           onDelete={onDelete ? () => onDelete(ledger) : undefined}
           onImport={() =>
             navigate(`/app/import?ledger=${encodeURIComponent(ledger.ledger_id)}`)
@@ -180,6 +185,7 @@ interface LedgerCardProps {
   isActive: boolean
   roleLabel: string
   onEdit: () => void
+  onSwitch: () => void
   /** undefined 时不展示删除按钮(viewer / 非 owner / page 没接 handler 时) */
   onDelete?: () => void
   onImport: () => void
@@ -187,33 +193,46 @@ interface LedgerCardProps {
   onOpenStats: () => void
 }
 
-function LedgerCard({ ledger, isActive, roleLabel, onEdit, onDelete, onImport, onManageMembers, onOpenStats }: LedgerCardProps) {
+function LedgerCard({ ledger, isActive, roleLabel, onEdit, onSwitch, onDelete, onImport, onManageMembers, onOpenStats }: LedgerCardProps) {
   const t = useT()
   const accent = accentFor(ledger.ledger_name || '?')
   const initial = (ledger.ledger_name || '?').trim().slice(0, 1).toUpperCase()
   // §7 共享账本:Owner 保留导入/编辑入口(他对自己创建的共享账本拥有所有
   // 权限);非 Owner 成员(Editor)的共享账本卡片才禁用编辑 — Editor 不能
   // 改账本元数据(name / currency),server 也会拦截。
-  const editDisabled = !!ledger.is_shared && ledger.role !== 'owner'
-  const handleClick = editDisabled ? undefined : onEdit
+  const [menuOpen, setMenuOpen] = useState(false)
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const held = useRef(false)
+  const holdStart = useRef({ x: 0, y: 0 })
+  const cancelHold = () => {
+    if (holdTimer.current) clearTimeout(holdTimer.current)
+    holdTimer.current = null
+  }
+  useEffect(() => () => { if (holdTimer.current) clearTimeout(holdTimer.current) }, [])
 
   return (
     <div
-      role={editDisabled ? undefined : 'button'}
-      tabIndex={editDisabled ? undefined : 0}
-      onClick={handleClick}
-      onKeyDown={
-        editDisabled
-          ? undefined
-          : (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onEdit()
-              }
-            }
-      }
+      role="button"
+      tabIndex={0}
+      onClick={() => { if (!held.current) onSwitch(); held.current = false }}
+      onContextMenu={(e) => { e.preventDefault(); cancelHold(); held.current = true; setMenuOpen(true) }}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
+        held.current = false
+        holdStart.current = { x: e.clientX, y: e.clientY }
+        cancelHold()
+        holdTimer.current = setTimeout(() => { held.current = true; setMenuOpen(true) }, 500)
+      }}
+      onPointerUp={cancelHold}
+      onPointerMove={(e) => { if (Math.hypot(e.clientX - holdStart.current.x, e.clientY - holdStart.current.y) > 10) cancelHold() }}
+      onPointerCancel={cancelHold}
+      onPointerLeave={cancelHold}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSwitch() }
+      }}
       className={`group relative overflow-hidden rounded-2xl border text-left transition ${
-        editDisabled ? '' : 'cursor-pointer hover:-translate-y-0.5 hover:shadow-lg'
+        'cursor-pointer hover:shadow-lg motion-reduce:transition-none'
       } ${
         isActive
           ? 'border-primary/60 shadow-md ring-1 ring-primary/20'
@@ -252,6 +271,17 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit, onDelete, onImport, o
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+                  <DropdownMenuTrigger asChild><button type="button" aria-label={t('ledger.settings.title')} className="rounded-lg bg-background/80 p-2 hover:bg-muted"><MoreHorizontal className="h-4 w-4" /></button></DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {!isActive ? <DropdownMenuItem onSelect={onSwitch}>{t('ledger.settings.switch')}</DropdownMenuItem> : null}
+                    <DropdownMenuItem onSelect={onEdit}><Settings className="mr-2 h-4 w-4" />{t('ledger.settings.title')}</DropdownMenuItem>
+                    {(!ledger.is_shared || ledger.role === 'owner') && onDelete ? <DropdownMenuItem className="text-destructive" onSelect={onDelete}>{t('ledgers.action.delete')}</DropdownMenuItem> : null}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+
               {/* §7 共享账本:成员/邀请管理入口。任何账本(单人/共享)都
                   显示 — 单人账本 Owner 通过它生成邀请码邀请他人加入。 */}
               <button
@@ -299,10 +329,6 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit, onDelete, onImport, o
                   >
                     <Upload className="h-3 w-3" />
                   </button>
-                  <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
-                    <Pencil className="mr-0.5 inline h-2.5 w-2.5" />
-                    {t('common.edit')}
-                  </span>
                   {/* 删除按钮 — owner-only(server _OWNER_ONLY_ROLES 兜底拦截),
                       stopPropagation 防卡片整张的 onEdit 同时触发。视觉上跟其它
                       action 按钮排在一起 — 不再塞编辑弹窗里(per #13 review)。 */}
@@ -515,4 +541,41 @@ export function LedgerEditDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+
+/** 帳本設定的唯一詳細入口，header／偏好設定／列表共用。 */
+export function LedgerSettingsPanel({ ledger, onEdit, onDelete, onBack }: {
+  ledger: ReadLedger
+  onEdit: (ledger: ReadLedger) => void
+  onDelete: (ledger: ReadLedger) => void
+  onBack: () => void
+}) {
+  const t = useT()
+  const { activeLedgerId, setActiveLedgerId } = useLedgers()
+  const [membersOpen, setMembersOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
+  const owner = !ledger.is_shared || ledger.role === 'owner'
+  return <div className="mx-auto max-w-3xl space-y-4" data-testid="ledger-settings">
+    <Button variant="outline" onClick={onBack}>{t('ledger.settings.back')}</Button>
+    <Card className="bc-panel"><CardHeader><CardTitle>{t('ledger.settings.title')} · {ledger.ledger_name}</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        <dl className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 text-sm">
+          <dt className="text-muted-foreground">{t('ledgers.field.name')}</dt><dd className="break-words text-right">{ledger.ledger_name}</dd>
+          <dt className="text-muted-foreground">{t('ledgers.field.currency')}</dt><dd className="text-right">{ledger.currency}</dd>
+          <dt className="text-muted-foreground">{t('ledgers.field.monthStartDay')}</dt><dd className="text-right">{ledger.month_start_day ?? 1}</dd>
+        </dl>
+        <p className="text-sm text-muted-foreground">{t('ledgers.monthStartDay.hint')}</p>
+        <div className="flex flex-wrap gap-2">
+          {owner ? <Button onClick={() => onEdit(ledger)}>{t('common.edit')}</Button> : null}
+          {activeLedgerId !== ledger.ledger_id ? <Button variant="outline" onClick={() => setActiveLedgerId(ledger.ledger_id)}>{t('ledger.settings.switch')}</Button> : null}
+          <Button variant="outline" onClick={() => setMembersOpen(true)}>{t('sharedLedger.openManage')}</Button>
+          {ledger.is_shared ? <Button variant="outline" onClick={() => setStatsOpen(true)}>{t('sharedLedger.statsOpen')}</Button> : null}
+          {owner ? <Button variant="outline" className="text-destructive" onClick={() => onDelete(ledger)}>{t('ledgers.action.delete')}</Button> : null}
+        </div>
+      </CardContent>
+    </Card>
+    <SharedLedgerManageDialog open={membersOpen} onOpenChange={setMembersOpen} ledgerId={ledger.ledger_id} ledgerName={ledger.ledger_name} isOwner={owner} />
+    <SharedLedgerStatsDialog open={statsOpen} onOpenChange={setStatsOpen} ledgerId={ledger.ledger_id} ledgerName={ledger.ledger_name} />
+  </div>
 }

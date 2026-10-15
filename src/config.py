@@ -87,10 +87,9 @@ class Settings(BaseSettings):
     # Admins can still create users via POST /api/v1/admin/users regardless.
     registration_enabled: bool = Field(default=False, alias="REGISTRATION_ENABLED")
 
-    # 共享账本邀请短链域名前缀(Phase 2 才点击跳转,MVP 仅用于复制文案展示)。
-    invite_share_origin: str = Field(
-        default="https://count.beejz.com", alias="INVITE_SHARE_ORIGIN"
-    )
+    # 共享账本邀请短链域名前缀。留空 = 用請求的對外網址(這台 Cloud 自己),
+    # 反向代理後面若網址不對再設 INVITE_SHARE_ORIGIN=https://your-domain。
+    invite_share_origin: str = Field(default="", alias="INVITE_SHARE_ORIGIN")
 
     # Legacy strict `base_change_id` check on /write/* endpoints. When mobile
     # fullPush is streaming changes, the server-side materializer bumps the

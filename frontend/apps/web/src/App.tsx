@@ -74,6 +74,7 @@ const SettingsPatsPage = lazy(() =>
 const SettingsHealthPage = lazy(() =>
   import('./pages/sections/SettingsHealthPage').then((m) => ({ default: m.SettingsHealthPage })),
 )
+const SettingsCloudPage = lazy(() => import('./pages/sections/SettingsCloudPage').then((m) => ({ default: m.SettingsCloudPage })))
 const SettingsProfilePage = lazy(() =>
   import('./pages/sections/SettingsProfilePage').then((m) => ({ default: m.SettingsProfilePage })),
 )
@@ -508,6 +509,7 @@ function AppRoutes() {
             </Suspense>
           }
         />
+        <Route path="settings/cloud" element={<Suspense fallback={<RouteFallback />}><SettingsCloudPage /></Suspense>} />
         <Route
           path="settings/profile"
           element={
