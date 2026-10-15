@@ -27,7 +27,7 @@ water：`{day,remaining,bonus}`；weather：null 或 `{at,temperature,precipitat
 
 - `GET /farms?filter=active|ready`：`[{userId,displayName,avatarUrl,isHome,newbieUntil,title,guardDogUntil,thiefUntil}]`。僅啟用農場且帳戶啟用者；active 近24小時、ready 有成熟未枯萎作物。
 - `GET /farms/{userId}`：以上欄位加 plots/layout/turnipSellPrice/serverTime；沒有錢包／庫存／真實收支／email。
-- `POST /farms/{userId}/actions {requestId,action,index?,kind?,emoji?,quantity?,eventId?}`：help（index+kind=water/weed/removePests）、steal（index）、react（提供的五種 emoji）、sellTurnips（quantity）、returnGift（**index+eventId**）。回 `{message,quantity?,caught?,snapshot}`；亦接受 steal+returnGift:eventId 相容寫法。
+- `POST /farms/{userId}/actions {requestId,action,index?,kind?,emoji?,quantity?,eventId?}`：help（index+kind=water/weed/removePests）、steal（index）、react（❤️👍🌱🎉👋🌻 六種 emoji，同一訪客對同一農場 5 分鐘一次）、visit（進入農場的足跡：不給幣、不計額度、不發通知；同一訪客對同一農場 30 分鐘內只記一筆，回 `{message:'',recorded}`，無 snapshot）、sellTurnips（quantity）、returnGift（**index+eventId**）。回 `{message,quantity?,caught?,snapshot}`；亦接受 steal+returnGift:eventId 相容寫法。
 - `GET /events`：本人最近七天最多100項 `[{id,actorId,ownerId,displayName,action,createdAt,returned,caught,emoji,returnGiftUntil,returnGiftAllowed}]`。回禮只有被偷本人、未捕獲／未使用且未滿12小時才可用；列表 allowed 只是提示，操作時再次驗證。回禮仍需選對方可偷田地，僅豁免在家／每日上限／4小時冷卻。
 - `POST /presence {state:home|away,deviceId}`：每裝置獨立。WS `{type:farm_presence,state:home|away}` 每連線獨立。home 45秒過期，某台away不得清掉另一台home。App 每20秒前景且正在農場頁送心跳；Cloud目前單 process，擴充多worker前須換共享presence儲存。
 

@@ -1668,3 +1668,34 @@ def test_cloud_cheats_populated_plots_reset_and_weather_refresh(env):
     assert result["social"]["nickname"] == "小安"
     assert result["balance"] == initial["balance"] and result["inventory"] == []
     assert all(p["cropId"] is None for p in result["plots"])
+
+
+def test_visit_footprint_is_throttled_and_listed_for_the_owner(env):
+    create(env)
+    create(env, "bh")
+    first = visit_action(env, "visit")
+    assert first.status_code == 200, first.text
+    assert first.json()["recorded"] is True
+    # Walking in again inside the window leaves no second footprint.
+    again = visit_action(env, "visit")
+    assert again.status_code == 200 and again.json()["recorded"] is False
+    incoming = env["client"].get(API + "/events", headers=env["bh"]).json()
+    assert [e["action"] for e in incoming] == ["visit"]
+    assert incoming[0]["actorId"] == env["a"] and not incoming[0]["outgoing"]
+    env["clock"][0] += timedelta(minutes=social.VISIT_FOOTPRINT_MINUTES + 1)
+    later = visit_action(env, "visit")
+    assert later.json()["recorded"] is True
+    assert len(env["client"].get(API + "/events", headers=env["bh"]).json()) == 2
+    # No coins, quota or notification side effects, and you cannot visit yourself.
+    assert visit_action(env, "visit", header="bh", owner=env["b"]).status_code == 400
+
+
+def test_react_accepts_the_sunflower_and_rejects_unknown_emoji(env):
+    create(env)
+    create(env, "bh")
+    bad = visit_action(env, "react", emoji="💩")
+    assert bad.status_code == 400 and error_code(bad) == "INVALID_EMOJI"
+    ok = visit_action(env, "react", emoji="🌻")
+    assert ok.status_code == 200, ok.text
+    events = env["client"].get(API + "/events", headers=env["bh"]).json()
+    assert events[0]["emoji"] == "🌻"

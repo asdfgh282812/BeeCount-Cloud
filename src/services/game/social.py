@@ -14,6 +14,10 @@ from .engine import BOARDS, day, fail, instant, integer, iso, week_start
 from .models import GameEvent, GameFarm, GameLeaderboard, GameSettlement, GameSlot
 from .random import FarmRandom, farm_seed
 
+# Walking into a farm leaves one footprint per visitor per owner in this window.
+VISIT_FOOTPRINT_MINUTES = 30
+REACTIONS = ("❤️", "👍", "🌱", "🎉", "👋", "🌻")
+
 POLICY = {
     "dailyHelp": 10,
     "helpCoins": 5,
@@ -277,9 +281,20 @@ def social_action(service, actor, owner, data):
         visitor_week["quantity"] -= quantity
         actor.turnips = visitor_week
         result = {"message": "已依這座農場當期價格出售大頭菜"}
+    elif action == "visit":
+        # Footprint only: no wallet, quota or notification. Entering the same farm
+        # again inside the window records nothing, so the owner's list stays readable.
+        if any(
+            e.kind == "visit"
+            and e.owner_id == target
+            and instant(e.created_at) > service.now - timedelta(minutes=VISIT_FOOTPRINT_MINUTES)
+            for e in events
+        ):
+            return {"message": "", "recorded": False}
+        result = {"message": "", "recorded": True}
     elif action == "react":
         emoji = data.get("emoji")
-        if emoji not in ("❤️", "👍", "🌱", "🎉", "👋"):
+        if emoji not in REACTIONS:
             fail("INVALID_EMOJI", "請選擇提供的貼圖", 400)
         if any(
             e.kind == "react"
