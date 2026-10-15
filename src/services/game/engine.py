@@ -102,6 +102,17 @@ def transaction(db: Session, user_ids):
             raise
 
 
+def validate_nickname(value):
+    import unicodedata
+
+    if not isinstance(value, str):
+        fail("INVALID_NICKNAME", "請輸入 1～20 個字的農場暱稱", 400)
+    value = value.strip()
+    if not 1 <= len(value) <= 20 or any(unicodedata.category(c) == "Cc" for c in value):
+        fail("INVALID_NICKNAME", "請輸入 1～20 個字的農場暱稱", 400)
+    return value
+
+
 class FarmService:
     def __init__(self, db, now=None):
         self.db = db
@@ -293,6 +304,13 @@ class FarmService:
                 )
             )
         ]
+        if state.get("debugWeather"):
+            hours = [
+                {**state["debugWeather"], "at": iso(
+                    self.now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=i)
+                )}
+                for i in range(721)
+            ]
         for slot in slots:
             slot.plot = rules.advance(slot.plot, self.now, hours, self.config)
         self.db.execute(
@@ -557,6 +575,8 @@ class FarmService:
             "waterRemaining": self.config["care"]["dailyWater"],
             "waterBonus": False,
         }
+        if "nickname" in data:
+            state["nickname"] = validate_nickname(data["nickname"])
         farm = GameFarm(
             user_id=uid,
             enabled=True,
@@ -772,7 +792,7 @@ class FarmService:
                 "bonus": farm.state["waterBonus"],
             },
             "scoringAvailable": self.eligible(farm),
-            "weather": hours[0].data if hours else None,
+            "weather": farm.state.get("debugWeather") or (hours[0].data if hours else None),
             "layout": farm.layout,
             "plots": [s.plot for s in self.slots(farm.user_id)],
             "inventory": [
@@ -814,6 +834,9 @@ class FarmService:
             ),
             "anonymousOnBoard": farm.anonymous,
             "social": {
+                "nickname": farm.state.get("nickname"),
+                "nicknameRequired": not bool(farm.state.get("nickname")),
+                "canCheat": bool(self.db.get(User, farm.user_id).is_admin),
                 "conscience": farm.conscience,
                 "newbieUntil": iso(farm.newbie_until),
                 "guardDogOwned": farm.state.get("guardDogOwned", False),
@@ -842,6 +865,8 @@ class FarmService:
         if farm.enabled:
             self.advance(farm)
         state = deepcopy(farm.state)
+        if "nickname" in data:
+            state["nickname"] = validate_nickname(data["nickname"])
         if "enabled" in data:
             if type(data["enabled"]) is not bool:
                 fail("INVALID_ARGUMENT", "enabled 必須為布林值", 400)

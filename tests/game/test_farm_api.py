@@ -1506,3 +1506,165 @@ def test_shared_ledger_needs_reselection_notification_once(env):
             if r.payload_json.get("type") == "farm_scoring_ledger"
         ]
         assert len(notices) == 1 and notices[0].category == "farm"
+
+
+def test_farm_nickname_is_separate_from_profile_and_has_no_id_fallback(env):
+    result = create(env)
+    assert result["social"]["nicknameRequired"]
+    result = env["client"].patch(
+        API + "/farm", headers=env["ah"], json={"nickname": "  小安的菜園  "}
+    )
+    assert result.status_code == 200
+    assert result.json()["social"]["nickname"] == "小安的菜園"
+    assert not result.json()["social"]["nicknameRequired"]
+    create(env, "bh")
+    farms = env["client"].get(API + "/farms", headers=env["bh"]).json()
+    assert len(farms) == 1 and farms[0]["displayName"] == "小安的菜園"
+    unnamed = env["client"].get(API + "/farms", headers=env["ah"]).json()[0]
+    assert unnamed["displayName"] == "尚未取暱稱的農友"
+    for invalid in ("", "   ", "a" * 21, "小安\n菜園", 12, None):
+        rejected = env["client"].patch(API + "/farm", headers=env["ah"], json={"nickname": invalid})
+        assert rejected.status_code == 400
+        assert current(env)["social"]["nickname"] == "小安的菜園"
+
+
+def test_events_show_counterparty_and_exclude_own_market_receipts(env):
+    create(env)
+    create(env, "bh")
+    env["client"].patch(API + "/farm", headers=env["ah"], json={"nickname": "小安"})
+    env["client"].patch(API + "/farm", headers=env["bh"], json={"nickname": "小白"})
+    with env["sessions"]() as db:
+        for actor, owner, kind in (
+            (env["a"], env["b"], "react"),
+            (env["a"], env["a"], "market_sale"),
+        ):
+            db.add(
+                GameEvent(
+                    id=str(uuid4()),
+                    actor_id=actor,
+                    owner_id=owner,
+                    kind=kind,
+                    data={},
+                    created_at=env["clock"][0],
+                )
+            )
+        db.commit()
+    outgoing = env["client"].get(API + "/events", headers=env["ah"]).json()
+    incoming = env["client"].get(API + "/events", headers=env["bh"]).json()
+    assert len(outgoing) == len(incoming) == 1
+    assert outgoing[0]["displayName"] == "小白" and outgoing[0]["outgoing"]
+    assert outgoing[0]["counterpartyId"] == env["b"]
+    assert incoming[0]["displayName"] == "小安" and not incoming[0]["outgoing"]
+
+
+def test_cloud_cheats_require_admin_and_replay_only_mutates_own_farm(env):
+    before = create(env)
+    other = create(env, "bh")
+    body = {"requestId": str(uuid4()), "command": "addCoins", "value": 1000}
+    denied = env["client"].post(API + "/debug/actions", headers=env["ah"], json=body)
+    assert denied.status_code == 403
+    with env["sessions"]() as db:
+        db.get(User, env["a"]).is_admin = True
+        db.commit()
+    first = env["client"].post(API + "/debug/actions", headers=env["ah"], json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()["balance"] == before["balance"] + 1000
+    assert first.json()["social"]["canCheat"]
+    again = env["client"].post(API + "/debug/actions", headers=env["ah"], json=body)
+    assert again.json() == first.json()
+    assert current(env, "bh")["balance"] == other["balance"]
+    _, web = env["register"]("farm-a@test.local", "web")
+    assert env["client"].post(API + "/debug/actions", headers=web, json=body).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "command,params",
+    [
+        ("setLevel", {"value": 8}),
+        ("refillWater", {}),
+        ("giveAllSeeds", {"value": 10}),
+        ("giveAllItems", {"value": 5}),
+        ("giveAllCrops", {"value": 10}),
+        ("addCapacity", {"value": 50}),
+        ("clearInventory", {}),
+        ("unlockPlots", {"value": 24}),
+        ("plantEmpty", {"cropId": "radish"}),
+        ("ripenAll", {}),
+        ("careAll", {}),
+        ("clearAllPlots", {}),
+        ("fastForward", {"value": 3600}),
+        ("setWeather", {"kind": "rain"}),
+        ("setDaylight", {"value": False}),
+        ("resetFarm", {}),
+    ],
+)
+def test_cloud_toolbox_commands_are_executable(env, command, params):
+    create(env)
+    create(env, "bh")
+    with env["sessions"]() as db:
+        db.get(User, env["a"]).is_admin = True
+        db.commit()
+    r = env["client"].post(
+        API + "/debug/actions",
+        headers=env["ah"],
+        json={"requestId": str(uuid4()), "command": command, **params},
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["ownerId"] == env["a"]
+    if command == "setLevel":
+        assert result["state"]["xp"] > 0
+    if command == "unlockPlots":
+        assert len(result["plots"]) == 24
+    if command == "setWeather":
+        assert result["weather"]["precipitation"] == 3
+        assert current(env, "bh")["weather"] is None
+    if command == "setDaylight":
+        assert result["weather"]["isDay"] is False
+
+
+def test_new_farm_nickname_validation_is_atomic(env):
+    rejected = env["client"].post(API + "/farm", headers=env["ah"], json={"nickname": "  "})
+    assert rejected.status_code == 400
+    assert current(env) is None
+    assert create(env, nickname="  小安  ")["social"]["nickname"] == "小安"
+
+
+def test_cloud_cheats_populated_plots_reset_and_weather_refresh(env):
+    initial = create(env, nickname="小安")
+    with env["sessions"]() as db:
+        db.get(User, env["a"]).is_admin = True
+        db.commit()
+
+    def cheat(command, **params):
+        r = env["client"].post(
+            API + "/debug/actions",
+            headers=env["ah"],
+            json={"requestId": str(uuid4()), "command": command, **params},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    cheat("giveAllCrops", value=10)
+    result = cheat("plantEmpty", cropId="radish")
+    assert all(p["cropId"] == "radish" for p in result["plots"])
+    result = cheat("ripenAll")
+    assert all(p["growth"] == 1 for p in result["plots"])
+    result = cheat("careAll")
+    assert all(p["moisture"] == 100 and not p["withered"] for p in result["plots"])
+    cheat("setDaylight", value=False)
+    result = cheat("setWeather", kind="storm")
+    assert result["weather"]["isDay"] is False and result["weather"]["precipitation"] == 14
+    # A manual refresh clears only this farm's test weather.
+    # No upstream weather request is needed for this regression.
+    from unittest.mock import patch
+
+    from src.services.game import weather
+
+    with patch.object(weather, "refresh_weather"):
+        refreshed = env["client"].get(API + "/farm?refreshWeather=true", headers=env["ah"]).json()
+    assert refreshed["weather"] is None
+    result = cheat("resetFarm")
+    assert result["social"]["nickname"] == "小安"
+    assert result["balance"] == initial["balance"] and result["inventory"] == []
+    assert all(p["cropId"] is None for p in result["plots"])

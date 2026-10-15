@@ -28,6 +28,7 @@ const zhCN = {
   'farmBoard.value': '分数',
   'farmBoard.reward': '奖励',
   'farmBoard.coins': '{value} 好币',
+  'farmBoard.unnamed': '尚未取昵称的农友',
   'farmBoard.anonymous': '匿名农友',
   'farmBoard.me': '我',
   'farmBoard.privacy': '只显示农友昵称、头像与游戏分数，不包含真实记账金额或电子邮件。',

@@ -54,6 +54,8 @@ def own_farm(
         if farm is None:
             return None
         svc.advance(farm)
+        if refreshWeather and farm.state.get("debugWeather"):
+            farm.state = {k: v for k, v in farm.state.items() if k != "debugWeather"}
         return svc.snapshot(farm)
 
 
@@ -85,6 +87,20 @@ def act(
     with game_tx(db, [uid]) as svc:
         farm = svc.farm(uid)
         return svc.replay(uid, data.get("requestId"), data, lambda: svc.action(farm, data))
+
+
+@router.post("/debug/actions", dependencies=[app_only])
+def debug_action(
+    data: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    if not user.is_admin:
+        fail("ADMIN_REQUIRED", "雲端作弊器僅限管理員使用", 403)
+    from ..services.game.cheats import apply
+
+    uid = user.id
+    with game_tx(db, [uid]) as svc:
+        farm = svc.farm(uid)
+        return svc.replay(uid, data.get("requestId"), data, lambda: apply(svc, farm, data))
 
 
 @router.get("/market", dependencies=[app_only])
@@ -194,6 +210,7 @@ def events(db: Session = Depends(get_db), user: User = Depends(get_current_user)
         select(GameEvent)
         .where(
             or_(GameEvent.actor_id == uid, GameEvent.owner_id == uid),
+            GameEvent.actor_id != GameEvent.owner_id,
             GameEvent.created_at >= svc.now - timedelta(days=7),
         )
         .order_by(GameEvent.created_at.desc())
@@ -201,14 +218,18 @@ def events(db: Session = Depends(get_db), user: User = Depends(get_current_user)
     )
     result = []
     for row in rows:
-        actor = db.get(GameFarm, row.actor_id)
+        outgoing = row.actor_id == uid
+        counterpart_id = row.owner_id if outgoing else row.actor_id
+        counterpart = db.get(GameFarm, counterpart_id)
         expires = instant(row.created_at) + timedelta(hours=12)
         result.append(
             {
                 "id": row.id,
                 "actorId": row.actor_id,
                 "ownerId": row.owner_id,
-                "displayName": identity(db, actor)["displayName"],
+                "displayName": identity(db, counterpart)["displayName"],
+                "counterpartyId": counterpart_id,
+                "outgoing": outgoing,
                 "action": row.kind,
                 "createdAt": iso(row.created_at),
                 "returned": bool(row.data.get("returned")),

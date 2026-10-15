@@ -123,7 +123,7 @@ export function FarmLeaderboardPage() {
                           {row.userId && row.avatarUrl ? <img src={resolveApiUrl(row.avatarUrl) ?? undefined} alt="" referrerPolicy="no-referrer" className="h-8 w-8 shrink-0 rounded-full object-cover" /> : <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted"><UserRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" /></span>}
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="max-w-[260px] break-words font-medium">{row.userId ? row.displayName : t('farmBoard.anonymous')}</span>
+                              <span className="max-w-[260px] break-words font-medium">{row.userId ? (row.displayName?.trim() || t('farmBoard.unnamed')) : t('farmBoard.anonymous')}</span>
                               {row.thiefUntil && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title={t('farmBoard.thiefMarkBody')}>🦝 {t('farmBoard.thiefMark')}</span>}
                               {row.isMe && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{t('farmBoard.me')}</span>}
                             </div>

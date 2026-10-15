@@ -39,9 +39,7 @@ def identity(db, farm, anonymous=False):
         return {"userId": None, "displayName": "匿名農夫", "avatarUrl": None}
     return {
         "userId": farm.user_id,
-        "displayName": profile.display_name
-        if profile and profile.display_name
-        else "農夫 #" + farm.user_id[-4:],
+        "displayName": farm.state.get("nickname") or "尚未取暱稱的農友",
         "avatarUrl": f"{get_settings().api_prefix}/profile/avatar/{farm.user_id}"
         if profile and profile.avatar_file_id
         else None,

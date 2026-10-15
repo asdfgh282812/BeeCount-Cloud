@@ -1,6 +1,6 @@
 # 資料庫 Schema 說明（維運參考）
 
-> 本文件對照 [`src/models.py`](../src/models.py) 逐表整理，目的是讓維運人員在看 DB 時，能快速知道「這張表是做什麼的」「這個欄位代表什麼」。
+> 本文件對照 [`src/models.py`](../src/models.py) 與 [`src/services/game/models.py`](../src/services/game/models.py) 逐表整理，目的是讓維運人員在看 DB 時，能快速知道「這張表是做什麼的」「這個欄位代表什麼」。
 > 欄位型別為 SQLAlchemy 型別（對應到 Postgres/SQLite 實際欄位型別大致為：`String/Text`→varchar/text、`Integer/BigInteger`→整數、`Float`→浮點數、`Boolean`→布林、`DateTime(timezone=True)`→帶時區時間戳、`Date`→日期、`JSON`→json）。
 > 「屬性」欄位標註：`PK`=主鍵、`FK→表.欄位`=外鍵、`nullable`=可為空、`unique`=唯一、`index`=有索引、`default`=應用層預設值、`server_default`=資料庫層預設值。
 >
@@ -26,6 +26,7 @@
 11. [授權金鑰](#11-授權金鑰)
 12. [股票持股（3.7.0）](#12-股票持股370)
 13. [節日資料](#13-節日資料)
+14. [雲端農場（M4）](#14-雲端農場m4)
 
 ---
 
@@ -269,6 +270,8 @@
 | tx_type | String(16) | not null | 交易類型：expense（支出）/income（收入）/transfer（轉帳）/adjustment（餘額調整） |
 | amount | Float | default 0.0 | 實際影響帳戶餘額的金額 |
 | happened_at | DateTime | not null | 交易發生時間 |
+| client_created_at | DateTime | nullable | 客戶端原始建立時間（0073）；農場記帳習慣計分使用，與交易發生時間分開，後續編輯不改寫 |
+| first_seen_at | DateTime | nullable | 伺服器首次接收這筆交易的時間（0073）；農場計分用來判斷離線紀錄是否在寬限內到達 |
 | note | Text | nullable | 備註 |
 | merchant | Text | nullable | 商店名稱（純展示用，不參與統計） |
 | category_sync_id | String(255) | nullable | 分類同步 ID |
@@ -1046,3 +1049,145 @@ A：這是本專案刻意的設計取捨：這類彙總數字若落庫，會需�
 | version | Integer | not null | 資料集版本，內容有變就 +1；客戶端帶 `known_version` 比對 |
 | year_hashes | JSON | not null | `{"2026": sha256, ...}`，判斷重新產生後各年內容是否變動 |
 | updated_at | DateTime | | 最後一次版本變動時間 |
+
+---
+
+## 14. 雲端農場（M4）
+
+> Migration：[`0074_game_farms`](../alembic/versions/0074_game_farms.py)（接 `0073_tx_created_at`），新增 **11 張 `game_*` 表**。模型位於 [`src/services/game/models.py`](../src/services/game/models.py)，由 `src/models.py` 登記；既有整庫備份會包含這些表。API 契約見 [`FARM_API_CONTRACT.md`](./FARM_API_CONTRACT.md)，實作說明見 [M4 Cloud 紀錄](./changes/2026-10-15-m4-cloud-authority.md)。
+>
+> 農場是伺服器權威的獨立遊戲資料，透過 `/api/v1/game` 讀寫，**不進 `sync_changes`、記帳投影或 `/sync/full` 帳本快照**。個人農場以 `user_id` 為歸屬；天氣與市場行情是全服共用資料。遊戲推進、消耗、領獎與社交更新在同一個 transaction 內完成。
+>
+> 下列 `DateTime` 均為 `DateTime(timezone=True)`、儲存 UTC 瞬間；週次 `week` 則為業務時區週一的日期字串 `YYYY-MM-DD`。`default` 是 ORM 應用層預設，0074 沒有為這些欄位設定 `server_default`。
+
+### `game_farms` — 農場主表（GameFarm）
+
+每位使用者最多一座雲端農場。核心狀態及可擴充設定存 JSON，計分帳本只參照記帳資料，不把農場變成帳本層級實體。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| user_id | String(36) | PK, FK→users.id (CASCADE) | 農場擁有者，亦為登入歸屬；不可與 `state.playerId` 遊戲隨機種子身分混用 |
+| enabled | Boolean | not null, default True | 農場是否啟用 |
+| state | JSON | not null | 遊戲狀態：playerId、城市、啟用／推進時間、經驗值、倉庫容量、每日水量，以及看門狗、佈置抵用額 `decorCredits`、通知設定等 metadata |
+| layout | JSON | nullable | 農場佈置與物件位置 |
+| turnips | JSON | nullable | 當週大頭菜狀態，含伺服器生成的報價序列；API 快照不公開未來價格 |
+| scoring_ledger_id | String(36) | FK→ledgers.id (SET NULL), nullable | 計分帳本的伺服器內部 ID；API 使用 `scoringLedgerSyncId` 對應帳本 external ID，須為自有非共享且未軟刪除的帳本 |
+| anonymous | Boolean | not null, default False | 是否在排行榜匿名 |
+| conscience | Integer | not null, default 100 | 良心值，影響偷菜資格及出售費用 |
+| title | String(64) | nullable | 遊戲稱號 |
+| thief_until | DateTime | nullable | 被狗抓到後的公開標記到期時間 |
+| newbie_until | DateTime | not null | 新手保護到期時間 |
+| created_at | DateTime | not null | 雲端農場建立時間 |
+
+### `game_slots` — 田地狀態（GameSlot）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| user_id | String(36) | PK(複合), FK→game_farms.user_id (CASCADE) | 所屬農場 |
+| idx | Integer | PK(複合) | 田地索引 |
+| plot | JSON | not null | 該田地的作物、生長及照料效果等規則狀態 |
+| stolen_qty | Integer | not null, default 0 | 該代作物累計被偷走的數量，用於保留主人最低收成 |
+
+### `game_inventory` — 物品庫存（GameInventory）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK, autoincrement | 庫存列流水號 |
+| user_id | String(36) | FK→game_farms.user_id (CASCADE), not null, index | 所屬農場 |
+| item_id | String(64) | not null | 物品識別碼，如種子、作物或道具 |
+| quantity | Integer | not null | 數量 |
+| expires_at | DateTime | nullable | 到期／腐壞時間，null 表示無到期時間 |
+
+索引：`ix_game_inventory_user_id(user_id)`。同一物品可有多筆庫存列，不能假設 `(user_id, item_id)` 唯一。
+
+### `game_wallet_entries` — 好幣收支流水（GameWallet）
+
+遊戲錢包採 append-only 流水，餘額由 `delta` 加總，不另存餘額欄位。每筆收支透過原因與參照值防重複入帳。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK, autoincrement | 流水號 |
+| user_id | String(36) | FK→game_farms.user_id (CASCADE), not null, index | 所屬農場 |
+| delta | Integer | not null | 好幣變動量，正數收入、負數支出 |
+| reason | String(64) | not null | 收支原因，如週結算 `settlement`、排名獎勵 `rank_reward` |
+| ref_id | String(128) | not null | 該次收支的防重複參照值；週結算使用 week，排名獎勵使用 week + 榜別 |
+| created_at | DateTime | not null | 入帳時間 |
+
+唯一約束：`uq_game_wallet_receipt(user_id, reason, ref_id)`；索引：`ix_game_wallet_entries_user_id(user_id)`。週獎勵須由使用者手動領取；是否已領以 `reason='settlement'`、`ref_id=week` 的流水為憑證，建立結算列不代表已發幣。
+
+### `game_listings` — 攤位上架（GameListing）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| user_id | String(36) | PK(複合), FK→game_farms.user_id (CASCADE) | 所屬農場 |
+| slot | Integer | PK(複合) | 攤位槽位 |
+| data | JSON | not null | 上架識別碼、作物、數量、單價、上架／成交／到期時間等資料 |
+
+上架物品已離開庫存；成交後仍須點攤位領取好幣，不能直接把成交時間視為錢包入帳時間。
+
+### `game_weekly_settlements` — 週結算（GameSettlement）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| user_id | String(36) | PK(複合), FK→game_farms.user_id (CASCADE) | 所屬農場 |
+| week | String(10) | PK(複合) | 結算週的週一日期 |
+| data | JSON | not null | 週次、記帳分數、可領好幣、連續週數、計分／獎勵明細 `detailsJson` 與建立時間 |
+| anomaly_flags | JSON | not null, default `[]` | 異常標記，如交易筆數過多 `too_many_transactions`、收入突增 `income_spike`，供排名獎勵資格判斷 |
+
+### `game_leaderboards` — 週排行榜（GameLeaderboard）
+
+每週凍結各榜結果，獎勵在凍結交易內發放；公開 API 會另做匿名與隱私處理。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| week | String(10) | PK(複合) | 排名週的週一日期 |
+| board | String(16) | PK(複合) | 榜別：`bookkeeping` 記帳／`harvest` 豐收／`thief` 神偷／`guardian` 守護者 |
+| user_id | String(36) | PK(複合), FK→game_farms.user_id (CASCADE) | 玩家農場 |
+| data | JSON | not null | 名次、遊戲數值、獎勵好幣、稱號、記帳習慣分數、異常標記與凍結時有效玩家人數等資料 |
+
+### `game_action_receipts` — 操作憑證（GameAction）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| user_id | String(36) | PK(複合), FK→game_farms.user_id (CASCADE) | 發出操作的玩家 |
+| request_id | String(36) | PK(複合) | 客戶端提供的操作請求 ID |
+| fingerprint | String(64) | not null | 請求內容指紋，用來辨識同 ID 卻不同內容的請求 |
+| response | JSON | not null | 完整回應快取；同一操作重送時直接回放，避免重複扣款、消耗或發獎 |
+| created_at | DateTime | not null | 操作憑證建立時間 |
+
+### `game_social_events` — 社交與遊戲事件（GameEvent）
+
+除偷菜、幫忙、回禮與貼圖外，也記錄收成及攤位成交，供排行統計與市場供需計算。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | String(36) | PK | 事件 ID（UUID） |
+| actor_id | String(36) | FK→game_farms.user_id (CASCADE), not null, index | 操作者農場 |
+| owner_id | String(36) | FK→game_farms.user_id (CASCADE), not null, index | 被拜訪／操作的農場；自己的收成或成交事件與 actor_id 相同 |
+| kind | String(16) | not null | 事件種類：`help`、`steal`、`react`、`harvest`、`market_sale`；回禮操作亦記為 `steal` |
+| data | JSON | not null | 該類事件的田地、數量、價值、是否被抓、貼圖或回禮狀態等明細 |
+| created_at | DateTime | not null, index | 事件時間，亦用於冷卻、次數限制與週榜統計 |
+
+索引：`ix_game_social_events_actor_id(actor_id)`、`ix_game_social_events_owner_id(owner_id)`、`ix_game_social_events_created_at(created_at)`。
+
+### `game_weather_cache` — 城市天氣快取（GameWeather）
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| city_code | String(32) | PK(複合) | 粗略城市代碼，供同城市農場共用 |
+| hour | DateTime | PK(複合) | 天氣對應的小時時間點 |
+| data | JSON | not null | 溫度、降水、雲量、陣風、濕度、日夜等天氣資料 |
+| fetched_at | DateTime | not null | 實際抓取時間，用於判斷快取新鮮度 |
+
+### `game_market_snapshots` — 市場行情快照（GameMarketSnapshot）
+
+全服共用，每個行情時段、每種作物一列；已產生的價格不重算。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| tick | Integer | PK(複合) | 行情時段序號（UTC epoch 秒數整除 43,200）；UTC 00:00／12:00 切換，台北時間為 08:00／20:00 |
+| crop_id | String(64) | PK(複合) | 作物識別碼 |
+| price | Integer | not null | 該時段的作物單價（好幣） |
+| supply_quantity | Integer | not null | 該時段開始前 24 小時的攤位售出量，作為供需定價輸入 |
+
+**維運補充**：農場的在家／離開狀態（presence）目前只放在單一 process 記憶體，按裝置／WS 連線記錄、45 秒到期，沒有對應資料表；多 worker 部署前須先改用共享儲存。結算排名與天氣更新沿用第 10 節的排程設定，job key 分別為 `farm_settlement_rankings` 與 `farm_weather_refresh`。

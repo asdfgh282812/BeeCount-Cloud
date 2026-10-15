@@ -43,3 +43,19 @@ week 必須合法曆日、週一、且已結束；省略時取最新已結算週
 每週一00:05結算、00:10排名，補最近四週、週唯一鍵防重。H 用 immutable createdAt，且 firstSeenAt≤週結束+48h；寬限只適用尚未凍結週，已結算結果不重新計算。總預算入口已於M3移除，B維持缺項重分配，不用分類／專案預算代替。低於5個有效玩家僅 S≥60保底200；名次獎勵暫停。冠軍的季節樹木信用存 social.decorCredits，佈置新增對應樹木自動免該次價格並原子消耗信用。通知／稱號／種子與排名獎勵同交易防重。
 
 計分來源變成共享／軟刪除時建立一次 `farm_scoring_ledger` 通知，App通知中心跳農場設定改選；私人帳本本來就有owner membership，不能以「任何member」判為共享。App所有game HTTP請求帶SDK X-App-Version，402／426經既有授權／更新攔截；舊server回應先經session身份驗證才觸發全域攔截。
+
+## 2026-10-15：農場暱稱、事件對方與管理員測試工具
+
+- `POST /farm` 與 `PATCH /farm` 接受 `nickname`，去頭尾空白後 1～20 個 Unicode
+  code points、不得有控制字元；存於既有 state JSON，不改 profile 名稱。
+  舊客戶端建立仍相容，新 App 建立前先取名。
+- own snapshot 的 `social` 新增 `nickname`／`nicknameRequired`／`canCheat`。
+  公開 identity 的 displayName 使用農場暱稱；舊農場未取名顯示「尚未取暱稱的農友」，
+  不使用個人資料名稱或帳號末碼。榜上匿名規則不變，Web 同步顯示暱稱。
+- `/events` 排除 actorId == ownerId（含攤位成交），新增 `counterpartyId`／`outgoing`，
+  displayName 為相對於登入者的互動對方，action 與回禮規則不變。
+- `POST /debug/actions {requestId,command,...params}` 僅 App scope **且管理員**，
+  正式 `/actions` 不接受作弊。可用 command 與 value/cropId/kind 對應見
+  `src/services/game/cheats.py`；支援原子 rollback、requestId replay 與權威 snapshot。
+  天氣覆寫只影響自己的農場，GET /farm?refreshWeather=true 會清除；重置保留暱稱、
+  回到初始農場。這是會修改真實進度的管理員工具，App 僅 debug 建置提供入口。
