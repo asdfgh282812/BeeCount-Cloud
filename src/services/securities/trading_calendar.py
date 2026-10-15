@@ -13,7 +13,7 @@ App(`lib/services/investment/trading_calendar.dart`)和 Web 沒有 `holidays`
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -114,3 +114,47 @@ def stock_dca_trade_time(
         return None
     shifted = next_trading_day(market, day)
     return occurrence + timedelta(days=(shifted - day).days)
+
+
+# ---------------------------------------------------------------------------
+# 款券交割日(買進/賣出的錢實際扣/入帳的日子)
+# ---------------------------------------------------------------------------
+
+# 預設交割天數(交易日)。台股是 T+2;美股 2024-05 起結算是 T+1,但國內複委託
+# 帳戶實際扣/入帳仍是 T+2,所以所有市場先統一 2,使用者每筆都能改。
+# App `kStockSettlementLagDays`/Web 說明文字同一個數字。
+STOCK_SETTLEMENT_LAG_DAYS = 2
+
+# 交割日的「時刻」:一律當天 09:00(業務時區)——對應「開市時間才扣款」,也讓
+# 當天稍晚才記的交易不會比扣款時間還早。App 同。
+STOCK_SETTLEMENT_HOUR = 9
+
+
+def add_trading_days(market: str | None, day: date, days: int) -> date:
+    """從 [day] 起算,往後數 [days] 個交易日(`day` 本身當第 0 天,即使它休市)。
+    例:週一成交、T+2 → 週三;週五成交 → 下週二;中間夾休市日再順延。"""
+    current = day
+    remaining = days
+    while remaining > 0:
+        current = next_trading_day(market, current + timedelta(days=1))
+        remaining -= 1
+    return current
+
+
+def default_settlement_at(
+    market: str | None,
+    trade_at: datetime,
+    *,
+    tz: ZoneInfo,
+    lag_days: int = STOCK_SETTLEMENT_LAG_DAYS,
+) -> datetime:
+    """預設交割時間:成交日(業務時區)起算第 [lag_days] 個交易日的 09:00。
+    `lag_days <= 0` 回成交時間本身(沒有交割延遲)。回傳 aware datetime。
+    對齊 App `TradingCalendar.defaultStockSettlementAt`。"""
+    if lag_days <= 0:
+        return trade_at
+    if trade_at.tzinfo is None:
+        trade_at = trade_at.replace(tzinfo=ZoneInfo("UTC"))
+    day = trade_at.astimezone(tz).date()
+    settle_day = add_trading_days(market, day, lag_days)
+    return datetime.combine(settle_day, time(STOCK_SETTLEMENT_HOUR), tzinfo=tz)

@@ -81,7 +81,15 @@ import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { routePath } from '../../state/router'
 import { OpeningHoldingsDialog } from './OpeningHoldingsDialog'
 import { PendingDividendsPanel } from './PendingDividendsPanel'
-import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass, splitRatioInfo } from './investmentsShared'
+import {
+  dateValueToIso,
+  formatQuoteTime,
+  isoToDateValue,
+  numText,
+  pnlClass,
+  settlementValueToIso,
+  splitRatioInfo,
+} from './investmentsShared'
 
 /**
  * 投資頁(股票持股 2026-09-28,docs/STOCK_HOLDINGS_SD.md)。跟 App 功能對等:
@@ -723,7 +731,14 @@ function HoldingRowGroup({
                     const editable = CREATABLE_TYPES.includes(tr.trade_type as CreatableType)
                     return (
                       <tr key={tr.id} className="border-t">
-                        <td className="py-1.5">{isoToDateValue(tr.trade_date)}</td>
+                        <td className="py-1.5">
+                          {isoToDateValue(tr.trade_date)}
+                          {tr.settlement_date && isoToDateValue(tr.settlement_date) > isoToDateValue(tr.trade_date) ? (
+                            <span className="ml-1 text-muted-foreground">
+                              {t('investments.settlesOn', { date: isoToDateValue(tr.settlement_date) })}
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="py-1.5">
                           {tr.trade_type === 'split' ? splitLabel(tr.shares, t) : t(`investments.tradeType.${tr.trade_type}`)}
                         </td>
@@ -810,6 +825,12 @@ export function StockTradeDialog({
   )
   const [settlementAmount, setSettlementAmount] = useState('')
   const [tradeDate, setTradeDate] = useState(isoToDateValue(editingTrade?.trade_date))
+  // 交割日(買進/賣出,2026-10-15):錢實際扣/入帳的日子。空字串 = 沒選:新增時 server 套預設
+  // (成交日起第 2 個交易日,依休市日順延);編輯時維持原樣(原本就沒有交割日 = 同成交日)。
+  const [settlementDate, setSettlementDate] = useState(
+    editingTrade?.settlement_date ? isoToDateValue(editingTrade.settlement_date) : '',
+  )
+  const [settlementTouched, setSettlementTouched] = useState(false)
   const [note, setNote] = useState(editingTrade?.note || '')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -830,6 +851,8 @@ export function StockTradeDialog({
   // 需要選「交割/入帳帳戶」的類型;reinvest 入投資理財帳戶本身。
   const isCash = tradeType === 'buy' || tradeType === 'sell' || tradeType === 'cash_dividend'
   const isDividend = tradeType === 'cash_dividend'
+  // 只有買賣有交割日(錢到交割日才動,股數成交日就變);股利/期初持股/配股/分割沒有。
+  const hasSettlementDate = tradeType === 'buy' || tradeType === 'sell'
   // 股票分割:shares = 每 1 股變成幾股,只有日期/標的/比例/備註。
   const isSplit = tradeType === 'split'
   const settlement = accounts.find((a) => a.id === settlementId)
@@ -1086,6 +1109,10 @@ export function StockTradeDialog({
             note: note.trim() || null,
             ...(isCash ? { settlement_account_id: settlementId } : {}),
             ...(crossCurrency ? { settlement_amount: Number(settlementAmount) } : {}),
+            // 沒動交割日就不送(server:改了成交日才依新成交日重算預設);清空 = 送 null 重算預設。
+            ...(hasSettlementDate && settlementTouched
+              ? { settlement_date: settlementDate ? settlementValueToIso(settlementDate, tradeDate) : null }
+              : {}),
           },
           ),
         )
@@ -1103,6 +1130,9 @@ export function StockTradeDialog({
             tax: tradeType === 'sell' || isDividend ? Number(tax) || 0 : 0,
             currency,
             trade_date: dateValueToIso(tradeDate),
+            ...(hasSettlementDate && settlementDate
+              ? { settlement_date: settlementValueToIso(settlementDate, tradeDate) }
+              : {}),
             settlement_account_id: isCash ? settlementId : null,
             settlement_amount: crossCurrency ? Number(settlementAmount) : null,
             note: note.trim() || null,
@@ -1471,13 +1501,39 @@ export function StockTradeDialog({
           <div className={`grid grid-cols-2 gap-3 ${isDca ? 'hidden' : ''}`}>
             <div className="space-y-1">
               <Label>{t('investments.field.tradeDate')}</Label>
-              <DatePicker value={tradeDate} onChange={setTradeDate} />
+              <DatePicker
+                value={tradeDate}
+                onChange={(v) => {
+                  setTradeDate(v)
+                  // 編輯時沒手動動過交割日:成交日改了,server 會依新成交日重算,先清掉舊的顯示避免誤導。
+                  if (editing && !settlementTouched && editingTrade?.settlement_date) setSettlementDate('')
+                }}
+              />
             </div>
             <div className="space-y-1">
               <Label>{t('investments.field.note')}</Label>
               <Input value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
           </div>
+          {hasSettlementDate && !isDca && (
+            <div className="space-y-1">
+              <Label>{t('investments.field.settlementDate')}</Label>
+              <DatePicker
+                value={settlementDate}
+                onChange={(v) => {
+                  setSettlementDate(v)
+                  setSettlementTouched(true)
+                }}
+                placeholder={
+                  editing && !editingTrade?.settlement_date
+                    ? t('investments.field.settlementDateSameDay')
+                    : t('investments.field.settlementDateDefault')
+                }
+                clearable
+              />
+              <p className="text-xs text-muted-foreground">{t('investments.field.settlementDateHint')}</p>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" disabled={saving} onClick={onClose}>

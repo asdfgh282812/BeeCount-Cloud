@@ -2941,6 +2941,9 @@ class WriteStockTradeCreateRequest(WriteBaseRequest):
     tax: float = Field(default=0.0, ge=0)
     currency: str | None = Field(default=None, max_length=16)
     trade_date: datetime
+    # 交割日(買進/賣出才有意義):錢實際扣/入帳的時間。不給 = 預設 T+2 個交易日
+    # (`trading_calendar.default_settlement_at`)。
+    settlement_date: datetime | None = None
     settlement_account_id: str | None = Field(default=None, max_length=255)
     # 交割帳戶幣別跟證券幣別不同時必填:交割帳戶實際扣款(買進)/入帳(賣出)
     # 的金額,已含手續費/稅。
@@ -2956,6 +2959,9 @@ class WriteStockTradeUpdateRequest(WriteBaseRequest):
     fee: float | None = Field(default=None, ge=0)
     tax: float | None = Field(default=None, ge=0)
     trade_date: datetime | None = None
+    # 有給 = 改成這個交割日;沒給但改了 trade_date 且這筆原本有交割日 = 依新成交日
+    # 重算預設 T+2。
+    settlement_date: datetime | None = None
     security_name: str | None = Field(default=None, max_length=255)
     settlement_account_id: str | None = Field(default=None, max_length=255)
     settlement_amount: float | None = Field(default=None, gt=0)

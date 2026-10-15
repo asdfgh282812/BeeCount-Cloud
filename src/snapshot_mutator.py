@@ -3044,6 +3044,24 @@ def _round_money(value: float) -> float:
     return round(value + 0.0, 8)
 
 
+def _stock_trade_default_settlement_iso(market: object, trade_date_iso: object) -> str:
+    """buy/sell 預設交割時間(成交日起算 T+2 個交易日的 09:00,業務時區),
+    回 ISO UTC 字串。App `TradingCalendar.defaultStockSettlementAt` 同一套規則。"""
+    from .services.business_time import business_tz
+    from .services.securities import trading_calendar
+
+    trade_at = datetime.fromisoformat(str(trade_date_iso))
+    settle = trading_calendar.default_settlement_at(
+        str(market or "") or None, trade_at, tz=business_tz(),
+    )
+    return _to_iso8601(settle)
+
+
+def _stock_tx_happened_at(trade: dict) -> object:
+    """綁定轉帳交易的日期:有交割日用交割日(錢到那天才移動),沒有就是成交日。"""
+    return trade.get("settlementDate") or trade.get("tradeDate")
+
+
 def stock_trade_amount(
     trade_type: str, shares: float, price: float, fee: float, tax: float, currency: str | None = None,
 ) -> float:
@@ -3191,7 +3209,7 @@ def _apply_stock_tx(
         tx_payload = {
             "tx_type": "transfer",
             "amount": fields["amount"],
-            "happened_at": trade.get("tradeDate"),
+            "happened_at": _stock_tx_happened_at(trade),
             "note": note,
             "from_account_id": from_acc.get("syncId"),
             "from_account_name": from_acc.get("name"),
@@ -3208,7 +3226,7 @@ def _apply_stock_tx(
     for key in _STOCK_TX_MANAGED_KEYS:
         tx.pop(key, None)
     tx.update(fields)
-    tx["happenedAt"] = trade.get("tradeDate")
+    tx["happenedAt"] = _stock_tx_happened_at(trade)
     tx["note"] = note
     tx["fromAccountId"] = from_acc.get("syncId")
     tx["fromAccountName"] = from_acc.get("name")
@@ -3363,6 +3381,14 @@ def create_stock_trade(snapshot: dict, payload: dict) -> tuple[dict, str]:
     }
     if currency:
         trade["currency"] = currency
+    if trade_type in STOCK_TRADE_CASH_TYPES:
+        # 交割日:有給用給的,沒給預設 T+2 個交易日(錢要到交割日才扣/入)。
+        settle_raw = payload.get("settlement_date")
+        trade["settlementDate"] = (
+            _to_iso8601(settle_raw)
+            if settle_raw
+            else _stock_trade_default_settlement_iso(market, trade["tradeDate"])
+        )
     name = _to_optional_str(payload.get("security_name"))
     if name:
         trade["securityName"] = name
@@ -3407,6 +3433,17 @@ def update_stock_trade(snapshot: dict, trade_id: str, payload: dict) -> dict:
             trade[snap_key] = _to_optional_float(payload.get(key)) or 0.0
     if "trade_date" in payload:
         trade["tradeDate"] = _to_iso8601(payload.get("trade_date"))
+    if trade_type in STOCK_TRADE_CASH_TYPES:
+        if payload.get("settlement_date"):
+            trade["settlementDate"] = _to_iso8601(payload.get("settlement_date"))
+        elif "settlement_date" in payload or (
+            "trade_date" in payload and trade.get("settlementDate")
+        ):
+            # 明確給 null,或改了成交日而原本就有交割日:依(新的)成交日重算預設。
+            # 舊資料沒有交割日(NULL = 同成交日)只改成交日時維持 NULL。
+            trade["settlementDate"] = _stock_trade_default_settlement_iso(
+                trade.get("market"), trade.get("tradeDate"),
+            )
     if "note" in payload:
         note = _to_optional_str(payload.get("note"))
         if note:

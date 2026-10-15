@@ -909,6 +909,12 @@ def upsert_stock_trade(
         "amount": _as_float(payload.get("amount")),
         "currency": (_as_str(payload.get("currency")) or "").upper() or None,
         "trade_date": _parse_happened_at(payload.get("tradeDate")),
+        # nullable:缺鍵/空字串必須是 NULL(_parse_happened_at 缺值會退化成「現在」)。
+        "settlement_date": (
+            _parse_happened_at(payload.get("settlementDate"))
+            if _as_str(payload.get("settlementDate"))
+            else None
+        ),
         "tx_sync_id": _as_str(payload.get("txId")),
         "dividend_event_ref": _as_str(payload.get("dividendEventRef")),
         "note": _as_str(payload.get("note")),

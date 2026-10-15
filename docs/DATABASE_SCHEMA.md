@@ -986,6 +986,7 @@ rclone 遠端儲存位置配置（如 S3、Google Drive），也可以是加密�
 | amount | Float | default 0.0 | 以證券幣別計的現金影響（正數）：buy/opening=股數×價格+手續費；sell=股數×價格−手續費−交易稅；cash_dividend/reinvest=實收金額；stock_dividend=0 |
 | currency | String(16) | nullable | 證券幣別 |
 | trade_date | DateTime | nullable | 交易日期 |
+| settlement_date | DateTime | nullable | 交割日（alembic 0073）：買進/賣出綁定轉帳的 `happened_at`，錢到這個瞬間才扣/入帳（預設 T+2 個交易日 09:00）；null = 沒有交割延遲（舊資料/定期定額/非買賣類型） |
 | tx_sync_id | String(255) | nullable | 對應的轉帳/收入交易 syncId |
 | dividend_event_ref | String(64) | nullable | 股利明細對應的除權息事件（`security_dividend_events.id` 字串），非股利為 null |
 | note | Text | nullable | 備註 |

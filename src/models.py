@@ -1523,6 +1523,10 @@ class ReadStockTradeProjection(Base):
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
     trade_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 交割日(2026-10-15,alembic 0073):綁定轉帳交易的 happened_at——買進/賣出
+    # 的錢要到這個瞬間才真的扣/入(預設 T+2 個交易日 09:00)。NULL = 沒有交割延遲
+    # (舊資料/定期定額/非買賣類型),轉帳日期 = trade_date。
+    settlement_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 股利明細對應的除權息事件(Phase 2,`security_dividend_events.id` 的字串);
     # Phase 1 一律 None。

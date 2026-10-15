@@ -25,6 +25,16 @@ export function dateValueToIso(value: string): string {
   return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).toISOString()
 }
 
+/**
+ * 交割日 → ISO。跟成交同一天保留成交時間(中午,沒有延遲);其它天 09:00(對應「開市時間
+ * 才扣款」,跟 server `STOCK_SETTLEMENT_HOUR`、App `kStockSettlementHour` 一致)。
+ */
+export function settlementValueToIso(settlement: string, tradeDate: string): string {
+  if (settlement === tradeDate) return dateValueToIso(tradeDate)
+  const [y, m, d] = settlement.split('-').map(Number)
+  return new Date(y, (m || 1) - 1, d || 1, 9, 0, 0).toISOString()
+}
+
 export function isoToDateValue(iso: string | null | undefined): string {
   if (!iso) return todayDateValue()
   const d = new Date(iso)

@@ -793,6 +793,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadStockTradeProjection.amount,
         ReadStockTradeProjection.currency,
         ReadStockTradeProjection.trade_date,
+        ReadStockTradeProjection.settlement_date,
         ReadStockTradeProjection.tx_sync_id,
         ReadStockTradeProjection.dividend_event_ref,
         ReadStockTradeProjection.note,
@@ -800,7 +801,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
     ).where(ReadStockTradeProjection.ledger_id == ledger_id)
     for (
         sid, account_sid, market, symbol, security_name, trade_type, shares,
-        price, fee, tax, amount, currency, trade_date, tx_sid,
+        price, fee, tax, amount, currency, trade_date, settlement_date, tx_sid,
         dividend_event_ref, note, created_by,
     ) in db.execute(stock_stmt).all():
         t: dict[str, Any] = {
@@ -823,6 +824,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             t["currency"] = currency
         if trade_date is not None:
             t["tradeDate"] = _to_iso_utc(trade_date)
+        if settlement_date is not None:
+            t["settlementDate"] = _to_iso_utc(settlement_date)
         if tx_sid:
             t["txId"] = tx_sid
         if dividend_event_ref:

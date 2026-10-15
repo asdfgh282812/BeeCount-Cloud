@@ -368,6 +368,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("amount", "amount"),
         ("currency", "currency"),
         ("tradeDate", "trade_date", _isoformat_or_none),
+        ("settlementDate", "settlement_date", _isoformat_or_none),
         ("txId", "tx_sync_id"),
         ("dividendEventRef", "dividend_event_ref"),
         ("note", "note"),

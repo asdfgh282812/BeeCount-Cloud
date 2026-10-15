@@ -116,6 +116,8 @@ export type StockTrade = {
   amount: number
   currency: string | null
   trade_date: string | null
+  /** 交割日 = 綁定轉帳的入/扣帳時間(買進/賣出);null = 沒有交割延遲(同成交日)。 */
+  settlement_date?: string | null
   tx_id: string | null
   dividend_event_ref: string | null
   note: string | null
@@ -137,6 +139,8 @@ export type StockTradeCreatePayload = {
   tax?: number
   currency?: string | null
   trade_date: string
+  /** 買進/賣出的交割日(錢實際扣/入帳的時間)。不給 = server 預設成交日起第 2 個交易日 09:00。 */
+  settlement_date?: string | null
   settlement_account_id?: string | null
   /** 交割帳戶幣別跟證券幣別不同時必填(已含手續費/稅)。 */
   settlement_amount?: number | null
@@ -146,7 +150,7 @@ export type StockTradeCreatePayload = {
 export type StockTradeUpdatePayload = Partial<
   Pick<
     StockTradeCreatePayload,
-    'shares' | 'price' | 'fee' | 'tax' | 'trade_date' | 'security_name' | 'settlement_account_id' | 'settlement_amount' | 'note'
+    'shares' | 'price' | 'fee' | 'tax' | 'trade_date' | 'settlement_date' | 'security_name' | 'settlement_account_id' | 'settlement_amount' | 'note'
   >
 >
 

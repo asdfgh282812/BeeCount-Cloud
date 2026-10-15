@@ -695,3 +695,23 @@ App 端對應文件:App repo `docs/changes/2026-10-02-stock-phase3.md`。
 - **Web 動態頁面**:帳戶頁(有帳戶資料)、標籤頁(有標籤)、股票總覽/亮點(有股票活動)才出現;「年度稱號」頁
   (`data/persona.ts`,規則有優先序 + 最多 3 條理由)與成就牆(新增 5 個股票成就)依資料決定內容。
   股票讀取失敗只會少了股票頁,不會讓整份報告失敗。漲跌色沿用 `<html data-stock-color>`(股票漲跌色設定)。
+
+## 13. 交割日 T+2(2026-10-15,alembic 0073)
+
+買賣的款券交割是 T+2:成交日股數就變動,錢兩個營業日後才扣/入。做法**不用排程**:帳戶餘額本來就只算
+`happened_at <= now`(`routers/read/workspace.py`),所以成交當下就建好綁定轉帳,但轉帳日期 = 交割日。
+
+- `read_stock_trade_projection.settlement_date`(nullable)= 綁定轉帳的 `happened_at`。wire key `settlementDate`
+  (merge spec / `upsert_stock_trade` / snapshot_builder / `StockTradeOut.settlement_date`)。null = 沒有交割延遲,
+  轉帳日期 = 成交日(舊資料、DCA、opening/stock_dividend/split/cash_dividend/reinvest)。
+- 預設:`trading_calendar.default_settlement_at(market, trade_at, tz=business_tz())` = 成交日(業務時區)起第
+  `STOCK_SETTLEMENT_LAG_DAYS`(2)個交易日的 `STOCK_SETTLEMENT_HOUR`(9)點;休市表同定期定額。對齊 App
+  `TradingCalendar.defaultStockSettlementAt`(兩邊測試用同樣的日期例子)。
+- `create_stock_trade`:buy/sell 沒給 `settlement_date` → 預設;有給 → 用給的。`update_stock_trade`:有給 → 設定(給
+  null = 重算預設);沒給但改了 `trade_date` 且原本有交割日 → 依新成交日重算;原本是 null 維持 null(舊資料不會被偷偷改成 T+2)。
+  `_apply_stock_tx` 一律用 `settlementDate or tradeDate` 當轉帳 `happenedAt`。
+- DCA(`recurring_materializer`)不走 `create_stock_trade`,刻意維持 D+0。
+- 部署:先 Cloud(migration)→ Web → App。舊 App push 不帶 `settlementDate` → merge 保留既有值(`tests/test_stock_holdings.py`
+  的 partial-update 測試)。
+- Web:買賣表單「交割日」(空 = 預設,由 server 算;編輯沒動就不送,清空 = 送 null 重算);持股交易列表顯示「交割 …」。
+

@@ -149,6 +149,8 @@ class StockTradeOut(BaseModel):
     amount: float
     currency: str | None = None
     trade_date: str | None = None
+    # 交割日 = 綁定轉帳的入/扣帳時間;None = 沒有交割延遲(同成交日)。
+    settlement_date: str | None = None
     tx_id: str | None = None
     dividend_event_ref: str | None = None
     note: str | None = None
@@ -811,6 +813,7 @@ def list_stock_trades(
             amount=float(r.amount or 0),
             currency=r.currency,
             trade_date=quote_service._iso(r.trade_date),
+            settlement_date=quote_service._iso(r.settlement_date),
             tx_id=r.tx_sync_id,
             dividend_event_ref=r.dividend_event_ref,
             note=r.note,

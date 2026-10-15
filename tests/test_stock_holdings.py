@@ -1025,3 +1025,167 @@ def test_workspace_stock_annual_endpoint():
         assert client.get("/api/v1/read/workspace/stock-annual", headers=hdr_web).status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# 交割日(2026-10-15,alembic 0073):買賣當下建好轉帳,但日期 = 交割日(T+2)    #
+# --------------------------------------------------------------------------- #
+
+
+def _nine_am(y, m, d):
+    """業務時區(測試環境可能是 UTC)當天 09:00 的 UTC 瞬間。"""
+    from src.services.business_time import business_tz
+
+    return datetime(y, m, d, 9, 0, tzinfo=business_tz()).astimezone(timezone.utc)
+
+
+def _iso_utc(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def test_add_trading_days_skips_weekends_and_closures():
+    from datetime import date
+
+    from src.services.securities import trading_calendar as cal
+
+    # 2026-09-01(二)→ T+2 = 週四;週五成交 → 下週二;週六成交(非交易日)也從當天起算。
+    assert cal.add_trading_days("TW", date(2026, 9, 1), 2) == date(2026, 9, 3)
+    assert cal.add_trading_days("TW", date(2026, 9, 4), 2) == date(2026, 9, 8)
+    assert cal.add_trading_days("TW", date(2026, 9, 5), 2) == date(2026, 9, 8)
+    assert cal.add_trading_days("TW", date(2026, 9, 1), 0) == date(2026, 9, 1)
+    # 夾到休市日一定順延:任何一個證交所平日休市日前一個交易日成交,交割日都不會落在休市日。
+    for closure in cal.exchange_closures("TWSE", 2026):
+        for back in (1, 2):
+            trade_day = closure - timedelta(days=back)
+            settle = cal.add_trading_days("TW", trade_day, 2)
+            assert cal.is_trading_day("TW", settle)
+            assert settle != closure
+
+
+def test_default_settlement_at_is_0900_business_tz():
+    from zoneinfo import ZoneInfo
+
+    from src.services.securities import trading_calendar as cal
+
+    tz = ZoneInfo("Asia/Taipei")
+    trade = datetime(2026, 9, 1, 2, 0, tzinfo=timezone.utc)  # 台北 09/01 10:00
+    got = cal.default_settlement_at("TW", trade, tz=tz)
+    assert got.astimezone(tz).strftime("%Y-%m-%d %H:%M") == "2026-09-03 09:00"
+    # 台北 00:30 成交 = UTC 前一天 16:30,仍然是台北的 09/01 → 同一個交割日
+    early = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)
+    assert cal.default_settlement_at("TW", early, tz=tz).astimezone(tz).date().isoformat() == "2026-09-03"
+    assert cal.default_settlement_at("TW", trade, tz=tz, lag_days=0) == trade
+
+
+def test_web_buy_defaults_to_t_plus_2_and_tx_dated_on_settlement():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-settle1@t.com")
+        r = _buy(client, hdr_web)  # 2026-09-01 10:00 台北,沒給 settlement_date
+        assert r.status_code == 200, r.text
+        [trade] = _trade_rows(TS)
+        assert _iso_utc(trade.settlement_date) == _nine_am(2026, 9, 3)
+        tx = _tx_row(TS, trade.tx_sync_id)
+        assert _iso_utc(tx.happened_at) == _iso_utc(trade.settlement_date)
+        # 成交日不動,持股照成交日算
+        assert _iso_utc(trade.trade_date) == datetime(2026, 9, 1, 2, 0, tzinfo=timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_buy_explicit_settlement_date_wins():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-settle2@t.com")
+        r = _buy(client, hdr_web, settlement_date="2026-09-01T02:00:00+00:00")  # D+0
+        assert r.status_code == 200, r.text
+        [trade] = _trade_rows(TS)
+        tx = _tx_row(TS, trade.tx_sync_id)
+        assert _iso_utc(trade.settlement_date) == datetime(2026, 9, 1, 2, 0, tzinfo=timezone.utc)
+        assert _iso_utc(tx.happened_at) == datetime(2026, 9, 1, 2, 0, tzinfo=timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_sell_also_defers_and_non_cash_types_do_not():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-settle3@t.com")
+        assert _buy(client, hdr_web, trade_date="2026-08-03T02:00:00+00:00").status_code == 200
+        r = _buy(client, hdr_web, trade_type="sell", shares=1000, price=700, fee=1000, tax=2100)
+        assert r.status_code == 200, r.text
+        opening = _buy(client, hdr_web, trade_type="opening", symbol="0050", shares=10, price=100,
+                       fee=0, tax=0, settlement_account_id=None)
+        assert opening.status_code == 200, opening.text
+        rows = {(t.trade_type, t.symbol): t for t in _trade_rows(TS)}
+        sell = rows[("sell", "2330")]
+        assert sell.settlement_date is not None
+        assert _iso_utc(_tx_row(TS, sell.tx_sync_id).happened_at) == _iso_utc(sell.settlement_date)
+        assert rows[("opening", "0050")].settlement_date is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_update_trade_date_recomputes_settlement_and_tx_date():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-settle4@t.com")
+        trade_id = _buy(client, hdr_web).json()["entity_id"]
+        # 只改成交日(→ 週五 09/04 10:00 台北):預設交割順延到下週二 09/08
+        r = client.patch(f"/api/v1/write/ledgers/lg1/stock-trades/{trade_id}", headers=hdr_web,
+                         json={"base_change_id": 0, "trade_date": "2026-09-04T02:00:00+00:00"})
+        assert r.status_code == 200, r.text
+        [trade] = _trade_rows(TS)
+        assert _iso_utc(trade.settlement_date) == _nine_am(2026, 9, 8)
+        assert _iso_utc(_tx_row(TS, trade.tx_sync_id).happened_at) == _iso_utc(trade.settlement_date)
+        # 明確指定交割日
+        r = client.patch(f"/api/v1/write/ledgers/lg1/stock-trades/{trade_id}", headers=hdr_web,
+                         json={"base_change_id": 0, "settlement_date": "2026-09-05T01:00:00+00:00"})
+        assert r.status_code == 200, r.text
+        [trade] = _trade_rows(TS)
+        assert _iso_utc(trade.settlement_date) == datetime(2026, 9, 5, 1, 0, tzinfo=timezone.utc)
+        assert _iso_utc(_tx_row(TS, trade.tx_sync_id).happened_at) == datetime(2026, 9, 5, 1, 0, tzinfo=timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_legacy_trade_without_settlement_keeps_tx_on_trade_date_when_edited():
+    """舊資料(NULL = 同成交日)只改備註/成交日不能被偷偷改成 T+2。"""
+    client, TS = _make_client()
+    try:
+        hdr_app, hdr_web = _setup(client, "stk-settle5@t.com")
+        _push(client, hdr_app, "lg1", "transaction", "tx_1", {
+            "syncId": "tx_1", "type": "transfer", "amount": 600000,
+            "happenedAt": "2026-09-01T02:00:00+00:00",
+            "fromAccountId": "acc_bank", "toAccountId": "acc_inv",
+        })
+        _push(client, hdr_app, "lg1", "stock_trade", "stk_1", _full_trade_payload())
+        [row] = _trade_rows(TS)
+        assert row.settlement_date is None
+        r = client.patch(f"/api/v1/write/ledgers/lg1/stock-trades/stk_1", headers=hdr_web,
+                         json={"base_change_id": 0, "trade_date": "2026-09-02T02:00:00+00:00"})
+        assert r.status_code == 200, r.text
+        [row] = _trade_rows(TS)
+        assert row.settlement_date is None
+        assert _iso_utc(_tx_row(TS, "tx_1").happened_at) == datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_stock_trade_settlement_date_roundtrip_and_partial_update():
+    client, TS = _make_client()
+    try:
+        hdr_app, _ = _setup(client, "stk-settle6@t.com")
+        _push(client, hdr_app, "lg1", "stock_trade", "stk_1",
+              _full_trade_payload(settlementDate="2026-09-03T01:00:00+00:00"))
+        [row] = _trade_rows(TS)
+        assert _iso_utc(row.settlement_date) == datetime(2026, 9, 3, 1, 0, tzinfo=timezone.utc)
+        # 後續 push 沒帶 settlementDate(例如舊 App)不能把它沖成 NULL
+        _push(client, hdr_app, "lg1", "stock_trade", "stk_1", {"syncId": "stk_1", "note": "改備註"})
+        [row] = _trade_rows(TS)
+        assert row.note == "改備註"
+        assert _iso_utc(row.settlement_date) == datetime(2026, 9, 3, 1, 0, tzinfo=timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
