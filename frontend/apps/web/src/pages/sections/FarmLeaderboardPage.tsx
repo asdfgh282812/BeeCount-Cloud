@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Trophy, UserRound } from 'lucide-react'
+import { CircleHelp, RefreshCw, Trophy, UserRound } from 'lucide-react'
 import {
   FARM_BOARDS,
   fetchFarmLeaderboard,
@@ -9,7 +9,8 @@ import {
 } from '@beecount/api-client'
 import {
   Button, Card, CardContent, Select, SelectContent, SelectItem, SelectTrigger,
-  SelectValue, GlassSegmented, useLocale, useT,
+  SelectValue, GlassSegmented, Dialog, DialogContent, DialogTitle, DialogDescription,
+  DialogTrigger, useLocale, useT,
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
@@ -62,13 +63,29 @@ export function FarmLeaderboardPage() {
         </Button>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <GlassSegmented
-          value={board}
-          onValueChange={setBoard}
-          options={FARM_BOARDS.map((key) => ({ value: key, label: t(`farmBoard.${key}`) }))}
-          label={t('farmBoard.chooseBoard')}
-          className="w-full sm:w-auto sm:min-w-[360px]"
-        />
+        <div className="flex w-full items-center gap-2 sm:w-auto">
+          <GlassSegmented
+            value={board}
+            onValueChange={setBoard}
+            options={FARM_BOARDS.map((key) => ({ value: key, label: t(`farmBoard.${key}`) }))}
+            label={t('farmBoard.chooseBoard')}
+            className="min-w-0 flex-1 sm:min-w-[360px]"
+          />
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="icon" className="shrink-0 rounded-full"
+                aria-label={`${t(`farmBoard.${board}`)} · ${t('farmBoard.calculation')}`}>
+                <CircleHelp className="h-5 w-5" aria-hidden="true" />
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden">
+              <DialogTitle className="shrink-0 pr-6">{t(`farmBoard.${board}`)} · {t('farmBoard.calculation')}</DialogTitle>
+              <DialogDescription className="min-h-0 overflow-y-auto whitespace-pre-line pr-1 leading-relaxed">
+                {t(`farmBoard.help.${board}`)}{'\n\n'}{t('farmBoard.help.common')}
+              </DialogDescription>
+            </DialogContent>
+          </Dialog>
+        </div>
         <div className="flex items-center gap-2">
           <label htmlFor="farm-board-week" className="text-sm text-muted-foreground">{t('farmBoard.week')}</label>
           <Select value={week ?? '__latest__'} onValueChange={(value) => setWeek(value === '__latest__' ? undefined : value)}>
@@ -125,13 +142,13 @@ export function FarmLeaderboardPage() {
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="max-w-[260px] break-words font-medium">{row.userId ? (row.displayName?.trim() || t('farmBoard.unnamed')) : t('farmBoard.anonymous')}</span>
                               {row.thiefUntil && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title={t('farmBoard.thiefMarkBody')}>🦝 {t('farmBoard.thiefMark')}</span>}
-                              {row.isMe && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{t('farmBoard.me')}</span>}
+                              {row.isMe && <span className="rounded-full border border-primary/30 bg-primary/15 px-2 py-0.5 text-xs font-bold text-primary-strong">{t('farmBoard.me')}</span>}
                             </div>
                             {row.title && <p className="mt-0.5 text-xs text-muted-foreground">{row.title}</p>}
                           </div>
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">{number(row.value)}</td>
+                      <td className={`whitespace-nowrap px-4 py-3 text-right tabular-nums ${row.isMe ? 'font-bold text-primary-strong' : ''}`}>{number(row.value)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">{t('farmBoard.coins', { value: number(row.rewardCoins) })}</td>
                     </tr>
                   ))}
