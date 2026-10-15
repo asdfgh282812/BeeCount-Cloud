@@ -922,7 +922,7 @@ class FarmService:
                 fail("INVALID_ITEM", "無效物品", 400)
             if (
                 kind == "buySeeds"
-                and obj["minLevel"] > 1 + state["xp"] // self.config["progression"]["xpPerLevel"]
+                and obj["minLevel"] > rules.level(state["xp"], self.config)
             ):
                 fail("LEVEL_REQUIRED", "等級尚未解鎖")
             integer(q, "quantity", 1)
@@ -946,7 +946,7 @@ class FarmService:
                     self.now,
                     state["playerId"],
                     self.config,
-                    level=1 + state["xp"] // self.config["progression"]["xpPerLevel"],
+                    level=rules.level(state["xp"], self.config),
                 )
                 self.consume(uid, "seed:" + crop, 1)
                 slot.stolen_qty = 0
@@ -1106,7 +1106,7 @@ class FarmService:
             opts = self.config["progression"]
             slots = self.slots(uid)
             n = len(slots)
-            level = 1 + state["xp"] // opts["xpPerLevel"]
+            level = rules.level(state["xp"], self.config)
             if (
                 n >= opts["maximumPlots"]
                 or n >= opts["initialPlots"] + (level - 1) * opts["plotsPerLevel"]

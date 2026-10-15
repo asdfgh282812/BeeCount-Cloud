@@ -9,8 +9,9 @@ Base：`/api/v1/game`。JSON 欄位 camelCase，瞬間 UTC ISO（Z），週次�
 ## 自己的農場
 
 - `GET /config`：共用 `balance_v1.json` 加上 social policy。
+- `progression.xpPerLevel` 是第一次升級需求（目前 50），`xpGrowthPercent` 是後續每級需求成長百分比（目前 50）；每級先整數除法捨去小數，再計算下一級（50、75、112、168……）。`state.xp` 永遠是累積整數 XP；缺少比例欄位的舊設定沿用固定需求，不能再以 `xp ~/ xpPerLevel` 計算新設定的等級。
 - `GET /farm?refreshWeather=true`：無農場回 null；有農場先推進至伺服器時間。refreshWeather 選填，僅更新自己的粗略城市快取，已有一小時內快取時不重抓。
-- `POST /farm {importSave?,scoringLedgerId?}`：新建／恢復；scoringLedgerId 為帳本 external sync ID，需自有非共享帳本。已有雲端農場時不接受 importSave 覆蓋。移入只處理 saveVersion=1；保留田地、佈置、庫存、有效攤位、等級及當週大頭菜數量；好幣最多 5,000，超額給「開墾先驅」，不移入歷史結算或排名。大頭菜當週未來序列由伺服器重新計算，不信任 client prices。
+- `POST /farm {importSave?,scoringLedgerId?}`：新建／恢復；scoringLedgerId 為帳本 external sync ID，需自有非共享帳本。已有雲端農場時不接受 importSave 覆蓋。移入只處理 saveVersion=1；保留田地、佈置、庫存、有效攤位、累積 XP 及當週大頭菜數量，等級依目前曲線重算；好幣最多 5,000，超額給「開墾先驅」，不移入歷史結算或排名。大頭菜當週未來序列由伺服器重新計算，不信任 client prices。
 - `PATCH /farm {enabled?,cityCode?,scoringLedgerId?,anonymousOnBoard?,notificationSettings?}`。通知固定 settlement/ranking/stolen/guardian/harvest/season；除 harvest 預設關閉，其餘開。
 - `POST /actions {requestId,action,...params}` 回完整 snapshot。action：buySeeds(cropId,quantity)、buyItem(itemId,quantity)、plant(index,cropId)、water(index)、weed(index)、removePests(index)、clear(index)、useItem(index,itemId)、harvest(index)、sell(cropId,quantity)、listForSale(slot,cropId,quantity)、collectListing(slot)、claimSettlement(week)、expandPlots、expandStorage、buyTurnips(quantity)、sellTurnips(quantity)、saveLayout(layout)、guardDog、feedGuardDog。
 

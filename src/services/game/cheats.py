@@ -28,9 +28,11 @@ def apply(service, farm, data):
     if command == "addCoins":
         service.wallet(uid, integer(data.get("value"), "value", 1, 100000), "debug_cheat")
     elif command == "setLevel":
-        state["xp"] = (integer(data.get("value"), "value", 1, 99) - 1) * service.config[
-            "progression"
-        ]["xpPerLevel"]
+        target = min(
+            integer(data.get("value"), "value", 1, 99),
+            rules.level(rules.MAX_EXACT_XP, service.config),
+        )
+        state["xp"] = rules.xp_for_level(target, service.config)
     elif command == "refillWater":
         state["waterRemaining"] = 99
     elif command in ("giveAllSeeds", "giveAllItems", "giveAllCrops"):

@@ -176,6 +176,33 @@ def test_create_idempotent_and_wallet_cannot_be_client_set(env):
     )
 
 
+def test_new_xp_threshold_applies_to_seed_purchase_and_planting(env):
+    create(env)
+    with env["sessions"]() as db:
+        farm = db.get(GameFarm, env["a"])
+        farm.state = {**farm.state, "xp": 236}
+        db.add(GameInventory(user_id=env["a"], item_id="seed:pomelo", quantity=1))
+        db.commit()
+
+    denied = action(env, "buySeeds", cropId="pomelo", quantity=1)
+    assert denied.status_code == 409 and error_code(denied) == "LEVEL_REQUIRED"
+    assert action(env, "plant", index=0, cropId="pomelo").status_code != 200
+    unchanged = current(env)
+    assert unchanged["balance"] == 500
+    assert unchanged["plots"][0]["cropId"] is None
+    assert next(r for r in unchanged["inventory"] if r["itemId"] == "seed:pomelo")["quantity"] == 1
+
+    with env["sessions"]() as db:
+        farm = db.get(GameFarm, env["a"])
+        farm.state = {**farm.state, "xp": 237}
+        db.commit()
+    bought = action(env, "buySeeds", cropId="pomelo", quantity=1)
+    assert bought.status_code == 200, bought.text
+    planted = action(env, "plant", index=0, cropId="pomelo")
+    assert planted.status_code == 200, planted.text
+    assert planted.json()["plots"][0]["cropId"] == "pomelo"
+
+
 def test_buy_plant_care_replay_and_failed_action_rollback(env):
     create(env)
     request_id = str(uuid4())
@@ -1613,7 +1640,9 @@ def test_cloud_toolbox_commands_are_executable(env, command, params):
     result = r.json()
     assert result["ownerId"] == env["a"]
     if command == "setLevel":
-        assert result["state"]["xp"] > 0
+        config = rules.load_config()
+        assert result["state"]["xp"] == rules.xp_for_level(params["value"], config)
+        assert rules.level(result["state"]["xp"], config) == params["value"]
     if command == "unlockPlots":
         assert len(result["plots"]) == 24
     if command == "setWeather":

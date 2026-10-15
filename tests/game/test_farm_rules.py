@@ -34,6 +34,31 @@ def assert_fields(actual, expected):
             assert actual[key] == value
 
 
+@pytest.mark.parametrize("month", [3, 6, 10, 12])
+def test_seasonal_unlocks_apply_at_each_level_boundary(config, month):
+    now = time.utc(f"2026-{month:02d}-14T02:00:00Z")
+    seasonal = [row for row in config["crops"] if time.season(now) in row["seasons"]]
+    previous = set()
+    for level in range(1, 6):
+        xp = rules.xp_for_level(level, config)
+        assert rules.level(xp, config) == level
+        if level > 1:
+            assert rules.level(xp - 1, config) == level - 1
+        unlocked = {row["id"] for row in seasonal if row["minLevel"] <= level}
+        assert len(unlocked) == level + 1
+        assert previous <= unlocked
+        assert len(unlocked - previous) == (2 if level == 1 else 1)
+        for row in seasonal:
+            empty = rules.empty_plot(0, now)
+            if row["id"] in unlocked:
+                assert rules.plant(empty, row["id"], now, "p", config, level)["cropId"] == row["id"]
+            else:
+                with pytest.raises(ValueError, match="等級尚未解鎖"):
+                    rules.plant(empty, row["id"], now, "p", config, level)
+        previous = unlocked
+    assert previous == {row["id"] for row in seasonal}
+
+
 @pytest.mark.parametrize("row", GOLDEN["random"])
 def test_random_golden(row):
     seed = farm_seed(row["key"])
@@ -52,7 +77,10 @@ def test_time_golden(row):
 
 @pytest.mark.parametrize("row", GOLDEN["growth"], ids=lambda r: r["name"])
 def test_growth_golden(row, config):
-    p = rules.plant(rules.empty_plot(0, row["at"]), row["crop"], row["at"], "golden", config)
+    # These golden rows test growth, independently of crop unlock progression.
+    p = rules.plant(
+        rules.empty_plot(0, row["at"]), row["crop"], row["at"], "golden", config, level=99
+    )
     p["growth"] = row.get("growth", 0)
     result = rules.advance(p, row["to"], [dict(at=row["at"], **row["weather"])], config)
     assert_fields(result, row["expected"])
@@ -125,7 +153,7 @@ def test_drought_season_and_greenhouse(config):
 
 def test_items_harvest_and_multi_harvest(config):
     start = time.utc("2026-05-13T02:00:00Z")
-    p = rules.plant(rules.empty_plot(0, start), "tea", start, "p", config)
+    p = rules.plant(rules.empty_plot(0, start), "tea", start, "p", config, level=4)
     p["pests"] = True
     p = rules.use_item(p, "pesticide", start, config)
     assert not p["pests"]

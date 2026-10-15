@@ -35,12 +35,14 @@ def test_initial_farm_balance_contract() -> None:
     }
 
 
-def test_each_season_has_five_starter_crops_and_level_unlocks() -> None:
+@pytest.mark.parametrize("season", ["spring", "summer", "autumn", "winter"])
+def test_each_season_has_two_starters_and_one_unlock_per_level(season: str) -> None:
     config = json.loads((ROOT / "src/services/game/balance_v1.json").read_text())
-    for season in ("spring", "summer", "autumn", "winter"):
-        stock = [crop for crop in config["crops"] if season in crop["seasons"]]
-        assert len([crop for crop in stock if crop["minLevel"] == 1]) >= 5
-        assert any(crop["minLevel"] > 1 for crop in stock)
+    stock = [crop for crop in config["crops"] if season in crop["seasons"]]
+    assert len(stock) == 6
+    assert [sum(crop["minLevel"] == level for crop in stock) for level in range(1, 6)] == [
+        2, 1, 1, 1, 1
+    ]
 
 
 def test_turnips_can_be_bought_all_sunday_with_existing_spoil_hour() -> None:

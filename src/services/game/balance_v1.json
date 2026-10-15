@@ -38,7 +38,7 @@
       "basePrice": 21,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 2,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -79,7 +79,7 @@
       "basePrice": 35,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 3,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 1
@@ -100,7 +100,7 @@
       "basePrice": 28,
       "harvests": 3,
       "crossSeasons": 1,
-      "minLevel": 1,
+      "minLevel": 4,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -160,7 +160,7 @@
       "basePrice": 60,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 2,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -181,7 +181,7 @@
       "basePrice": 12,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 4,
+      "minLevel": 5,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -201,7 +201,7 @@
       "basePrice": 100,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 3,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -261,7 +261,7 @@
       "basePrice": 48,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 3,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -281,7 +281,7 @@
       "basePrice": 30,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 5,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -341,7 +341,7 @@
       "basePrice": 30,
       "harvests": 1,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 2,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -361,7 +361,7 @@
       "basePrice": 25,
       "harvests": 3,
       "crossSeasons": 0,
-      "minLevel": 1,
+      "minLevel": 4,
       "shelfLifeDays": 14,
       "xp": 10,
       "seedReward": 0
@@ -564,7 +564,8 @@
     "initialCapacity": 10,
     "expansionBasePrice": 1600,
     "expansionMultiplier": 1.25,
-    "xpPerLevel": 100,
+    "xpPerLevel": 50,
+    "xpGrowthPercent": 50,
     "storageExpansionPrice": 100,
     "storageExpansionQuantity": 10,
     "cloudMigrationCoinCap": 5000,
