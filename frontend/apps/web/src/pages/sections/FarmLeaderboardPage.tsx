@@ -110,7 +110,7 @@ export function FarmLeaderboardPage() {
           <div className={`grid gap-3 ${board === 'bookkeeping' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
             <Summary label={t('farmBoard.players')} value={number(data.playerCount)} />
             {board === 'bookkeeping' && <Summary label={t('farmBoard.average')} value={number(data.averageScore)} />}
-            <Summary label={t('farmBoard.myValue')} value={data.myValue === null ? t('farmBoard.notParticipating') : number(data.myValue)}>
+            <Summary highlight label={t('farmBoard.myValue')} value={data.myValue === null ? t('farmBoard.notParticipating') : number(data.myValue)}>
               {delta !== null && <p className="mt-1 text-xs text-muted-foreground">{t('farmBoard.difference', { value: `${delta > 0 ? '+' : ''}${number(delta)}` })}</p>}
             </Summary>
           </div>
@@ -132,7 +132,7 @@ export function FarmLeaderboardPage() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {data.items.map((row) => (
-                    <tr key={`${row.rank}-${row.userId ?? 'anonymous'}`} className={row.isMe ? 'bg-primary/5' : ''}>
+                    <tr key={`${row.rank}-${row.userId ?? 'anonymous'}`} className={row.isMe ? 'bg-primary/15 shadow-[inset_4px_0_0_hsl(var(--primary))]' : ''}>
                       <td className="px-4 py-3 font-medium tabular-nums">{row.rank}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -142,13 +142,13 @@ export function FarmLeaderboardPage() {
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="max-w-[260px] break-words font-medium">{row.userId ? (row.displayName?.trim() || t('farmBoard.unnamed')) : t('farmBoard.anonymous')}</span>
                               {row.thiefUntil && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground" title={t('farmBoard.thiefMarkBody')}>🦝 {t('farmBoard.thiefMark')}</span>}
-                              {row.isMe && <span className="rounded-full border border-primary/30 bg-primary/15 px-2 py-0.5 text-xs font-bold text-primary-strong">{t('farmBoard.me')}</span>}
+                              {row.isMe && <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-extrabold text-primary-foreground">{t('farmBoard.me')}</span>}
                             </div>
                             {row.title && <p className="mt-0.5 text-xs text-muted-foreground">{row.title}</p>}
                           </div>
                         </div>
                       </td>
-                      <td className={`whitespace-nowrap px-4 py-3 text-right tabular-nums ${row.isMe ? 'font-bold text-primary-strong' : ''}`}>{number(row.value)}</td>
+                      <td className={`whitespace-nowrap px-4 py-3 text-right tabular-nums ${row.isMe ? 'text-base font-extrabold text-primary-strong' : ''}`}>{number(row.value)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">{t('farmBoard.coins', { value: number(row.rewardCoins) })}</td>
                     </tr>
                   ))}
@@ -163,10 +163,10 @@ export function FarmLeaderboardPage() {
   )
 }
 
-function Summary({ label, value, children }: { label: string; value: string; children?: React.ReactNode }) {
-  return <Card><CardContent className="py-4">
-    <p className="text-xs text-muted-foreground">{label}</p>
-    <p className="mt-2 text-2xl font-semibold tabular-nums">{value}</p>
+function Summary({ label, value, children, highlight = false }: { label: string; value: string; children?: React.ReactNode; highlight?: boolean }) {
+  return <Card className={highlight ? 'border-primary bg-primary/10' : ''}><CardContent className="py-4">
+    <p className={highlight ? 'text-sm font-bold text-primary-strong' : 'text-xs text-muted-foreground'}>{label}</p>
+    <p className={`mt-2 tabular-nums ${highlight ? 'text-3xl font-extrabold text-primary-strong' : 'text-2xl font-semibold'}`}>{value}</p>
     {children}
   </CardContent></Card>
 }
