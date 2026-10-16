@@ -318,3 +318,59 @@ def test_due_soon_uses_days_after_closing_mode():
         assert [n.payload_json["kind"] for n in notifs] == ["due_soon"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_profile_override_suppresses_and_reset_restores_global():
+    client, TS = _make_client()
+    try:
+        email = 'ph02-override@t.com'
+        hdr = {'Authorization': f'Bearer {_login(client, email, device_id="d-app")}' }
+        now = datetime.now(timezone.utc)
+        _setup_group_with_debt(client, hdr, 'ph02', email,
+                               billing_day=(now.date() - timedelta(days=1)).day, payment_due_day=20)
+        defaults = {'cc_settings_version': 1, 'cc_billing_reminder_enabled': True,
+                    'cc_reminder_hour': 0, 'cc_card_overrides': {'acc-group': {'cc_billing_reminder_enabled': False}}}
+        response = client.patch('/api/v1/profile/me', headers=hdr, json={'notification_settings': defaults})
+        assert response.status_code == 200
+        assert response.json()['notification_settings'] == defaults
+        with TS() as db:
+            assert credit_card_reminders.send_due_card_reminders(db, now=now) == 0
+            db.commit()
+        defaults['cc_card_overrides'] = {}
+        client.patch('/api/v1/profile/me', headers=hdr, json={'notification_settings': defaults})
+        with TS() as db:
+            assert credit_card_reminders.send_due_card_reminders(db, now=now) == 1
+            db.commit()
+            assert credit_card_reminders.send_due_card_reminders(db, now=now) == 0
+        assert len(_notifications_for(TS, email)) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_configured_time_and_daily_overdue_dedup():
+    client, TS = _make_client()
+    try:
+        email = 'ph02-daily@t.com'
+        hdr = {'Authorization': f'Bearer {_login(client, email, device_id="d-app")}' }
+        _setup_group_with_debt(client, hdr, 'ph02-daily', email, billing_day=5, payment_due_day=16)
+        _push(client, hdr, 'ph02-daily', 'transaction', 'tx-spend',
+              {'syncId': 'tx-spend', 'type': 'expense', 'amount': 100.0,
+               'happenedAt': _iso(datetime(2026, 10, 1, 2, tzinfo=timezone.utc)),
+               'accountId': 'acc-card', 'accountName': '卡'}, device_id='d-app')
+        settings = {'cc_settings_version': 1, 'cc_due_reminder_enabled': True,
+                    'cc_due_reminder_maxdays': 3, 'cc_reminder_hour': 23, 'cc_reminder_minute': 30}
+        assert client.patch('/api/v1/profile/me', headers=hdr,
+                            json={'notification_settings': settings}).status_code == 200
+        for day, expected in [(16, 1), (17, 1), (18, 1), (19, 0)]:
+            with TS() as db:
+                before = datetime(2026, 10, day, 23, 29, tzinfo=timezone.utc)
+                at = datetime(2026, 10, day, 23, 30, tzinfo=timezone.utc)
+                assert credit_card_reminders.send_due_card_reminders(db, now=before) == 0
+                assert credit_card_reminders.send_due_card_reminders(db, now=at) == expected
+                db.commit()
+                assert credit_card_reminders.send_due_card_reminders(db, now=at) == 0
+        notifs = _notifications_for(TS, email)
+        assert [n.payload_json['kind'] for n in notifs] == ['due_today', 'overdue', 'overdue']
+        assert [n.payload_json['reminderDate'] for n in notifs] == ['2026-10-16', '2026-10-17', '2026-10-18']
+    finally:
+        app.dependency_overrides.clear()

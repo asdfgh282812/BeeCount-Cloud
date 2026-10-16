@@ -20,6 +20,7 @@ export async function fetchProfileMe(token: string): Promise<ProfileMe> {
 export async function patchProfileMe(
   token: string,
   payload: {
+    notification_settings?: Record<string, unknown>
     display_name?: string
     /** 收支配色:true = 红色收入/绿色支出,false = 反之。 */
     income_is_red?: boolean

@@ -118,6 +118,7 @@ export type AIConfig = {
 export const BUILTIN_PROVIDER_ID = 'zhipu_glm'
 
 export type ProfileMe = {
+  notification_settings?: Record<string, unknown> | null
   user_id: string
   email: string
   display_name?: string | null

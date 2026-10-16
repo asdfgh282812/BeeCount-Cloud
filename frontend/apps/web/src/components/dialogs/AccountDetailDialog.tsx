@@ -268,6 +268,7 @@ export function AccountDetailDialog({
   onJumpToParentAccount,
 }: Props) {
   const t = useT()
+  const navigate = useNavigate()
   const { profileMe, token } = useAuth()
   const { activeLedgerId } = useLedgers()
   const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
@@ -434,6 +435,11 @@ export function AccountDetailDialog({
             {/* 信用卡 / 银行卡专属信息:bank_name / 卡号末 4 / 信用额度 /
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
             <AccountCardInfo account={account} t={t} billing={billing} />
+            {billing.canViewBilling && <button type="button"
+              className="border-b border-border/60 px-6 py-3 text-left text-sm text-primary hover:bg-muted/30"
+              onClick={() => { onClose(); navigate(`/app/settings/reminders?account=${encodeURIComponent(billing.billingAccountId!)}`) }}>
+              {t('reminders.title')}
+            </button>}
 
             {/* 信用卡合併帳單 + 免息期建议 + 繳款(§2.9 Phase 4,2026-08-02
                 改版為群組模型,同日第二輪放寬到單卡,2026-08-04 第二輪放寬到

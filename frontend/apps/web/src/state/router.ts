@@ -30,6 +30,7 @@ export const APP_SECTIONS: AppSection[] = [
   'ledgers',
   'overview',
   'settings-cloud',
+  'settings-reminders',
   'settings-profile',
   'settings-appearance',
   'settings-ai',
@@ -68,6 +69,8 @@ function parseWorkspaceSection(parts: string[]): AppSection {
 
 function parseSettingsSection(parts: string[]): AppSection {
   switch (parts.join('/')) {
+    case 'reminders':
+      return 'settings-reminders'
     case 'cloud':
       return 'settings-cloud'
     case 'profile':
@@ -130,6 +133,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'overview'
     case 'admin/users':
       return 'admin-users'
+    case 'settings/reminders':
+      return 'settings-reminders'
     case 'settings/cloud':
       return 'settings-cloud'
     case 'settings/profile':
@@ -168,6 +173,8 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'budgets'
     case 'overview':
       return 'overview'
+    case 'settings/reminders':
+      return 'settings-reminders'
     case 'settings/cloud':
       return 'settings-cloud'
     case 'settings/profile':
@@ -296,6 +303,8 @@ export function routePath(route: AppRoute): string {
       return '/app/ledgers'
     case 'overview':
       return '/app/overview'
+    case 'settings-reminders':
+      return '/app/settings/reminders'
     case 'settings-cloud':
       return '/app/settings/cloud'
     case 'settings-profile':

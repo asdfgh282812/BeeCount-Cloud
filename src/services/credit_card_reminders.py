@@ -31,33 +31,37 @@ billing_day/payment_due_day 的帳戶跑,且該期 `remaining_due <= 0`
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Notification, ReadTxProjection, UserAccountProjection
+from ..models import Notification, ReadTxProjection, UserAccountProjection, UserProfile
 from . import billing_schedule, credit_card, credit_card_billing
 from . import notifications as notification_service
-from .business_time import business_today
+from .business_time import business_today, to_business_date
+from .card_reminder_settings import effective_settings, reminder_kinds
 
 logger = logging.getLogger(__name__)
 
 
-def _already_sent(db: Session, *, user_id: str, account_id: str, cycle_end_iso: str, kind: str) -> bool:
+def _already_sent(db: Session, *, user_id: str, account_id: str, cycle_end_iso: str, kind: str, reminder_date: str | None = None) -> bool:
     rows = db.scalars(
-        select(Notification.payload_json).where(
+        select(Notification).where(
             Notification.user_id == user_id,
             Notification.category == "card_due",
         )
     ).all()
-    for payload in rows:
+    for row in rows:
+        payload = row.payload_json
         if not isinstance(payload, dict):
             continue
         if (
             payload.get("accountId") == account_id
             and payload.get("cycleEnd") == cycle_end_iso
             and payload.get("kind") == kind
+            and (reminder_date is None or payload.get("reminderDate") == reminder_date
+                 or ("reminderDate" not in payload and to_business_date(row.created_at).isoformat() == reminder_date))
         ):
             return True
     return False
@@ -96,21 +100,12 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
         cycle_start, cycle_end = credit_card.most_recently_closed_cycle(today, schedule)
         due_date = credit_card.due_date_for_cycle_end(cycle_end, schedule)
 
-        kind: str | None = None
-        if today == cycle_end + timedelta(days=1):
-            kind = "statement_closed"
-        elif today == due_date:
-            kind = "due_today"
-        elif (due_date - today).days == 7:
-            kind = "due_soon"
-        elif today > due_date:
-            kind = "overdue"
-        if kind is None:
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == group.user_id))
+        settings = effective_settings(profile.notification_settings_json if profile else None, group.sync_id)
+        kinds = reminder_kinds(settings, today=today, cycle_end=cycle_end, due_date=due_date, now=now)
+        if not kinds:
             continue
-
         cycle_end_iso = cycle_end.isoformat()
-        if _already_sent(db, user_id=group.user_id, account_id=group.sync_id, cycle_end_iso=cycle_end_iso, kind=kind):
-            continue
 
         children = credit_card_billing.resolve_billing_children(db, account=group)
         if not children:
@@ -140,33 +135,39 @@ def send_due_card_reminders(db: Session, *, now: datetime | None = None) -> int:
         if remaining_due <= 0.01:
             continue  # 已繳清/溢繳,不提醒
 
-        label = {
-            "statement_closed": "帳單已結算",
-            "due_soon": "即將到期",
-            "due_today": "今天到期",
-            "overdue": "已逾期",
-        }[kind]
-        notification_service.create_notification(
-            db,
-            user_id=group.user_id,
-            category="card_due",
-            title=f"{label}：{group.name or '信用卡'}",
-            body=(
-                f"{group.name or '信用卡'} 帳單({cycle_start.isoformat()}~{cycle_end_iso}）"
-                f"應繳 {remaining_due:.2f},繳款截止日 {due_date.isoformat()}"
-                + ("(已逾期)" if kind == "overdue" else "")
-            ),
-            payload={
-                "accountId": group.sync_id,
-                "cycleEnd": cycle_end_iso,
-                "kind": kind,
-                "ledgerId": ledger_external_id,
-            },
-            # 使用者反饋:信用卡帳單優先度僅次於欠款(見 debt_reminders.py 的
-            # priority=2),排在其餘一般通知之前。
-            priority=1,
-        )
-        sent += 1
+        for kind in kinds:
+            reminder_date = today.isoformat() if kind == 'overdue' and not settings.legacy else None
+            if _already_sent(db, user_id=group.user_id, account_id=group.sync_id,
+                             cycle_end_iso=cycle_end_iso, kind=kind, reminder_date=reminder_date):
+                continue
+            label = {
+                "statement_closed": "帳單已結算",
+                "due_soon": "即將到期",
+                "due_today": "今天到期",
+                "overdue": "已逾期",
+            }[kind]
+            notification_service.create_notification(
+                db,
+                user_id=group.user_id,
+                category="card_due",
+                title=f"{label}：{group.name or '信用卡'}",
+                body=(
+                    f"{group.name or '信用卡'} 帳單({cycle_start.isoformat()}~{cycle_end_iso}）"
+                    f"應繳 {remaining_due:.2f},繳款截止日 {due_date.isoformat()}"
+                    + ("(已逾期)" if kind == "overdue" else "")
+                ),
+                payload={
+                    "accountId": group.sync_id,
+                    "cycleEnd": cycle_end_iso,
+                    "kind": kind,
+                    **({"reminderDate": today.isoformat()} if not settings.legacy else {}),
+                    "ledgerId": ledger_external_id,
+                },
+                # 使用者反饋:信用卡帳單優先度僅次於欠款(見 debt_reminders.py 的
+                # priority=2),排在其餘一般通知之前。
+                priority=1,
+            )
+            sent += 1
 
     if sent:
         logger.info("credit_card_reminders: sent %d reminders", sent)
