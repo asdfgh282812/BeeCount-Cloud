@@ -2814,6 +2814,7 @@ const en = {
   'sharedLedger.targetRole': 'Role after joining',
   'sharedLedger.preview': 'Preview',
   'sharedLedger.acceptInvite': 'Accept invite',
+  'sharedLedger.openInApp': 'Open in the app',
   'sharedLedger.openManage': 'Members/Invites',
   'sharedLedger.joinAction': 'Join shared ledger',
   'sharedLedger.cmdkJoin': 'Join shared ledger',

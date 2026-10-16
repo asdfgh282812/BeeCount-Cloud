@@ -7,3 +7,5 @@
 `LedgerEditDialog` 接欄位模式，沿用既有提交鎖、權限、重名檢查與失敗保留；`ledgerFieldPatch` 每次只更新被選欄位，避免重試時寫回其它欄位的舊資料。`updateLedgerMeta` 的衝突重試和 backend 幣種重算沿用原流程，沒有新增 API 或 schema。
 
 Web 272 項測試與 TypeScript／Vite build 通過。App 同步修正並通過 24 項帳本／導航／導覽測試，詳見 App repo 同名變更紀錄。未部署；真實跨裝置與完整實機驗收仍待後續進行。
+
+後續版面修正：Web 帳本設定將箭頭獨立為固定寬度圖示，三列一致靠右；App 共用 `BeeListTile` 同步修正右值寬度，避免箭頭隨值的字數移動。此調整僅影響對齊，不變更操作或導覽。

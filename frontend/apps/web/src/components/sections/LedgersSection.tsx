@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { BarChart3, MoreHorizontal, Settings, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
+import { BarChart3, ChevronRight, MoreHorizontal, Settings, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
@@ -610,7 +610,11 @@ export function LedgerSettingsPanel({ ledger, onEdit, onDelete, onBack }: {
         ] as const).map(([field,label,value]) => <button key={field} type="button" disabled={!owner}
           data-testid={`ledger-edit-${field}`} onClick={() => onEdit(ledger,field)}
           className="flex min-h-14 w-full items-center justify-between gap-4 py-3 text-left disabled:cursor-default">
-          <span className="text-sm">{label}</span><span className="break-words text-right text-sm text-muted-foreground">{value}{owner ? ' ›' : ''}</span>
+          <span className="min-w-0 flex-1 text-sm">{label}</span>
+          <span className="flex min-w-0 flex-1 items-center justify-end gap-1 text-sm text-muted-foreground">
+            <span className="min-w-0 break-words text-right">{value}</span>
+            {owner ? <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" /> : null}
+          </span>
         </button>)}</div>
         <p className="text-sm text-muted-foreground">{t('ledgers.monthStartDay.hint')}</p>
         <div className="flex flex-wrap gap-2">

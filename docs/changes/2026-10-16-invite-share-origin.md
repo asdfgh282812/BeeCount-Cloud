@@ -9,6 +9,6 @@
 
 **App 端不用改**:App 只是把 `share_url` 原樣放進分享文字(`invite_page.dart`),網域完全由 Cloud 決定。部署 Cloud 後新產生的連結就會正確;舊邀請在列表裡也會用新網域重新計算(連結不是存起來的)。
 
-**刻意不做**:目前沒有任何東西會處理 `/invite/<code>` 這個路徑(App 沒有 universal link/deeplink,Web 也沒有該路由),所以點連結不會直接開 App 加入,對方仍要輸入邀請碼。要做成點連結就加入,需另開一個功能(Web 路由 + App deep link)。
+**後續**:連結點了沒反應的問題,已補上 Web `/invite/<碼>` 路由與 App `beecount://invite/<碼>`,見 App repo `docs/changes/2026-10-16-invite-link-deeplink.md`。
 
 **部署**:反向代理後面若連結的網域不對,在 Cloud 設 `INVITE_SHARE_ORIGIN=https://你的網域`。

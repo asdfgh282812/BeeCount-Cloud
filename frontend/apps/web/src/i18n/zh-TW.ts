@@ -2805,6 +2805,7 @@ const zhTW = {
   'sharedLedger.targetRole': '加入後角色',
   'sharedLedger.preview': '預覽',
   'sharedLedger.acceptInvite': '接受邀請',
+  'sharedLedger.openInApp': '用 App 開啟',
   'sharedLedger.openManage': '成員/邀請',
   'sharedLedger.joinAction': '加入共享帳本',
   'sharedLedger.cmdkJoin': '加入共享帳本',

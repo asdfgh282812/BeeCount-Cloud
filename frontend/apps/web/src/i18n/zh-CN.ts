@@ -2847,6 +2847,7 @@ const zhCN = {
   'sharedLedger.targetRole': '加入后角色',
   'sharedLedger.preview': '预览',
   'sharedLedger.acceptInvite': '接受邀请',
+  'sharedLedger.openInApp': '用 App 打开',
   'sharedLedger.openManage': '成员/邀请',
   'sharedLedger.joinAction': '加入共享账本',
   'sharedLedger.cmdkJoin': '加入共享账本',

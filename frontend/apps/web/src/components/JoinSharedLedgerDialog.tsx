@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import {
@@ -26,6 +26,8 @@ import { useLedgers } from '../context/LedgersContext'
 interface Props {
   open: boolean
   onOpenChange: (next: boolean) => void
+  /** 從 /invite/<碼> 連結帶進來的邀請碼:開啟時自動填入並預覽。 */
+  initialCode?: string
 }
 
 /**
@@ -34,7 +36,7 @@ interface Props {
  * 对齐 mobile lib/pages/cloud/join_shared_ledger_page.dart 流程。
  * accept 成功后调 refreshLedgers 拉新账本到 sidebar。
  */
-export function JoinSharedLedgerDialog({ open, onOpenChange }: Props) {
+export function JoinSharedLedgerDialog({ open, onOpenChange, initialCode }: Props) {
   const t = useT()
   const toast = useToast()
   const { token } = useAuth()
@@ -60,8 +62,8 @@ export function JoinSharedLedgerDialog({ open, onOpenChange }: Props) {
     setAccepting(false)
   }, [])
 
-  const onPreview = useCallback(async () => {
-    const normalized = code.trim().toUpperCase().replace(/[\s-]/g, '')
+  const onPreview = useCallback(async (override?: string) => {
+    const normalized = (override ?? code).trim().toUpperCase().replace(/[\s-]/g, '')
     if (!normalized) {
       notifyError(new Error(t('sharedLedger.codeRequired')))
       return
@@ -77,6 +79,20 @@ export function JoinSharedLedgerDialog({ open, onOpenChange }: Props) {
       setLoading(false)
     }
   }, [code, token, t, notifyError])
+
+  // 帶著邀請碼開啟(點分享連結進來)→ 自動填碼並預覽,使用者只需按「接受邀請」。
+  const autoPreviewedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!open) {
+      autoPreviewedRef.current = null
+      return
+    }
+    const normalized = (initialCode || '').trim().toUpperCase().replace(/[\s-]/g, '')
+    if (!normalized || autoPreviewedRef.current === normalized) return
+    autoPreviewedRef.current = normalized
+    setCode(normalized)
+    void onPreview(normalized)
+  }, [open, initialCode, onPreview])
 
   const onAccept = useCallback(async () => {
     if (!preview) return
@@ -161,6 +177,17 @@ export function JoinSharedLedgerDialog({ open, onOpenChange }: Props) {
             </div>
           ) : null}
         </div>
+
+        {initialCode ? (
+          <a
+            href={`beecount://invite/${encodeURIComponent(
+              initialCode.trim().toUpperCase().replace(/[\s-]/g, ''),
+            )}`}
+            className="block text-center text-sm text-primary underline-offset-4 hover:underline"
+          >
+            {t('sharedLedger.openInApp')}
+          </a>
+        ) : null}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

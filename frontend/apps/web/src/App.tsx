@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
@@ -562,10 +562,25 @@ function AppRoutes() {
         {/* legacy 深链 /app/:ledgerId/... 目前直接 fall-through 到 transactions */}
         <Route path="*" element={<Navigate to="/app/overview" replace />} />
       </Route>
+      {/* 共享帳本邀請連結 https://<host>/invite/<碼>:未登入先去登入(RequireAuth 會把
+          這個網址存進 state.from,登入後回來),已登入則進總覽並自動彈出加入對話框。 */}
+      <Route
+        path="/invite/:code"
+        element={
+          <RequireAuth isAuthed={!!token}>
+            <InviteRedirect />
+          </RequireAuth>
+        }
+      />
       <Route path="/" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
       <Route path="*" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
     </Routes>
   )
+}
+
+function InviteRedirect() {
+  const { code } = useParams()
+  return <Navigate to={`/app/overview?invite=${encodeURIComponent(code || '')}`} replace />
 }
 
 // LegacyAppPage 和 useLegacyRoute 桥已随阶段 3 T15 移除 —— 所有 section 都是

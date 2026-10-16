@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import {
   listenOpenSharedJoin,
@@ -18,13 +19,36 @@ import { SharedLedgerManageDialog } from './SharedLedgerManageDialog'
 export function GlobalSharedLedgerDialogs() {
   const [joinOpen, setJoinOpen] = useState(false)
   const [manage, setManage] = useState<OpenSharedManageDetail | null>(null)
+  const [inviteCode, setInviteCode] = useState('')
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  // /invite/<碼> 登入後會導到 /app/overview?invite=<碼>:開加入對話框並把碼從網址拿掉,
+  // 避免重新整理又彈一次。
+  useEffect(() => {
+    const code = new URLSearchParams(location.search).get('invite')
+    if (!code) return
+    setInviteCode(code)
+    setJoinOpen(true)
+    const next = new URLSearchParams(location.search)
+    next.delete('invite')
+    const qs = next.toString()
+    navigate(`${location.pathname}${qs ? `?${qs}` : ''}`, { replace: true })
+  }, [location.pathname, location.search, navigate])
 
   useEffect(() => listenOpenSharedJoin(() => setJoinOpen(true)), [])
   useEffect(() => listenOpenSharedManage((d) => setManage(d)), [])
 
   return (
     <>
-      <JoinSharedLedgerDialog open={joinOpen} onOpenChange={setJoinOpen} />
+      <JoinSharedLedgerDialog
+        open={joinOpen}
+        onOpenChange={(o) => {
+          setJoinOpen(o)
+          if (!o) setInviteCode('')
+        }}
+        initialCode={inviteCode || undefined}
+      />
       <SharedLedgerManageDialog
         open={manage != null}
         onOpenChange={(o) => { if (!o) setManage(null) }}
