@@ -252,7 +252,9 @@ function MobileStyleAssets({
                     </div>
                   </div>
                 </div>
-                <div className="relative flex items-center gap-3">
+                {/* 金額對齊:gap-1.5 + 固定寬 w-5 箭頭槽,跟 AccountListRow 的金額
+                    右緣落在同一條線上(兩邊都是 px-5 / pr-5)。 */}
+                <div className="relative flex items-center gap-1.5">
                   {/* 小计按币种逐条展示 —— 单币种 1 条(同原样);该组跨币种时各币种
                       一行,绝不相加。多币种页统一带币种符号消歧。 */}
                   <div className="flex flex-col items-end gap-0.5">
@@ -271,13 +273,14 @@ function MobileStyleAssets({
                       />
                     ))}
                   </div>
-                  <span
-                    className={`text-xl text-muted-foreground transition-transform ${
-                      isCollapsed ? '' : 'rotate-90'
-                    }`}
-                    aria-hidden
-                  >
-                    ›
+                  <span className="flex w-5 shrink-0 justify-end" aria-hidden>
+                    <span
+                      className={`inline-block text-xl text-muted-foreground transition-transform ${
+                        isCollapsed ? '' : 'rotate-90'
+                      }`}
+                    >
+                      ›
+                    </span>
                   </span>
                 </div>
               </button>
@@ -524,7 +527,7 @@ function HiddenAccountsSection({
         <span className="text-[13px] font-medium text-muted-foreground">
           {t('accounts.hidden.sectionTitle', { count: rows.length })}
         </span>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5">
           <div className="flex flex-col items-end gap-0.5">
             {subtotals.map(([cur, value]) => (
               <Amount
@@ -537,13 +540,14 @@ function HiddenAccountsSection({
               />
             ))}
           </div>
-          <span
-            className={`text-lg text-muted-foreground transition-transform ${
-              collapsed ? '' : 'rotate-90'
-            }`}
-            aria-hidden
-          >
-            ›
+          <span className="flex w-5 shrink-0 justify-end" aria-hidden>
+            <span
+              className={`inline-block text-lg text-muted-foreground transition-transform ${
+                collapsed ? '' : 'rotate-90'
+              }`}
+            >
+              ›
+            </span>
           </span>
         </div>
       </button>
@@ -565,13 +569,7 @@ function HiddenAccountsSection({
                   {t('accounts.hidden.badge')}
                 </span>
               </button>
-              <div className="flex shrink-0 items-center gap-2">
-                <Amount
-                  value={accountBalance(row)}
-                  currency={row.currency || 'CNY'}
-                  size="sm"
-                  className="text-muted-foreground"
-                />
+              <div className="flex shrink-0 items-center gap-1.5">
                 <button
                   type="button"
                   disabled={!canManage}
@@ -590,6 +588,14 @@ function HiddenAccountsSection({
                     {t('accounts.hidden.restore')}
                   </button>
                 ) : null}
+                {/* 按鈕放金額左邊、金額後接空的 w-5 槽,跟分區標題小計對齊。 */}
+                <Amount
+                  value={accountBalance(row)}
+                  currency={row.currency || 'CNY'}
+                  size="sm"
+                  className="text-muted-foreground"
+                />
+                <span className="w-5 shrink-0" aria-hidden />
               </div>
             </div>
           ))}

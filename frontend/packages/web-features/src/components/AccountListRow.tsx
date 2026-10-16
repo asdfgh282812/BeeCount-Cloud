@@ -280,7 +280,7 @@ export function AccountListRow({
   return (
     <div>
       <div
-        className="group flex items-center justify-between gap-3 py-2.5 pr-3 transition-colors hover:bg-muted/20"
+        className="group flex items-center justify-between gap-3 py-2.5 pr-5 transition-colors hover:bg-muted/20"
         style={{ paddingLeft: `${14 + depth * 22}px` }}
       >
         <button
@@ -347,41 +347,11 @@ export function AccountListRow({
             ) : null}
           </div>
         </button>
+        {/* 金額對齊(2026-10-16):金額後面一律接固定寬的配件槽(主帳戶的展開
+            箭頭放這裡,其它列留白),懸停才出現的編輯/刪除與換算鈕都放在金額
+            左邊 —— 以前它們在金額右邊,透明時仍佔寬度,把金額往左推,跟分類
+            標題的小計一下左一下右。右內距 pr-5 跟分類標題的 px-5 一致。 */}
         <div className="flex shrink-0 items-center gap-1.5">
-          {currencyBadgeLabel ? (
-            <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
-              {currencyBadgeLabel}
-            </span>
-          ) : null}
-          <Amount value={amountValue} currency={amountCurrency} tone={primaryTone} bold size={amountSize} />
-          {canConvert ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                setShowConverted((prev) => !prev)
-              }}
-              title={t('accounts.row.convertToggle')}
-              aria-label={t('accounts.row.convertToggle')}
-              className="shrink-0 rounded-full border border-border/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              ⇄
-            </button>
-          ) : null}
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={() => setExpanded((prev) => !prev)}
-              className="text-base text-muted-foreground"
-            >
-              <span
-                className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}
-                aria-hidden
-              >
-                ›
-              </span>
-            </button>
-          ) : null}
           {!selectMode && onEdit ? (
             <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
               <button
@@ -410,6 +380,42 @@ export function AccountListRow({
               ) : null}
             </div>
           ) : null}
+          {canConvert ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                setShowConverted((prev) => !prev)
+              }}
+              title={t('accounts.row.convertToggle')}
+              aria-label={t('accounts.row.convertToggle')}
+              className="shrink-0 rounded-full border border-border/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              ⇄
+            </button>
+          ) : null}
+          {currencyBadgeLabel ? (
+            <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+              {currencyBadgeLabel}
+            </span>
+          ) : null}
+          <Amount value={amountValue} currency={amountCurrency} tone={primaryTone} bold size={amountSize} />
+          <span className="flex w-5 shrink-0 justify-end" data-testid="account-row-accessory">
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((prev) => !prev)}
+                className="text-base text-muted-foreground"
+              >
+                <span
+                  className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}
+                  aria-hidden
+                >
+                  ›
+                </span>
+              </button>
+            ) : null}
+          </span>
         </div>
       </div>
       {hasChildren && expanded ? (
