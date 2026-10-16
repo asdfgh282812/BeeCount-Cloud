@@ -23,7 +23,7 @@ import { ProviderEditDialog } from './ProviderEditDialog'
 interface Props {
   config: Record<string, any> | null | undefined
   saving: boolean
-  onSave: (next: AIConfig) => Promise<void> | void
+  onSave: (next: AIConfig) => Promise<boolean>
 }
 
 export function ProvidersCard({ config, saving, onSave }: Props) {
@@ -55,7 +55,7 @@ export function ProvidersCard({ config, saving, onSave }: Props) {
       existingIdx >= 0
         ? providers.map((p, i) => (i === existingIdx ? next : p))
         : [...providers, next]
-    await onSave(mergeAiConfig(config, { providers: nextProviders }))
+    if (!await onSave(mergeAiConfig(config, { providers: nextProviders }))) return
     setEditOpen(false)
     setEditTarget(null)
   }
@@ -67,7 +67,7 @@ export function ProvidersCard({ config, saving, onSave }: Props) {
       setDeleteTarget(null)
       return
     }
-    await onSave(mergeAiConfig(config, result))
+    if (!await onSave(mergeAiConfig(config, result))) return
     setDeleteTarget(null)
   }
 

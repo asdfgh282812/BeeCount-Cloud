@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyDeleteFallback, capabilitiesBoundTo, mergeAiConfig } from './aiConfigMerge'
+import { applyDeleteFallback, capabilitiesBoundTo, mergeAiConfig, normalizeAiConfig } from './aiConfigMerge'
 
 describe('mergeAiConfig', () => {
   it('returns providers/binding defaults when current and patch are both empty;does NOT default mobile-only fields', () => {
@@ -112,25 +112,25 @@ describe('applyDeleteFallback', () => {
   const custom1 = { id: 'cust1', name: 'Custom1' }
   const custom2 = { id: 'cust2', name: 'Custom2' }
 
-  it('removes provider and falls back binding to zhipu_glm when bound', () => {
+  it('removes provider and clears bound capabilities without switching services', () => {
     const providers = [builtIn, custom1, custom2]
     const binding = { textProviderId: 'cust1', visionProviderId: 'cust1', speechProviderId: 'cust2' }
     const result = applyDeleteFallback(providers, binding, 'cust1')
     expect(result).not.toBeNull()
-    expect(result!.providers).toHaveLength(2)
+    expect(result!.providers).toHaveLength(1)
     expect(result!.providers.find((p) => p.id === 'cust1')).toBeUndefined()
-    expect(result!.binding.textProviderId).toBe('zhipu_glm')
-    expect(result!.binding.visionProviderId).toBe('zhipu_glm')
+    expect(result!.binding.textProviderId).toBeNull()
+    expect(result!.binding.visionProviderId).toBeNull()
     // speech 没绑 cust1,应该保留 cust2
     expect(result!.binding.speechProviderId).toBe('cust2')
   })
 
   it('only removes provider when not bound (binding unchanged)', () => {
     const providers = [builtIn, custom1, custom2]
-    const binding = { textProviderId: 'zhipu_glm', visionProviderId: 'zhipu_glm', speechProviderId: 'zhipu_glm' }
+    const binding = { textProviderId: 'cust2', visionProviderId: 'cust2', speechProviderId: 'cust2' }
     const result = applyDeleteFallback(providers, binding, 'cust1')
     expect(result).not.toBeNull()
-    expect(result!.providers).toHaveLength(2)
+    expect(result!.providers).toHaveLength(1)
     expect(result!.binding).toEqual(binding)
   })
 
@@ -162,5 +162,45 @@ describe('capabilitiesBoundTo', () => {
     expect(capabilitiesBoundTo(binding, 'a')).toEqual(['text', 'vision'])
     expect(capabilitiesBoundTo(binding, 'b')).toEqual(['speech'])
     expect(capabilitiesBoundTo(binding, 'c')).toEqual([])
+  })
+})
+
+describe('智慧記帳共用偏好', () => {
+  const current = {
+    providers: [{ id: 'custom', name: 'Existing', apiKey: 'kept' }],
+    binding: { textProviderId: 'custom' },
+    custom_prompt: 'my prompt', use_vision: true,
+    voice_trigger_mode: 'hold_to_talk', voice_silence_timeout_ms: 1700,
+    project_assign_mode: 'ask', tag_assign_mode: 'aiDecideExisting',
+    future_field: { keep: true },
+  }
+  it('逐項修改偏好保留服務商、提示詞、其他設定與未知欄位', () => {
+    const next = mergeAiConfig(current, { tag_assign_mode: 'none' }) as Record<string, any>
+    expect(next).toEqual({ ...current, tag_assign_mode: 'none' })
+    const voice = mergeAiConfig(next, { voice_trigger_mode: 'auto', voice_silence_timeout_ms: 2400 })
+    expect(voice).toEqual({ ...current, tag_assign_mode: 'none', voice_trigger_mode: 'auto', voice_silence_timeout_ms: 2400 })
+  })
+  it('開關與專案設定使用 App 原有 wire 值，缺省不寫入其他偏好', () => {
+    expect(mergeAiConfig(null, { bill_extraction_enabled: true, project_assign_mode: 'aiDecide' })).toEqual({
+      providers: [], binding: {}, bill_extraction_enabled: true, project_assign_mode: 'aiDecide',
+    })
+  })
+})
+
+describe('retired built-in GLM', () => {
+  it('removes the empty built-in and its bindings; preserves custom providers and unknown fields', () => {
+    const config = {providers: [{id:'zhipu_glm',isBuiltIn:true,apiKey:''},{id:'mine',name:'Mine'}], binding:{textProviderId:'zhipu_glm',visionProviderId:'mine'}, future:'kept'}
+    expect(normalizeAiConfig(config)).toEqual({...config,providers:[{id:'mine',name:'Mine'}],binding:{textProviderId:null,visionProviderId:'mine'}})
+    expect(config.providers).toHaveLength(2)
+  })
+  it('preserves configured GLM as a deletable custom provider', () => {
+    const provider = {id:'zhipu_glm',isBuiltIn:true,apiKey:'fixture',textModel:'saved'}
+    const config = normalizeAiConfig({providers:[provider],binding:{textProviderId:'zhipu_glm'}})
+    expect(config.providers).toEqual([{...provider,isBuiltIn:false}])
+    expect(config.binding.textProviderId).toBe('zhipu_glm')
+    expect(applyDeleteFallback(config.providers,config.binding,'zhipu_glm')?.binding.textProviderId).toBeNull()
+  })
+  it('does not recreate providers or bindings in empty settings', () => {
+    expect(mergeAiConfig({providers:[],binding:{}},{})).toEqual({providers:[],binding:{}})
   })
 })

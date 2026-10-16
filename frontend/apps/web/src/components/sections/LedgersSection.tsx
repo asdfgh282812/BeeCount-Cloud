@@ -26,11 +26,13 @@ import {
 import {
   Amount,
   CurrencySelectorTrigger,
+  CurrencySelector,
   formatIsoDateTime,
   loadRatesToBase,
 } from '@beecount/web-features'
 
 import { useLedgers } from '../../context/LedgersContext'
+import type { LedgerEditableField } from '../../lib/ledgerFieldEdit'
 import { useAuth } from '../../context/AuthContext'
 import { JoinSharedLedgerDialog } from '../JoinSharedLedgerDialog'
 import { SharedLedgerManageDialog } from '../SharedLedgerManageDialog'
@@ -428,10 +430,11 @@ export type LedgerForm = {
 interface LedgerEditDialogProps {
   open: boolean
   mode: 'create' | 'edit'
+  field?: LedgerEditableField
   form: LedgerForm
   onChange: (next: LedgerForm) => void
   onClose: () => void
-  onSubmit: () => Promise<boolean> | boolean
+  onSubmit: (next?: LedgerForm) => Promise<boolean> | boolean
   /** 编辑模式额外信息行,例如 ledger id / 创建者 / 角色。 */
   meta?: { label: string; value: string }[]
 }
@@ -439,6 +442,7 @@ interface LedgerEditDialogProps {
 export function LedgerEditDialog({
   open,
   mode,
+  field,
   form,
   onChange,
   onClose,
@@ -448,11 +452,14 @@ export function LedgerEditDialog({
   const t = useT()
   const { token } = useAuth()
   const [submitting, setSubmitting] = useState(false)
+  const [pendingCurrency, setPendingCurrency] = useState<string | null>(null)
+  const selectedCurrency = useRef(false)
+  useEffect(() => { if (!open) { setPendingCurrency(null); selectedCurrency.current = false } }, [open])
   // v30 多币种:币种选择弹窗展示各币种对账本主币种的汇率(1 该币种 ≈ x 主币种,含手动 override)。
   const rateBase = (form.currency || 'TWD').toUpperCase()
   const [ratesToBase, setRatesToBase] = useState<Record<string, number>>({})
   useEffect(() => {
-    if (!open || !token) return
+    if (!open || !token || (field && field !== 'currency')) return
     let cancelled = false
     loadRatesToBase(token, rateBase)
       .then((m) => {
@@ -462,22 +469,54 @@ export function LedgerEditDialog({
     return () => {
       cancelled = true
     }
-  }, [open, rateBase, token])
-  const handleSubmit = async () => {
+  }, [open, rateBase, token, field])
+  const handleSubmit = async (next = form) => {
+    if (submitting) return
     setSubmitting(true)
     try {
-      const ok = await onSubmit()
+      const ok = await onSubmit(next)
       if (ok) onClose()
     } finally {
       setSubmitting(false)
     }
   }
+  if (mode === 'edit' && field === 'currency') return <>
+    <CurrencySelector open={open && pendingCurrency === null} value={form.currency}
+      title={t('ledgers.field.currency')} ratesToBase={ratesToBase} rateBase={rateBase}
+      onSelect={(code) => {
+        selectedCurrency.current = true
+        if (code === form.currency) { onClose(); return }
+        setPendingCurrency(code)
+      }}
+      onClose={() => {
+        if (selectedCurrency.current) { selectedCurrency.current = false; return }
+        onClose()
+      }} />
+    <Dialog open={open && pendingCurrency !== null} onOpenChange={(v) => !v && !submitting && onClose()}>
+      <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{t('ledgers.field.currency')}</DialogTitle></DialogHeader>
+        <p className="text-sm">{t('ledger.settings.currencyConfirm')}</p>
+        <p className="font-semibold">{form.currency} → {pendingCurrency}</p>
+        <DialogFooter><Button variant="outline" disabled={submitting} onClick={onClose}>{t('dialog.cancel')}</Button>
+          <Button disabled={submitting} onClick={() => pendingCurrency && void handleSubmit({...form,currency:pendingCurrency})}>{t('common.confirm')}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
+  if (mode === 'edit' && field === 'month_start_day') return <Dialog open={open} onOpenChange={(v) => !v && !submitting && onClose()}>
+    <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{t('ledgers.field.monthStartDay')}</DialogTitle></DialogHeader>
+      <p className="text-sm text-muted-foreground">{t('ledgers.monthStartDay.hint')}</p>
+      <div className="grid grid-cols-7 gap-2">{Array.from({length:28},(_,i)=>i+1).map((day) => <button key={day}
+        type="button" aria-pressed={day === form.month_start_day} disabled={submitting}
+        className={`min-h-11 rounded-lg border text-sm ${day === form.month_start_day ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}`}
+        onClick={() => day === form.month_start_day ? onClose() : void handleSubmit({...form,month_start_day:day})}>{day}</button>)}</div>
+      <DialogFooter><Button variant="outline" disabled={submitting} onClick={onClose}>{t('dialog.cancel')}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>
   return (
     <Dialog open={open} onOpenChange={(v) => !v && !submitting && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {mode === 'create' ? t('ledgers.button.create') : t('ledgers.button.update')}
+            {mode === 'create' ? t('ledgers.button.create') : field === 'ledger_name' ? t('ledgers.field.name') : t('ledgers.button.update')}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
@@ -485,10 +524,13 @@ export function LedgerEditDialog({
             <Label>{t('ledgers.field.name')}</Label>
             <Input
               placeholder={t('ledgers.placeholder.name')}
+              aria-label={t('ledgers.field.name') as string}
+              autoFocus={mode === 'edit' && field === 'ledger_name'}
               value={form.ledger_name}
               onChange={(e) => onChange({ ...form, ledger_name: e.target.value })}
             />
           </div>
+          {!field && <>
           <div className="space-y-1">
             <Label>{t('ledgers.field.currency')}</Label>
             <CurrencySelectorTrigger
@@ -519,7 +561,8 @@ export function LedgerEditDialog({
               {t('ledgers.monthStartDay.hint')}
             </p>
           </div>
-          {meta && meta.length > 0 ? (
+          </>}
+          {!field && meta && meta.length > 0 ? (
             <div className="space-y-1 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
               {meta.map((row) => (
                 <div key={row.label} className="flex items-center justify-between gap-2">
@@ -547,7 +590,7 @@ export function LedgerEditDialog({
 /** 帳本設定的唯一詳細入口，header／偏好設定／列表共用。 */
 export function LedgerSettingsPanel({ ledger, onEdit, onDelete, onBack }: {
   ledger: ReadLedger
-  onEdit: (ledger: ReadLedger) => void
+  onEdit: (ledger: ReadLedger, field: LedgerEditableField) => void
   onDelete: (ledger: ReadLedger) => void
   onBack: () => void
 }) {
@@ -560,14 +603,17 @@ export function LedgerSettingsPanel({ ledger, onEdit, onDelete, onBack }: {
     <Button variant="outline" onClick={onBack}>{t('ledger.settings.back')}</Button>
     <Card className="bc-panel"><CardHeader><CardTitle>{t('ledger.settings.title')} · {ledger.ledger_name}</CardTitle></CardHeader>
       <CardContent className="space-y-4">
-        <dl className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 text-sm">
-          <dt className="text-muted-foreground">{t('ledgers.field.name')}</dt><dd className="break-words text-right">{ledger.ledger_name}</dd>
-          <dt className="text-muted-foreground">{t('ledgers.field.currency')}</dt><dd className="text-right">{ledger.currency}</dd>
-          <dt className="text-muted-foreground">{t('ledgers.field.monthStartDay')}</dt><dd className="text-right">{ledger.month_start_day ?? 1}</dd>
-        </dl>
+        <div className="divide-y divide-border/60">{([
+          ['ledger_name', t('ledgers.field.name'), ledger.ledger_name],
+          ['currency', t('ledgers.field.currency'), ledger.currency],
+          ['month_start_day', t('ledgers.field.monthStartDay'), String(ledger.month_start_day ?? 1)],
+        ] as const).map(([field,label,value]) => <button key={field} type="button" disabled={!owner}
+          data-testid={`ledger-edit-${field}`} onClick={() => onEdit(ledger,field)}
+          className="flex min-h-14 w-full items-center justify-between gap-4 py-3 text-left disabled:cursor-default">
+          <span className="text-sm">{label}</span><span className="break-words text-right text-sm text-muted-foreground">{value}{owner ? ' ›' : ''}</span>
+        </button>)}</div>
         <p className="text-sm text-muted-foreground">{t('ledgers.monthStartDay.hint')}</p>
         <div className="flex flex-wrap gap-2">
-          {owner ? <Button onClick={() => onEdit(ledger)}>{t('common.edit')}</Button> : null}
           {activeLedgerId !== ledger.ledger_id ? <Button variant="outline" onClick={() => setActiveLedgerId(ledger.ledger_id)}>{t('ledger.settings.switch')}</Button> : null}
           <Button variant="outline" onClick={() => setMembersOpen(true)}>{t('sharedLedger.openManage')}</Button>
           {ledger.is_shared ? <Button variant="outline" onClick={() => setStatsOpen(true)}>{t('sharedLedger.statsOpen')}</Button> : null}

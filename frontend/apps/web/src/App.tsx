@@ -526,6 +526,7 @@ function AppRoutes() {
             </Suspense>
           }
         />
+        <Route path="settings/ai/manage" element={<Suspense fallback={<RouteFallback />}><SettingsAiPage management /></Suspense>} />
         <Route
           path="settings/ai"
           element={

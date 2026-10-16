@@ -19,6 +19,7 @@ import {
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { localizeError } from '../../i18n/errors'
+import { ledgerFieldPatch, type LedgerEditableField } from '../../lib/ledgerFieldEdit'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
 const defaultForm: LedgerForm = { ledger_name: '', currency: 'TWD', month_start_day: 1 }
@@ -39,6 +40,7 @@ export function LedgersPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<LedgerForm>(defaultForm)
+  const [editField, setEditField] = useState<LedgerEditableField>('ledger_name')
   const [editing, setEditing] = useState<ReadLedger | null>(null)
   const [editForm, setEditForm] = useState<LedgerForm>(defaultForm)
   // 删除流:卡片上的 Trash 按钮把待删 ledger 放进 state → 弹独立确认 dialog →
@@ -67,8 +69,9 @@ export function LedgersPage() {
     setCreateOpen(true)
   }
 
-  const onOpenEdit = (ledger: ReadLedger) => {
+  const onOpenEdit = (ledger: ReadLedger, field: LedgerEditableField) => {
     if (ledger.is_shared && ledger.role !== 'owner') return;
+    setEditField(field)
     setEditing(ledger)
     setEditForm({
       ledger_name: ledger.ledger_name || '',
@@ -111,16 +114,12 @@ export function LedgersPage() {
     }
   }
 
-  const onSaveEdit = async (): Promise<boolean> => {
+  const onSaveEdit = async (next = editForm): Promise<boolean> => {
     if (!editing) return false
-    if (!validateName(editForm.ledger_name, editing.ledger_id)) return false
+    if (editField === 'ledger_name' && !validateName(next.ledger_name, editing.ledger_id)) return false
     try {
       await retryOnConflict(editing.ledger_id, (base) =>
-        updateLedgerMeta(token, editing.ledger_id, base, {
-          ledger_name: editForm.ledger_name.trim(),
-          currency: editForm.currency || editing.currency,
-          month_start_day: editForm.month_start_day || 1,
-        }),
+        updateLedgerMeta(token, editing.ledger_id, base, ledgerFieldPatch(editField, next)),
       )
       notifySuccess(t('ledgers.notice.updated'))
       await refreshLedgers()
@@ -179,6 +178,7 @@ export function LedgersPage() {
       <LedgerEditDialog
         open={editing !== null}
         mode="edit"
+        field={editField}
         form={editForm}
         onChange={setEditForm}
         onClose={() => setEditing(null)}

@@ -74,6 +74,7 @@ function parseSettingsSection(parts: string[]): AppSection {
       return 'settings-profile'
     case 'appearance':
       return 'settings-appearance'
+    case 'ai/manage':
     case 'ai':
       return 'settings-ai'
     case 'health':
@@ -135,6 +136,7 @@ function parseRootSection(parts: string[]): AppSection {
       return 'settings-profile'
     case 'settings/appearance':
       return 'settings-appearance'
+    case 'settings/ai/manage':
     case 'settings/ai':
       return 'settings-ai'
     case 'settings/health':
@@ -172,6 +174,7 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'settings-profile'
     case 'settings/appearance':
       return 'settings-appearance'
+    case 'settings/ai/manage':
     case 'settings/ai':
       return 'settings-ai'
     case 'settings/health':

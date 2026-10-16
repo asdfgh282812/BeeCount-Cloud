@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { parseRoute, routePath } from './router'
 
 describe('router path mapping', () => {
+  it('keeps AI management in the Smart Bookkeeping navigation section', () => {
+    expect(parseRoute('/app/settings/ai/manage')).toEqual({ kind: 'app', ledgerId: '', section: 'settings-ai' })
+    expect(routePath({ kind: 'app', ledgerId: '', section: 'settings-ai' })).toBe('/app/settings/ai')
+  })
+
   it('round-trips the cloud management home', () => {
     expect(parseRoute('/app/settings/cloud')).toEqual({ kind: 'app', ledgerId: '', section: 'settings-cloud' })
     expect(routePath({ kind: 'app', ledgerId: '', section: 'settings-cloud' })).toBe('/app/settings/cloud')

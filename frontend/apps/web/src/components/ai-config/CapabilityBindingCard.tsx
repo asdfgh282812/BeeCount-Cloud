@@ -14,7 +14,6 @@ import {
   type AICapabilityBinding,
   type AIConfig,
   type AIProvider,
-  BUILTIN_PROVIDER_ID,
 } from '@beecount/api-client'
 
 import { mergeAiConfig } from '../../lib/aiConfigMerge'
@@ -22,7 +21,7 @@ import { mergeAiConfig } from '../../lib/aiConfigMerge'
 interface Props {
   config: Record<string, any> | null | undefined
   saving: boolean
-  onSave: (next: AIConfig) => Promise<void> | void
+  onSave: (next: AIConfig) => Promise<boolean>
 }
 
 type Cap = 'text' | 'vision' | 'speech'
@@ -52,11 +51,11 @@ export function CapabilityBindingCard({ config, saving, onSave }: Props) {
       </CardHeader>
       <CardContent className="space-y-2">
         {FIELDS.map(({ cap, bindingKey, modelKey, labelKey }) => {
-          const currentId = (binding[bindingKey] as string | null | undefined) || BUILTIN_PROVIDER_ID
+          const currentId = (binding[bindingKey] as string | null | undefined) || ''
           return (
             <div
               key={cap}
-              className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/10 px-3 py-2"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/10 px-3 py-2"
             >
               <span className="text-sm">{t(labelKey)}</span>
               <Select
@@ -64,8 +63,8 @@ export function CapabilityBindingCard({ config, saving, onSave }: Props) {
                 onValueChange={(v) => void handleChange(cap, v)}
                 disabled={saving}
               >
-                <SelectTrigger className="h-8 w-[200px] text-xs">
-                  <SelectValue />
+                <SelectTrigger aria-label={t(labelKey) as string} className="h-8 w-full sm:w-[240px] text-xs">
+                  <SelectValue placeholder={t('common.unset') as string} />
                 </SelectTrigger>
                 <SelectContent>
                   {providers.map((p) => {

@@ -107,6 +107,10 @@ export type AIConfig = {
   custom_prompt?: string
   strategy?: string
   bill_extraction_enabled?: boolean
+  project_assign_mode?: 'none' | 'ask' | 'aiDecide'
+  tag_assign_mode?: 'none' | 'ask' | 'aiDecideExisting' | 'aiDecideOrNew'
+  voice_trigger_mode?: 'auto' | 'hold_to_talk'
+  voice_silence_timeout_ms?: number
   use_vision?: boolean
 }
 

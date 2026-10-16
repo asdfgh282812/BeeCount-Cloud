@@ -15,7 +15,6 @@ import {
 } from '@beecount/ui'
 import {
   type AIProvider,
-  BUILTIN_PROVIDER_ID,
   type TestProviderCapability,
   type TestProviderResult,
   testProvider,
@@ -230,7 +229,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             <Input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              disabled={saving || initial?.id === BUILTIN_PROVIDER_ID}
+              disabled={saving || isBuiltIn}
               placeholder={apiFamily === 'gemini' ? GEMINI_DEFAULT_BASE_URL : 'https://api.example.com/v1'}
               className="font-mono text-xs"
             />
