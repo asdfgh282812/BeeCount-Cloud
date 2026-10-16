@@ -3442,9 +3442,6 @@ const en = {
   "ai.preferences.retry": "Retry",
   "ai.preferences.strategy.unsupported": "This saved strategy is unavailable. Choose a cloud strategy.",
   "ledger.settings.currencyConfirm": "Changing the ledger currency will reconvert historical transactions at current rates. Continue?",
-} as const
-
-export default en
   "welcome.skip": "Skip",
   "welcome.back": "Back",
   "welcome.next": "Next",
@@ -3478,3 +3475,6 @@ export default en
   "welcome.ai.configureDesc": "Choose which AI service handles text, images and voice",
   "welcome.laterHint": "You can change all of this later under Settings → Appearance, Smart Billing.",
   "profile.sync.weekStart": "First day of week",
+} as const
+
+export default en

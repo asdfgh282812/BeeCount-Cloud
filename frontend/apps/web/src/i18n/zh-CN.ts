@@ -3472,9 +3472,6 @@ const zhCN = {
   "ai.preferences.retry": "重新读取",
   "ai.preferences.strategy.unsupported": "已保存的策略目前不可用，请选择云端策略。",
   "ledger.settings.currencyConfirm": "更改账本币种将按当前汇率重新换算历史交易，是否继续？",
-} as const
-
-export default zhCN
   "welcome.skip": "跳过",
   "welcome.back": "上一步",
   "welcome.next": "下一步",
@@ -3508,3 +3505,6 @@ export default zhCN
   "welcome.ai.configureDesc": "选择由哪个 AI 服务处理文字、图片与语音",
   "welcome.laterHint": "之后随时可以到 设置 → 外观、智能记账 重新调整。",
   "profile.sync.weekStart": "每周起始日",
+} as const
+
+export default zhCN

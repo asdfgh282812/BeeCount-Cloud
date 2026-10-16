@@ -3430,9 +3430,6 @@ const zhTW = {
   "ai.preferences.retry": "重新讀取",
   "ai.preferences.strategy.unsupported": "已儲存的策略目前無法使用，請選擇雲端策略。",
   "ledger.settings.currencyConfirm": "變更帳本幣種會依目前匯率重新換算歷史交易，是否繼續？",
-} as const
-
-export default zhTW
   "welcome.skip": "略過",
   "welcome.back": "上一步",
   "welcome.next": "下一步",
@@ -3466,3 +3463,6 @@ export default zhTW
   "welcome.ai.configureDesc": "選擇由哪個 AI 服務處理文字、圖片與語音",
   "welcome.laterHint": "之後隨時可以到 設定 → 外觀、智慧記帳 重新調整。",
   "profile.sync.weekStart": "每週起始日",
+} as const
+
+export default zhTW
