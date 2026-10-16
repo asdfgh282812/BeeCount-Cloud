@@ -37,6 +37,11 @@ _sqlite_lock = RLock()
 BOARDS = ("bookkeeping", "harvest", "thief", "guardian")
 
 
+# 庫存批次所在位置：倉庫的收成才能出售；板條箱是另一個獨立空間，只能存放。
+WAREHOUSE = "warehouse"
+CRATE = "crate"
+
+
 def now_utc():
     return datetime.now(timezone.utc)
 
@@ -173,7 +178,7 @@ class FarmService:
         )
         self.db.flush()
 
-    def add(self, uid, item, quantity, expires=None):
+    def add(self, uid, item, quantity, expires=None, location=WAREHOUSE):
         integer(quantity, "quantity", 1, 100000)
         self.db.add(
             GameInventory(
@@ -181,13 +186,15 @@ class FarmService:
                 item_id=item,
                 quantity=quantity,
                 expires_at=instant(expires) if expires else None,
+                location=location,
             )
         )
         self.db.flush()
 
     def consume(self, uid, item, quantity):
+        """只扣倉庫裡的庫存；板條箱裡的收成要先移回倉庫才能賣或上架。"""
         integer(quantity, "quantity", 1)
-        rows = [r for r in self.inventory(uid) if r.item_id == item]
+        rows = [r for r in self.inventory(uid) if r.item_id == item and r.location != CRATE]
         if sum(r.quantity for r in rows) < quantity:
             fail("INSUFFICIENT_STOCK", "庫存不足")
         for row in rows:
@@ -201,12 +208,65 @@ class FarmService:
                 break
         self.db.flush()
 
-    def capacity(self, farm, added):
-        used = sum(r.quantity for r in self.inventory(farm.user_id) if r.expires_at is not None)
+    def used(self, uid, location):
+        """只有會腐壞的收成／大頭菜占格子；種子與道具不占。"""
+        return sum(
+            r.quantity
+            for r in self.inventory(uid)
+            if r.expires_at is not None and r.location == location
+        )
+
+    def store(self, farm, item, quantity, expires):
+        """收成先放倉庫，倉庫滿了才放板條箱；兩邊都放不下就整筆失敗。"""
         from .layout import storage_capacity
 
-        if used + added > farm.state["capacity"] + storage_capacity(farm.layout):
+        uid = farm.user_id
+        free_warehouse = max(0, farm.state["capacity"] - self.used(uid, WAREHOUSE))
+        free_crate = max(0, storage_capacity(farm.layout) - self.used(uid, CRATE))
+        if quantity > free_warehouse + free_crate:
             fail("STORAGE_FULL", "請先賣出或擴充倉庫")
+        to_warehouse = min(quantity, free_warehouse)
+        if to_warehouse:
+            self.add(uid, item, to_warehouse, expires)
+        if quantity > to_warehouse:
+            self.add(uid, item, quantity - to_warehouse, expires, CRATE)
+
+    def shift(self, uid, source, target, quantity, latest_first):
+        """把 quantity 個收成從 source 搬到 target；整批搬只改位置，部分搬就拆批。"""
+        rows = [r for r in self.inventory(uid) if r.expires_at is not None and r.location == source]
+        for row in reversed(rows) if latest_first else rows:
+            if quantity <= 0:
+                break
+            take = min(quantity, row.quantity)
+            self.relocate(row, take, target)
+            quantity -= take
+        self.db.flush()
+
+    def relocate(self, row, quantity, target):
+        if quantity == row.quantity:
+            row.location = target
+            return
+        row.quantity -= quantity
+        self.db.add(
+            GameInventory(
+                user_id=row.user_id,
+                item_id=row.item_id,
+                quantity=quantity,
+                expires_at=row.expires_at,
+                location=target,
+            )
+        )
+
+    def rebalance(self, farm):
+        """舊存檔把板條箱當成倉庫的共用容量，倉庫可能超過上限：把超出的部分
+        （最晚到期的先）搬進板條箱。正常操作下倉庫不會超量，所以這是冪等的。"""
+        from .layout import storage_capacity
+
+        uid = farm.user_id
+        over = self.used(uid, WAREHOUSE) - farm.state["capacity"]
+        free = storage_capacity(farm.layout) - self.used(uid, CRATE)
+        if over > 0 and free > 0:
+            self.shift(uid, WAREHOUSE, CRATE, min(over, free), latest_first=True)
 
     def _eligible_ledger(self, ledger, uid):
         if ledger is None or ledger.user_id != uid:
@@ -318,6 +378,7 @@ class FarmService:
                 GameInventory.user_id == farm.user_id, GameInventory.expires_at <= self.now
             )
         )
+        self.rebalance(farm)
         for listing in self.db.scalars(
             select(GameListing).where(GameListing.user_id == farm.user_id)
         ):
@@ -689,8 +750,11 @@ class FarmService:
             expiry = instant(row["expiresAt"]) if row.get("expiresAt") is not None else None
             if item in (*self.crops, "turnip") and expiry is None:
                 fail("INVALID_SAVE", "收成缺少到期時間", 400)
+            location = row.get("location", WAREHOUSE)
+            if location not in (WAREHOUSE, CRATE) or (location == CRATE and expiry is None):
+                fail("INVALID_SAVE", "無效庫存位置", 400)
             if expiry is None or expiry > self.now:
-                self.add(farm.user_id, item, quantity, expiry)
+                self.add(farm.user_id, item, quantity, expiry, location)
         listings = save.get("listings", [])
         if not isinstance(listings, list) or len(listings) > 3:
             fail("INVALID_SAVE", "無效市場攤位", 400)
@@ -759,7 +823,13 @@ class FarmService:
                 "quantity": imported_turnips,
                 "bought": max(bought, imported_turnips),
             }
-        self.capacity(farm, 0)
+        from .layout import storage_capacity
+
+        self.rebalance(farm)
+        if self.used(farm.user_id, WAREHOUSE) > farm.state["capacity"] or self.used(
+            farm.user_id, CRATE
+        ) > storage_capacity(farm.layout):
+            fail("STORAGE_FULL", "請先賣出或擴充倉庫")
         total = sum(
             integer(abs(r.get("delta", 0)), "delta", 0, 100000000)
             * (1 if r.get("delta", 0) >= 0 else -1)
@@ -801,6 +871,7 @@ class FarmService:
                     "itemId": r.item_id,
                     "quantity": r.quantity,
                     "expiresAt": iso(r.expires_at) if r.expires_at else None,
+                    "location": r.location,
                 }
                 for r in self.inventory(farm.user_id)
             ],
@@ -954,8 +1025,7 @@ class FarmService:
                 result = rules.harvest(p, self.now, self.config)
                 qty = result["quantity"] - slot.stolen_qty
                 if qty > 0:
-                    self.capacity(farm, qty)
-                    self.add(uid, result["cropId"], qty, result["expiresAt"])
+                    self.store(farm, result["cropId"], qty, result["expiresAt"])
                 if result["seedReward"]:
                     self.add(uid, "seed:" + result["cropId"], result["seedReward"])
                 state["xp"] += result["xp"]
@@ -1012,7 +1082,7 @@ class FarmService:
             if crop not in self.crops and crop != "turnip":
                 fail("INVALID_ITEM", "無效作物", 400)
             integer(q, "quantity", 1)
-            batches = [r for r in self.inventory(uid) if r.item_id == crop]
+            batches = [r for r in self.inventory(uid) if r.item_id == crop and r.location != CRATE]
             if sum(r.quantity for r in batches) < q:
                 fail("INSUFFICIENT_STOCK", "庫存不足")
             price = self.market_prices().get(crop)
@@ -1069,6 +1139,24 @@ class FarmService:
                         },
                     )
                 )
+        elif kind == "moveInventory":
+            # 倉庫 ⇄ 板條箱：只搬會腐壞的收成，指定批次 id 與數量。
+            target = data.get("to")
+            if target not in (WAREHOUSE, CRATE):
+                fail("INVALID_ARGUMENT", "無效的 to", 400)
+            integer(q, "quantity", 1, 100000)
+            row = self.db.get(GameInventory, integer(data.get("id"), "id", 1, 2**31 - 1))
+            if not row or row.user_id != uid or row.expires_at is None:
+                fail("INVALID_STOCK", "找不到這批收成", 404)
+            if row.location == target:
+                fail("INVALID_ARGUMENT", "已經在這裡", 400)
+            if row.quantity < q:
+                fail("INSUFFICIENT_STOCK", "庫存不足")
+            if target == WAREHOUSE and self.used(uid, WAREHOUSE) + q > state["capacity"]:
+                fail("STORAGE_FULL", "倉庫空間不足")
+            if target == CRATE and self.used(uid, CRATE) + q > storage_capacity(farm.layout):
+                fail("CRATE_FULL", "板條箱空間不足")
+            self.relocate(row, q, target)
         elif kind == "collectListing":
             listing = self.db.get(GameListing, (uid, integer(data.get("slot"), "slot", 0, 2)))
             if (
@@ -1137,9 +1225,12 @@ class FarmService:
                     and not (before.startswith("home") and d["type"].startswith("home"))
                 ):
                     fail("INVALID_LAYOUT", "換物品類型請先移除再放置", 400)
-            used = sum(r.quantity for r in self.inventory(uid) if r.expires_at)
-            if used > state["capacity"] + storage_capacity(layout):
-                fail("STORAGE_FULL", "移除板條箱後空間不足")
+            # 移除板條箱時，放不下的箱內收成（最早到期的先）退回倉庫；倉庫也放不下就失敗。
+            overflow = self.used(uid, CRATE) - storage_capacity(layout)
+            if overflow > 0:
+                if self.used(uid, WAREHOUSE) + overflow > state["capacity"]:
+                    fail("STORAGE_FULL", "移除板條箱後空間不足")
+                self.shift(uid, CRATE, WAREHOUSE, overflow, latest_first=False)
             cost = layout_cost(layout, old)
             from .layout import DECOR
 
@@ -1165,9 +1256,8 @@ class FarmService:
                     or tw["bought"] + q > self.config["turnips"]["maximumQuantity"]
                 ):
                     fail("MARKET_CLOSED", "現在不能買大頭菜或已達上限")
-                self.capacity(farm, q)
                 self.wallet(uid, -q * tw["buyPrice"], "buy_turnip")
-                self.add(uid, "turnip", q, instant(tw["weekStart"]) + timedelta(days=7))
+                self.store(farm, "turnip", q, instant(tw["weekStart"]) + timedelta(days=7))
                 tw["quantity"] += q
                 tw["bought"] += q
             else:

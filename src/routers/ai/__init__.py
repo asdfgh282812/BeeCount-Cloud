@@ -6,10 +6,11 @@
 """
 from fastapi import APIRouter
 
-from . import ask, parse_tx_image, parse_tx_text, test_provider
+from . import ask, chat, parse_tx_image, parse_tx_text, test_provider
 
 router = APIRouter()
 router.include_router(ask.router)
+router.include_router(chat.router)
 router.include_router(parse_tx_image.router)
 router.include_router(parse_tx_text.router)
 router.include_router(test_provider.router)

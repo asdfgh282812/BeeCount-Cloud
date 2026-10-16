@@ -47,6 +47,10 @@ class GameInventory(Base):
     item_id: Mapped[str] = mapped_column(String(64))
     quantity: Mapped[int] = mapped_column(Integer)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "warehouse"（可出售）或 "crate"（板條箱，只能存放）；只有會腐壞的收成能放進板條箱。
+    location: Mapped[str] = mapped_column(
+        String(16), default="warehouse", server_default="warehouse"
+    )
 
 
 class GameWallet(Base):

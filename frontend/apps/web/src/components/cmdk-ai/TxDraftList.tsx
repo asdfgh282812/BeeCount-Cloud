@@ -33,7 +33,7 @@ export type TxDraftListProps = {
   imageId?: string | null
   extraTagName: string
   locale: string
-  onSaved: (createdSyncIds: string[]) => void
+  onSaved: (createdSyncIds: string[], savedDrafts: TxDraft[]) => void
   onCancel: () => void
 }
 
@@ -75,7 +75,7 @@ export function TxDraftList({
         setCategories(cats)
         // 账户隐藏(issue #240):AI 快速记账新建的草稿不应落到隐藏账户上 ——
         // 跟正常记账表单(TransactionsPanel)的选择器排除规则保持一致。
-        setAccounts(accts.filter((a) => !a.hidden))
+        setAccounts(accts.filter((a) => !a.hidden && a.account_type !== 'account_group'))
       })
       .catch(() => {})
   }, [token, ledgerId])
@@ -143,7 +143,12 @@ export function TxDraftList({
         locale,
       })
       toast.success(t('cmdk.parseTx.saved', { count: result.created_sync_ids.length }))
-      onSaved(result.created_sync_ids)
+      onSaved(result.created_sync_ids, selected.map(d => ({
+        type: d.type, amount: Number(d.amountText) || 0, happened_at: d.happenedAtIso,
+        note: d.note, category_name: d.categoryName, account_name: d.accountName,
+        from_account_name: d.fromAccountName, to_account_name: d.toAccountName,
+        tags: d.tags, confidence: d.confidence,
+      })))
     } catch (err) {
       const apiErr = err as ApiError
       toast.error(apiErr.message || String(err), t('cmdk.parseTx.saveFailed'))

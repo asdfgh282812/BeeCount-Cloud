@@ -46,6 +46,7 @@ from ._shared import (
     _TRANSACTION_WRITE_ROLES,
     _WRITE_RESPONSES,
     _WRITE_SCOPE_DEP,
+    _assert_account_not_group,
     _emit_entity_diffs,
     _hash_request,
     _load_idempotent_response,
@@ -140,6 +141,10 @@ async def create_tx_batch(
     if replay:
         # 幂等回放 — 直接拿之前的 BatchCreateTxResponse
         return BatchCreateTxResponse(**replay.model_dump()) if hasattr(replay, "model_dump") else replay  # type: ignore[return-value]
+
+    for item in req.transactions:
+        for field in ("account_id", "from_account_id", "to_account_id"):
+            _assert_account_not_group(db, user_id=current_user.id, account_id=getattr(item, field), field_name=field)
 
     # 1. (可选)attach_image_id → 转正式 attachment 一份
     attachment_dict: dict | None = None

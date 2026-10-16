@@ -222,8 +222,7 @@ def social_action(service, actor, owner, data):
                 payload={"type": "farm_guardian", "userId": uid},
             )
         else:
-            service.capacity(actor, allowance)
-            service.add(uid, harvest["cropId"], allowance, harvest["expiresAt"])
+            service.store(actor, harvest["cropId"], allowance, harvest["expiresAt"])
             slot.stolen_qty += allowance
             actor.conscience = max(0, actor.conscience - 2)
             insurance = rules.dart_round(price * allowance * POLICY["insuranceFraction"])

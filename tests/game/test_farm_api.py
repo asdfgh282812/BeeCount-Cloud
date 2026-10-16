@@ -277,6 +277,101 @@ def test_harvest_storage_rollback_xp_and_sale(env):
     )
 
 
+def _with_crate(env):
+    snap = create(env)
+    layout = rules.default_layout(range(len(snap["plots"])))
+    layout["decor"].append(
+        dict(id="crate-1", type="crate_slat", position=rules.first_free(layout, 16, 16))
+    )
+    assert action(env, "saveLayout", layout=layout).status_code == 200
+    with env["sessions"]() as db:
+        farm = db.get(GameFarm, env["a"])
+        farm.state = {**farm.state, "capacity": 4}
+        db.commit()
+    return layout
+
+
+def _stock(snapshot, crop="radish"):
+    totals = {}
+    for r in snapshot["inventory"]:
+        if r["itemId"] == crop:
+            totals[r["location"]] = totals.get(r["location"], 0) + r["quantity"]
+    return totals
+
+
+def test_crate_is_separate_storage_and_only_warehouse_sells(env):
+    layout = _with_crate(env)
+    ready_plot(env, env["a"], 6)
+    harvested = action(env, "harvest", index=0)
+    assert harvested.status_code == 200, harvested.text
+    # 倉庫 4 格放滿後，剩下的才進板條箱。
+    assert _stock(harvested.json()) == {"warehouse": 4, "crate": 2}
+    failed = action(env, "sell", cropId="radish", quantity=5)
+    assert error_code(failed) == "INSUFFICIENT_STOCK"
+    crate_row = next(r for r in harvested.json()["inventory"] if r.get("location") == "crate")
+    full = action(env, "moveInventory", id=crate_row["id"], quantity=1, to="warehouse")
+    assert error_code(full) == "STORAGE_FULL"
+    assert action(env, "sell", cropId="radish", quantity=4).status_code == 200
+    moved = action(env, "moveInventory", id=crate_row["id"], quantity=1, to="warehouse")
+    assert moved.status_code == 200, moved.text
+    assert _stock(moved.json()) == {"warehouse": 1, "crate": 1}
+    back = next(
+        r
+        for r in moved.json()["inventory"]
+        if r["itemId"] == "radish" and r["location"] == "warehouse"
+    )
+    stored = action(env, "moveInventory", id=back["id"], quantity=1, to="crate")
+    assert _stock(stored.json()) == {"crate": 2}
+    same = action(env, "moveInventory", id=back["id"], quantity=1, to="crate")
+    assert same.status_code == 400
+    # 移除板條箱：箱內收成退回倉庫。
+    layout["decor"] = [d for d in layout["decor"] if d["id"] != "crate-1"]
+    removed = action(env, "saveLayout", layout=layout)
+    assert removed.status_code == 200, removed.text
+    assert _stock(removed.json()) == {"warehouse": 2}
+
+
+def test_crate_removal_fails_when_warehouse_cannot_take_contents(env):
+    layout = _with_crate(env)
+    with env["sessions"]() as db:
+        for location, qty in (("warehouse", 4), ("crate", 3)):
+            db.add(
+                GameInventory(
+                    user_id=env["a"],
+                    item_id="radish",
+                    quantity=qty,
+                    expires_at=env["clock"][0] + timedelta(days=2),
+                    location=location,
+                )
+            )
+        db.commit()
+    layout["decor"] = [d for d in layout["decor"] if d["id"] != "crate-1"]
+    failed = action(env, "saveLayout", layout=layout)
+    assert error_code(failed) == "STORAGE_FULL"
+    assert _stock(current(env)) == {"warehouse": 4, "crate": 3}
+
+
+def test_legacy_shared_storage_overflow_moves_into_crate(env):
+    _with_crate(env)
+    with env["sessions"]() as db:
+        for days, qty in ((1, 5), (3, 3)):
+            db.add(
+                GameInventory(
+                    user_id=env["a"],
+                    item_id="radish",
+                    quantity=qty,
+                    expires_at=env["clock"][0] + timedelta(days=days),
+                )
+            )
+        db.commit()
+    snap = current(env)
+    assert _stock(snap) == {"warehouse": 4, "crate": 4}
+    crate = [r for r in snap["inventory"] if r["location"] == "crate"]
+    # 最晚到期的先進板條箱，快壞的留在倉庫賣。
+    assert sorted(r["quantity"] for r in crate) == [1, 3]
+    assert _stock(current(env)) == {"warehouse": 4, "crate": 4}
+
+
 def test_stall_early_collect_and_receipt_no_double_pay(env):
     create(env)
     ready_plot(env, env["a"], 6)

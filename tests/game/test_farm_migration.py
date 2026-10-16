@@ -1,4 +1,4 @@
-"""0074 round-trip runs only against ephemeral SQLite, preserving bookkeeping."""
+"""0074(+0075) round-trip runs only against ephemeral SQLite, preserving bookkeeping."""
 
 import importlib.util
 from pathlib import Path
@@ -10,6 +10,14 @@ from alembic.operations import Operations
 
 from src.database import Base
 from src.services.game import models  # noqa: F401 -- register metadata
+
+
+def _load(name):
+    path = Path(__file__).resolve().parents[2] / f"alembic/versions/{name}.py"
+    spec = importlib.util.spec_from_file_location("farm_migration_" + name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def test_farm_migration_upgrade_and_downgrade_preserves_bookkeeping():
@@ -25,6 +33,10 @@ def test_farm_migration_upgrade_and_downgrade_preserves_bookkeeping():
         connection.execute(sa.text("INSERT INTO ledgers (id) VALUES ('preserved-ledger')"))
         mod.op = Operations(MigrationContext.configure(connection))
         mod.upgrade()
+        # 0075 在 game_inventory 補 location；模型對照的是最新版，所以一起套用。
+        location = _load("0075_game_inventory_location")
+        location.op = mod.op
+        location.upgrade()
         inspector = sa.inspect(connection)
         tables = {name for name in inspector.get_table_names() if name.startswith("game_")}
         expected = {name for name in Base.metadata.tables if name.startswith("game_")}
@@ -45,6 +57,10 @@ def test_farm_migration_upgrade_and_downgrade_preserves_bookkeeping():
             slot_fk[0]["referred_table"] == "game_farms"
             and slot_fk[0]["options"]["ondelete"] == "CASCADE"
         )
+        location.downgrade()
+        assert "location" not in {
+            c["name"] for c in sa.inspect(connection).get_columns("game_inventory")
+        }
         mod.downgrade()
         assert sa.inspect(connection).get_table_names() == ["ledgers", "users"]
         assert connection.scalar(sa.text("SELECT id FROM users")) == "preserved-user"

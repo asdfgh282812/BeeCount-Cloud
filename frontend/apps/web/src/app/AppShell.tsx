@@ -17,6 +17,7 @@ import { AboutDialog } from '../components/AboutDialog'
 import { PwaInstallBanner } from '../components/PwaInstallBanner'
 import { PwaUpdateBanner } from '../components/PwaUpdateBanner'
 import { GlobalAskDialog } from '../components/cmdk-ai/GlobalAskDialog'
+import { AiAssistant } from '../components/ai-assistant/AiAssistant'
 import { GlobalParseTxDialog } from '../components/cmdk-ai/GlobalParseTxDialog'
 import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
 import { GlobalSharedLedgerDialogs } from '../components/GlobalSharedLedgerDialogs'
@@ -254,6 +255,7 @@ export function AppShell({ token, onLogout }: Props) {
           <GlobalEntityDialogs />
           <GlobalEditDialogs />
           <GlobalAskDialog />
+          <AiAssistant />
           <GlobalParseTxDialog />
           <GlobalSharedLedgerDialogs />
         </SharedLedgerResourcesProvider>

@@ -1,0 +1,32 @@
+const zh = {
+  title: 'AI 助手', subtitle: '陪你記帳，也幫你看懂生活', greeting: '嗨，今天想聊什麼？',
+  intro: '記一筆日常、看看開銷，或一起整理你的財務。', hint: '有記帳問題，隨時找我',
+  open: '開啟 AI 助手', minimize: '收起助手', expand: '放大視窗', restore: '還原視窗', dismiss: '關閉提示',
+  placeholder: '記一筆，或問問你的帳務…', send: '送出', stop: '停止回覆', thinking: '正在思考', querying: '正在查詢帳務', drafting: '正在整理記帳內容',
+  memory: '連續記憶', memoryOn: '已開啟連續記憶 · 帶入最近 8 則對話',
+  memoryTitle: '開啟連續記憶？', memoryBody: '後續提問會將最近 8 則對話傳送給你設定的 AI 服務商，增加 token 用量，免費方案也可能較容易遇到用量限制。這項設定只保留在此瀏覽器。',
+  enable: '開啟', cancel: '取消', clear: '清除對話', clearTitle: '清除此帳本的對話？', clearBody: '這會刪除此瀏覽器中的聊天紀錄。已儲存的交易不受影響。',
+  settings: 'AI 設定', noProvider: '先設定 AI 文字服務商，就能開始對話。',
+  disabled: 'AI 小助手已停用，請至 AI 設定重新啟用。',
+  error: '這次沒有完成回覆，請重試或檢查 AI 設定。', queryError: '請試著補上查詢期間或帳戶名稱，再問一次。', interrupted: '回覆已中斷，請重試。', stopped: '已停止回覆', retry: '重試',
+  noLedger: '先建立或選擇帳本，再開始對話。', switchGroup: '換一組建議', suggestions: '試著問問',
+  draftReady: '已整理好記帳草稿，請確認內容後儲存。', review: '確認記帳', draftTitle: '確認記帳內容', saved: '已儲存交易', view: '查看交易', emptyDraft: '沒有辨識到可記帳的收支，請補上金額與內容。',
+  local: '對話保留於此瀏覽器 · AI 回覆僅供參考', copied: '已複製', copy: '複製回覆',
+  queries: ['這個月花了多少錢？', '我的預算還剩多少？', '最近有哪些交易？', '有哪些應收應付款？', '有哪些週期性收支？', '我的股票持股如何？', '這個月收入多少？', '有哪些待確認股利？', '目前帳戶餘額多少？'],
+}
+const en: typeof zh = {
+  title: 'AI assistant', subtitle: 'Your everyday money companion', greeting: 'Hi, what’s on your mind?',
+  intro: 'Log an expense, explore your spending, or make sense of your finances.', hint: 'Questions about your money? I’m here.',
+  open: 'Open AI assistant', minimize: 'Minimize assistant', expand: 'Expand window', restore: 'Restore window', dismiss: 'Dismiss hint',
+  placeholder: 'Log an expense or ask about your money…', send: 'Send', stop: 'Stop response', thinking: 'Thinking', querying: 'Checking your finances', drafting: 'Preparing transaction drafts',
+  memory: 'Conversation memory', memoryOn: 'Memory on · Includes the last 8 messages', memoryTitle: 'Enable conversation memory?',
+  memoryBody: 'Future questions will include the last 8 messages sent to your AI provider. This uses more tokens and may reach free plan limits sooner. This setting stays in this browser.',
+  enable: 'Enable', cancel: 'Cancel', clear: 'Clear conversation', clearTitle: 'Clear this ledger’s conversation?', clearBody: 'This removes chat history from this browser. Saved transactions are unaffected.',
+  settings: 'AI settings', noProvider: 'Set up an AI text provider to start chatting.', error: 'The response could not finish. Retry or check your AI settings.', queryError: 'Try specifying a period or account and ask again.', interrupted: 'The response was interrupted. Please retry.', stopped: 'Response stopped', retry: 'Retry',
+  disabled: 'The AI assistant is disabled. Enable it in AI settings.',
+  noLedger: 'Create or select a ledger to start chatting.', switchGroup: 'More suggestions', suggestions: 'Try asking',
+  draftReady: 'Your transaction drafts are ready. Review and save them.', review: 'Review transactions', draftTitle: 'Review transactions', saved: 'Transactions saved', view: 'View transactions', emptyDraft: 'No transactions found. Please include an amount and description.',
+  local: 'Chat stays in this browser · Check AI answers', copied: 'Copied', copy: 'Copy response',
+  queries: ['How much did I spend this month?', 'How much budget do I have left?', 'Show my recent transactions', 'What do I owe or need to collect?', 'What recurring transactions do I have?', 'How are my stock holdings?', 'How much did I earn this month?', 'Any pending dividends?', 'What are my account balances?'],
+}
+export function assistantCopy(locale: string) { return locale === 'en' ? en : zh }
