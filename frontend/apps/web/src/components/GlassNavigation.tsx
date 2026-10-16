@@ -8,7 +8,7 @@ export function GlassNavigation({ items, activeSection, onNavigate, className }:
   className?: string
 }) {
   const t = useT()
-  return <GlassSegmented semantics="navigation" label={t('nav.group.bookkeeping')}
+  return <GlassSegmented semantics="navigation" pill label={t('nav.group.bookkeeping')}
     value={activeSection} onValueChange={onNavigate}
     className={`bc-glass-nested min-w-0 ${className || ''}`}
     options={items.map((item) => ({ value: item.key, label: t(item.labelKey) }))}

@@ -1,4 +1,6 @@
 const zhTW = {
+  "calendar.loadFailed": "暫時無法載入紀錄，請再試一次。",
+  "calendar.retry": "重試",
   "reminders.title": "信用卡繳費提醒",
   "reminders.back": "返回提醒總覽",
   "reminders.defaultsHint": "全域預設只影響沿用預設的卡片；個別覆寫的卡片保留自己的設定。",

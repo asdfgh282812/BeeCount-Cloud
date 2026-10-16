@@ -1,4 +1,6 @@
 const en = {
+  "calendar.loadFailed": "Unable to load your records. Please try again.",
+  "calendar.retry": "Retry",
   "reminders.title": "Credit Card Payment Reminders",
   "reminders.back": "Back to reminders",
   "reminders.defaultsHint": "Global defaults apply only to cards following defaults. Custom cards keep their settings.",

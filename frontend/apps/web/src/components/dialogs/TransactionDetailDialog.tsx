@@ -174,7 +174,7 @@ export function TransactionDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="flex max-w-md flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] max-w-md flex-col gap-0 overflow-hidden rounded-[28px] p-0">
         <DialogHeader className="border-b border-border/60 px-6 py-4">
           <DialogTitle className="text-sm font-medium text-muted-foreground">
             {t('detail.transaction.title')}
@@ -182,7 +182,7 @@ export function TransactionDetailDialog({
         </DialogHeader>
 
         {tx ? (
-          <div className="flex flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {/* 大金额 */}
             <div className="flex flex-col items-center gap-1 border-b border-border/60 bg-muted/20 px-6 py-6">
               <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-muted-foreground">
@@ -217,7 +217,7 @@ export function TransactionDetailDialog({
                   </span>
                 ) : null}
               </span>
-              <span className={`text-4xl font-bold tabular-nums ${tone}`}>
+              <span className={`max-w-full break-all text-center text-3xl font-bold tabular-nums sm:text-4xl ${tone}`}>
                 {sign}
                 {(tx.tx_type === 'transfer' ? Number((tx.amount + (tx.fee_amount ?? 0)).toFixed(2)) : tx.amount).toLocaleString('zh-CN', {
                   minimumFractionDigits: 0,
@@ -666,7 +666,7 @@ export function TransactionDetailDialog({
           </div>
         ) : null}
 
-        <DialogFooter className="flex flex-row items-center justify-end gap-2 border-t border-border/60 bg-muted/20 px-6 py-3">
+        <DialogFooter className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 border-t border-border/60 bg-muted/20 px-4 py-3">
           {/* §2.12.3:退款发起点搬到这里 —— 原支出/收入交易明细都显示(转账
               不可退款),取代旧版「新建交易表单里挑退款对象」的下拉。§2.6:
               已经被退过款的交易(alreadyRefunded)不能再退,按钮灰掉 + title
@@ -784,12 +784,12 @@ function DetailRow({
   value: React.ReactNode
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-3">
+    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="text-muted-foreground/70">{icon}</span>
         <span>{label}</span>
       </div>
-      <div className="max-w-[60%] text-right text-sm text-foreground">
+      <div className="min-w-0 max-w-full break-words text-right text-sm text-foreground sm:max-w-[60%]">
         {typeof value === 'string' ? <span className="break-all">{value}</span> : value}
       </div>
     </div>

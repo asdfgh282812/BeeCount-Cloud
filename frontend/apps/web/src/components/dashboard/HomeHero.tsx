@@ -184,7 +184,7 @@ export function HomeHero({
             bold
             animate
             tone={balance >= 0 ? 'positive' : 'negative'}
-            className="mt-1 block font-black tracking-tight"
+            className="mt-1 block max-w-full break-all font-black tracking-tight"
           />
           {flowRows.length > 0 && (
             <button

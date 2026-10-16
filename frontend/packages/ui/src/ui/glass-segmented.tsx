@@ -10,6 +10,8 @@ type Props<T extends string | number> = {
   label: string
   className?: string
   semantics?: 'group' | 'tabs' | 'navigation'
+  /** 膠囊造型:外框、滑塊、按鈕全用 rounded-full,滑塊與外框同心(頂部導覽列用)。 */
+  pill?: boolean
 }
 
 // Critically damped spring with Apple's 0.3s response. Exact integration keeps
@@ -33,7 +35,7 @@ function step(position: number, velocity: number, target: number, dt: number, ra
     (velocity - omega * c * dt) * decay] as const
 }
 
-export function GlassSegmented<T extends string | number>({ options, value, onValueChange, label, className, semantics = 'group' }: Props<T>) {
+export function GlassSegmented<T extends string | number>({ options, value, onValueChange, label, className, semantics = 'group', pill = false }: Props<T>) {
   const root = useRef<HTMLDivElement>(null)
   const thumb = useRef<HTMLSpanElement>(null)
   const optionKeys = JSON.stringify(options.map((option) => option.value))
@@ -145,7 +147,7 @@ export function GlassSegmented<T extends string | number>({ options, value, onVa
 
   return (
     <div ref={root} role={semantics === 'tabs' ? 'tablist' : 'group'} aria-label={label}
-      className={cn('bc-glass-control relative flex h-10 w-full touch-pan-y select-none rounded-xl p-[3px]', className)}
+      className={cn('bc-glass-control relative flex h-10 w-full touch-pan-y select-none p-[3px]', pill ? 'rounded-full' : 'rounded-xl', className)}
       onPointerDown={(event) => {
         if (drag.current || !event.isPrimary || event.button !== 0) return
         suppressClick.current = false
@@ -182,7 +184,7 @@ export function GlassSegmented<T extends string | number>({ options, value, onVa
       onLostPointerCapture={(event) => finish(event, true)}
       onClickCapture={(event) => { if (suppressClick.current && event.detail !== 0) { event.preventDefault(); event.stopPropagation(); suppressClick.current = false } }}
     >
-      <span ref={thumb} aria-hidden="true" className="bc-glass-segment pointer-events-none absolute bottom-[3px] left-[3px] top-[3px] rounded-lg" />
+      <span ref={thumb} aria-hidden="true" className={cn('bc-glass-segment pointer-events-none absolute bottom-[3px] left-[3px] top-[3px]', pill ? 'rounded-full' : 'rounded-lg')} />
       {options.map((option, index) => (
         <button key={option.value} type="button" disabled={option.disabled}
           data-testid={option.testId}
@@ -192,7 +194,7 @@ export function GlassSegmented<T extends string | number>({ options, value, onVa
           aria-selected={semantics === 'tabs' ? option.value === value : undefined}
           aria-pressed={semantics === 'group' ? option.value === value : undefined}
           aria-current={semantics === 'navigation' && option.value === value ? 'page' : undefined}
-          className={cn('relative z-10 min-w-0 flex-1 truncate rounded-lg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40',
+          className={cn('relative z-10 min-w-0 flex-1 truncate px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40', pill ? 'rounded-full' : 'rounded-lg',
             (hover ?? selected) === index ? 'font-semibold text-foreground' : 'font-medium text-muted-foreground')}
           onClick={(event) => {
             instant.current = event.detail === 0

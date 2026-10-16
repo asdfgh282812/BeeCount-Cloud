@@ -1,4 +1,6 @@
 const zhCN = {
+  "calendar.loadFailed": "暂时无法加载记录，请重试。",
+  "calendar.retry": "重试",
   "reminders.title": "信用卡缴费提醒",
   "reminders.back": "返回提醒总览",
   "reminders.defaultsHint": "全局默认只影响沿用默认的卡片；自定义卡片保留自己的设置。",

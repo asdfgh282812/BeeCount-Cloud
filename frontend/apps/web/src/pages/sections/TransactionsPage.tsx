@@ -2932,9 +2932,9 @@ export function TransactionsPage() {
                   ml-auto 套在右组上(而不是单按钮),即便其中一个 button 隐藏
                   另一个仍会贴右,不会跟左组贴在一起。 */}
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 max-w-full flex-1 items-center gap-2 sm:flex-none">
                   <Input
-                    className="h-9 w-[260px] bg-muted lg:w-[360px]"
+                    className="h-9 min-w-0 w-full bg-muted sm:w-[260px] lg:w-[360px]"
                     placeholder={t('shell.placeholder.keyword')}
                     value={listQuery}
                     onChange={(event) => setListQuery(event.target.value)}

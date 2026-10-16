@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import {
@@ -178,10 +178,14 @@ export function CalendarPage() {
   const cacheBucket = `calendar:${activeLedgerId || '__none__'}:${focusedMonth}`
   const [monthData, setMonthData] = usePageCache<WorkspaceAnalytics | null>(cacheBucket, null)
   const [loadingMonth, setLoadingMonth] = useState(false)
+  const [monthError, setMonthError] = useState(false)
+  const monthRequest = useRef(0)
 
   const loadMonth = useCallback(async () => {
+    const request = ++monthRequest.current
     if (!activeLedgerId) return
     setLoadingMonth(true)
+    setMonthError(false)
     try {
       const tzOffsetMinutes = -new Date().getTimezoneOffset()
       const data = await fetchWorkspaceAnalytics(token, {
@@ -191,16 +195,17 @@ export function CalendarPage() {
         tzOffsetMinutes,
         naturalMonth: true,
       })
-      setMonthData(data)
+      if (request === monthRequest.current) setMonthData(data)
     } catch {
-      // 静默,UI 显示空月历不阻塞
+      if (request === monthRequest.current) setMonthError(true)
     } finally {
-      setLoadingMonth(false)
+      if (request === monthRequest.current) setLoadingMonth(false)
     }
   }, [token, activeLedgerId, focusedMonth, setMonthData])
 
   useEffect(() => {
     void loadMonth()
+    return () => { monthRequest.current++ }
   }, [loadMonth])
 
   // 同步 ws 推送时刷新当月
@@ -211,13 +216,18 @@ export function CalendarPage() {
   // ====== 数据:选中日 tx 列表 ======
   const [dayTxs, setDayTxs] = useState<WorkspaceTransaction[]>([])
   const [loadingDay, setLoadingDay] = useState(false)
+  const [dayError, setDayError] = useState(false)
+  const dayRequest = useRef(0)
 
   const loadDay = useCallback(async () => {
+    const request = ++dayRequest.current
     if (!activeLedgerId || !selectedDate) {
       setDayTxs([])
       return
     }
     setLoadingDay(true)
+    setDayError(false)
+    setDayTxs([])
     try {
       // dateFrom = 选中日 00:00 本地;dateTo = 次日 00:00(独占)
       const [y, m, d] = selectedDate.split('-').map(Number)
@@ -229,16 +239,17 @@ export function CalendarPage() {
         dateTo: end,
         limit: 200,
       })
-      setDayTxs(data.items || [])
+      if (request === dayRequest.current) setDayTxs(data.items || [])
     } catch {
-      setDayTxs([])
+      if (request === dayRequest.current) setDayError(true)
     } finally {
-      setLoadingDay(false)
+      if (request === dayRequest.current) setLoadingDay(false)
     }
   }, [token, activeLedgerId, selectedDate])
 
   useEffect(() => {
     void loadDay()
+    return () => { dayRequest.current++ }
   }, [loadDay])
 
   useSyncRefresh(() => {
@@ -422,6 +433,7 @@ export function CalendarPage() {
         </div>
       </div>
 
+      {monthError ? <CalendarLoadError onRetry={() => void loadMonth()} /> : null}
       {/* 引导 hint band:色块图例 + 操作提示。
        *  色点用固定 block 元素 + inline style 给颜色,保证 rgb var 解析后能看到。
        *  文案改成「收入色 / 支出色」 — 之前用「净收入 / 净支出」是会计术语,用户难以秒懂。 */}
@@ -525,7 +537,9 @@ export function CalendarPage() {
               currency={currency}
               onAdd={handleAddTxOnSelectedDay}
             />
-            <DayTxList txs={dayTxs} loading={loadingDay} currency={currency} />
+            {dayError
+              ? <CalendarLoadError onRetry={() => void loadDay()} />
+              : <DayTxList txs={dayTxs} loading={loadingDay} currency={currency} />}
           </CardContent>
         </Card>
       </div>
@@ -689,6 +703,14 @@ type DayDetailHeaderProps = {
   onAdd: () => void
 }
 
+function CalendarLoadError({ onRetry }: { onRetry: () => void }) {
+  const t = useT()
+  return <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] bg-muted/40 p-4">
+    <p className="text-sm text-muted-foreground">{t('calendar.loadFailed')}</p>
+    <Button variant="outline" size="sm" onClick={onRetry}>{t('calendar.retry')}</Button>
+  </div>
+}
+
 function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderProps) {
   const t = useT()
   const { dateBig, dateSub } = useMemo(() => {
@@ -741,7 +763,7 @@ function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderPr
               {bucket.net >= 0 ? '+' : ''}
               {signedAmount(bucket.net, currency)}
             </div>
-            <div className="mt-1 flex items-center gap-3 text-[11px] text-muted-foreground">
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
               <span className="inline-flex items-center gap-1">
                 <span
                   className="h-1.5 w-1.5 rounded-full bg-[rgb(var(--income-rgb))]"
@@ -799,7 +821,7 @@ function DayTxList({ txs, loading, currency }: DayTxListProps) {
           <button
             type="button"
             onClick={() => dispatchOpenDetailTx(tx)}
-            className="group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+            className="group flex w-full flex-wrap items-center gap-3 rounded-[14px] px-3 py-3 text-left transition-colors hover:bg-muted/40"
           >
             {/* 类型色条 */}
             <span
