@@ -23,6 +23,7 @@ def pull_changes(
     since: int = Query(default=0, ge=0),
     device_id: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    include_own: bool = Query(default=False),
     _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -75,7 +76,10 @@ def pull_changes(
         .order_by(SyncChange.change_id.asc())
         .limit(limit + 1)
     )
-    if device_id:
+    # 預設不回傳該裝置自己推上來的 change(它本地已有)。但「從 0 重放 / 差異自動
+    # 修復」時裝置本地可能已經因為別的原因少了自己當初推的實體(例如本機列被非追蹤
+    # 路徑刪掉),這時一定要拿回自己的 change,否則永遠補不回來 → include_own=true。
+    if device_id and not include_own:
         query = query.where(SyncChange.updated_by_device_id != device_id)
 
     rows = db.execute(query).all()
