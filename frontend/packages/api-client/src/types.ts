@@ -65,6 +65,12 @@ export type ProfileAppearance = {
   holiday_primary?: string
   /** 節日當天自動套用節日主題(P3) */
   holiday_theme_enabled?: boolean
+  /** 每週起始日:true(預設/未設)= 星期一,false = 星期日。App 與 Web 共用同一個 key。 */
+  week_starts_monday?: boolean
+  /** 首次登入個人化引導做過了(App / Web 共用,只增不減)。全新帳號才會看到歡迎引導,
+   *  任一端做完這個帳號就不再問。整包 appearance 是整體替換,所以任何寫 appearance 的
+   *  地方都要把現有的帶上(`{ ...appearance, ... }`),否則會把它洗掉。 */
+  onboarding_done?: boolean
   /** 外幣折算取整方式,以帳本 ledger_id 為 key(同 App ConvertedRounding);整份 last-write-wins。 */
   converted_rounding?: Record<string, 'floor' | 'round' | 'none'>
   /** converted_rounding 最後修改時間(毫秒),App/Web 以較新者為準。 */

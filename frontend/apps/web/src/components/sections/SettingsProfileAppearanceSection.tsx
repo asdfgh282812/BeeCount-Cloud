@@ -50,6 +50,7 @@ import { SettingsLicenseSection } from './SettingsLicenseSection'
 import { SettingsSwipeSmartSection } from './SettingsSwipeSmartSection'
 import { GlassStyleSetting } from '../GlassStyleSetting'
 import { resolveGlassStyle } from '../../lib/glassStyle'
+import { resolveWeekStartsMonday } from '../../lib/welcomeOnboarding'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
 const DISPLAY_NAME_MAX = 60
@@ -215,6 +216,11 @@ export function SettingsProfileAppearanceSection() {
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
   const cuteIcons = appearance.category_icon_style === 'cute'
   const stockUpIsRed = appearance.stock_up_is_red ?? true
+  // 每週起始日:跟 App 同一個 key(week_starts_monday),Web 日曆讀它;沒設定時沿用語系推斷。
+  const weekStartsMonday = resolveWeekStartsMonday(
+    appearance,
+    typeof navigator !== 'undefined' ? navigator.language : 'zh',
+  )
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
   const saveAppearance = async (
@@ -564,6 +570,27 @@ export function SettingsProfileAppearanceSection() {
                 <SelectContent>
                   <SelectItem value="full">{t('profile.sync.compactAmount.full')}</SelectItem>
                   <SelectItem value="compact">{t('profile.sync.compactAmount.compact')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {/* 每週起始日:影響日曆頁;跟 App 的「每週起始日」同步。 */}
+            <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.weekStart')}
+              </p>
+              <Select
+                value={weekStartsMonday ? 'monday' : 'sunday'}
+                onValueChange={(value) =>
+                  void saveAppearance({ week_starts_monday: value === 'monday' })
+                }
+                disabled={appearanceSaving}
+              >
+                <SelectTrigger className="mt-1 h-8 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus:ring-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="sunday">{t('welcome.weekStart.sunday')}</SelectItem>
+                  <SelectItem value="monday">{t('welcome.weekStart.monday')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>

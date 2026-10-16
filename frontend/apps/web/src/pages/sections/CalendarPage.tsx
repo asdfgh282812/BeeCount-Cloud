@@ -13,6 +13,7 @@ import { formatAmountTrimmed } from '@beecount/web-features'
 import { ChevronLeft, ChevronRight, Info, Plus, Sparkles } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
+import { resolveWeekStartsMonday } from '../../lib/welcomeOnboarding'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
@@ -138,7 +139,7 @@ function aggregateByDay(series: WorkspaceAnalyticsSeriesItem[]): Map<string, Day
 
 export function CalendarPage() {
   const t = useT()
-  const { token } = useAuth()
+  const { token, profileMe } = useAuth()
   const { activeLedgerId, currency } = useLedgers()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -152,16 +153,20 @@ export function CalendarPage() {
     dateFromUrl && /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl) ? dateFromUrl : todayKey(),
   )
 
-  // 周起始:locale 推断,中文一,其他日。可以未来通过设置切换。
+  // 周起始:优先用帐号设定(appearance.week_starts_monday,App 同一个 key;首次登入欢迎引导
+  // 与「外观」设定页都能改),没设定才用 locale 推断(中文一,其他日)。
   const weekStartsOn: 0 | 1 = useMemo(() => {
-    const lang = (typeof navigator !== 'undefined' ? navigator.language : 'zh').toLowerCase()
-    return lang.startsWith('zh') ? 1 : 0
-  }, [])
-  const weekHeaders = weekStartsOn === 1
-    ? [...ZH_WEEK.slice(1), ZH_WEEK[0]]
-    : weekStartsOn === 0 && (typeof navigator !== 'undefined' ? navigator.language : 'zh').toLowerCase().startsWith('zh')
-      ? ZH_WEEK
-      : EN_WEEK
+    const lang = typeof navigator !== 'undefined' ? navigator.language : 'zh'
+    return resolveWeekStartsMonday(profileMe?.appearance, lang) ? 1 : 0
+  }, [profileMe?.appearance])
+  // 表头语言跟起始日脱钩:起始日现在可以由设定决定(英文浏览器也能选周一),
+  // 不能再用「周一 = 中文」推断标签。两个数组都是周日在前,周一起始就轮转一格。
+  const weekLabels = (typeof navigator !== 'undefined' ? navigator.language : 'zh')
+    .toLowerCase()
+    .startsWith('zh')
+    ? ZH_WEEK
+    : EN_WEEK
+  const weekHeaders = weekStartsOn === 1 ? [...weekLabels.slice(1), weekLabels[0]] : weekLabels
 
   // ====== URL 同步:focusedMonth / selectedDate 改变写回 URL ======
   useEffect(() => {

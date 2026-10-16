@@ -25,6 +25,9 @@ import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
 import { applyGlassStyle } from '../lib/glassStyle'
+import { applyIncomeColorScheme, applyStockColorScheme } from '../lib/colorScheme'
+import { shouldShowWelcome } from '../lib/welcomeOnboarding'
+import { WelcomeOnboarding } from '../components/WelcomeOnboarding'
 import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
 import { AuthProvider } from '../context/AuthContext'
 import { LedgersProvider } from '../context/LedgersContext'
@@ -60,6 +63,10 @@ export function AppShell({ token, onLogout }: Props) {
   const { applyServerColor: applyServerPrimaryColor } = usePrimaryColor()
 
   const [ledgers, setLedgers] = useState<ReadLedger[]>([])
+  // 帳本清單第一次載完才知道「是不是全新帳號」,歡迎引導要等這個(見 shouldShowWelcome)。
+  const [ledgersLoaded, setLedgersLoaded] = useState(false)
+  // 引導走完(或略過)後本地先蓋掉,不用等 profile 重抓回來才收起。
+  const [welcomeDone, setWelcomeDone] = useState(false)
   const [profileMe, setProfileMe] = useState<ProfileMe | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [isAdminResolved, setIsAdminResolved] = useState(false)
@@ -113,6 +120,7 @@ export function AppShell({ token, onLogout }: Props) {
   const refreshLedgers = useCallback(async () => {
     const rows = await fetchReadLedgers(token)
     setLedgers(rows)
+    setLedgersLoaded(true)
     reconcileActiveLedger(rows)
   }, [token, reconcileActiveLedger])
 
@@ -197,6 +205,16 @@ export function AppShell({ token, onLogout }: Props) {
   const { locale } = useLocale()
   const festival = useFestivalTheme(token, profileMe, locale)
 
+  // 全新帳號第一次進來:先走個人化歡迎引導(對齊 App,見 WelcomeOnboarding)。
+  const showWelcome =
+    !welcomeDone &&
+    shouldShowWelcome({
+      profileLoaded: profileMe !== null,
+      ledgersLoaded,
+      ledgerCount: ledgers.length,
+      appearance: profileMe?.appearance,
+    })
+
   const handleSectionNavigate = useCallback(
     (section: AppSection) => {
       navigate(routePath({ kind: 'app', ledgerId: '', section }))
@@ -258,6 +276,7 @@ export function AppShell({ token, onLogout }: Props) {
           <AiAssistant />
           <GlobalParseTxDialog />
           <GlobalSharedLedgerDialogs />
+          {showWelcome ? <WelcomeOnboarding onFinished={() => setWelcomeDone(true)} /> : null}
         </SharedLedgerResourcesProvider>
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
@@ -266,16 +285,6 @@ export function AppShell({ token, onLogout }: Props) {
       </CategoryIconStyleProvider>
     </AuthProvider>
   )
-}
-
-function applyStockColorScheme(stockUpIsRed: boolean) {
-  if (typeof document === 'undefined') return
-  document.documentElement.dataset.stockColor = stockUpIsRed ? 'red' : 'green'
-}
-
-function applyIncomeColorScheme(incomeIsRed: boolean) {
-  if (typeof document === 'undefined') return
-  document.documentElement.dataset.incomeColor = incomeIsRed ? 'red' : 'green'
 }
 
 /**
