@@ -678,6 +678,9 @@ class FarmService:
         for raw in raw_slots:
             p = json.loads(raw["plotJson"])
             expected = rules.empty_plot(0, self.now)
+            if isinstance(p, dict):
+                for key in ("yieldGrowingMicros", "yieldAdverseMicros", "readyYield"):
+                    p.setdefault(key, 0)
             if not isinstance(p, dict) or set(expected) - set(p):
                 fail("INVALID_SAVE", "田地欄位不完整", 400)
             if not isinstance(p["playerId"], str) or len(p["playerId"]) > 64:
@@ -687,6 +690,9 @@ class FarmService:
                     fail("INVALID_SAVE", "無效田地旗標", 400)
             integer(p["harvests"], "harvests", 0, 3)
             integer(p["seasonPasses"], "seasonPasses", 0, 2)
+            integer(p["yieldGrowingMicros"], "yieldGrowingMicros", 0, 2**53 - 1)
+            integer(p["yieldAdverseMicros"], "yieldAdverseMicros", 0, p["yieldGrowingMicros"])
+            integer(p["readyYield"], "readyYield", 0, 5)
             if not isinstance(p["effects"], list) or len(p["effects"]) > len(self.items):
                 fail("INVALID_SAVE", "無效道具效果", 400)
             effect_ids = set()
@@ -713,6 +719,8 @@ class FarmService:
                     fail("INVALID_SAVE", "無效作物狀態", 400)
             if p["growth"] > 1 or p["moisture"] > 100:
                 fail("INVALID_SAVE", "無效作物狀態", 400)
+            if p["readyYield"] and (p["cropId"] is None or p["growth"] < 1):
+                fail("INVALID_SAVE", "未成熟作物不能帶固定產量", 400)
             p["lastAdvancedAt"] = iso(min(self.now, instant(p["lastAdvancedAt"])))
             for effect in p.get("effects", []):
                 if effect.get("id") not in self.items:
@@ -1023,7 +1031,8 @@ class FarmService:
                 slot.stolen_qty = 0
             elif kind == "harvest":
                 result = rules.harvest(p, self.now, self.config)
-                qty = result["quantity"] - slot.stolen_qty
+                # 舊版已成熟／被偷作物改用新產量時，至少保留一個給主人。
+                qty = max(1, result["quantity"] - slot.stolen_qty)
                 if qty > 0:
                     self.store(farm, result["cropId"], qty, result["expiresAt"])
                 if result["seedReward"]:

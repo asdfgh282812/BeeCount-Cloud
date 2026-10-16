@@ -255,7 +255,7 @@ def test_invalid_arguments_are_400_and_atomic(env, params):
 
 def test_harvest_storage_rollback_xp_and_sale(env):
     create(env)
-    h = ready_plot(env, env["a"], 6)
+    h = ready_plot(env, env["a"], 5)
     with env["sessions"]() as db:
         farm = db.get(GameFarm, env["a"])
         farm.state = {**farm.state, "capacity": 1}
@@ -269,10 +269,10 @@ def test_harvest_storage_rollback_xp_and_sale(env):
     assert harvested.status_code == 200, harvested.text
     assert harvested.json()["state"]["xp"] == h["xp"]
     assert harvested.json()["plots"][0]["cropId"] is None
-    assert sum(r["quantity"] for r in harvested.json()["inventory"] if r["itemId"] == "radish") == 6
-    sold = action(env, "sell", cropId="radish", quantity=6)
+    assert sum(r["quantity"] for r in harvested.json()["inventory"] if r["itemId"] == "radish") == 5
+    sold = action(env, "sell", cropId="radish", quantity=5)
     assert sold.status_code == 200, sold.text
-    assert sold.json()["balance"] == 400 + 6 * rules.market_price(
+    assert sold.json()["balance"] == 400 + 5 * rules.market_price(
         "radish", env["clock"][0], rules.load_config()
     )
 
@@ -301,11 +301,11 @@ def _stock(snapshot, crop="radish"):
 
 def test_crate_is_separate_storage_and_only_warehouse_sells(env):
     layout = _with_crate(env)
-    ready_plot(env, env["a"], 6)
+    ready_plot(env, env["a"], 5)
     harvested = action(env, "harvest", index=0)
     assert harvested.status_code == 200, harvested.text
     # 倉庫 4 格放滿後，剩下的才進板條箱。
-    assert _stock(harvested.json()) == {"warehouse": 4, "crate": 2}
+    assert _stock(harvested.json()) == {"warehouse": 4, "crate": 1}
     failed = action(env, "sell", cropId="radish", quantity=5)
     assert error_code(failed) == "INSUFFICIENT_STOCK"
     crate_row = next(r for r in harvested.json()["inventory"] if r.get("location") == "crate")
@@ -314,21 +314,21 @@ def test_crate_is_separate_storage_and_only_warehouse_sells(env):
     assert action(env, "sell", cropId="radish", quantity=4).status_code == 200
     moved = action(env, "moveInventory", id=crate_row["id"], quantity=1, to="warehouse")
     assert moved.status_code == 200, moved.text
-    assert _stock(moved.json()) == {"warehouse": 1, "crate": 1}
+    assert _stock(moved.json()) == {"warehouse": 1}
     back = next(
         r
         for r in moved.json()["inventory"]
         if r["itemId"] == "radish" and r["location"] == "warehouse"
     )
     stored = action(env, "moveInventory", id=back["id"], quantity=1, to="crate")
-    assert _stock(stored.json()) == {"crate": 2}
+    assert _stock(stored.json()) == {"crate": 1}
     same = action(env, "moveInventory", id=back["id"], quantity=1, to="crate")
     assert same.status_code == 400
     # 移除板條箱：箱內收成退回倉庫。
     layout["decor"] = [d for d in layout["decor"] if d["id"] != "crate-1"]
     removed = action(env, "saveLayout", layout=layout)
     assert removed.status_code == 200, removed.text
-    assert _stock(removed.json()) == {"warehouse": 2}
+    assert _stock(removed.json()) == {"warehouse": 1}
 
 
 def test_crate_removal_fails_when_warehouse_cannot_take_contents(env):
@@ -374,9 +374,9 @@ def test_legacy_shared_storage_overflow_moves_into_crate(env):
 
 def test_stall_early_collect_and_receipt_no_double_pay(env):
     create(env)
-    ready_plot(env, env["a"], 6)
+    ready_plot(env, env["a"], 5)
     assert action(env, "harvest", index=0).status_code == 200
-    listed = action(env, "listForSale", cropId="radish", quantity=6, slot=0)
+    listed = action(env, "listForSale", cropId="radish", quantity=5, slot=0)
     assert listed.status_code == 200, listed.text
     listing = listed.json()["listings"][0]
     assert action(env, "collectListing", slot=0).status_code == 409
@@ -384,7 +384,7 @@ def test_stall_early_collect_and_receipt_no_double_pay(env):
     collected = action(env, "collectListing", slot=0)
     assert collected.status_code == 200, collected.text
     balance = collected.json()["balance"]
-    assert balance == 500 + 6 * listing["unitPrice"]
+    assert balance == 500 + 5 * listing["unitPrice"]
     assert action(env, "collectListing", slot=0).status_code == 409
     assert current(env)["balance"] == balance
 
@@ -437,7 +437,7 @@ def test_presence_multi_device_ttl_and_private_visit(env):
 def test_steal_newbie_home_cooldown_and_owner_reserve(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     protected = visit_action(env, "steal", index=0)
     assert protected.status_code == 409 and error_code(protected) == "NEWBIE_PROTECTION"
     remove_newbie(env, env["a"])
@@ -463,7 +463,7 @@ def test_steal_newbie_home_cooldown_and_owner_reserve(env):
     assert reserved.status_code == 409 and error_code(reserved) == "OWNER_RESERVE"
     harvested = action(env, "harvest", "bh", index=0)
     assert harvested.status_code == 200, harvested.text
-    assert sum(r["quantity"] for r in harvested.json()["inventory"] if r["itemId"] == "radish") >= 4
+    assert sum(r["quantity"] for r in harvested.json()["inventory"] if r["itemId"] == "radish") == 3
 
 
 def seed_events(env, kind, count, at=None):
@@ -485,7 +485,7 @@ def seed_events(env, kind, count, at=None):
 def test_help_rewards_both_and_daily_limit(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     with env["sessions"]() as db:
         slot = db.get(GameSlot, (env["b"], 0))
         slot.plot = {**slot.plot, "moisture": 60}
@@ -503,7 +503,7 @@ def test_help_rewards_both_and_daily_limit(env):
 def test_daily_and_weekly_steal_limits(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
     seed_events(env, "steal", 10)
     limited = visit_action(env, "steal", index=0)
@@ -802,7 +802,7 @@ def test_concurrent_request_replay_grants_once(env):
 def test_guardian_catches_fine_atomic_and_low_conscience(env, monkeypatch):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
 
     class AlwaysCatch:
@@ -975,7 +975,7 @@ def incoming_theft(env, at=None, returned=False, caught=False):
 def test_return_gift_once_exempts_home_daily_limit_and_cooldown(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
     gift = incoming_theft(env)
     seed_events(env, "steal", 10)
@@ -1014,7 +1014,7 @@ def test_return_gift_once_exempts_home_daily_limit_and_cooldown(env):
 def test_return_gift_expires_at_exact_twelve_hours(env, age_hours):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
     gift = incoming_theft(env, env["clock"][0] - timedelta(hours=age_hours))
     receipt = next(
@@ -1058,7 +1058,7 @@ def test_notification_preferences_suppress_stolen_but_retain_return_gift(env):
 
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
     patched = env["client"].patch(
         API + "/farm", headers=env["bh"], json={"notificationSettings": {"stolen": False}}
@@ -1129,7 +1129,7 @@ def test_daily_help_resets_at_taipei_midnight_and_water_not_utc_midnight(env):
     env["clock"][0] = time.utc("2026-10-15T15:59:00Z")
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     with env["sessions"]() as db:
         slot = db.get(GameSlot, (env["b"], 0))
         slot.plot = {**slot.plot, "moisture": 60}
@@ -1152,8 +1152,8 @@ def test_harvest_notification_opt_in_and_one_per_crop(env):
         API + "/farm", headers=env["ah"], json={"notificationSettings": {"harvest": True}}
     )
     assert patched.status_code == 200, patched.text
-    ready_plot(env, env["a"], 6)
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["a"], 5)
+    ready_plot(env, env["b"], 5)
     current(env)
     current(env)
     current(env, "bh")
@@ -1162,7 +1162,7 @@ def test_harvest_notification_opt_in_and_one_per_crop(env):
         assert [r.user_id for r in rows] == [env["a"]]
         assert rows[0].payload_json["type"] == "farm_harvest"
     assert action(env, "harvest", index=0).status_code == 200
-    ready_plot(env, env["a"], 6)
+    ready_plot(env, env["a"], 5)
     # A newly planted generation, even in the same slot, may notify again.
     with env["sessions"]() as db:
         slot = db.get(GameSlot, (env["a"], 0))
@@ -1202,7 +1202,7 @@ def test_season_reminder_waits_until_taipei_20_once_and_respects_pref(env):
 def test_social_replay_cannot_duplicate_both_wallet_rewards(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     with env["sessions"]() as db:
         slot = db.get(GameSlot, (env["b"], 0))
         slot.plot = {**slot.plot, "moisture": 60}
@@ -1325,7 +1325,7 @@ def test_dog_fine_or_insurance_uses_authoritative_market_snapshot(env, monkeypat
 
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
 
     class DeterministicDog:
@@ -1366,7 +1366,7 @@ def test_guard_dog_requires_fine_coverage_before_random_draw(env, monkeypatch):
 
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
 
     class MustNotDraw:
@@ -1470,7 +1470,7 @@ def test_old_import_creation_time_does_not_become_today_habit(env):
 def test_return_gift_keeps_weekly_target_protection(env):
     create(env)
     create(env, "bh")
-    ready_plot(env, env["b"], 6)
+    ready_plot(env, env["b"], 5)
     remove_newbie(env, env["a"])
     gift = incoming_theft(env)
     seed_events(env, "steal", 5, env["clock"][0] - timedelta(days=1))
@@ -1823,3 +1823,49 @@ def test_react_accepts_the_sunflower_and_rejects_unknown_emoji(env):
     assert ok.status_code == 200, ok.text
     events = env["client"].get(API + "/events", headers=env["bh"]).json()
     assert events[0]["emoji"] == "🌻"
+
+
+@pytest.mark.parametrize('values', [
+    {'yieldGrowingMicros': -1},
+    {'yieldGrowingMicros': 1, 'yieldAdverseMicros': 2},
+    {'readyYield': 6},
+    {'readyYield': 3},  # Empty/immature plots cannot claim a fixed yield.
+    {'yieldGrowingMicros': True},
+])
+def test_import_rejects_invalid_yield_state(env, values):
+    import json
+    save = local_save(env)
+    p = json.loads(save['slots'][0]['plotJson'])
+    p.update(values)
+    save['slots'][0]['plotJson'] = json.dumps(p)
+    response = env['client'].post(API + '/farm', headers=env['ah'], json={'importSave': save})
+    assert response.status_code == 400, response.text
+    assert current(env) is None
+
+
+def test_import_accepts_legacy_plots_without_yield_fields(env):
+    import json
+    save = local_save(env)
+    for slot in save['slots']:
+        p = json.loads(slot['plotJson'])
+        for key in ['yieldGrowingMicros', 'yieldAdverseMicros', 'readyYield']:
+            p.pop(key, None)
+        slot['plotJson'] = json.dumps(p)
+    snapshot = create(env, importSave=save)
+    for p in snapshot['plots']:
+        assert p['yieldGrowingMicros'] == p['yieldAdverseMicros'] == p['readyYield'] == 0
+
+
+def test_legacy_stolen_count_never_creates_negative_harvest_score(env):
+    create(env)
+    ready_plot(env, env['a'], 1)
+    with env['sessions']() as db:
+        slot = db.get(GameSlot, (env['a'], 0))
+        slot.stolen_qty = 3
+        db.commit()
+    harvested = action(env, 'harvest', index=0)
+    assert harvested.status_code == 200, harvested.text
+    assert sum(row['quantity'] for row in harvested.json()['inventory'] if row['itemId'] == 'radish') == 1
+    with env['sessions']() as db:
+        event = db.scalar(select(GameEvent).where(GameEvent.actor_id == env['a'], GameEvent.kind == 'harvest'))
+        assert event.data['value'] > 0

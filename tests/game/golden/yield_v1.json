@@ -1,0 +1,738 @@
+{
+  "normalWeights": [
+    5,
+    40,
+    30,
+    20,
+    5
+  ],
+  "adverseWeights": [
+    30,
+    25,
+    20,
+    15,
+    10
+  ],
+  "vectors": [
+    {
+      "player": "yield-0",
+      "roll": 49.757325465919756,
+      "expected": {
+        "normal": 3,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-1",
+      "roll": 22.562374734576263,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-2",
+      "roll": 14.515619383027767,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-3",
+      "roll": 78.70353744648018,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-4",
+      "roll": 77.76555363086236,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-5",
+      "roll": 57.9061307636887,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-6",
+      "roll": 46.891050501771446,
+      "expected": {
+        "normal": 3,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-7",
+      "roll": 8.156896886437725,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-8",
+      "roll": 76.0006479013441,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-9",
+      "roll": 13.506824305472254,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-10",
+      "roll": 15.29133041475168,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-11",
+      "roll": 86.12162324698409,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-12",
+      "roll": 67.62096423645028,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-13",
+      "roll": 91.17720715897633,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-14",
+      "roll": 88.05583926642733,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-15",
+      "roll": 61.084220215826775,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-16",
+      "roll": 23.728813529661764,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-17",
+      "roll": 30.632933105551054,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-18",
+      "roll": 75.15225189039829,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-19",
+      "roll": 56.10866115594628,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-20",
+      "roll": 33.82632551536305,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-21",
+      "roll": 61.72396409893496,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-22",
+      "roll": 82.98650505821648,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-23",
+      "roll": 41.042895804337334,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-24",
+      "roll": 64.56835473005161,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-25",
+      "roll": 49.194170799515135,
+      "expected": {
+        "normal": 3,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-26",
+      "roll": 7.06803486505777,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-27",
+      "roll": 29.873897216100577,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-28",
+      "roll": 52.67730651142516,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-29",
+      "roll": 25.894652072838674,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-30",
+      "roll": 40.590430764714405,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-31",
+      "roll": 65.1233738191034,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-32",
+      "roll": 57.295896160421066,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-33",
+      "roll": 52.90811703812588,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-34",
+      "roll": 68.93824729691958,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-35",
+      "roll": 15.536460959629494,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-36",
+      "roll": 36.22160476796488,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-37",
+      "roll": 15.710884712775975,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-38",
+      "roll": 93.96947928286382,
+      "expected": {
+        "normal": 4,
+        "mixed": 5,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-39",
+      "roll": 23.52605100861983,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-40",
+      "roll": 65.73407041198517,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-41",
+      "roll": 32.39895740935672,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-42",
+      "roll": 94.4770052350273,
+      "expected": {
+        "normal": 4,
+        "mixed": 5,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-43",
+      "roll": 91.69595831188047,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-44",
+      "roll": 26.807810247227014,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-45",
+      "roll": 4.627932382191668,
+      "expected": {
+        "normal": 1,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-46",
+      "roll": 78.19322474978195,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-47",
+      "roll": 70.02868767956362,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-48",
+      "roll": 16.775562217409203,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-49",
+      "roll": 3.606637579015559,
+      "expected": {
+        "normal": 1,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-50",
+      "roll": 74.23107768087345,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-51",
+      "roll": 10.277800286811022,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-52",
+      "roll": 35.4274349199795,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-53",
+      "roll": 5.939370689084333,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-54",
+      "roll": 82.92831530824343,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-55",
+      "roll": 80.37004785316425,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-56",
+      "roll": 34.16150462876296,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-57",
+      "roll": 17.406046357734052,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-58",
+      "roll": 89.10594873146184,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-59",
+      "roll": 27.77628138566618,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-60",
+      "roll": 50.597515294731544,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-61",
+      "roll": 97.0543739007884,
+      "expected": {
+        "normal": 5,
+        "mixed": 5,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-62",
+      "roll": 3.4624983697557066,
+      "expected": {
+        "normal": 1,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-63",
+      "roll": 0.4254924624902956,
+      "expected": {
+        "normal": 1,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-64",
+      "roll": 39.05444967193736,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-65",
+      "roll": 77.86147172236036,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-66",
+      "roll": 63.40487704368996,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-67",
+      "roll": 49.04443567919298,
+      "expected": {
+        "normal": 3,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-68",
+      "roll": 78.75725294209988,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    },
+    {
+      "player": "yield-69",
+      "roll": 63.553797217213045,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-70",
+      "roll": 18.00486335446444,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-71",
+      "roll": 96.8344986416484,
+      "expected": {
+        "normal": 5,
+        "mixed": 5,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-72",
+      "roll": 72.49343088809327,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-73",
+      "roll": 93.55109001851855,
+      "expected": {
+        "normal": 4,
+        "mixed": 5,
+        "adverse": 5
+      }
+    },
+    {
+      "player": "yield-74",
+      "roll": 20.57147644094901,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-75",
+      "roll": 5.179003048069319,
+      "expected": {
+        "normal": 2,
+        "mixed": 1,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-76",
+      "roll": 18.312717319288964,
+      "expected": {
+        "normal": 2,
+        "mixed": 2,
+        "adverse": 1
+      }
+    },
+    {
+      "player": "yield-77",
+      "roll": 67.77583666815141,
+      "expected": {
+        "normal": 3,
+        "mixed": 3,
+        "adverse": 3
+      }
+    },
+    {
+      "player": "yield-78",
+      "roll": 48.14282726978525,
+      "expected": {
+        "normal": 3,
+        "mixed": 2,
+        "adverse": 2
+      }
+    },
+    {
+      "player": "yield-79",
+      "roll": 88.6321702211129,
+      "expected": {
+        "normal": 4,
+        "mixed": 4,
+        "adverse": 4
+      }
+    }
+  ]
+}

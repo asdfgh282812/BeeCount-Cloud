@@ -39,6 +39,9 @@ def empty_plot(index: int, now) -> dict:
         withered=False,
         harvests=0,
         seasonPasses=0,
+        yieldGrowingMicros=0,
+        yieldAdverseMicros=0,
+        readyYield=0,
         effects=[],
     )
 
@@ -108,6 +111,25 @@ def use_item(plot: dict, item_id: str, now, config: dict) -> dict:
     return p
 
 
+def harvest_weights(plot: dict, config: dict) -> list[float]:
+    total = plot.get("yieldGrowingMicros", 0)
+    adverse = min(1.0, max(0.0, plot.get("yieldAdverseMicros", 0) / total)) if total else 0.0
+    normal = config["care"]["normalYieldWeights"]
+    bad = config["care"]["adverseYieldWeights"]
+    return [normal[i] + (bad[i] - normal[i]) * adverse for i in range(5)]
+
+
+def roll_yield(plot: dict, config: dict) -> int:
+    key = f"{plot['playerId']}|{plot['index']}|{iso(plot['plantedAt'])}|harvest|{plot['harvests']}"
+    roll = FarmRandom(farm_seed(key)).next_double() * 100
+    cumulative = 0.0
+    for quantity, weight in enumerate(harvest_weights(plot, config), 1):
+        cumulative += weight
+        if roll < cumulative:
+            return quantity
+    return 5
+
+
 def advance(plot: dict, now, weather, config: dict) -> dict:
     return advance_result(plot, now, weather, config)["plot"]
 
@@ -124,6 +146,8 @@ def advance_result(initial: dict, now, weather, config: dict) -> dict:
         return dict(plot=p, events=events)
     if p["plantedAt"] is None:
         raise ValueError("已播種田地缺少 plantedAt")
+    if ready(p) and not p.get("readyYield", 0):
+        p["readyYield"] = roll_yield(p, config)
     row = crop(config, p["cropId"])
     options = config["care"]
     planted = utc(p["plantedAt"])
@@ -249,12 +273,30 @@ def advance_result(initial: dict, now, weather, config: dict) -> dict:
             min(1.0, p["growth"] + dt / row["growthHours"] * factor) if growing else p["growth"]
         )
         dry_hours = p["dryHours"] + dt if moisture <= 0 else 0.0
+        adverse = p["pests"] or (
+            not greenhouse
+            and (
+                (w["gust"] >= options["windThreshold"] and not effect("wind_net", at))
+                or (not sunny and w["precipitation"] >= options["heavyRainThreshold"])
+                or (w["temperature"] < options["coldTemperature"] and "winter" not in row["seasons"])
+                or (
+                    w["temperature"] > options["hotTemperature"]
+                    and (sunny or w["cloud"] < options["sunnyCloudThreshold"])
+                    and not rain and not sprinkler
+                )
+            )
+        )
+        yield_micros = (end - at) // timedelta(microseconds=1) if p["growth"] < 1 else 0
+        p["yieldGrowingMicros"] = p.get("yieldGrowingMicros", 0) + yield_micros
+        p["yieldAdverseMicros"] = p.get("yieldAdverseMicros", 0) + (yield_micros if adverse else 0)
         next_moisture = max(0.0, moisture - loss * dt)
         if abs(next_moisture) < 1e-8:
             next_moisture = 0.0
         if abs(next_moisture - options["thirstThreshold"]) < 1e-8:
             next_moisture = float(options["thirstThreshold"])
         p.update(growth=growth, moisture=next_moisture, dryHours=dry_hours, lastAdvancedAt=iso(end))
+        if ready(p) and not p.get("readyYield", 0):
+            p["readyYield"] = roll_yield(p, config)
 
         def event(kind, when=end):
             events.append(dict(kind=kind, at=iso(when)))
@@ -314,16 +356,7 @@ def harvest(plot: dict, now, config: dict) -> dict:
     if now != utc(plot["lastAdvancedAt"]):
         raise ValueError("收成前必須先推進到操作時間")
     row = crop(config, plot["cropId"])
-    random = FarmRandom(
-        farm_seed(
-            f"{plot['playerId']}|{plot['index']}|{iso(plot['plantedAt'])}|harvest|{plot['harvests']}"
-        )
-    )
-    quantity = float(row["minYield"] + random.next_int(row["maxYield"] - row["minYield"] + 1))
-    if plot["pests"]:
-        quantity *= config["care"]["pestYieldMultiplier"]
-    if plot["windDamaged"]:
-        quantity *= config["care"]["windYieldMultiplier"]
+    quantity = plot.get("readyYield", 0) or roll_yield(plot, config)
     count = plot["harvests"] + 1
     p = deepcopy(plot) if count < row["harvests"] else empty_plot(plot["index"], now)
     if count < row["harvests"]:
@@ -331,12 +364,15 @@ def harvest(plot: dict, now, config: dict) -> dict:
             growth=0.0,
             harvests=count,
             windDamaged=False,
+            yieldGrowingMicros=0,
+            yieldAdverseMicros=0,
+            readyYield=0,
             effects=[e for e in p["effects"] if e["id"] != "fertilizer"],
         )
     return dict(
         plot=p,
         cropId=row["id"],
-        quantity=max(1, dart_round(quantity)),
+        quantity=quantity,
         expiresAt=iso(now + timedelta(days=row["shelfLifeDays"])),
         xp=row["xp"],
         seedReward=row["seedReward"],
