@@ -1,3 +1,4 @@
+import { useHistoryDialog } from '../lib/useHistoryDialog'
 import { useCallback, useEffect, useState } from 'react'
 
 import {
@@ -109,7 +110,11 @@ export function GlobalEditDialogs() {
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
-  const [editTxOpen, setEditTxOpen] = useState(false)
+  const [editTxVisible, setEditTxVisible] = useHistoryDialog<boolean>('tx-editor')
+  const editTxOpen = editTxVisible === true
+  const setEditTxOpen = useCallback((open: boolean) => {
+    setEditTxVisible(open ? true : null)
+  }, [setEditTxVisible])
   const [editTxForm, setEditTxForm] = useState<TxForm>(txDefaults())
   // Phase 24:非 null 時,存檔要分流到 occurrence PATCH / update-from POST
   // 而不是一般的 updateTransaction——見 onOpenEditTx 監聽器與 handleSaveTx。
@@ -177,7 +182,11 @@ export function GlobalEditDialogs() {
   }, [editTxOpen, editTxForm.tx_type, editTxForm.account_name, editTxLedgerId, editTxAccounts, token])
 
   // 分类编辑相关
-  const [editCatOpen, setEditCatOpen] = useState(false)
+  const [editCatVisible, setEditCatVisible] = useHistoryDialog<boolean>('category-editor')
+  const editCatOpen = editCatVisible === true
+  const setEditCatOpen = useCallback((open: boolean) => {
+    setEditCatVisible(open ? true : null)
+  }, [setEditCatVisible])
   const [editCatForm, setEditCatForm] = useState<CategoryForm>(categoryDefaults())
   const [editCatLedgerId, setEditCatLedgerId] = useState('')
   const [editCatRows, setEditCatRows] = useState<WorkspaceCategory[]>([])

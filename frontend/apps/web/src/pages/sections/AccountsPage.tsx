@@ -1,3 +1,4 @@
+import { useHistoryDialog } from '../../lib/useHistoryDialog'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -114,6 +115,10 @@ export function AccountsPage() {
     [],
   )
   const [form, setForm] = useState<AccountForm>(accountDefaults())
+  const [accountEditor, setAccountEditor] = useHistoryDialog<ReadAccount | true>('account-editor')
+  const setAccountEditorOpen = useCallback((open: boolean) => {
+    setAccountEditor((previous) => open ? previous ?? true : null)
+  }, [setAccountEditor])
   // 删除前的待确认账户。null = 无 pending。WorkspaceAccount 带 tx_count 字段,
   // confirm dialog 直接读它,不再发额外请求。
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
@@ -280,6 +285,10 @@ export function AccountsPage() {
   }, [])
 
   useEffect(() => onOpenEditAccount(handleEditAccount), [handleEditAccount])
+
+  useEffect(() => {
+    if (accountEditor && accountEditor !== true) handleEditAccount(accountEditor)
+  }, [accountEditor, handleEditAccount])
 
   const onSave = async (): Promise<boolean> => {
     if (!activeLedgerId) {
@@ -799,6 +808,8 @@ export function AccountsPage() {
         onReset={() => setForm(accountDefaults())}
         onEdit={handleEditAccount}
         openSignal={editOpenSignal}
+        dialogOpen={accountEditor !== null}
+        onDialogOpenChange={setAccountEditorOpen}
         avatarPreviewUrlByFileId={avatarPreviewByFileId}
         baseCurrency={base}
         fxRates={rates}

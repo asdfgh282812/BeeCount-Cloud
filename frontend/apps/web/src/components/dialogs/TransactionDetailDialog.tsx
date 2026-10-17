@@ -38,7 +38,7 @@ interface Props {
   tags?: WorkspaceTag[]
   onClose: () => void
   onEdit: (tx: WorkspaceTransaction) => void
-  /** §2.12.3:expense/income 均显示(转账不可退款)—— 点击后关闭详情、开建
+  /** §2.12.3:expense/income 均显示(转账不可退款)—— 点击后保留详情、开建
    *  交易表单并预填退款信息。已经被退过款的交易(tx.refunds.length > 0)
    *  不再显示为可点击 —— 一笔交易只能被退款一次,见按钮 disabled 逻辑。 */
   onRefund?: (tx: WorkspaceTransaction) => void
@@ -46,7 +46,7 @@ interface Props {
    *  一份,開啟「新增交易」表單讓使用者修改時間或其它內容再存成新交易。 */
   onDuplicate?: (tx: WorkspaceTransaction) => void
   /** 退款双向勾稽(ph1.5+):点击「退款」徽章跳原交易,或点反查清单里的某笔
-   *  退款跳去那笔退款交易 —— 用同一个 detail 弹窗原地切换展示对象。 */
+   *  退款跳去那笔退款交易 —— 保留來源,以同一個 detail 元件顯示下一筆,返回還原原交易。 */
   onJumpToTx?: (txId: string) => void
   /** 借還款雙向勾稽(體驗補強):點「關聯欠款」跳去借還款頁對應卡片。 */
   onJumpToDebt?: (debtId: string) => void

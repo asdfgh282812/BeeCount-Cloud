@@ -1,3 +1,4 @@
+import { useHistoryDialog } from '../lib/useHistoryDialog'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -82,15 +83,31 @@ export function GlobalEntityDialogs() {
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
   const { retryOnConflict } = useLedgerWrite()
 
-  // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
-  const [tx, setTx] = useState<WorkspaceTransaction | null>(null)
+  // 只顯示目前一層;父層資料留在歷史中,供返回與子功能寫入使用。
+  const [tx, setTx, replaceTx, sourceTx] = useHistoryDialog<WorkspaceTransaction>('tx')
+
+  useEffect(() => {
+    if (!tx) return
+    let cancelled = false
+    void fetchWorkspaceTransactions(token, { txSyncId: tx.id, limit: 1 })
+      .then((page) => {
+        if (cancelled) return
+        const latest = page.items[0]
+        if (latest) replaceTx(latest)
+        else setTx(null)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+    // Run on return to a transaction, not on the refresh replacement itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tx?.id, token])
 
   // 交易详情弹窗的刪除入口(2026-09-18 使用者反饋補強):只存要刪的那筆
   // tx,實際刪除前彈 ConfirmDialog 二次確認 —— 跟 TransactionsPage.tsx 的
   // pendingDelete 是各自獨立的一份(那份只服務交易主頁列表的刪除按鈕,這裡
   // 服務全域詳情彈窗,兩者不共用 state,但都是呼叫同一支 deleteTransaction
   // API,刪除後靠 sync 事件讓其它頁面自己刷新,不需要在這裡手動通知）。
-  const [pendingDeleteTx, setPendingDeleteTx] = useState<WorkspaceTransaction | null>(null)
+  const [pendingDeleteTx, setPendingDeleteTx] = useHistoryDialog<WorkspaceTransaction>('delete-tx')
   const [deleteTxBusy, setDeleteTxBusy] = useState(false)
 
   // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):tx.reward_rule_ids 只有 id,
@@ -103,26 +120,26 @@ export function GlobalEntityDialogs() {
   // 打開時拉一次該帳本的尾款清單(用 source_tx_id / completed_tx_id 比對,不
   // 在交易 read model 上加欄位)。只有 expense/transfer 才可能有。
   const [txDepositBalances, setTxDepositBalances] = useState<ReadDepositBalance[]>([])
-  const [depositCompleteTarget, setDepositCompleteTarget] = useState<ReadDepositBalance | null>(null)
+  const [depositCompleteTarget, setDepositCompleteTarget] = useHistoryDialog<ReadDepositBalance>('complete-deposit')
   const [depositCompleteAccounts, setDepositCompleteAccounts] = useState<WorkspaceAccount[]>([])
 
   // §2.6:分期交易的退款发起点 —— 先问「只退这一期」还是「整笔退款」。
   // step === 'confirmWhole' 时展示第二个 destructive 二次确认(删整个计划
   // 不可复原,跟本应用其它破坏性分期操作的既有模式一致)。
-  const [installmentRefund, setInstallmentRefund] = useState<
-    { tx: WorkspaceTransaction; step: 'choice' | 'confirmWhole' } | null
-  >(null)
+  const [installmentRefund, setInstallmentRefund] = useHistoryDialog<
+    { tx: WorkspaceTransaction; step: 'choice' | 'confirmWhole' }
+  >('installment-refund')
   const [installmentRefundBusy, setInstallmentRefundBusy] = useState(false)
 
   // 2026-08-03 使用者反饋 #4:分期產生的交易編輯發起點 —— 先問要做哪一種
   // 差異化操作,見 InstallmentEditChoiceDialog 說明。
-  const [installmentEdit, setInstallmentEdit] = useState<WorkspaceTransaction | null>(null)
+  const [installmentEdit, setInstallmentEdit] = useHistoryDialog<WorkspaceTransaction>('installment-edit')
 
   // Phase 24(需求 #5):週期性收支產生的交易編輯發起點 —— 先問「修改此
   // 記錄」還是「修改連同未來週期」,見 RecurringEditChoiceDialog 說明。
-  const [recurringEdit, setRecurringEdit] = useState<WorkspaceTransaction | null>(null)
+  const [recurringEdit, setRecurringEdit] = useHistoryDialog<WorkspaceTransaction>('recurring-edit')
 
-  const [account, setAccount] = useState<WorkspaceAccount | null>(null)
+  const [account, setAccount, replaceAccount] = useHistoryDialog<WorkspaceAccount>('account')
   const [accountScope, setAccountScope] = useState<DetailScope>('current')
   const [accountTxs, setAccountTxs] = useState<WorkspaceTransaction[]>([])
   const [accountTotal, setAccountTotal] = useState(0)
@@ -142,7 +159,7 @@ export function GlobalEntityDialogs() {
     undefined,
   )
 
-  const [category, setCategory] = useState<WorkspaceCategory | null>(null)
+  const [category, setCategory] = useHistoryDialog<WorkspaceCategory>('category')
   const [categoryScope, setCategoryScope] = useState<DetailScope>('current')
   const [categoryTxs, setCategoryTxs] = useState<WorkspaceTransaction[]>([])
   const [categoryTotal, setCategoryTotal] = useState(0)
@@ -153,7 +170,7 @@ export function GlobalEntityDialogs() {
   const [categoryStatsLoading, setCategoryStatsLoading] = useState(false)
   const [categoryStatsTruncated, setCategoryStatsTruncated] = useState(false)
 
-  const [tag, setTag] = useState<WorkspaceTag | null>(null)
+  const [tag, setTag] = useHistoryDialog<WorkspaceTag>('tag')
   const [tagScope, setTagScope] = useState<DetailScope>('current')
   const [tagTxs, setTagTxs] = useState<WorkspaceTransaction[]>([])
   const [tagTotal, setTagTotal] = useState(0)
@@ -311,21 +328,21 @@ export function GlobalEntityDialogs() {
   )
   const handleCompleteDeposit = useCallback(
     async (balance: ReadDepositBalance, payload: DepositBalanceCompletePayload): Promise<boolean> => {
-      if (!tx) return false
-      const ledgerId = tx.ledger_id
+      if (!sourceTx) return false
+      const ledgerId = sourceTx.ledger_id
       try {
         await retryOnConflict(ledgerId, (base) =>
           completeDepositBalance(token, ledgerId, balance.id, base, payload),
         )
         toast.success(t('depositBalance.notice.completed'), t('notice.success'))
-        await loadTxDepositBalances(tx)
+        await loadTxDepositBalances(sourceTx)
         return true
       } catch (err) {
         toast.error(localizeError(err, t), t('notice.error'))
         return false
       }
     },
-    [tx, token, retryOnConflict, toast, t, loadTxDepositBalances],
+    [sourceTx, token, retryOnConflict, toast, t, loadTxDepositBalances],
   )
 
   // 转帐「≈折算金额」显示用(2026-09-18):详情弹窗没有现成的完整帐户清单
@@ -402,13 +419,27 @@ export function GlobalEntityDialogs() {
       setAccountTotal(0)
       setAccountOffset(0)
       setAccountPeriodRange(null)
-      void loadAccountTxs(acc.id, defaultScope, 0)
       // 同时拉一份 tags 字典(如还没拉)
       if (tagsDict.length === 0) {
         void fetchWorkspaceTags(token, { limit: 500 }).then(setTagsDict).catch(() => undefined)
       }
     })
   }, [loadAccountTxs, token, tagsDict.length])
+
+  // 返回保留的帳戶詳情時,重新載入此帳戶而非沿用上一個子詳情的交易。
+  useEffect(() => {
+    if (!account) return
+    let cancelled = false
+    void loadAccountTxs(account.id, accountScope, 0)
+    void fetchWorkspaceAccounts(token, { limit: 500 }).then((accounts) => {
+      if (cancelled) return
+      const latest = accounts.find((row) => row.id === account.id)
+      if (latest) replaceAccount(latest)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+    // Re-entering a retained detail refreshes it; replacing its data adds no history.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.id, token])
 
   const handleAccountScopeChange = useCallback(
     (next: DetailScope) => {
@@ -603,7 +634,6 @@ export function GlobalEntityDialogs() {
   // 依赖 inline icon picker,数据流复杂,后续单独全局化)。
   const handleEditTx = useCallback(
     (target: WorkspaceTransaction) => {
-      setTx(null)
       // §2.12.1 补强(2026-08-03 使用者反饋 #4):分期產生的交易不能直接
       // 自由編輯(後端也擋了 amount/happened_at/account_id,見
       // `TX_UPDATE_INSTALLMENT_LINKED`)——先問要做哪一種差異化操作,而不是
@@ -634,7 +664,6 @@ export function GlobalEntityDialogs() {
       const planId = installmentEdit.installment_plan_id
       if (!planId) return
       const txId = installmentEdit.id
-      setInstallmentEdit(null)
       const params = new URLSearchParams({ highlight: planId, action })
       if (action === 'editThis' || action === 'editFuture') {
         params.set('txId', txId)
@@ -651,19 +680,17 @@ export function GlobalEntityDialogs() {
     (mode: 'single' | 'future') => {
       if (!recurringEdit) return
       const target = recurringEdit
-      setRecurringEdit(null)
       dispatchOpenEditTx(target, { recurringEditMode: mode })
     },
     [recurringEdit],
   )
 
-  // §2.12.3:退款发起点 —— 关掉详情,开「新建交易」表单并带上原交易的
+  // §2.12.3:退款发起点 —— 保留详情,开「新建交易」表单并带上原交易的
   // 金额/备注/分类/账户预填 + refund_of_id 关联,tx_type 强制为原交易的
   // 反向类型(§2.6:income 也能被退款,GlobalEditDialogs 的 onOpenNewTx
   // 监听器负责实际预填逻辑)。
   const handleRefundTx = useCallback(
     (target: WorkspaceTransaction) => {
-      setTx(null)
       // §2.6:已经被退过款的交易不能再退,退款交易本身也不能再被退款(不允许
       // 链式退款)—— detail 弹窗的按钮已经 disabled/隐藏,这里再挡一道防呆
       // (万一未来有其它入口直接调这个 handler)。
@@ -700,18 +727,17 @@ export function GlobalEntityDialogs() {
     [toast, t],
   )
 
-  // 複製交易(2026-08 使用者回饋):關掉詳情,開「新建交易」表單並帶上原
+  // 複製交易:保留詳情,開「新建交易」表單並帶上原
   // 交易的備註/帳戶/分類/回饋項目/專案/標籤/拆帳等屬性欄位預填,時間欄位
   // 不複製(用現在時間),使用者可直接修改時間或其它內容再存成新交易。
   const handleDuplicateTx = useCallback((target: WorkspaceTransaction) => {
-    setTx(null)
     dispatchOpenNewTx({
       ledgerId: target.ledger_id,
       duplicateOf: target,
     })
   }, [])
 
-  // 刪除(2026-09-18 使用者反饋補強):關掉詳情彈窗、記住目標交易,彈
+  // 刪除:保留詳情彈窗、記住目標交易,彈
   // ConfirmDialog 二次確認,實際刪除在 handleConfirmDeleteTx。
   const handleDeleteTx = useCallback(
     (target: WorkspaceTransaction) => {
@@ -721,7 +747,6 @@ export function GlobalEntityDialogs() {
         toast.error(t('transactions.liveReward.deleteBlocked'), t('notice.error'))
         return
       }
-      setTx(null)
       setPendingDeleteTx(target)
     },
     [toast, t],
@@ -739,16 +764,16 @@ export function GlobalEntityDialogs() {
         deleteTransaction(token, target.ledger_id, target.id, base),
       )
       toast.success(t('notice.txDeleted'), t('notice.success'))
-      setPendingDeleteTx(null)
+      navigate(-2)
     } catch (err) {
       toast.error(localizeError(err, t), t('notice.error'))
     } finally {
       setDeleteTxBusy(false)
     }
-  }, [pendingDeleteTx, retryOnConflict, token, toast, t])
+  }, [pendingDeleteTx, retryOnConflict, token, toast, t, navigate])
 
-  // 退款双向勾稽(ph1.5+):点击退款徽章 / 反查清单里的某一笔,原地把 detail
-  // 弹窗切换成那笔交易 —— 用 tx_sync_id 精确查(跨分页/跨账本都能查到,不
+  // 退款双向勾稽:点击退款徽章 / 反查清单里的某一笔,以新歷史項目開啟
+  // 那笔交易,保留來源詳情 —— 用 tx_sync_id 精确查(跨分页/跨账本都能查到,不
   // 局限在当前已加载的列表里)。
   const handleJumpToTx = useCallback(
     async (txId: string) => {
@@ -807,24 +832,22 @@ export function GlobalEntityDialogs() {
 
   const handleEditCategory = useCallback(
     (cat: WorkspaceCategory) => {
-      setCategory(null)
       dispatchOpenEditCategory(cat)
     },
     [],
   )
 
-  // 借還款雙向勾稽(體驗補強):關掉交易詳情,跳去借還款頁並帶 highlight
+  // 借還款雙向勾稽:保留交易詳情,跳去借還款頁並帶 highlight
   // query param 定位到對應卡片(跟 handleJumpToTransactions 同款 navigate 写法)。
   const handleJumpToDebt = useCallback(
     (debtId: string) => {
-      setTx(null)
       navigate(`/app/debts?highlight=${encodeURIComponent(debtId)}`)
     },
     [navigate],
   )
 
   // 信用卡紅利回饋(§2.9.5,2026-08-04 補強):點交易詳情的「使用回饋」chip
-  // —— 关掉交易详情,查出这张卡的完整帳戶物件(帳戶詳情彈窗需要 account_type
+  // —— 保留交易详情,查出这张卡的完整帳戶物件(帳戶詳情彈窗需要 account_type
   // /credit_limit 等欄位才能正确渲染紅利回饋區塊),再開帳戶詳情彈窗並帶上
   // 這條規則的 id 讓它自動展開 + 打開規則明細彈窗(見
   // `onOpenDetailAccount`/`AccountDetailDialog`/`CardRewardRulesSection` 的
@@ -832,7 +855,6 @@ export function GlobalEntityDialogs() {
   const handleJumpToReward = useCallback(
     async (accountId: string, ruleId: string) => {
       const sourceTx = tx
-      setTx(null)
       if (!sourceTx) return
       try {
         const accounts = await fetchWorkspaceAccounts(token, { ledgerId: sourceTx.ledger_id, limit: 500 })
@@ -852,7 +874,6 @@ export function GlobalEntityDialogs() {
   const handleJumpToTransactions = useCallback(
     (cat: WorkspaceCategory) => {
       const scopeAtJump = categoryScope
-      setCategory(null)
       // 跳过去的 TransactionsPage ledger filter 跟当前 scope 对齐:current
       // 时带 ledger=...,all 时不限制账本,避免用户切到「全部账本」却跳进单
       // 账本列表造成迷惑。

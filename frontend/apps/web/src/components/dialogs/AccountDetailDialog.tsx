@@ -1,3 +1,4 @@
+import { pushDialogState } from '../../lib/dialogHistory'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -64,7 +65,7 @@ import { localizeError } from '../../i18n/errors'
 import { BillingCycleAdjustDialog } from './BillingCycleAdjustDialog'
 import { jwtUserId } from '../../state/jwt'
 import type { DetailScope } from '../../lib/txDialogEvents'
-import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialogEvents'
+import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 import { AccountStatementSection, BalanceAdjustmentButton } from './AccountReconciliationSection'
 import { CardRewardRulesSection } from './CardRewardRulesSection'
 import { DetailScopeToggle } from './DetailScopeToggle'
@@ -437,7 +438,7 @@ export function AccountDetailDialog({
             <AccountCardInfo account={account} t={t} billing={billing} />
             {billing.canViewBilling && <button type="button"
               className="border-b border-border/60 px-6 py-3 text-left text-sm text-primary hover:bg-muted/30"
-              onClick={() => { onClose(); navigate(`/app/settings/reminders?account=${encodeURIComponent(billing.billingAccountId!)}`) }}>
+              onClick={() => navigate(`/app/settings/reminders?account=${encodeURIComponent(billing.billingAccountId!)}`)}>
               {t('reminders.title')}
             </button>}
 
@@ -1211,14 +1212,10 @@ function CreditCardBillingSection({
               type="button"
               className="rounded-md border border-border px-2.5 py-1 font-medium text-muted-foreground hover:bg-muted/50"
               onClick={() => {
-                // 详情弹窗是全局挂载的(可能从任意页面打开),先关自己 + 跳到
-                // 账户列表页,再派发 openEditAccount 让该页把这个账户装进编辑
-                // 表单 —— 单纯 navigate 在已经身处 /app/accounts 时是个
-                // no-op,弹窗也不会自己关掉,点了跟没点一样(2026-08-02 用户
-                // 实测反馈)。
-                onClose()
-                navigate('/app/accounts')
-                dispatchOpenEditAccount(account as WorkspaceAccount)
+                // 在目的地直接開同一份編輯器,返回還原本次來源詳情。
+                navigate('/app/accounts', {
+                  state: pushDialogState(null, { kind: 'account-editor', value: account }),
+                })
               }}
             >
               {t('cardBilling.manageAutoPay')}

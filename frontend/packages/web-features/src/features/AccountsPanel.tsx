@@ -985,6 +985,8 @@ type AccountsPanelProps = {
    *  一次弹窗。不传則完全不影响现有行為(2026-08-02 用户反馈"前往帳戶設定"
    *  点了没反应,根因就是这条路径漏了 setOpen)。 */
   openSignal?: number
+  dialogOpen?: boolean
+  onDialogOpenChange?: (open: boolean) => void
   /** 帳戶頭像(2026-08-02 補強):`avatar_cloud_file_id` → 已加载好的 blob
    *  URL,透传给 BankCardTile 渲染卡面照片。 */
   avatarPreviewUrlByFileId?: Record<string, string>
@@ -1019,6 +1021,8 @@ export function AccountsPanel({
   hideCurrencyCards = false,
   onRestore,
   openSignal,
+  dialogOpen,
+  onDialogOpenChange,
   avatarPreviewUrlByFileId,
   onUploadAvatar,
   baseCurrency,
@@ -1029,7 +1033,9 @@ export function AccountsPanel({
   onReorderChildren
 }: AccountsPanelProps) {
   const t = useT()
-  const [open, setOpen] = useState(false)
+  const [internalOpen, setInternalOpen] = useState(false)
+  const open = dialogOpen ?? internalOpen
+  const setOpen = onDialogOpenChange ?? setInternalOpen
   // 帳戶清單拖曳排序(2026-09-05):切換模式的 state 放在這裡(跟 open 同層
   // 級)——只是個 UI 開關,不需要提升到 AccountsPage。
   const [editingOrder, setEditingOrder] = useState(false)
