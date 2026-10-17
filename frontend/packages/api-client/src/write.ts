@@ -112,7 +112,7 @@ export async function deleteTransaction(
 
 export type BatchDeleteTxFailure = {
   tx_id: string
-  reason: 'not_found' | 'permission_denied' | 'conflict' | 'installment_linked'
+  reason: 'not_found' | 'permission_denied' | 'conflict' | 'installment_linked' | 'live_reward'
   message?: string | null
 }
 

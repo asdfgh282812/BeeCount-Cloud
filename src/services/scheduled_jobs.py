@@ -53,6 +53,8 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "stock_dca_materialization": (15 * 60, False),
     "card_autopay": (15 * 60, False),
     "card_reward_payout": (5 * 60, False),
+    # 即時回饋(2026-10-16):寫入當下就重算,這裡只是每小時的保險 + 整期回饋入帳通知。
+    "card_reward_live_reconcile": (3600, False),
     "swipesmart_usage_backfill": (15 * 60, False),
     "check_latest_app_version": (30 * 60, False),
     # 股票持股(2026-09-28):預設每 5 分鐘一次;盤中每次都抓盤中報價、收盤後
@@ -233,6 +235,12 @@ def _run_card_reward_payout(db: Session) -> dict:
     return {"tx_payouts": result["tx_payouts"], "period_payouts": result["period_payouts"]}
 
 
+def _run_card_reward_live_reconcile(db: Session) -> dict:
+    from . import card_reward_live
+
+    return card_reward_live.reconcile_live_card_rewards(db)
+
+
 def _run_swipesmart_usage_backfill(db: Session) -> dict:
     from . import swipesmart_backfill
 
@@ -307,6 +315,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "stock_dca_materialization": _run_stock_dca_materialization,
     "card_autopay": _run_card_autopay,
     "card_reward_payout": _run_card_reward_payout,
+    "card_reward_live_reconcile": _run_card_reward_live_reconcile,
     "swipesmart_usage_backfill": _run_swipesmart_usage_backfill,
     "check_latest_app_version": _run_check_latest_app_version,
     "security_quote_close": _run_security_quote_close,

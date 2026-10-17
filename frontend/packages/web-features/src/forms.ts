@@ -36,6 +36,9 @@ export type TxForm = {
    *  無帳戶交易被迫在 web 端補選帳戶才能存檔其它欄位的編輯(比照
    *  `original_currency` 同款「開表單時的快照」模式)。 */
   original_account_name: string
+  /** 即時回饋交易(2026-10-16):金額由回饋規則自動計算,表單金額欄唯讀、不提供
+   *  手續費/折扣/拆帳。只在編輯既有即時回饋交易時為 true。 */
+  amount_locked?: boolean
   tags: string[]
   attachments: AttachmentRef[]
   /** 交易币种(v30 多币种):'' = 跟随账户/账本本位币;显式值 = 用户手选。

@@ -1872,6 +1872,11 @@ async def _commit_create_tx_fast(
                 "serverTimestamp": response.server_timestamp.isoformat(),
             },
         )
+        # 即時回饋(2026-10-16):commit 前重算寫進其它帳本的回饋交易也要廣播。
+        from ...services.card_reward_live import broadcast_touched_ledgers
+        await broadcast_touched_ledgers(
+            db, ws_manager=request.app.state.ws_manager, exclude_ledger_ids={ledger.id},
+        )
     logger.info(
         "write.commit.create_fast ledger=%s entity=%s change_id=%d device=%s user=%s replay=%s",
         ledger.external_id, response.entity_id, response.new_change_id,
@@ -2257,6 +2262,11 @@ async def _commit_write_fast_tx(
                 "serverTimestamp": response.server_timestamp.isoformat(),
             },
         )
+        # 即時回饋(2026-10-16):commit 前重算寫進其它帳本的回饋交易也要廣播。
+        from ...services.card_reward_live import broadcast_touched_ledgers
+        await broadcast_touched_ledgers(
+            db, ws_manager=request.app.state.ws_manager, exclude_ledger_ids={ledger.id},
+        )
     logger.info(
         "write.commit.fast action=%s ledger=%s entity=%s change_id=%d device=%s user=%s replay=%s",
         audit_action, ledger.external_id, tx_id, response.new_change_id, device_id, current_user.id, did_replay,
@@ -2393,6 +2403,12 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     # 入帳交易的其它字段时,不带上这个会让 rewardSourceTxId 反查被静默清空。
     if row.reward_source_tx_sync_id is not None:
         item["rewardSourceTxId"] = row.reward_source_tx_sync_id
+    # 即時回饋交易(2026-10-16)連回規則 + 期別:同理,編輯回饋交易的日期/帳戶時
+    # 不能把連結清掉。
+    if row.reward_payout_rule_sync_id is not None:
+        item["rewardPayoutRuleId"] = row.reward_payout_rule_sync_id
+    if row.reward_payout_key is not None:
+        item["rewardPayoutKey"] = row.reward_payout_key
     # 延後入帳/對帳模式(§2.10 Phase 5,2026-08-09 改版):同理,fast path
     # 编辑一笔已標記延後入帳/已確認的交易的其它字段时(例如只改 reconciled_at
     # 却不带 deferred_posting_at,或反过来),不带上这两个会让另一个字段在
@@ -2569,6 +2585,11 @@ async def _commit_write(
             "serverCursor": response.new_change_id,
             "serverTimestamp": response.server_timestamp.isoformat(),
         },
+    )
+    # 即時回饋(2026-10-16):commit 前重算寫進其它帳本的回饋交易也要廣播。
+    from ...services.card_reward_live import broadcast_touched_ledgers
+    await broadcast_touched_ledgers(
+        db, ws_manager=request.app.state.ws_manager, exclude_ledger_ids={ledger.id},
     )
 
     # Editor 的 /sync/pull 只返回自己 scope=user 的变更,Owner 的 user-global

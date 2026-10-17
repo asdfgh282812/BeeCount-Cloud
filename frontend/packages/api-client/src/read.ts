@@ -444,6 +444,8 @@ export async function fetchWorkspaceTransactions(
     txType?: string
     accountName?: string
     txSyncId?: string
+    /** 只列出由這筆消費產生的回饋交易(即時回饋,2026-10-16)。 */
+    rewardSourceTxId?: string
     tagSyncId?: string
     categorySyncId?: string
     accountSyncId?: string
@@ -471,6 +473,7 @@ export async function fetchWorkspaceTransactions(
   if (options?.txType) query.set('tx_type', options.txType)
   if (options?.accountName) query.set('account_name', options.accountName)
   if (options?.txSyncId) query.set('tx_sync_id', options.txSyncId)
+  if (options?.rewardSourceTxId) query.set('reward_source_tx_id', options.rewardSourceTxId)
   if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
   if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
   if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)

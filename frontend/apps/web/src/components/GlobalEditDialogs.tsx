@@ -48,6 +48,7 @@ import {
   TransactionsPanel,
   txDefaults,
   validateDepositForm,
+  isLiveCardReward,
   type CategoryForm,
   type TxForm,
 } from '@beecount/web-features'
@@ -424,6 +425,8 @@ export function GlobalEditDialogs() {
         category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
         account_name: tx.account_name || '',
         original_account_name: tx.account_name || '',
+        // 即時回饋交易(2026-10-16):金額由回饋規則計算,表單唯讀。
+        amount_locked: isLiveCardReward(tx),
         from_account_name: tx.from_account_name || '',
         to_account_name: tx.to_account_name || '',
         // 转帐「转入金额」(2026-09-18 使用者反馈:重开编辑表单会用当下市场

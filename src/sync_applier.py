@@ -487,6 +487,10 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
         # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同款语义。
         ("rewardSourceTxId", "reward_source_tx_sync_id"),
+        # 即時回饋交易(2026-10-16)連回規則 + 期別:缺键保留(舊版 App 不認得這兩個鍵,
+        # 推回來時不能把連結清掉)。
+        ("rewardPayoutRuleId", "reward_payout_rule_sync_id"),
+        ("rewardPayoutKey", "reward_payout_key"),
         # 拆帳(§2.4):缺键保留既有 splits(跟 attachments 同一套惯例)——
         # payload 没带 "splits" key(旧客户端 / 只改其它字段的 push)时,merge
         # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批

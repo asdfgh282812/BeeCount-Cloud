@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -38,6 +39,14 @@ from src.models import (
     UserAccountProjection,
 )
 from src.services import card_reward_payout, card_rewards
+
+
+@pytest.fixture(autouse=True)
+def _legacy_card_reward_scheduler_only(monkeypatch):
+    """這個檔案驗證的是即時回饋(2026-10-16)上線前就勾選的消費由舊排程
+    (`card_reward_payout`)入帳的行為;關掉即時機制 = 所有配對都是舊套用。
+    即時回饋本身見 tests/test_card_reward_live.py。"""
+    monkeypatch.setenv("CARD_REWARD_LIVE_ENABLED", "0")
 
 
 def _make_client():
@@ -1865,10 +1874,9 @@ def test_mobile_push_settlement_date_fields_partial_update_keeps_existing():
         app.dependency_overrides.clear()
 
 
-def test_card_reward_rule_locks_calc_fields_once_it_has_history():
-    """#16:規則有交易掛著之後,計算相關欄位 PATCH 一律 422;label/note/
-    enabled/starts_at/ends_at 仍可正常編輯。GET 回傳的 `locked` 旗標也要
-    正確反映有/沒有歷史兩種狀態。"""
+def test_card_reward_rule_calc_fields_stay_editable_after_history():
+    """#16 原本規則有交易掛著之後鎖住計算欄位;2026-10-16 即時回饋起改規則只重算
+    還沒入帳的回饋,規則不再上鎖:`locked` 永遠 False,計算欄位照常可改。"""
     client, TS = _make_client()
     try:
         app_tok = _login(client, "crr30@t.com", device_id="d-app", client_type="app")
@@ -1908,7 +1916,7 @@ def test_card_reward_rule_locks_calc_fields_once_it_has_history():
             "/api/v1/read/ledgers/lgr30/accounts/acc-card1/card-reward-rules", headers=hdr_web,
         )
         item_after = next(i for i in lst_after.json() if i["id"] == rule_id)
-        assert item_after["locked"] is True
+        assert item_after["locked"] is False
 
         base = _latest_change_id(client, hdr_web, "lgr30")
         r_locked_field = client.patch(
@@ -1916,7 +1924,7 @@ def test_card_reward_rule_locks_calc_fields_once_it_has_history():
             headers=hdr_web,
             json={"base_change_id": base, "rate_value": 20.0},
         )
-        assert r_locked_field.status_code == 422, r_locked_field.text
+        assert r_locked_field.status_code == 200, r_locked_field.text
 
         base = _latest_change_id(client, hdr_web, "lgr30")
         r_editable = client.patch(

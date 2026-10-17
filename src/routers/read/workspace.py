@@ -49,6 +49,10 @@ def list_workspace_transactions(
     account_name: str | None = Query(default=None),
     q: str | None = Query(default=None),
     tx_sync_id: str | None = Query(default=None, description="按 tx 自身 syncId 精确过滤(用于 admin/integrity 跳到具体交易)"),
+    reward_source_tx_id: str | None = Query(
+        default=None,
+        description="只列出由這筆消費產生的回饋交易(reward_source_tx_sync_id 精確比對;Web 交易詳情列逐筆即時回饋用)",
+    ),
     tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
     category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
     account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
@@ -107,6 +111,8 @@ def list_workspace_transactions(
     # tx 自身 sync_id 过滤(单条精确查找)
     if tx_sync_id:
         query = query.where(ReadTxProjection.sync_id == tx_sync_id)
+    if reward_source_tx_id:
+        query = query.where(ReadTxProjection.reward_source_tx_sync_id == reward_source_tx_id)
     # Tag 精确过滤:用 tag_sync_ids_json LIKE 含引号形式 `"<sync_id>"`,确保是 JSON
     # 数组里那个 id(而不是 note/tags_csv 里的字符串误匹配)。前端标签弹窗走这个参数。
     if tag_sync_id:
@@ -337,6 +343,8 @@ def list_workspace_transactions(
                 project_name=project_name_by_id.get(row.project_sync_id) if row.project_sync_id else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
+                reward_payout_rule_id=row.reward_payout_rule_sync_id,
+                reward_payout_key=row.reward_payout_key,
                 deferred_posting_at=row.deferred_posting_at,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,

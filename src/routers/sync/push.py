@@ -397,6 +397,14 @@ async def push_changes(
                 },
             )
 
+    # 即時回饋(2026-10-16):commit 前重算寫進的回饋交易若落在這次 push 沒碰到的帳本
+    # (例如只改了回饋規則),補廣播。
+    from ...services.card_reward_live import broadcast_touched_ledgers
+    await broadcast_touched_ledgers(
+        db, ws_manager=request.app.state.ws_manager,
+        exclude_ledger_ids=set(touched_ledgers.values()),
+    )
+
     if touched_user_global:
         # user-global change broadcast 走 sentinel ledger external id,mobile/web
         # 收到后会去 pull __user_global__ 拉这一份增量。

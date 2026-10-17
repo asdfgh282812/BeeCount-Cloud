@@ -34,6 +34,9 @@ from .routers import invites as invites_router
 from .routers import members as members_router
 from .routers import member_stats as member_stats_router
 from .routers import shared_resources as shared_resources_router
+# 即時回饋(2026-10-16):import 即註冊 Session.before_commit listener,所有交易/規則寫入
+# commit 前重算受影響的回饋交易。見 services/card_reward_live.py。
+from .services import card_reward_live as _card_reward_live  # noqa: E402,F401
 from .mcp import server as mcp_server
 from .websocket_manager import WSConnectionManager
 

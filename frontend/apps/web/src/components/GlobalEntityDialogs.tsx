@@ -5,6 +5,7 @@ import {
   completeDepositBalance,
   deleteInstallmentPlan,
   deleteTransaction,
+  fetchAllCardRewardRules,
   fetchCardRewardRules,
   fetchReadDepositBalances,
   fetchWorkspaceAccounts,
@@ -24,6 +25,8 @@ import {
   ConfirmDialog,
   DepositBalanceCompleteDialog,
   findDepositBalanceLink,
+  isLiveCardReward,
+  liveCardRewardPeriod,
 } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
@@ -48,7 +51,7 @@ import { InstallmentEditChoiceDialog } from './dialogs/InstallmentEditChoiceDial
 import { InstallmentRefundChoiceDialog } from './dialogs/InstallmentRefundChoiceDialog'
 import { RecurringEditChoiceDialog } from './dialogs/RecurringEditChoiceDialog'
 import { TagDetailDialog } from './dialogs/TagDetailDialog'
-import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
+import { TransactionDetailDialog, type LiveRewardDetail } from './dialogs/TransactionDetailDialog'
 
 const DETAIL_PAGE_SIZE = 50
 // CategoryDetail 的 stats batch 上限。单账本单分类的交易量上限,950 以下场景
@@ -190,6 +193,68 @@ export function GlobalEntityDialogs() {
       .catch(() => {
         if (!cancelled) setTxRewardRules([])
       })
+    return () => {
+      cancelled = true
+    }
+  }, [tx, token])
+
+  // 即時回饋交易(2026-10-16,Cloud services/card_reward_live.py):詳情要顯示規則、
+  // 期別/來源消費與目前計入幾筆;消費交易則列出它產生的逐筆即時回饋交易。跟 App
+  // 交易詳情的「信用卡回饋」區塊同一份資訊。
+  const [txLiveReward, setTxLiveReward] = useState<LiveRewardDetail | null>(null)
+  const [txGeneratedRewards, setTxGeneratedRewards] = useState<
+    Array<{ tx: WorkspaceTransaction; ruleLabel: string }>
+  >([])
+  useEffect(() => {
+    setTxLiveReward(null)
+    setTxGeneratedRewards([])
+    if (!tx) return
+    const live = isLiveCardReward(tx)
+    const maybeSource = tx.tx_type === 'expense' && (tx.reward_rule_ids?.length ?? 0) > 0
+    if (!live && !maybeSource) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const allRules = await fetchAllCardRewardRules(token, tx.ledger_id)
+        if (live) {
+          const rule = allRules.find((r) => r.id === tx.reward_payout_rule_id) ?? null
+          const period = liveCardRewardPeriod(tx, rule?.interval)
+          let includedCount: number | null = null
+          if (period && rule) {
+            const page = await fetchWorkspaceTransactions(token, {
+              ledgerId: tx.ledger_id,
+              accountSyncId: rule.account_id,
+              txType: 'expense',
+              dayFrom: period.start,
+              dayTo: period.end,
+              limit: 500,
+            })
+            includedCount = page.items.filter((i) => (i.reward_rule_ids || []).includes(rule.id)).length
+          }
+          if (!cancelled) {
+            setTxLiveReward({
+              rule,
+              period,
+              includedCount,
+              sourceTxId: period ? null : tx.reward_source_tx_id || tx.reward_payout_key || null,
+            })
+          }
+        } else {
+          const page = await fetchWorkspaceTransactions(token, {
+            ledgerId: tx.ledger_id,
+            rewardSourceTxId: tx.id,
+            limit: 50,
+          })
+          const rows = page.items.filter(isLiveCardReward).map((r) => ({
+            tx: r,
+            ruleLabel: allRules.find((rule) => rule.id === r.reward_payout_rule_id)?.label || '',
+          }))
+          if (!cancelled) setTxGeneratedRewards(rows)
+        }
+      } catch {
+        // 補充資訊載入失敗不影響詳情本身。
+      }
+    })()
     return () => {
       cancelled = true
     }
@@ -648,10 +713,19 @@ export function GlobalEntityDialogs() {
 
   // 刪除(2026-09-18 使用者反饋補強):關掉詳情彈窗、記住目標交易,彈
   // ConfirmDialog 二次確認,實際刪除在 handleConfirmDeleteTx。
-  const handleDeleteTx = useCallback((target: WorkspaceTransaction) => {
-    setTx(null)
-    setPendingDeleteTx(target)
-  }, [])
+  const handleDeleteTx = useCallback(
+    (target: WorkspaceTransaction) => {
+      // 即時回饋交易由回饋規則維護,刪了也會被視為「不要這筆回饋」(Cloud 標記
+      // dismissed);跟 App 一樣擋下來,請使用者從消費或規則那一端處理。
+      if (isLiveCardReward(target)) {
+        toast.error(t('transactions.liveReward.deleteBlocked'), t('notice.error'))
+        return
+      }
+      setTx(null)
+      setPendingDeleteTx(target)
+    },
+    [toast, t],
+  )
 
   const handleConfirmDeleteTx = useCallback(async () => {
     const target = pendingDeleteTx
@@ -810,6 +884,8 @@ export function GlobalEntityDialogs() {
         onDelete={handleDeleteTx}
         depositLink={txDepositLink}
         onCompleteDeposit={txIsLedgerOwner ? handleOpenCompleteDeposit : undefined}
+        liveReward={txLiveReward}
+        generatedRewards={txGeneratedRewards}
       />
       <DepositBalanceCompleteDialog
         balance={depositCompleteTarget}

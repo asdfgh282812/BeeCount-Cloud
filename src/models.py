@@ -707,6 +707,13 @@ class ReadTxProjection(Base):
     # 存就够)。None = 普通交易,或 period_end/manual 這種不對應單一原始
     # 交易的回饋入帳。
     reward_source_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 即時回饋交易(2026-10-16,alembic 0076,見 services/card_reward_live.py):
+    # 這筆交易是哪條回饋規則(sync_id)+ 哪一期/哪筆消費(`CardRewardPayout.dedup_key`)
+    # 的專屬回饋交易。兩者都只有即時機制產生的回饋交易才有值;舊排程產生的回饋交易、
+    # 一般交易皆為 None。權威來源是 `card_reward_payouts`,這兩欄是給 App/Web 顯示用的
+    # denormalized 副本(App 推回來的值不會拿來建立連結)。
+    reward_payout_rule_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reward_payout_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 延後入帳(§2.10 MOZE_FEATURE_GAP_SD.md Phase 5,對帳模式的必要前置):
     # 有值 = 這筆交易處於「延後入帳」狀態,值是使用者填的實際入帳日;None =
     # 正常,沿用 happened_at。對帳/信用卡帳單彙總等需要「入帳日口徑」的地方
@@ -1801,6 +1808,51 @@ class CardRewardPayout(Base):
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     payout_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # 即時回饋交易(2026-10-16,alembic 0076,見 services/card_reward_live.py)。
+    # `live=True` 的列由即時機制維護:金額隨消費即時重算、同一期/同一筆消費只有
+    # 一筆回饋交易;舊排程(`card_reward_payout`)一律只看 `live=False` 的列,兩邊
+    # 互不干擾。`dedup_key`:整期模式 `live:{start}~{end}:{ledger_id}`、逐筆模式
+    # = 來源消費 sync_id。
+    live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    ledger_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 上次系統寫進回饋交易的值。重算時交易目前的值跟它不同 = 使用者手動改過,保留不動。
+    proposed_happened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    proposed_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proposed_project_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 使用者刪掉了這筆即時回饋交易:之後不再重建。
+    dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # 整期回饋交易「入帳」(日期到了)時發過通知沒。
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CardRewardLegacyLink(Base):
+    """即時回饋上線前(alembic 0076)就已勾選的「消費 × 規則」配對快照。在表裡的
+    配對 = 舊套用,繼續由舊排程(`card_reward_payout`)照舊方式入帳;不在表裡 =
+    新套用,走即時機制(`card_reward_live`)。只減不增:使用者取消勾選或刪除消費
+    時刪掉對應列,之後再勾回來就是新套用。不同步到 App/Web。"""
+
+    __tablename__ = "card_reward_legacy_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    tx_sync_id: Mapped[str] = mapped_column(String(255))
+    rule_sync_id: Mapped[str] = mapped_column(String(255))
+
+
+Index(
+    "ux_card_reward_legacy_links",
+    CardRewardLegacyLink.user_id,
+    CardRewardLegacyLink.tx_sync_id,
+    CardRewardLegacyLink.rule_sync_id,
+    unique=True,
+)
+Index(
+    "ix_card_reward_legacy_links_rule",
+    CardRewardLegacyLink.user_id,
+    CardRewardLegacyLink.rule_sync_id,
+)
 
 
 Index(

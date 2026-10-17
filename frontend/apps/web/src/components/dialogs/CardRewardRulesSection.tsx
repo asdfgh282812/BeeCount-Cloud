@@ -473,11 +473,6 @@ function SingleCardCardRewards({
                 {t('cardRewards.expiredBadge')}
               </span>
             ) : null}
-            {rule.locked ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                {t('cardRewards.lockedBadge')}
-              </span>
-            ) : null}
             {rule.is_basic ? (
               <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                 {t('cardRewards.field.isBasic')}
@@ -731,9 +726,9 @@ function CardRewardRuleFormDialog({
   const isEdit = Boolean(rule)
   const source = rule ?? seed
 
-  // Phase 8 #16(2026-08 使用者反饋):規則已有交易掛著或已有自動入帳紀錄時,
-  // 計算相關欄位全部鎖定,只能調整名稱/備註/啟用狀態/起訖日期/基本回饋/回饋金專案。
-  const locked = isEdit && Boolean(rule?.locked)
+  // 2026-10-16 即時回饋起規則不再上鎖(後端回傳的鎖定旗標永遠 false):改規則只會
+  // 重算還沒入帳的回饋交易,已入帳的不動。見 App repo
+  // docs/changes/2026-10-16-live-card-reward-transactions.md。
 
   const [label, setLabel] = useState(source?.label || '')
   const [rateType, setRateType] = useState<CardRewardRateType>(source?.rate_type || 'percentage')
@@ -918,24 +913,10 @@ function CardRewardRuleFormDialog({
       }
 
       if (isEdit && rule) {
-        // Phase 8 #16:規則已鎖定時,只送出仍可編輯的欄位(label/note/enabled/
-        // starts_at/ends_at)——送出鎖定欄位(即使值沒變)會被後端 422 擋下。
-        const updatePayload = locked
-          ? {
-              label: fullPayload.label,
-              starts_at: fullPayload.starts_at,
-              ends_at: fullPayload.ends_at,
-              note: fullPayload.note,
-              enabled: fullPayload.enabled,
-              // 基本回饋/回饋金專案不影響計算結果,規則鎖定後仍可調整。
-              is_basic: fullPayload.is_basic,
-              reward_project_id: fullPayload.reward_project_id,
-            }
-          : fullPayload
         await retryOnConflict(ledgerId, (base) =>
-          updateCardRewardRule(token, ledgerId, accountId, rule.id, base, updatePayload),
+          updateCardRewardRule(token, ledgerId, accountId, rule.id, base, fullPayload),
         )
-        toast.success(t('cardRewards.notice.updated'), t('notice.success'))
+        toast.success(t('cardRewards.notice.updatedLive'), t('notice.success'))
       } else {
         await retryOnConflict(ledgerId, (base) =>
           createCardRewardRule(token, ledgerId, accountId, base, fullPayload),
@@ -943,37 +924,34 @@ function CardRewardRuleFormDialog({
         toast.success(t('cardRewards.notice.created'), t('notice.success'))
       }
 
-      // 同步群組成員(規則鎖定時 cap_shared_key 不可改,略過整段——見上方
-      // updatePayload 的鎖定欄位白名單):新加入的規則 PATCH 成同一個 key,
+      // 同步群組成員:新加入的規則 PATCH 成同一個 key,
       // 原本屬於這個群組但這次被取消勾選的規則 PATCH 清空 key。每條規則
       // 各自屬於哪張卡,ledger_id 一律用當前這個(card_reward_rule 是
       // user-global 實體,寫入端點的 ledger_id 只拿來過 CAS 鎖,不影響歸屬)。
-      if (!locked) {
-        const previousMembers = new Set(
-          source?.cap_shared_key
-            ? otherRules.filter((r) => r.cap_shared_key === source.cap_shared_key).map((r) => r.id)
-            : [],
+      const previousMembers = new Set(
+        source?.cap_shared_key
+          ? otherRules.filter((r) => r.cap_shared_key === source.cap_shared_key).map((r) => r.id)
+          : [],
+      )
+      const toAdd = [...capGroupSelection].filter((id) => !previousMembers.has(id))
+      const toRemove = [...previousMembers].filter((id) => !capGroupSelection.has(id))
+      for (const id of toAdd) {
+        const member = allRules.find((r) => r.id === id)
+        if (!member) continue
+        await retryOnConflict(ledgerId, (base) =>
+          updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
+            cap_shared_key: effectiveCapKey,
+          }),
         )
-        const toAdd = [...capGroupSelection].filter((id) => !previousMembers.has(id))
-        const toRemove = [...previousMembers].filter((id) => !capGroupSelection.has(id))
-        for (const id of toAdd) {
-          const member = allRules.find((r) => r.id === id)
-          if (!member) continue
-          await retryOnConflict(ledgerId, (base) =>
-            updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
-              cap_shared_key: effectiveCapKey,
-            }),
-          )
-        }
-        for (const id of toRemove) {
-          const member = allRules.find((r) => r.id === id)
-          if (!member) continue
-          await retryOnConflict(ledgerId, (base) =>
-            updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
-              cap_shared_key: null,
-            }),
-          )
-        }
+      }
+      for (const id of toRemove) {
+        const member = allRules.find((r) => r.id === id)
+        if (!member) continue
+        await retryOnConflict(ledgerId, (base) =>
+          updateCardRewardRule(token, ledgerId, member.account_id, id, base, {
+            cap_shared_key: null,
+          }),
+        )
       }
       onSaved()
     } catch (err) {
@@ -997,11 +975,6 @@ function CardRewardRuleFormDialog({
           </DialogTitle>
         </DialogHeader>
         <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
-          {locked ? (
-            <div className="rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
-              {t('cardRewards.lockedHint')}
-            </div>
-          ) : null}
           <div className="space-y-1">
             <Label>{t('cardRewards.field.label')}</Label>
             <Input
@@ -1013,7 +986,7 @@ function CardRewardRuleFormDialog({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>{t('cardRewards.field.rateType')}</Label>
-              <Select value={rateType} onValueChange={(v) => setRateType(v as CardRewardRateType)} disabled={locked}>
+              <Select value={rateType} onValueChange={(v) => setRateType(v as CardRewardRateType)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -1034,7 +1007,6 @@ function CardRewardRuleFormDialog({
                 inputMode="decimal"
                 value={rateValue}
                 onChange={(e) => setRateValue(e.target.value)}
-                disabled={locked}
               />
             </div>
           </div>
@@ -1044,7 +1016,6 @@ function CardRewardRuleFormDialog({
               <Select
                 value={intervalMode}
                 onValueChange={(v) => setIntervalMode(v as CardRewardInterval)}
-                disabled={locked}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -1058,7 +1029,7 @@ function CardRewardRuleFormDialog({
             </div>
             <div className="space-y-1">
               <Label>{t('cardRewards.field.rounding')}</Label>
-              <Select value={rounding} onValueChange={(v) => setRounding(v as CardRewardRounding)} disabled={locked}>
+              <Select value={rounding} onValueChange={(v) => setRounding(v as CardRewardRounding)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -1077,7 +1048,6 @@ function CardRewardRuleFormDialog({
               <Select
                 value={totalRounding}
                 onValueChange={(v) => setTotalRounding(v as CardRewardRounding)}
-                disabled={locked}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -1100,7 +1070,6 @@ function CardRewardRuleFormDialog({
                 inputMode="decimal"
                 value={minTxAmount}
                 onChange={(e) => setMinTxAmount(e.target.value)}
-                disabled={locked}
               />
             </div>
             <div className="space-y-1">
@@ -1108,7 +1077,6 @@ function CardRewardRuleFormDialog({
               <Input
                 type="number"
                 inputMode="decimal"
-                disabled={locked}
                 value={minSpendThreshold}
                 onChange={(e) => setMinSpendThreshold(e.target.value)}
               />
@@ -1147,7 +1115,6 @@ function CardRewardRuleFormDialog({
               inputMode="decimal"
               value={capAmount}
               onChange={(e) => setCapAmount(e.target.value)}
-              disabled={locked}
             />
           </div>
           {/* Phase 8 #16(2026-08 使用者反饋):共用上限群組只在填了「本期回饋
@@ -1167,7 +1134,6 @@ function CardRewardRuleFormDialog({
                     <GlassChoice
                       key={r.id}
                       type="button"
-                      disabled={locked}
                       onClick={() => toggleCapGroupMember(r.id)}
                       aria-pressed={checked}
                     >
@@ -1184,7 +1150,6 @@ function CardRewardRuleFormDialog({
             <Select
               value={settlementType}
               onValueChange={(v) => setSettlementType(v as CardRewardSettlementType)}
-              disabled={locked}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -1210,7 +1175,6 @@ function CardRewardRuleFormDialog({
                   max={365}
                   value={settlementDays}
                   onChange={(e) => setSettlementDays(e.target.value)}
-                  disabled={locked}
                 />
                 {settlementDaysInvalid ? (
                   <div className="text-xs text-destructive">{t('cardRewards.field.settlementDaysRange')}</div>
@@ -1224,7 +1188,6 @@ function CardRewardRuleFormDialog({
                   <Select
                     value={settlementMonthOffset}
                     onValueChange={setSettlementMonthOffset}
-                    disabled={locked}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder={t('cardRewards.settlementDate.defaultOption')} />
@@ -1240,7 +1203,6 @@ function CardRewardRuleFormDialog({
                   <Select
                     value={settlementDayOfMonth}
                     onValueChange={setSettlementDayOfMonth}
-                    disabled={locked}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder={t('cardRewards.settlementDate.dayPlaceholder')} />
@@ -1256,7 +1218,7 @@ function CardRewardRuleFormDialog({
                 </div>
                 <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                   <span>{t('cardRewards.settlementDate.hint')}</span>
-                  {!locked && (settlementMonthOffset !== '' || settlementDayOfMonth !== '') ? (
+                  {settlementMonthOffset !== '' || settlementDayOfMonth !== '' ? (
                     <button
                       type="button"
                       className="shrink-0 underline underline-offset-2"
@@ -1276,7 +1238,6 @@ function CardRewardRuleFormDialog({
                 <Label>{t('cardRewards.field.rewardAccount')}</Label>
                 <button
                   type="button"
-                  disabled={locked}
                   onClick={() => setRewardAccountPickerOpen(true)}
                   className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1602,6 +1563,29 @@ function CardRewardRuleTransactionsDialog({
                     {period.remaining_spend_room != null ? (
                       <div className="px-1 text-[11px] text-muted-foreground">
                         {t('cardRewards.detail.remainingSpendRoom', { amount: fmt(period.remaining_spend_room) })}
+                      </div>
+                    ) : null}
+                    {/* 即時回饋(2026-10-16):這一期實際連動的那筆回饋交易——預計入帳日/已入帳,
+                        跟 App 回饋明細頁的入帳徽章一致(改看實際交易,不是日期推算)。 */}
+                    {period.live_reward_tx_id && period.live_reward_happened_at ? (
+                      <div
+                        className={`flex items-center justify-between rounded-md px-3 py-1.5 text-[11px] ${
+                          period.live_reward_posted ? 'bg-income/10 text-income' : 'bg-amber-500/10 text-amber-600'
+                        }`}
+                        data-testid="card-reward-live-period"
+                      >
+                        <span>
+                          {period.live_reward_posted
+                            ? t('cardRewards.detail.livePosted', {
+                                date: isoToDateInput(period.live_reward_happened_at),
+                              })
+                            : t('cardRewards.detail.liveScheduled', {
+                                date: isoToDateInput(period.live_reward_happened_at),
+                              })}
+                        </span>
+                        <span className="font-mono font-semibold tabular-nums">
+                          {fmt(period.live_reward_amount ?? 0)}
+                        </span>
                       </div>
                     ) : null}
                   </div>

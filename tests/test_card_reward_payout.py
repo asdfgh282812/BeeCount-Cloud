@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -17,6 +18,14 @@ from src.database import Base, get_db
 from src.main import app
 from src.models import CardRewardPayout, Notification, ReadTxProjection, User
 from src.services import card_reward_payout, credit_card
+
+
+@pytest.fixture(autouse=True)
+def _legacy_card_reward_scheduler_only(monkeypatch):
+    """這個檔案驗證的是即時回饋(2026-10-16)上線前就勾選的消費由舊排程
+    (`card_reward_payout`)入帳的行為;關掉即時機制 = 所有配對都是舊套用。
+    即時回饋本身見 tests/test_card_reward_live.py。"""
+    monkeypatch.setenv("CARD_REWARD_LIVE_ENABLED", "0")
 
 
 def _make_client():

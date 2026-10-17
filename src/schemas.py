@@ -657,6 +657,10 @@ class ReadTransactionOut(BaseModel):
     # 自动产生的回饋 income,反查它对应的原始消费交易 sync_id;None = 普通
     # 交易,或 period_end/manual 這種不對應單一原始交易的回饋。
     reward_source_tx_id: str | None = None
+    # 即時回饋交易(2026-10-16):有值 = 這筆是某條回饋規則(rule sync_id)某一期/
+    # 某筆消費(`reward_payout_key`)的專屬回饋交易,金額由系統計算(前端唯讀、擋刪除)。
+    reward_payout_rule_id: str | None = None
+    reward_payout_key: str | None = None
     # 延後入帳(§2.10 Phase 5):有值 = 實際入帳日跟 happened_at 不同,對帳/
     # 信用卡帳單彙總按這個日期歸屬期別;None = 正常交易。
     deferred_posting_at: datetime | None = None
@@ -973,6 +977,14 @@ class ReadCardRewardPeriodTransactionsOut(BaseModel):
     capped_reward: float
     remaining_reward_room: float | None = None
     remaining_spend_room: float | None = None
+    # 即時回饋(2026-10-16,services/card_reward_live.py):整期模式這一期連動的那筆
+    # 回饋交易(沒有 = 只有舊套用消費、未達門檻,或規則是逐筆/手動)。`posted` =
+    # 交易日期已到(業務時區)。`live_reward_happened_at` 是日期標籤(業務日期的 UTC
+    # 零點,同 period_start/period_end),前端只取日期部分。
+    live_reward_tx_id: str | None = None
+    live_reward_amount: float | None = None
+    live_reward_happened_at: datetime | None = None
+    live_reward_posted: bool | None = None
     items: list[ReadCardRewardQualifyingTxOut] = Field(default_factory=list)
 
 

@@ -1035,10 +1035,14 @@ export function TransactionsPanel({
                   label={t('transactions.table.type') as string}
                   value={debtMode ?? form.tx_type}
                   options={[
-                    ...(['expense', 'income', 'transfer'] as const).map((type) => ({
+                    // 即時回饋交易(2026-10-16)的類型固定是收入。
+                    ...(form.amount_locked
+                      ? (['income'] as const)
+                      : (['expense', 'income', 'transfer'] as const)
+                    ).map((type) => ({
                       value: type, label: t(`enum.txType.${type}`), testId: `tx-type-${type}`
                     })),
-                    ...(showDebtTabs ? (['receivable', 'payable'] as const).map((kind) => ({
+                    ...(showDebtTabs && !form.amount_locked ? (['receivable', 'payable'] as const).map((kind) => ({
                       value: kind, label: t(`enum.txType.${kind}`), testId: `tx-type-${kind}`
                     })) : [])
                   ]}
@@ -1077,8 +1081,8 @@ export function TransactionsPanel({
                 <Label>{t('transactions.table.category')}</Label>
                 {/* 拆帳(§2.4):只对 expense/income 有意义,跟 transfer 互斥。
                     编辑既有交易时也能开关(对齐 Moze 编辑既有交易能改分类的语意),
-                    不像 recurring/installment 只在新建时显示。 */}
-                {!isTransfer ? (
+                    不像 recurring/installment 只在新建时显示。即時回饋交易(金額由規則計算)不提供。 */}
+                {!isTransfer && !form.amount_locked ? (
                   <button
                     type="button"
                     className={textActionClass}
@@ -1292,7 +1296,7 @@ export function TransactionsPanel({
                     金額旁邊的「+」):expense/income 展開手續費+折扣共用面板;
                     transfer(2026-08-29)展開的是轉出側手續費面板(獨立於
                     折損,見下方轉入金額列旁的 discount_enabled 面板)。 */}
-                {!form.fee_enabled ? (
+                {!form.fee_enabled && !form.amount_locked ? (
                   <button
                     type="button"
                     onClick={() => onFormChange({ ...form, fee_enabled: true })}
@@ -1308,7 +1312,12 @@ export function TransactionsPanel({
                 placeholder={t('transactions.placeholder.amount')}
                 value={form.amount}
                 onChange={(value) => onFormChange({ ...form, amount: value })}
+                disabled={form.amount_locked}
+                title={form.amount_locked ? t('transactions.liveReward.amountLocked') : undefined}
               />
+              {form.amount_locked ? (
+                <p className="text-[11px] text-muted-foreground">{t('transactions.liveReward.amountLocked')}</p>
+              ) : null}
               {/* 跨幣別自動換算(2026-08):币种另起一行,全宽显示币种全名+国旗
                   (挨金额太窄会截断)。帐户下拉不再按这个币种过滤——选到跟
                   帐户幣別不同的入帳幣別时,下面 FxRateRow 顯示換算列并允许

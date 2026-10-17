@@ -127,6 +127,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同样必须进 full
         # snapshot,原因同上。
         ReadTxProjection.reward_source_tx_sync_id,
+        # 即時回饋交易(2026-10-16)連回規則 + 期別,原因同上。
+        ReadTxProjection.reward_payout_rule_sync_id,
+        ReadTxProjection.reward_payout_key,
         # 延後入帳(§2.10 Phase 5),同样必须进 full snapshot,原因同上
         # (CLAUDE.md 記過的既有 bug 模式:漏 SELECT 新欄位 → 下一次
         # `_commit_write` 的 diff 把它當「本來就沒有」靜默清空)。
@@ -152,6 +155,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          recurring_rule_id, recurring_occurrence_overridden,
          splits_json, debt_id, project_id,
          reward_rule_ids_json, reward_source_tx_id,
+         reward_payout_rule_id, reward_payout_key,
          deferred_posting_at, reconciled_at) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
@@ -247,6 +251,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                 pass
         if reward_source_tx_id:
             item["rewardSourceTxId"] = reward_source_tx_id
+        if reward_payout_rule_id:
+            item["rewardPayoutRuleId"] = reward_payout_rule_id
+        if reward_payout_key:
+            item["rewardPayoutKey"] = reward_payout_key
         if deferred_posting_at is not None:
             item["deferredPostingAt"] = _to_iso_utc(deferred_posting_at)
         if reconciled_at is not None:

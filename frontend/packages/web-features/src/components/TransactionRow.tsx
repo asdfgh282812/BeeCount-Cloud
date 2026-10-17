@@ -4,6 +4,7 @@ import { useT } from '@beecount/ui'
 import { CategoryIcon } from './CategoryIcon'
 import { TagChip } from './TagChip'
 import { currencySymbol, transferConversionDisplay } from '../lib/currencies'
+import { isLiveCardReward } from '../lib/liveCardReward'
 import { composeTransactionRowTitle, type NoteDisplayMode } from '../lib/transactionRowTitle'
 
 export type TransactionRowVariant = 'default' | 'compact'
@@ -378,6 +379,10 @@ export function TransactionRow({
           ) : null}
           {row.exclude_from_budget ? (
             <span>· {t('txFlagBudgetExcludedTag')}</span>
+          ) : null}
+          {/* 即時回饋交易(2026-10-16):金額由回饋規則計算,跟 App 列表的「回饋」標籤一致。 */}
+          {isLiveCardReward(row) ? (
+            <span className="text-income">· {t('transactions.badge.liveReward')}</span>
           ) : null}
         </div>
 

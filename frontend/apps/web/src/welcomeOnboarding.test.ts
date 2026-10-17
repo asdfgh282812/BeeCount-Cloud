@@ -13,10 +13,10 @@ describe('shouldShowWelcome', () => {
     ).toBe(true)
   })
 
-  it('任一端做過(App 或 Web)就不再問', () => {
+  it('舊版只完成偏好但還沒有帳本，仍需完成帳本設定', () => {
     expect(
       shouldShowWelcome({ ...loaded, ledgerCount: 0, appearance: { onboarding_done: true } }),
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('舊帳號(已有帳本)不問,哪怕沒有旗標', () => {

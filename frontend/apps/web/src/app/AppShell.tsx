@@ -206,7 +206,8 @@ export function AppShell({ token, onLogout }: Props) {
   const festival = useFestivalTheme(token, profileMe, locale)
 
   // 全新帳號第一次進來:先走個人化歡迎引導(對齊 App,見 WelcomeOnboarding)。
-  const showWelcome =
+  const [welcomeStarted, setWelcomeStarted] = useState(false)
+  const eligibleForWelcome =
     !welcomeDone &&
     shouldShowWelcome({
       profileLoaded: profileMe !== null,
@@ -214,6 +215,9 @@ export function AppShell({ token, onLogout }: Props) {
       ledgerCount: ledgers.length,
       appearance: profileMe?.appearance,
     })
+
+  useEffect(() => { if (eligibleForWelcome) setWelcomeStarted(true) }, [eligibleForWelcome])
+  const showWelcome = !welcomeDone && (welcomeStarted || eligibleForWelcome)
 
   const handleSectionNavigate = useCallback(
     (section: AppSection) => {

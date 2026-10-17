@@ -22,6 +22,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -36,6 +37,14 @@ from src.models import (
     User,
 )
 from src.services import card_reward_payout, card_rewards
+
+
+@pytest.fixture(autouse=True)
+def _legacy_card_reward_scheduler_only(monkeypatch):
+    """這個檔案驗證的是即時回饋(2026-10-16)上線前就勾選的消費由舊排程
+    (`card_reward_payout`)入帳的行為;關掉即時機制 = 所有配對都是舊套用。
+    即時回饋本身見 tests/test_card_reward_live.py。"""
+    monkeypatch.setenv("CARD_REWARD_LIVE_ENABLED", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -526,9 +535,9 @@ def test_is_basic_and_reward_project_are_not_locked_after_rule_has_history():
         _spend(client, hdr_app, "lgx10", "tx-1", _utc(2026, 3, 12), 100.0, rule_id)
         _tick(TS, _utc(2026, 4, 1))
         item = next(i for i in _list_rules(client, hdr_web, "lgx10") if i["id"] == rule_id)
-        assert item["locked"] is True
-        # 鎖定欄位照舊 422,但這兩個新欄位可改。
-        assert _patch_rule(client, hdr_web, "lgx10", rule_id, rate_value=20.0).status_code == 422
+        # 2026-10-16 即時回饋起規則不再上鎖(計算欄位也能改)。
+        assert item["locked"] is False
+        assert _patch_rule(client, hdr_web, "lgx10", rule_id, rate_value=20.0).status_code == 200
         ok = _patch_rule(client, hdr_web, "lgx10", rule_id, is_basic=True, reward_project_id="proj_a")
         assert ok.status_code == 200, ok.text
         row = _rule_row(TS, email, rule_id)

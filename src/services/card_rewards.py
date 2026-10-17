@@ -32,8 +32,9 @@ from __future__ import annotations
 import calendar
 import json
 import math
+import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
@@ -41,6 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import (
+    CardRewardLegacyLink,
     CardRewardPayout,
     ReadCardRewardRuleProjection,
     ReadTxProjection,
@@ -221,6 +223,39 @@ def _attribution_date(tx: ReadTxProjection) -> datetime:
     「即使延後入帳也按消費日算」的第三種語意的實際需求,見文件 §2.9.5
     `calc_basis` 欄位說明。"""
     return _shared_attribution_date(tx)
+
+
+def live_enabled() -> bool:
+    """即時回饋機制(`services/card_reward_live.py`,2026-10-16)開關。預設開;
+    `CARD_REWARD_LIVE_ENABLED=0` 時完全退回改版前的行為(所有勾選配對都視為舊套用、
+    只由舊排程入帳,新勾的配對也會補進 `card_reward_legacy_links`,之後再打開不會
+    重複入帳)。給緊急回退與只測舊排程的既有測試用。"""
+    return os.environ.get("CARD_REWARD_LIVE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+PairFilter = str  # "all" | "legacy" | "live"
+
+
+def legacy_tx_ids(db: Session, *, user_id: str, rule_sync_id: str) -> set[str]:
+    """這條規則的「舊套用」消費(即時回饋上線前就已勾選,見 `CardRewardLegacyLink`)。"""
+    return set(db.scalars(
+        select(CardRewardLegacyLink.tx_sync_id).where(
+            CardRewardLegacyLink.user_id == user_id,
+            CardRewardLegacyLink.rule_sync_id == rule_sync_id,
+        )
+    ).all())
+
+
+def period_lower_bound_utc(rule: ReadCardRewardRuleProjection, period_start: date) -> datetime:
+    """期間下界(含)。`billing_cycle` 的 `period_start` 是上一期結帳日(exclusive,
+    見 `credit_card.billing_cycle_containing`),真正的第一天是隔天;其它 interval
+    (自然月 1 號、活動起日)本身就含當天。2026-10-16 以前一律用
+    `happened_at > period_start 00:00`,結帳日當天的消費同時算進前後兩期(App 端
+    `getAccountTransactions(startDate: 上期結帳日+1)` 沒有這個問題),即時回饋會
+    因此重複發錢,所以一併改成跟 App 相同的「下界含當天 00:00」。"""
+    if rule.interval == "billing_cycle":
+        return business_date_start_utc(period_start + timedelta(days=1))
+    return business_date_start_utc(period_start)
 
 
 def _date_to_utc_dt(d: date, *, end_of_day: bool = False) -> datetime:
@@ -507,6 +542,8 @@ def _qualifying_transactions(
     period_start: date | None,
     period_end: date | None,
     enforce_active_window: bool = True,
+    pair_filter: PairFilter = "all",
+    only_tx_ids: Collection[str] | None = None,
 ) -> list[QualifyingTx]:
     """規則 + (可選)期間 → 符合條件交易 + 各自回饋金額,依 happened_at
     升序排列。`period_start`/`period_end` 皆為 `None` 時不限期間(§2.9.5.4
@@ -530,17 +567,27 @@ def _qualifying_transactions(
     錯誤的全額;已經結算過的话這裡的重算不影響歷史 payout 記錄,由
     `card_reward_payout.reverse_card_reward_payouts_for_refund` 在退款當下
     另外補一筆等於「原回饋 − 淨額重算回饋」差額的沖銷交易,兩條路徑合起來
-    保證「退款前/退款後結算」淨效果一致。"""
+    保證「退款前/退款後結算」淨效果一致。
+
+    `pair_filter`(2026-10-16 即時回饋,見 `services/card_reward_live.py`):`"legacy"`
+    只留即時回饋上線前就已勾選的配對(舊排程用)、`"live"` 只留之後才勾的配對、
+    `"all"`(預設,顯示端)不過濾。即時機制關閉(`live_enabled() == False`)時所有
+    配對都算舊套用。`only_tx_ids` 限定只看這幾筆消費(即時逐筆重算用)。"""
     conditions = [
         ReadTxProjection.ledger_id == ledger_id,
         ReadTxProjection.account_sync_id == rule.account_sync_id,
         ReadTxProjection.tx_type == "expense",
         ReadTxProjection.reward_rule_sync_ids_json.like(f'%"{rule.sync_id}"%'),
     ]
+    if only_tx_ids is not None:
+        if not only_tx_ids:
+            return []
+        conditions.append(ReadTxProjection.sync_id.in_(list(only_tx_ids)))
     start_dt = end_dt = None
     if period_start is not None:
-        start_dt = _date_to_utc_dt(period_start)
-        conditions.append(ReadTxProjection.happened_at > start_dt)
+        start_dt = period_lower_bound_utc(rule, period_start)
+        # 歸屬日(延後入帳)下面再精確比對;這裡粗篩用 happened_at。
+        conditions.append(ReadTxProjection.happened_at >= start_dt)
     if period_end is not None:
         end_dt = _date_to_utc_dt(period_end, end_of_day=True)
         conditions.append(ReadTxProjection.happened_at <= end_dt)
@@ -548,6 +595,14 @@ def _qualifying_transactions(
     tx_rows = db.scalars(
         select(ReadTxProjection).where(*conditions).order_by(ReadTxProjection.happened_at.asc())
     ).all()
+    if pair_filter != "all" and live_enabled():
+        legacy_ids = legacy_tx_ids(db, user_id=rule.user_id, rule_sync_id=rule.sync_id)
+        if pair_filter == "legacy":
+            tx_rows = [tx for tx in tx_rows if tx.sync_id in legacy_ids]
+        else:
+            tx_rows = [tx for tx in tx_rows if tx.sync_id not in legacy_ids]
+    elif pair_filter == "live":
+        tx_rows = []  # 即時機制關閉:沒有任何新套用配對
     refunded_amounts = _refunded_amounts(
         db, ledger_id=ledger_id, sync_ids=[tx.sync_id for tx in tx_rows],
     )
@@ -555,7 +610,7 @@ def _qualifying_transactions(
     items: list[QualifyingTx] = []
     for tx in tx_rows:
         attributed = _attribution_date(tx)
-        if start_dt is not None and attributed <= start_dt:
+        if start_dt is not None and attributed < start_dt:
             continue
         if end_dt is not None and attributed > end_dt:
             continue
@@ -712,6 +767,7 @@ def compute_account_card_rewards(
     rules: Sequence[ReadCardRewardRuleProjection],
     now: datetime,
     period_offset: int = 0,
+    pair_filter: PairFilter = "all",
 ) -> list[RuleRewardResult]:
     """回傳每條規則在（`period_offset` 平移後）當期的計算結果,`capped_reward`
     此時尚未套用 `cap_shared_key` 跨規則共享上限 —— 呼叫端接着調
@@ -771,37 +827,54 @@ def compute_account_card_rewards(
             continue
 
         for period_start, period_end in periods:
-            if not _rule_active_in_period(rule, period_start, period_end):
-                results.append({
-                    "rule": rule, "period_start": period_start, "period_end": period_end,
-                    "qualifying_spend": 0.0, "threshold_met": False,
-                    "raw_reward": 0.0, "capped_reward": 0.0,
-                    "remaining_reward_room": None, "remaining_spend_room": None,
-                    "status": "expired",
-                })
-                continue
-
-            items = _qualifying_transactions(
+            results.append(compute_rule_period_result(
                 db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
-            )
-            qualifying_spend = sum(item["reward_base"] for item in items)
-            threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
-            raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
-            # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
-            # rule.total_rounding 再取整一次(round/floor/ceil 到整數,keep = 維持
-            # 現況二位小數彙總,向下相容既有規則的預設值)。
-            raw_reward = _round_amount(raw_reward, rule.total_rounding, to_integer=True)
-
-            results.append({
-                "rule": rule, "period_start": period_start, "period_end": period_end,
-                "qualifying_spend": round(qualifying_spend, 2),
-                "threshold_met": threshold_met,
-                "raw_reward": raw_reward,
-                "capped_reward": raw_reward,
-                "remaining_reward_room": None, "remaining_spend_room": None,
-                "status": "ok",
-            })
+                pair_filter=pair_filter,
+            ))
     return results
+
+
+def compute_rule_period_result(
+    db: Session,
+    *,
+    ledger_id: str,
+    rule: ReadCardRewardRuleProjection,
+    period_start: date,
+    period_end: date,
+    pair_filter: PairFilter = "all",
+) -> RuleRewardResult:
+    """單一規則、單一期間的計算結果(尚未套用共用上限,呼叫端再 `apply_caps`)。
+    `compute_account_card_rewards` 與即時回饋重算(`card_reward_live`)共用。"""
+    if not _rule_active_in_period(rule, period_start, period_end):
+        return {
+            "rule": rule, "period_start": period_start, "period_end": period_end,
+            "qualifying_spend": 0.0, "threshold_met": False,
+            "raw_reward": 0.0, "capped_reward": 0.0,
+            "remaining_reward_room": None, "remaining_spend_room": None,
+            "status": "expired",
+        }
+
+    items = _qualifying_transactions(
+        db, ledger_id=ledger_id, rule=rule, period_start=period_start, period_end=period_end,
+        pair_filter=pair_filter,
+    )
+    qualifying_spend = sum(item["reward_base"] for item in items)
+    threshold_met = rule.min_spend_threshold is None or qualifying_spend >= rule.min_spend_threshold
+    raw_reward = sum(item["reward_amount"] for item in items) if threshold_met else 0.0
+    # Phase 8 #4:單筆各自取整(compute_tx_reward_amount)後的總額,依
+    # rule.total_rounding 再取整一次(round/floor/ceil 到整數,keep = 維持
+    # 現況二位小數彙總,向下相容既有規則的預設值)。
+    raw_reward = _round_amount(raw_reward, rule.total_rounding, to_integer=True)
+
+    return {
+        "rule": rule, "period_start": period_start, "period_end": period_end,
+        "qualifying_spend": round(qualifying_spend, 2),
+        "threshold_met": threshold_met,
+        "raw_reward": raw_reward,
+        "capped_reward": raw_reward,
+        "remaining_reward_room": None, "remaining_spend_room": None,
+        "status": "ok",
+    }
 
 
 def apply_caps(results: list[RuleRewardResult]) -> None:

@@ -55,33 +55,9 @@ def _assert_rule_belongs_to_account(db: Session, *, user_id: str, rule_id: str, 
         )
 
 
-# Phase 8 #16(2026-08 使用者反饋):規則底下已經有交易掛著或已有自動入帳
-# 紀錄之後,核心計算欄位不該再默默被改掉(否則等於竄改「已經算過」的規則
-# 基礎)。名稱/備註/啟用狀態/起訖日期不影響計算,維持可編輯;2026-10 新增的
-# `is_basic`(基本回饋旗標)與 `reward_project_id`(回饋金歸屬專案)也不鎖定。
-# (例外:custom_range 規則已有入帳紀錄後不可改起訖日,見 `_assert_update_custom_range`。)
-_CARD_REWARD_LOCKED_FIELDS = frozenset({
-    "rate_type", "rate_value", "rounding", "total_rounding", "calc_basis", "interval",
-    "category_ids", "min_spend_threshold", "min_tx_amount", "cap_amount", "cap_shared_key",
-    "settlement_type", "settlement_days", "settlement_month_offset", "settlement_day_of_month",
-    "reward_account_id",
-})
-
-
-def _assert_card_reward_rule_editable(db: Session, *, user_id: str, rule_id: str, payload: dict) -> None:
-    touched = _CARD_REWARD_LOCKED_FIELDS.intersection(payload.keys())
-    if not touched:
-        return
-    if not card_rewards.rule_has_history(db, user_id=user_id, rule_id=rule_id):
-        return
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=(
-            "This card reward rule already has linked transactions or payouts; "
-            "only label/note/enabled/is_basic/reward_project_id/starts_at/ends_at can still be edited. "
-            "Delete it and create a new rule to change how it calculates."
-        ),
-    )
+# 2026-10-16 即時回饋(services/card_reward_live.py)起規則不再上鎖:改規則只會重算
+# 還沒入帳的即時回饋交易,已入帳的不動;舊套用消費仍由舊排程依「目前的規則」計算
+# (跟改版前行為相同)。原本的 `_CARD_REWARD_LOCKED_FIELDS` 已移除。
 
 
 def _assert_reward_project_exists(db: Session, *, user_id: str, project_id: str | None) -> None:
@@ -122,9 +98,10 @@ def _assert_update_custom_range(db: Session, *, user_id: str, rule_id: str, payl
     檢查(只改 interval、或只清掉 ends_at 都可能讓最終狀態不合法),且只在本次
     PATCH 動到 interval/starts_at/ends_at 時才檢查(停用/軟刪除等不受影響)。
 
-    額外保護(2026-10):custom_range 規則一旦已經有自動入帳紀錄(`CardRewardPayout`),
-    不能再改 starts_at/ends_at——入帳去重鍵是期末日(ends_at),改日期會讓同一批
-    消費被當成新的一期重複入帳。(其它 interval 的 starts_at/ends_at 仍可編輯。)"""
+    額外保護(2026-10):custom_range 規則一旦已經有**舊排程**的入帳紀錄(`CardRewardPayout`,
+    `live=False`),不能再改 starts_at/ends_at——舊排程的去重鍵是期末日(ends_at),改日期會
+    讓同一批消費被當成新的一期重複入帳。即時回饋(2026-10-16)的期別跟著規則重算,不受
+    這個限制。(其它 interval 的 starts_at/ends_at 仍可編輯。)"""
     touched = {"interval", "starts_at", "ends_at"}.intersection(payload.keys())
     if not touched:
         return
@@ -145,6 +122,7 @@ def _assert_update_custom_range(db: Session, *, user_id: str, rule_id: str, payl
             select(CardRewardPayout.id).where(
                 CardRewardPayout.user_id == user_id,
                 CardRewardPayout.rule_sync_id == rule_id,
+                CardRewardPayout.live.is_(False),
             ).limit(1)
         )
         if has_payout is not None:
@@ -238,7 +216,6 @@ async def update_card_reward_rule_api(
     if replay:
         return replay
     _assert_rule_belongs_to_account(db, user_id=current_user.id, rule_id=rule_id, account_id=account_id)
-    _assert_card_reward_rule_editable(db, user_id=current_user.id, rule_id=rule_id, payload=payload)
     _assert_update_custom_range(db, user_id=current_user.id, rule_id=rule_id, payload=payload)
     if "reward_project_id" in payload:
         _assert_reward_project_exists(

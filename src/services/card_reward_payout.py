@@ -96,10 +96,12 @@ def _resolve_ledger_id(db: Session, *, user_id: str, account_sync_id: str) -> st
 
 
 def _already_paid_keys(db: Session, *, user_id: str, rule_sync_id: str) -> set[str]:
+    # 即時回饋(card_reward_live)的列由即時機制維護,舊排程完全不看。
     rows = db.scalars(
         select(CardRewardPayout.dedup_key).where(
             CardRewardPayout.user_id == user_id,
             CardRewardPayout.rule_sync_id == rule_sync_id,
+            CardRewardPayout.live.is_(False),
         )
     ).all()
     return set(rows)
@@ -331,6 +333,8 @@ def reverse_card_reward_payouts_for_refund(
                 CardRewardPayout.user_id == user_id,
                 CardRewardPayout.rule_sync_id == rule_sync_id,
                 CardRewardPayout.dedup_key == refunded_tx_id,
+                # 即時回饋的退款由 card_reward_live 直接重算回饋金額,不另開沖銷交易。
+                CardRewardPayout.live.is_(False),
             )
         )
         if payout is None or payout.payout_tx_sync_id is None or payout.amount <= 0:
@@ -426,6 +430,8 @@ def reverse_card_reward_payouts_for_edit(
         select(CardRewardPayout).where(
             CardRewardPayout.user_id == user_id,
             CardRewardPayout.dedup_key == edited_tx_id,
+            # 即時回饋的列由 card_reward_live 在同一次 commit 重算,這裡不能刪。
+            CardRewardPayout.live.is_(False),
         )
     ).all()
     if not payouts:
@@ -462,25 +468,34 @@ def reverse_card_reward_payouts_for_edit(
 
 
 def _paid_in_period(
-    db: Session, *, user_id: str, rule_sync_id: str, ledger_id: str, account_sync_id: str,
-    period_start: date, period_end: date,
+    db: Session, *, rule: ReadCardRewardRuleProjection, ledger_id: str,
+    period_start: date, period_end: date, include_live: bool = True,
 ) -> float:
     """這條規則在 [period_start, period_end] 這個帳單週期/自然月裡,已經
     透過逐筆結算入帳過的金額加總(不含這次呼叫還沒 commit 的——呼叫端用
-    `period_cache` 在記憶體裡疊加,不依賴這裡重複查詢)。"""
-    start_dt = business_date_start_utc(period_start)
+    `period_cache` 在記憶體裡疊加,不依賴這裡重複查詢)。
+
+    同期上限是新舊共用的(2026-10-16 即時回饋):舊排程算剩餘上限時要把即時
+    逐筆回饋(`dedup_key` 同樣是來源消費 sync_id)也算進去;即時機制分配上限時
+    則用 `include_live=False` 只扣舊排程已發的部分,自己的部分重新分配。"""
+    start_dt = card_rewards.period_lower_bound_utc(rule, period_start)
     end_dt = business_date_end_utc(period_end)
+    conditions = [
+        CardRewardPayout.user_id == rule.user_id,
+        CardRewardPayout.rule_sync_id == rule.sync_id,
+        ReadTxProjection.ledger_id == ledger_id,
+        ReadTxProjection.account_sync_id == rule.account_sync_id,
+        ReadTxProjection.happened_at >= start_dt,
+        ReadTxProjection.happened_at <= end_dt,
+    ]
+    if not include_live:
+        conditions.append(CardRewardPayout.live.is_(False))
+    else:
+        conditions.append(CardRewardPayout.dismissed.is_(False))
     rows = db.execute(
         select(CardRewardPayout.amount)
         .join(ReadTxProjection, ReadTxProjection.sync_id == CardRewardPayout.dedup_key)
-        .where(
-            CardRewardPayout.user_id == user_id,
-            CardRewardPayout.rule_sync_id == rule_sync_id,
-            ReadTxProjection.ledger_id == ledger_id,
-            ReadTxProjection.account_sync_id == account_sync_id,
-            ReadTxProjection.happened_at > start_dt,
-            ReadTxProjection.happened_at <= end_dt,
-        )
+        .where(*conditions)
     ).scalars().all()
     return sum(rows)
 
@@ -491,6 +506,7 @@ def _materialize_per_tx(
 ) -> int:
     qualifying = card_rewards._qualifying_transactions(
         db, ledger_id=ledger_id, rule=rule, period_start=None, period_end=None,
+        pair_filter="legacy",
     )
     if not qualifying:
         return 0
@@ -523,8 +539,7 @@ def _materialize_per_tx(
             if period is not None:
                 if period not in period_cache:
                     period_cache[period] = _paid_in_period(
-                        db, user_id=rule.user_id, rule_sync_id=rule.sync_id,
-                        ledger_id=ledger_id, account_sync_id=rule.account_sync_id,
+                        db, rule=rule, ledger_id=ledger_id,
                         period_start=period[0], period_end=period[1],
                     )
                 already_in_period = period_cache[period]
@@ -583,6 +598,7 @@ def _materialize_period_end(
         select(CardRewardPayout.dedup_key, CardRewardPayout.amount).where(
             CardRewardPayout.user_id == rule.user_id,
             CardRewardPayout.rule_sync_id == rule.sync_id,
+            CardRewardPayout.live.is_(False),
         )
     ).all():
         base_key = key.split("#", 1)[0]
@@ -597,9 +613,11 @@ def _materialize_period_end(
     # (下方),之後每輪都走 top-up 分支、差額為 0 而 continue。有測試證明
     # (test_custom_range_*_pays_once),不要為了「優化」拿掉那段即時更新。
     for period_offset in range(-1, -lookback - 1, -1):
+        # 2026-10-16 即時回饋:舊排程只發「舊套用」消費的回饋;同一期新套用消費的
+        # 差額(Reward(全部) − Reward(只算舊套用))由 card_reward_live 的即時交易負責。
         results = card_rewards.compute_account_card_rewards(
             db, ledger_id=ledger_id, account=account, rules=group_rules, now=now,
-            period_offset=period_offset,
+            period_offset=period_offset, pair_filter="legacy",
         )
         card_rewards.apply_caps(results)
         # Phase 22(2026-08 使用者反饋):`calendar_month` 規則橫跨帳單週期時,
@@ -766,6 +784,7 @@ def backfill_reward_reversal_refund_links(db: Session, *, now: datetime) -> int:
             select(CardRewardPayout).where(
                 CardRewardPayout.dedup_key == rev.reward_source_tx_sync_id,
                 CardRewardPayout.payout_tx_sync_id.isnot(None),
+                CardRewardPayout.live.is_(False),
             )
         ).all()
         candidates: list[tuple[CardRewardPayout, ReadTxProjection]] = []

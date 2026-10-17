@@ -12,11 +12,12 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-import { patchProfileMe, type ProfileAppearance } from '@beecount/api-client'
+import { createLedger, createAccount, fetchReadLedgers, fetchReadLedgerDetail, patchProfileMe, type ProfileAppearance } from '@beecount/api-client'
 import {
   Button,
   Card,
   CardContent,
+  Input,
   PrimaryColorPicker,
   Select,
   SelectContent,
@@ -32,6 +33,7 @@ import {
   type ThemeMode,
 } from '@beecount/ui'
 
+import { useLedgers } from '../context/LedgersContext'
 import { useAuth } from '../context/AuthContext'
 import { localizeError } from '../i18n/errors'
 import { mergeAiConfig, normalizeAiConfig } from '../lib/aiConfigMerge'
@@ -62,7 +64,44 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
   const { mode: themeMode, setMode: setThemeMode } = useTheme()
   const { color: primaryColor } = usePrimaryColor()
 
-  const [step, setStep] = useState(0)
+  const { refreshLedgers, setActiveLedgerId } = useLedgers()
+  const [step, setStep] = useState(profileMe?.appearance?.onboarding_done ? 4 : 0)
+  const [ledgerName, setLedgerName] = useState('')
+  const [currency, setCurrency] = useState('TWD')
+  const [ledgerId, setLedgerId] = useState<string | null>(null)
+  const ledgerRequestId = useRef(crypto.randomUUID())
+  const accountRequestId = useRef(crypto.randomUUID())
+  const [accountName, setAccountName] = useState('')
+  const [accountCreated, setAccountCreated] = useState(false)
+  const [goToAiAfter, setGoToAiAfter] = useState(false)
+  const createFirstLedger = async () => {
+    if (saving || !ledgerName.trim()) return
+    if (ledgerId) { setStep(5); return }
+    setSaving(true)
+    try {
+      // Stable external ID plus a read before retry avoids duplicate ledgers after a lost response.
+      const existing = await fetchReadLedgers(token)
+      if (!existing.some((row) => row.ledger_id === ledgerRequestId.current)) {
+        await createLedger(token, { ledger_id: ledgerRequestId.current, ledger_name: ledgerName.trim(), currency })
+      }
+      setLedgerId(ledgerRequestId.current)
+      setActiveLedgerId(ledgerRequestId.current)
+      setStep(5)
+    } catch (err) { toast.error(localizeError(err, t)) }
+    finally { setSaving(false) }
+  }
+  const createFirstAccount = async () => {
+    if (saving || !ledgerId || !accountName.trim()) return
+    setSaving(true)
+    try {
+      const ledger = await fetchReadLedgerDetail(token, ledgerId)
+      await createAccount(token, ledgerId, ledger.source_change_id, {
+        name: accountName.trim(), account_type: 'cash', currency, initial_balance: 0,
+      }, accountRequestId.current)
+      setAccountCreated(true)
+    } catch (err) { toast.error(localizeError(err, t)) }
+    finally { setSaving(false) }
+  }
   const [saving, setSaving] = useState(false)
 
   // 沒碰過 = undefined,完成時不寫入;顯示時退回雲端現值。
@@ -123,7 +162,7 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
   }
 
   const finish = async (goToAi = false) => {
-    if (saving) return
+    if (saving || !ledgerId) return
     setSaving(true)
     try {
       const nextAppearance: ProfileAppearance = {
@@ -143,8 +182,9 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
         ...(primaryColor !== initialColor.current ? { theme_primary_color: primaryColor } : {}),
       })
       await refreshProfile()
+      await refreshLedgers()
       onFinished()
-      if (goToAi) navigate('/app/settings/ai/manage')
+      if (goToAi || goToAiAfter) navigate('/app/settings/ai/manage')
     } catch (err) {
       toast.error(localizeError(err, t))
     } finally {
@@ -173,7 +213,7 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
               />
             ))}
           </div>
-          <Button variant="ghost" size="sm" disabled={saving} onClick={() => void finish()}>
+          <Button variant="ghost" size="sm" disabled={saving} onClick={() => step < 5 ? setStep(4) : void finish()}>
             {t('welcome.skip')}
           </Button>
         </div>
@@ -381,7 +421,7 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
                   <button
                     type="button"
                     disabled={saving}
-                    onClick={() => void finish(true)}
+                    onClick={() => { setGoToAiAfter(true); setStep(4) }}
                     className="flex w-full items-center justify-between gap-4 p-4 text-left transition-colors hover:bg-muted/30 disabled:opacity-60"
                   >
                     <span>
@@ -399,6 +439,26 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
               <p className="mt-3 text-xs text-muted-foreground">{t('welcome.laterHint')}</p>
             </StepShell>
           ) : null}
+          {step === 4 ? <StepShell icon={Layers} title={t('welcome.ledger.title')} desc={t('welcome.ledger.desc')}>
+            <Group title={t('welcome.ledger.name')}>
+              <Input aria-label={t('welcome.ledger.name')} value={ledgerName} disabled={!!ledgerId || saving}
+                onChange={(e) => setLedgerName(e.target.value)} />
+            </Group>
+            <Group title={t('welcome.ledger.currency')}>
+              <Select value={currency} disabled={!!ledgerId || saving} onValueChange={setCurrency}>
+                <SelectTrigger aria-label={t('welcome.ledger.currency')}><SelectValue /></SelectTrigger>
+                <SelectContent>{['TWD','USD','EUR','JPY','HKD','CNY','GBP','KRW','SGD','AUD','CAD','CHF'].map((code) =>
+                  <SelectItem key={code} value={code}>{code}</SelectItem>)}</SelectContent>
+              </Select>
+            </Group>
+          </StepShell> : null}
+          {step === 5 ? <StepShell icon={Layers} title={t('welcome.account.title')} desc={t('welcome.account.desc')}>
+            <Input aria-label={t('welcome.account.name')} value={accountName} disabled={accountCreated || saving}
+              onChange={(e) => setAccountName(e.target.value)} />
+            <Button disabled={saving || accountCreated || !accountName.trim()} onClick={() => void createFirstAccount()}>
+              {t(accountCreated ? 'welcome.account.created' : 'welcome.account.create')}
+            </Button>
+          </StepShell> : null}
         </div>
 
         <div className="mt-8 flex items-center justify-between">
@@ -409,7 +469,7 @@ export function WelcomeOnboarding({ onFinished }: { onFinished: () => void }) {
           ) : (
             <span />
           )}
-          <Button disabled={saving} onClick={() => (isLast ? void finish() : setStep(step + 1))}>
+          <Button disabled={saving || (step === 4 && !ledgerName.trim())} onClick={() => (step === 4 ? void createFirstLedger() : isLast ? void finish() : setStep(step + 1))}>
             {isLast ? t('welcome.start') : t('welcome.next')}
           </Button>
         </div>

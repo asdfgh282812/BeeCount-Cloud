@@ -21,6 +21,7 @@ import {
   buildTagColorMap,
   depositBalanceTotal,
   depositDateFromWire,
+  isLiveCardReward,
   TagChip,
   transferConversionDisplay,
   type DepositBalanceLink,
@@ -71,6 +72,35 @@ interface Props {
   depositLink?: DepositBalanceLink | null
   /** 點「補尾款」(只在 pending 且呼叫端傳了才顯示;server 寫入是 owner-only)。 */
   onCompleteDeposit?: (balance: ReadDepositBalance) => void
+  /** 即時回饋交易(2026-10-16)的規則/期別/計入筆數,由 GlobalEntityDialogs 查好傳入;
+   *  不是即時回饋交易時 null。 */
+  liveReward?: LiveRewardDetail | null
+  /** 消費交易:它產生的逐筆即時回饋交易(勾了 3 條逐筆規則就有 3 筆)。 */
+  generatedRewards?: Array<{ tx: WorkspaceTransaction; ruleLabel: string }>
+}
+
+export type LiveRewardDetail = {
+  rule: ReadCardRewardRule | null
+  /** 整期模式期別(yyyy-mm-dd,皆含);逐筆模式 null。 */
+  period: { start: string; end: string } | null
+  /** 目前計入的消費筆數;還在載入或算不出來時 null。 */
+  includedCount: number | null
+  /** 逐筆模式的來源消費 id。 */
+  sourceTxId: string | null
+}
+
+function ymdLocal(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+}
+
+function isPostedLocal(iso: string): boolean {
+  const d = new Date(iso)
+  const now = new Date()
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  return day <= today
 }
 
 /**
@@ -101,6 +131,8 @@ export function TransactionDetailDialog({
   onDelete,
   depositLink,
   onCompleteDeposit,
+  liveReward,
+  generatedRewards,
 }: Props) {
   const t = useT()
 
@@ -120,6 +152,8 @@ export function TransactionDetailDialog({
   // 意外把它改回 expense(表單只能收窄成既有三選一),灰掉編輯入口避免
   // 悄悄改壞這筆交易的類型,要調整餘額請回到帳戶詳情頁重新做一次餘額調整。
   const isAdjustmentTx = tx?.tx_type === 'adjustment'
+  // 即時回饋交易(2026-10-16):金額由規則計算,不能刪(要從消費或規則那一端處理)。
+  const isLiveReward = isLiveCardReward(tx)
 
   const open = Boolean(tx)
   const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
@@ -216,6 +250,11 @@ export function TransactionDetailDialog({
                     {t('transactions.badge.recurring')}
                   </span>
                 ) : null}
+                {isLiveReward ? (
+                  <span className="rounded-full bg-income/15 px-1.5 py-0.5 text-[10px] normal-case text-income">
+                    {t('transactions.badge.liveReward')}
+                  </span>
+                ) : null}
               </span>
               <span className={`max-w-full break-all text-center text-3xl font-bold tabular-nums sm:text-4xl ${tone}`}>
                 {sign}
@@ -293,6 +332,87 @@ export function TransactionDetailDialog({
                 </div>
               ) : null}
             </div>
+
+            {/* 即時回饋交易(2026-10-16,跟 App 交易詳情的「信用卡回饋」區塊一致):規則、
+                期別(整期)或來源消費(逐筆)、目前計入幾筆、預計入帳/已入帳,以及「查看
+                計入的消費」(跳帳戶詳情並打開這條規則的明細)。 */}
+            {isLiveReward && liveReward ? (
+              <div className="mx-6 mt-4 rounded-xl bg-muted/40 px-4 py-3 text-xs" data-testid="tx-detail-live-reward">
+                <div className="flex items-center gap-2">
+                  <Gift className="h-4 w-4 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+                    {liveReward.rule?.label || t('detail.transaction.liveReward.ruleMissing')}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                      isPostedLocal(tx.happened_at) ? 'bg-income/15 text-income' : 'bg-amber-500/15 text-amber-600'
+                    }`}
+                  >
+                    {isPostedLocal(tx.happened_at)
+                      ? t('detail.transaction.liveReward.posted')
+                      : t('detail.transaction.liveReward.scheduled', { date: ymdLocal(tx.happened_at) })}
+                  </span>
+                </div>
+                <div className="mt-1.5 space-y-0.5 text-muted-foreground">
+                  {liveReward.period ? (
+                    <div>
+                      {t('detail.transaction.liveReward.period', {
+                        range: `${liveReward.period.start.split('-').join('/')} ~ ${liveReward.period.end.split('-').join('/')}`,
+                      })}
+                    </div>
+                  ) : null}
+                  {liveReward.period && liveReward.includedCount != null ? (
+                    <div>{t('detail.transaction.liveReward.count', { count: liveReward.includedCount })}</div>
+                  ) : null}
+                  {liveReward.sourceTxId ? (
+                    onJumpToTx ? (
+                      <button
+                        type="button"
+                        onClick={() => onJumpToTx(liveReward.sourceTxId!)}
+                        className="underline-offset-2 hover:text-primary hover:underline"
+                      >
+                        {t('detail.transaction.rewardSourceLink')}
+                      </button>
+                    ) : null
+                  ) : null}
+                  <div className="text-[11px] text-muted-foreground/80">{t('detail.transaction.liveReward.autoNote')}</div>
+                </div>
+                {liveReward.rule && onJumpToReward ? (
+                  <div className="mt-1 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => onJumpToReward(liveReward.rule!.account_id, liveReward.rule!.id)}
+                      className="text-xs font-medium text-primary hover:underline"
+                    >
+                      {t('detail.transaction.liveReward.viewSpend')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {/* 消費交易:它產生的逐筆即時回饋交易,每筆可點過去。 */}
+            {generatedRewards && generatedRewards.length > 0 ? (
+              <div className="mx-6 mt-4 text-xs" data-testid="tx-detail-generated-rewards">
+                <div className="mb-1 text-muted-foreground">{t('detail.transaction.liveReward.generatedTitle')}</div>
+                {generatedRewards.map((row) => (
+                  <button
+                    key={row.tx.id}
+                    type="button"
+                    onClick={() => onJumpToTx?.(row.tx.id)}
+                    disabled={!onJumpToTx}
+                    className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-muted/50 disabled:cursor-default"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-foreground">
+                      {row.ruleLabel} · {ymdLocal(row.tx.happened_at)}
+                    </span>
+                    <span className="font-semibold tabular-nums text-income">
+                      +{row.tx.amount.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             {/* 字段列表 */}
             <div className="flex flex-col divide-y divide-border/40 px-6">
@@ -686,14 +806,15 @@ export function TransactionDetailDialog({
               variant="destructive"
               size="sm"
               className="mr-auto"
-              disabled={!canManage}
+              disabled={!canManage || isLiveReward}
+              title={isLiveReward ? t('transactions.liveReward.deleteBlocked') : undefined}
               onClick={() => onDelete(tx)}
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
               {t('common.delete')}
             </Button>
           ) : null}
-          {tx && (tx.tx_type === 'expense' || tx.tx_type === 'income') && !isRefundTx && onRefund ? (
+          {tx && (tx.tx_type === 'expense' || tx.tx_type === 'income') && !isRefundTx && !isLiveReward && onRefund ? (
             <Button
               variant="outline"
               size="sm"

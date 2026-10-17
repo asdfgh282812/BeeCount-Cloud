@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_registered_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 19
+            assert len(rows) == 20
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 19
+            assert len(rows2) == 20
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_registered_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 19
+        assert len(rows) == 20
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -415,6 +415,7 @@ def test_all_registered_jobs_map_to_registered_handlers_and_get_called():
             "stock_dca_materialization",
             "card_autopay",
             "card_reward_payout",
+            "card_reward_live_reconcile",
             "swipesmart_usage_backfill",
             "check_latest_app_version",
             "security_quote_close",
@@ -460,6 +461,10 @@ def test_all_registered_jobs_map_to_registered_handlers_and_get_called():
                     return_value={"tx_payouts": 0, "period_payouts": 0},
                 ) as mock_reward,
                 patch(
+                    "src.services.card_reward_live.reconcile_live_card_rewards",
+                    return_value={"rules": 0, "notified": 0},
+                ) as mock_reward_live,
+                patch(
                     "src.services.swipesmart_backfill.run_swipesmart_usage_backfill",
                     return_value={"users": 0, "accounts_attempted": 0, "accounts_succeeded": 0},
                 ) as mock_swipesmart,
@@ -490,6 +495,7 @@ def test_all_registered_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "card_due_reminders")
                 scheduled_jobs.run_job(db, "card_autopay")
                 scheduled_jobs.run_job(db, "card_reward_payout")
+                scheduled_jobs.run_job(db, "card_reward_live_reconcile")
                 scheduled_jobs.run_job(db, "swipesmart_usage_backfill")
                 scheduled_jobs.run_job(db, "security_quote_close")
                 scheduled_jobs.run_job(db, "security_dividend_sync")
@@ -506,6 +512,7 @@ def test_all_registered_jobs_map_to_registered_handlers_and_get_called():
             mock_card.assert_called_once()
             mock_autopay.assert_called_once()
             mock_reward.assert_called_once()
+            mock_reward_live.assert_called_once()
             mock_swipesmart.assert_called_once()
             mock_security_close.assert_called_once()
             mock_dividend_sync.assert_called_once()

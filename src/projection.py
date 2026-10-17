@@ -22,6 +22,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .services.billing_schedule import encode_overrides, normalize_overrides
+from . import card_reward_dirty
 from .stats_amount import debt_split_total
 from .models import (
     AttachmentFile,
@@ -327,6 +328,11 @@ def upsert_tx(
     prev_file_ids = collect_tx_attachment_fileids(
         db, ledger_id=ledger_id, sync_id=sync_id
     )
+    # 即時回饋(2026-10-16):記下寫入前的狀態,commit 前由 card_reward_live 重算。
+    card_reward_dirty.mark_tx(
+        db, ledger_id=ledger_id, sync_id=sync_id,
+        before=_tx_snapshot_for_reward(db, ledger_id=ledger_id, sync_id=sync_id),
+    )
 
     # 共享账本:created_by_user_id 一旦写入就不能被后续 upsert 覆盖
     # (B 编辑 A 创建的 tx 时,payload 不带 createdByUserId,如果 _upsert
@@ -430,6 +436,9 @@ def upsert_tx(
         # 信用卡紅利回饋自動入帳(§2.9.5.4 補強)反查字段,同款语义:None =
         # 普通交易(或 period_end/manual 這種不對應單一原始交易的回饋)。
         "reward_source_tx_sync_id": _as_str(payload.get("rewardSourceTxId")),
+        # 即時回饋交易(2026-10-16)連回規則 + 期別,同款语义:None = 不是即時回饋交易。
+        "reward_payout_rule_sync_id": _as_str(payload.get("rewardPayoutRuleId")),
+        "reward_payout_key": _as_str(payload.get("rewardPayoutKey")),
         # 延後入帳(§2.10 Phase 5):None = 正常交易,缺键保留由上游
         # merge_with_existing 负责。
         "deferred_posting_at": (
@@ -1169,7 +1178,23 @@ def delete_entity(
     )
 
 
+def _tx_snapshot_for_reward(db: Session, *, ledger_id: str, sync_id: str) -> dict[str, Any] | None:
+    if card_reward_dirty.is_suppressed(db):
+        return None
+    row = db.scalar(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == sync_id,
+        )
+    )
+    return card_reward_dirty.tx_snapshot(row)
+
+
 def delete_tx(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    card_reward_dirty.mark_tx(
+        db, ledger_id=ledger_id, sync_id=sync_id,
+        before=_tx_snapshot_for_reward(db, ledger_id=ledger_id, sync_id=sync_id),
+    )
     delete_entity(db, ReadTxProjection, ledger_id=ledger_id, sync_id=sync_id)
     # 拆帳(§2.4):tx_sync_id 不是外键,ledger 级联删不到这张表,删单笔交易
     # 要顺手清掉它的 split 明细行,否则留下指向已删除交易的孤儿行。
@@ -1259,10 +1284,12 @@ def upsert_card_reward_rule(
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadCardRewardRuleProjection, ("user_id", "sync_id"), values)
+    card_reward_dirty.mark_rule(db, user_id=user_id, rule_sync_id=sync_id)
 
 
 def delete_card_reward_rule(db: Session, *, user_id: str, sync_id: str) -> None:
     """user-global card_reward_rule delete。PK=(user_id, sync_id)。"""
+    card_reward_dirty.mark_rule(db, user_id=user_id, rule_sync_id=sync_id)
     db.execute(
         delete(ReadCardRewardRuleProjection).where(
             ReadCardRewardRuleProjection.user_id == user_id,
@@ -1413,6 +1440,22 @@ def _truncate_ledger(db: Session, ledger_id: str) -> None:
 
 
 def rebuild_from_snapshot(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    snapshot: dict[str, Any],
+    source_change_id: int,
+) -> None:
+    # 重建投影不是使用者的寫入,不觸發即時回饋重算(card_reward_live)。
+    with card_reward_dirty.suppress(db):
+        _rebuild_from_snapshot(
+            db, ledger_id=ledger_id, user_id=user_id, snapshot=snapshot,
+            source_change_id=source_change_id,
+        )
+
+
+def _rebuild_from_snapshot(
     db: Session,
     *,
     ledger_id: str,

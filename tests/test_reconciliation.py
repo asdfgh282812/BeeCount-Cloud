@@ -455,9 +455,11 @@ def test_statement_flags_reward_category_transaction_as_is_reward():
         client.close()
 
 
-def test_statement_merges_same_rule_reward_payouts_into_one_row():
+def test_statement_merges_same_rule_reward_payouts_into_one_row(monkeypatch):
     """使用者反饋(2026-08-XX,需求 #7 改版):同一個回饋方案在這期帳單內的
-    多筆自動入帳回饋,合併成一列顯示總金額,不逐筆列出。"""
+    多筆自動入帳回饋,合併成一列顯示總金額,不逐筆列出。(驗證舊排程入帳,
+    關掉 2026-10-16 的即時回饋機制。)"""
+    monkeypatch.setenv("CARD_REWARD_LIVE_ENABLED", "0")
     client, TS = _make_client()
     try:
         app_tok = _login(client, "st15@t.com", device_id="d-app")

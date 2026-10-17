@@ -51,7 +51,7 @@ class BatchTxDeleteRequest(BaseModel):
 
 class BatchTxFailure(BaseModel):
     tx_id: str
-    reason: Literal["not_found", "permission_denied", "conflict", "installment_linked"]
+    reason: Literal["not_found", "permission_denied", "conflict", "installment_linked", "live_reward"]
     message: str | None = None
 
 
@@ -147,7 +147,27 @@ async def delete_tx_batch(
         if isinstance(it, dict)
     }
 
+    # 即時回饋交易(2026-10-16,services/card_reward_live.py):由回饋規則維護,批次刪除
+    # 跳過(單筆刪除 App/Web 前端已擋;真的刪了會被當成「不要這筆回饋」而不再重建)。
+    live_reward_tx_ids = {
+        str(it.get("syncId"))
+        for it in (snapshot.get("items") or [])
+        if isinstance(it, dict) and it.get("rewardPayoutRuleId") and it.get("rewardPayoutKey")
+    }
+
     for tx_id in unique_ids:
+        if tx_id in live_reward_tx_ids:
+            failed.append(
+                BatchTxFailure(
+                    tx_id=tx_id,
+                    reason="live_reward",
+                    message=(
+                        "This reward transaction is maintained by a card reward rule. "
+                        "Untick the rule on the purchase or disable the rule instead."
+                    ),
+                )
+            )
+            continue
         if plan_id_by_tx.get(tx_id):
             failed.append(
                 BatchTxFailure(

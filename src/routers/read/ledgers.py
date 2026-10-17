@@ -433,6 +433,8 @@ def list_transactions(
                 project_name=project_name_by_id.get(row.project_sync_id) if row.project_sync_id else None,
                 reward_rule_ids=_reward_rule_ids_list(row.reward_rule_sync_ids_json),
                 reward_source_tx_id=row.reward_source_tx_sync_id,
+                reward_payout_rule_id=row.reward_payout_rule_sync_id,
+                reward_payout_key=row.reward_payout_key,
                 deferred_posting_at=row.deferred_posting_at,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
@@ -950,7 +952,9 @@ def _card_reward_rule_to_out(
         reward_project_id=row.reward_project_id,
         note=row.note,
         enabled=row.enabled,
-        locked=card_rewards.rule_has_history(db, user_id=row.user_id, rule_id=row.sync_id),
+        # 2026-10-16 即時回饋起規則不再上鎖(見 services/card_reward_live.py);欄位保留給
+        # 舊版 Web 讀,永遠 False。
+        locked=False,
         last_change_id=last_change_id,
     )
 
@@ -1163,12 +1167,41 @@ def get_card_reward_rule_transactions(
         ).all()
         payout_amount_by_tx_id = dict(amount_rows)
 
+    # 即時回饋(2026-10-16):實際連動的回饋交易。逐筆模式的入帳日改看那筆交易的
+    # 實際日期(使用者可能手動改過);整期模式每一期帶出那一筆回饋交易。
+    live_tx_by_id: dict[str, ReadTxProjection] = {}
+    live_period_tx: dict[tuple[date, date], ReadTxProjection] = {}
+    live_payouts = db.scalars(
+        select(CardRewardPayout).where(
+            CardRewardPayout.user_id == current_user.id,
+            CardRewardPayout.rule_sync_id == rule.sync_id,
+            CardRewardPayout.live.is_(True),
+            CardRewardPayout.dismissed.is_(False),
+            CardRewardPayout.ledger_id == ledger.id,
+            CardRewardPayout.payout_tx_sync_id.is_not(None),
+        )
+    ).all()
+    if live_payouts:
+        rows = db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.sync_id.in_([p.payout_tx_sync_id for p in live_payouts]),
+            )
+        ).all()
+        live_tx_by_id = {r.sync_id: r for r in rows}
+        for p in live_payouts:
+            row = live_tx_by_id.get(p.payout_tx_sync_id or "")
+            if row is not None and p.period_start and p.period_end and p.dedup_key.startswith("live:"):
+                live_period_tx[(p.period_start, p.period_end)] = row
+    today = business_today(now)
+
     periods = []
     for period in detail["periods"]:
         items = []
         for item in period["items"]:
             payout_tx_id = payout_tx_by_dedup.get(item["tx"].sync_id)
             actual_amount = payout_amount_by_tx_id.get(payout_tx_id) if payout_tx_id else None
+            live_row = live_tx_by_id.get(payout_tx_id) if payout_tx_id else None
             items.append(
                 ReadCardRewardQualifyingTxOut(
                     tx_id=item["tx"].sync_id,
@@ -1178,7 +1211,9 @@ def get_card_reward_rule_transactions(
                     category_name=item["tx"].category_name,
                     reward_amount=actual_amount if actual_amount is not None else item["reward_amount"],
                     settlement_date=(
-                        _date_to_utc_dt(settlement_date)
+                        # 跟其它 settlement_date 一樣回「業務日期的 UTC 零點」,前端直接取日期部分。
+                        _date_to_utc_dt(to_business_date(live_row.happened_at)) if live_row is not None
+                        else _date_to_utc_dt(settlement_date)
                         if (settlement_date := card_rewards.compute_settlement_date(
                             rule, tx_happened_at=item["tx"].happened_at, period_end=period["period_end"],
                         )) is not None
@@ -1187,6 +1222,7 @@ def get_card_reward_rule_transactions(
                     payout_tx_id=payout_tx_id,
                 )
             )
+        live_period = live_period_tx.get((period["period_start"], period["period_end"]))
         periods.append(
             ReadCardRewardPeriodTransactionsOut(
                 period_start=_date_to_utc_dt(period["period_start"]),
@@ -1197,6 +1233,16 @@ def get_card_reward_rule_transactions(
                 capped_reward=period["capped_reward"],
                 remaining_reward_room=period["remaining_reward_room"],
                 remaining_spend_room=period["remaining_spend_room"],
+                live_reward_tx_id=live_period.sync_id if live_period is not None else None,
+                live_reward_amount=live_period.amount if live_period is not None else None,
+                # 業務日期的 UTC 零點(同 period_start/period_end),前端直接取日期部分。
+                live_reward_happened_at=(
+                    _date_to_utc_dt(to_business_date(live_period.happened_at))
+                    if live_period is not None else None
+                ),
+                live_reward_posted=(
+                    to_business_date(live_period.happened_at) <= today if live_period is not None else None
+                ),
                 items=items,
             )
         )

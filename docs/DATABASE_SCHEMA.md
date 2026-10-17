@@ -310,6 +310,8 @@
 | project_sync_id | String(255) | nullable | 使用者手動指定所屬的專案 |
 | reward_rule_sync_ids_json | Text | nullable | 使用者勾選適用的信用卡回饋規則清單（JSON） |
 | reward_source_tx_sync_id | String(255) | nullable | 若此筆為回饋自動入帳，反查原始消費交易 |
+| reward_payout_rule_sync_id | String(255) | nullable | 即時回饋交易（0076）連回的回饋規則；舊排程產生的回饋與一般交易為空 |
+| reward_payout_key | String(255) | nullable | 即時回饋交易的期別/來源鍵（= `card_reward_payouts.dedup_key`），App/Web 顯示用 |
 | deferred_posting_at | DateTime | nullable | 延後入帳的實際入帳日；NULL=沿用發生時間 |
 | reconciled_at | DateTime | nullable | 對帳模式中已確認出現在該期帳單的時間；NULL=尚未對過帳 |
 
@@ -738,8 +740,26 @@
 | amount | Float | default 0.0 | 入帳的回饋金額 |
 | payout_tx_sync_id | String(255) | nullable | 產生的入帳交易反查 |
 | created_at | DateTime | default 建立時 | 建立時間 |
+| live | Boolean | default false | 0076：即時回饋交易的列（`services/card_reward_live.py` 維護）；舊排程只看 false 的列 |
+| ledger_id | String(36) | nullable | 0076：即時回饋交易所在帳本 |
+| period_start / period_end | Date | nullable | 0076：整期模式的期別（帳單週期的 start 是上一期結帳日，不含） |
+| proposed_happened_at / proposed_account_sync_id / proposed_project_id | — | nullable | 0076：上次系統寫進回饋交易的日期/帳戶/專案；交易目前的值不同 = 使用者手動改過，重算時保留 |
+| dismissed | Boolean | default false | 0076：使用者刪掉了這筆即時回饋交易，之後不再重建 |
+| notified_at | DateTime | nullable | 0076：整期回饋入帳通知發過的時間 |
 
-唯一索引：`ux_card_reward_payouts_dedup(user_id, rule_sync_id, dedup_key)`
+唯一索引：`ux_card_reward_payouts_dedup(user_id, rule_sync_id, dedup_key)`。即時回饋的 dedup_key：整期 `live:{start}~{end}:{ledger_id}`、逐筆 = 來源消費 sync_id。
+
+### `card_reward_legacy_links` — 即時回饋上線前的「消費 × 規則」配對（CardRewardLegacyLink，0076）
+alembic 0076 部署當下所有勾選配對的快照。在表裡 = 舊套用，繼續由舊排程 `card_reward_payout` 入帳；不在表裡 = 新套用，走即時機制。使用者取消勾選或刪除消費時刪列（之後再勾回來就是新套用）；`CARD_REWARD_LIVE_ENABLED=0` 期間新勾的配對會補進來。不同步到 App/Web。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK | 流水號 |
+| user_id | String(36) | FK→users.id (CASCADE) | 所屬使用者 |
+| tx_sync_id | String(255) | not null | 消費交易同步 ID |
+| rule_sync_id | String(255) | not null | 回饋規則同步 ID |
+
+唯一索引：`ux_card_reward_legacy_links(user_id, tx_sync_id, rule_sync_id)`；查詢索引 `ix_card_reward_legacy_links_rule(user_id, rule_sync_id)`。
 
 ---
 

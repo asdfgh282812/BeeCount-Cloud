@@ -291,6 +291,11 @@ export type ReadTransaction = {
    *  规则自动产生的回饋 income,反查它对应的原始消费交易 id;null = 普通
    *  交易,或 period_end/manual 這種不對應單一原始交易的回饋。 */
   reward_source_tx_id?: string | null
+  /** 即時回饋交易(2026-10-16):有值 = 這筆是某條回饋規則某一期/某筆消費的專屬
+   *  回饋交易,金額由系統計算(唯讀、不能刪)。`reward_payout_key` 整期模式是
+   *  `live:{起}~{迄}:{帳本}`,逐筆模式 = 來源消費 id。 */
+  reward_payout_rule_id?: string | null
+  reward_payout_key?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -1422,6 +1427,11 @@ export type ReadCardRewardPeriodTransactions = {
   capped_reward: number
   remaining_reward_room?: number | null
   remaining_spend_room?: number | null
+  /** 即時回饋(2026-10-16):整期模式這一期連動的回饋交易;posted = 日期已到。 */
+  live_reward_tx_id?: string | null
+  live_reward_amount?: number | null
+  live_reward_happened_at?: string | null
+  live_reward_posted?: boolean | null
   items: ReadCardRewardQualifyingTx[]
 }
 

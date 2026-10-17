@@ -36,6 +36,14 @@ from src.models import (
 from src.services import business_time as bt
 from src.services import card_reward_payout, card_rewards, credit_card_billing
 
+
+@pytest.fixture(autouse=True)
+def _legacy_card_reward_scheduler_only(monkeypatch):
+    """這個檔案驗證的是即時回饋(2026-10-16)上線前就勾選的消費由舊排程
+    (`card_reward_payout`)入帳的行為;關掉即時機制 = 所有配對都是舊套用。
+    即時回饋本身見 tests/test_card_reward_live.py。"""
+    monkeypatch.setenv("CARD_REWARD_LIVE_ENABLED", "0")
+
 TPE = ZoneInfo("Asia/Taipei")
 UTC = timezone.utc
 

@@ -126,6 +126,7 @@ import {
   txDefaults,
   type TxForm,
   isStockAccount,
+  isLiveCardReward,
   validateDepositForm,
 } from '@beecount/web-features'
 
@@ -2600,6 +2601,8 @@ export function TransactionsPage() {
       category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
       account_name: tx.account_name || '',
       original_account_name: tx.account_name || '',
+      // 即時回饋交易(2026-10-16):金額由回饋規則計算,表單唯讀。
+      amount_locked: isLiveCardReward(tx),
       from_account_name: tx.from_account_name || '',
       to_account_name: tx.to_account_name || '',
       // 转帐「转入金额」(2026-09-18 使用者反馈:重开编辑表单会用当下市场
@@ -3165,13 +3168,18 @@ export function TransactionsPage() {
                   setRecurringEditContext(null)
                   openTxEditForm(tx as WorkspaceTransaction)
                 }}
-                onDelete={(row) =>
+                onDelete={(row) => {
+                  // 即時回饋交易(2026-10-16)由回饋規則維護,不能直接刪。
+                  if (isLiveCardReward(row as WorkspaceTransaction)) {
+                    toast.error(t('transactions.liveReward.deleteBlocked'))
+                    return
+                  }
                   setPendingDelete({
                     kind: 'tx',
                     id: row.id,
                     ledgerId: row.ledger_id || txWriteLedgerId || activeLedgerId || ''
                   })
-                }
+                }}
                 onSelect={(row) => {
                   // 派发全局 detail 事件,弹窗由 GlobalEntityDialogs 渲染
                   dispatchOpenDetailTx(row as WorkspaceTransaction)
