@@ -375,6 +375,24 @@ export function TransactionDetailDialog({
                       </button>
                     ) : null
                   ) : null}
+                  {/* 手動調整(2026-10-17):像拆帳一樣多一條,金額 = 回饋計算 + 手動調整。 */}
+                  {tx.reward_adjustment ? (
+                    <div className="space-y-0.5 py-0.5" data-testid="tx-detail-live-reward-breakdown">
+                      <div className="flex justify-between">
+                        <span>{t('detail.transaction.liveReward.computed')}</span>
+                        <span className="tabular-nums">
+                          {(tx.amount - tx.reward_adjustment).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>{t('detail.transaction.liveReward.adjustment')}</span>
+                        <span className={`tabular-nums ${tx.reward_adjustment > 0 ? 'text-income' : 'text-expense'}`}>
+                          {tx.reward_adjustment > 0 ? '+' : '−'}
+                          {Math.abs(tx.reward_adjustment).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="text-[11px] text-muted-foreground/80">{t('detail.transaction.liveReward.autoNote')}</div>
                 </div>
                 {liveReward.rule && onJumpToReward ? (

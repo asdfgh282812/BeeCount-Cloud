@@ -661,6 +661,8 @@ class ReadTransactionOut(BaseModel):
     # 某筆消費(`reward_payout_key`)的專屬回饋交易,金額由系統計算(前端唯讀、擋刪除)。
     reward_payout_rule_id: str | None = None
     reward_payout_key: str | None = None
+    # 即時回饋交易的手動調整(2026-10-17):amount = 系統計算 + 這個值;None = 沒調整。
+    reward_adjustment: float | None = None
     # 延後入帳(§2.10 Phase 5):有值 = 實際入帳日跟 happened_at 不同,對帳/
     # 信用卡帳單彙總按這個日期歸屬期別;None = 正常交易。
     deferred_posting_at: datetime | None = None
@@ -1906,6 +1908,9 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 信用卡紅利回饋(§2.9.5,2026-08-06 改版):None(不传该 key)= 不变。
     # 传空列表 [] = 清空,传非空列表 = 整批替换。
     reward_rule_ids: list[str] | None = None
+    # 即時回饋交易的手動調整(2026-10-17):key 不出現 = 不變;數值 = 新的調整
+    # (0 / null = 清掉)。只對即時回饋交易有意義,Cloud 會把金額重設成「計算 + 調整」。
+    reward_adjustment: float | None = None
     # 延後入帳(§2.10 Phase 5):key 不出現 = 不變;傳 ISO 時間 = 設定/更新;
     # 傳 null = 清除延後入帳標記(跟 debt closed_at 同款「key 是否出現才
     # 決定要不要改」語意,用 exclude_unset dump)。

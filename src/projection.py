@@ -439,6 +439,8 @@ def upsert_tx(
         # 即時回饋交易(2026-10-16)連回規則 + 期別,同款语义:None = 不是即時回饋交易。
         "reward_payout_rule_sync_id": _as_str(payload.get("rewardPayoutRuleId")),
         "reward_payout_key": _as_str(payload.get("rewardPayoutKey")),
+        # 即時回饋交易的手動調整(2026-10-17),缺键保留由上游 merge_with_existing 负责。
+        "reward_adjustment_amount": _as_float_or_none(payload.get("rewardAdjustment")),
         # 延後入帳(§2.10 Phase 5):None = 正常交易,缺键保留由上游
         # merge_with_existing 负责。
         "deferred_posting_at": (

@@ -312,6 +312,7 @@
 | reward_source_tx_sync_id | String(255) | nullable | 若此筆為回饋自動入帳，反查原始消費交易 |
 | reward_payout_rule_sync_id | String(255) | nullable | 即時回饋交易（0076）連回的回饋規則；舊排程產生的回饋與一般交易為空 |
 | reward_payout_key | String(255) | nullable | 即時回饋交易的期別/來源鍵（= `card_reward_payouts.dedup_key`），App/Web 顯示用 |
+| reward_adjustment_amount | Float | nullable | 0077：即時回饋交易的手動調整（使用者改金額的差額）；金額 = 系統計算（payout.amount）+ 調整 |
 | deferred_posting_at | DateTime | nullable | 延後入帳的實際入帳日；NULL=沿用發生時間 |
 | reconciled_at | DateTime | nullable | 對帳模式中已確認出現在該期帳單的時間；NULL=尚未對過帳 |
 

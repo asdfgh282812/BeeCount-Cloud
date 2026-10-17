@@ -345,6 +345,7 @@ def list_workspace_transactions(
                 reward_source_tx_id=row.reward_source_tx_sync_id,
                 reward_payout_rule_id=row.reward_payout_rule_sync_id,
                 reward_payout_key=row.reward_payout_key,
+                reward_adjustment=row.reward_adjustment_amount,
                 deferred_posting_at=row.deferred_posting_at,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,

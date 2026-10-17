@@ -75,6 +75,22 @@ import {
  * 「缺匯率」並阻斷送出(跟 `resolveCurrencyFields` 同一原則)。實際邏輯見
  * `lib/currencies.ts::resolveEffectiveRate`(送出邏輯共用同一份)。
  */
+/** 即時回饋交易(2026-10-17):金額下方的「回饋計算 X · 手動調整 ±Y」。 */
+function liveRewardBreakdownText(
+  base: number,
+  amountText: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  const fmt = (v: number) => v.toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+  const amount = Number(amountText)
+  const adj = Number.isFinite(amount) ? Math.round((amount - base) * 100) / 100 : 0
+  if (adj === 0) return t('transactions.liveReward.baseHint', { base: fmt(base) })
+  return t('transactions.liveReward.breakdown', {
+    base: fmt(base),
+    adjustment: `${adj > 0 ? '+' : '−'}${fmt(Math.abs(adj))}`,
+  })
+}
+
 function resolveFxPreview(
   rateOverrideStr: string,
   amountOverrideStr: string,
@@ -1036,13 +1052,13 @@ export function TransactionsPanel({
                   value={debtMode ?? form.tx_type}
                   options={[
                     // 即時回饋交易(2026-10-16)的類型固定是收入。
-                    ...(form.amount_locked
+                    ...(form.live_reward_base != null
                       ? (['income'] as const)
                       : (['expense', 'income', 'transfer'] as const)
                     ).map((type) => ({
                       value: type, label: t(`enum.txType.${type}`), testId: `tx-type-${type}`
                     })),
-                    ...(showDebtTabs && !form.amount_locked ? (['receivable', 'payable'] as const).map((kind) => ({
+                    ...(showDebtTabs && form.live_reward_base == null ? (['receivable', 'payable'] as const).map((kind) => ({
                       value: kind, label: t(`enum.txType.${kind}`), testId: `tx-type-${kind}`
                     })) : [])
                   ]}
@@ -1082,7 +1098,7 @@ export function TransactionsPanel({
                 {/* 拆帳(§2.4):只对 expense/income 有意义,跟 transfer 互斥。
                     编辑既有交易时也能开关(对齐 Moze 编辑既有交易能改分类的语意),
                     不像 recurring/installment 只在新建时显示。即時回饋交易(金額由規則計算)不提供。 */}
-                {!isTransfer && !form.amount_locked ? (
+                {!isTransfer && form.live_reward_base == null ? (
                   <button
                     type="button"
                     className={textActionClass}
@@ -1296,7 +1312,7 @@ export function TransactionsPanel({
                     金額旁邊的「+」):expense/income 展開手續費+折扣共用面板;
                     transfer(2026-08-29)展開的是轉出側手續費面板(獨立於
                     折損,見下方轉入金額列旁的 discount_enabled 面板)。 */}
-                {!form.fee_enabled && !form.amount_locked ? (
+                {!form.fee_enabled && form.live_reward_base == null ? (
                   <button
                     type="button"
                     onClick={() => onFormChange({ ...form, fee_enabled: true })}
@@ -1312,11 +1328,11 @@ export function TransactionsPanel({
                 placeholder={t('transactions.placeholder.amount')}
                 value={form.amount}
                 onChange={(value) => onFormChange({ ...form, amount: value })}
-                disabled={form.amount_locked}
-                title={form.amount_locked ? t('transactions.liveReward.amountLocked') : undefined}
               />
-              {form.amount_locked ? (
-                <p className="text-[11px] text-muted-foreground">{t('transactions.liveReward.amountLocked')}</p>
+              {form.live_reward_base != null ? (
+                <p className="text-[11px] text-muted-foreground" data-testid="live-reward-breakdown">
+                  {liveRewardBreakdownText(form.live_reward_base, form.amount, t)}
+                </p>
               ) : null}
               {/* 跨幣別自動換算(2026-08):币种另起一行,全宽显示币种全名+国旗
                   (挨金额太窄会截断)。帐户下拉不再按这个币种过滤——选到跟

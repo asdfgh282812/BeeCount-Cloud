@@ -814,6 +814,10 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("reconciledAt", None)
         else:
             item["reconciledAt"] = _to_iso8601(value)
+    if "reward_adjustment" in payload:
+        # 即時回饋交易的手動調整(2026-10-17);金額由 card_reward_live 依「計算 + 調整」重設。
+        value = payload.get("reward_adjustment")
+        item["rewardAdjustment"] = 0.0 if value is None else round(float(value), 2)
     if "reward_rule_ids" in payload:
         raw = payload.get("reward_rule_ids")
         if isinstance(raw, list):

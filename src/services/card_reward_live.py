@@ -138,6 +138,14 @@ class _SourceTarget:
 
 
 @dataclass(frozen=True)
+class _ReassertTarget:
+    """使用者改了即時回饋交易本身:金額重設成「系統計算 + 手動調整」。"""
+    user_id: str
+    ledger_id: str
+    sync_id: str
+
+
+@dataclass(frozen=True)
 class _PerTxPeriodTarget:
     user_id: str
     rule_sync_id: str
@@ -218,6 +226,12 @@ def _reward_row(db: Session, payout: CardRewardPayout | None) -> ReadTxProjectio
     if payout is None or not payout.ledger_id:
         return None
     return _tx_row(db, ledger_id=payout.ledger_id, sync_id=payout.payout_tx_sync_id)
+
+
+def _total_amount(computed: float, adjustment: float | None) -> float:
+    """回饋交易金額 = 系統計算的回饋 + 使用者的手動調整(2026-10-17,alembic 0077)。
+    調整讓總額變負時歸零(收入不能是負的)。"""
+    return max(round(computed + (adjustment or 0.0), 2), 0.0)
 
 
 def _is_frozen(ctx: _Ctx, row: ReadTxProjection | None) -> bool:
@@ -337,8 +351,10 @@ def _write_live(
     period: tuple[date, date] | None,
     source_tx_id: str | None,
 ) -> None:
-    """新建或更新一筆即時回饋交易。金額一律覆寫;日期/帳戶/專案只在使用者沒改過
-    (= 跟 `proposed_*` 相同)時換成新的系統值;沒有任何變化就不寫 SyncChange。"""
+    """新建或更新一筆即時回饋交易。`amount` 是系統計算的回饋(存進 payout.amount),
+    交易金額 = 它 + 交易上的手動調整(`reward_adjustment_amount`,使用者改金額時留下的
+    差額,重算時保留);日期/帳戶/專案只在使用者沒改過(= 跟 `proposed_*` 相同)時
+    換成新的系統值;沒有任何變化就不寫 SyncChange。"""
     from ..routers.write._shared import _projection_row_to_tx_dict
 
     user_id = rule.user_id
@@ -382,9 +398,9 @@ def _write_live(
     else:
         item = _projection_row_to_tx_dict(row)
         before = dict(item)
-        # 金額與類型由系統決定(前端金額唯讀;舊版 App 若改成支出也在這裡拉回來)。
+        # 類型由系統決定(舊版 App 若改成支出也在這裡拉回來);金額 = 計算 + 手動調整。
         item["type"] = "income"
-        item["amount"] = amount
+        item["amount"] = _total_amount(amount, row.reward_adjustment_amount)
         prev_happened = payout.proposed_happened_at if payout is not None else None
         prev_account = payout.proposed_account_sync_id if payout is not None else None
         prev_project = payout.proposed_project_id if payout is not None else None
@@ -401,7 +417,8 @@ def _write_live(
         item.pop("currencyCode", None)
         item.pop("nativeAmount", None)
         item.update(_currency_fields(db, user_id=user_id, ledger_id=ledger_id,
-                                     account_sync_id=str(item["accountId"]), amount=amount))
+                                     account_sync_id=str(item["accountId"]),
+                                     amount=float(item["amount"])))
         item["rewardPayoutRuleId"] = rule.sync_id
         item["rewardPayoutKey"] = dedup_key
         if source_tx_id is not None:
@@ -732,6 +749,10 @@ def _collect_tx(db: Session, ctx: _Ctx, *, ledger_id: str, sync_id: str,
         return
     user_id = snap["user_id"]
 
+    # 使用者改了即時回饋交易本身(日期/帳戶/金額…):金額要重設成「計算 + 手動調整」。
+    if before is not None and after is not None and after.get("reward_payout_key"):
+        ctx.add(_ReassertTarget(user_id, ledger_id, sync_id), "tx")
+
     # 使用者刪掉即時回饋交易 → dismissed,之後不再重建。
     if before is not None and after is None and before.get("reward_payout_key"):
         payout = _find_payout(db, user_id=user_id, rule_sync_id=str(before.get("reward_payout_rule_sync_id")),
@@ -817,11 +838,42 @@ def _collect_rule(db: Session, ctx: _Ctx, *, user_id: str, rule_sync_id: str) ->
                                   legacy=legacy, mode="rule")
 
 
+def _reassert_amount(db: Session, ctx: _Ctx, target: _ReassertTarget) -> None:
+    """使用者編輯即時回饋交易後:金額 = payout 上的系統計算值 + 交易上的手動調整
+    (App/Web 改金額時會把差額寫進 `rewardAdjustment`;沒帶這個鍵的舊版用戶端改了
+    金額,這裡會把金額拉回來)。類型一律收入。已入帳的也照做——調整是使用者自己要的。"""
+    from ..routers.write._shared import _projection_row_to_tx_dict
+
+    row = _tx_row(db, ledger_id=target.ledger_id, sync_id=target.sync_id)
+    if row is None or not row.reward_payout_rule_sync_id or not row.reward_payout_key:
+        return
+    payout = _find_payout(db, user_id=target.user_id, rule_sync_id=row.reward_payout_rule_sync_id,
+                          dedup_key=row.reward_payout_key)
+    if payout is None or payout.dismissed or payout.payout_tx_sync_id != row.sync_id:
+        return
+    desired = _total_amount(payout.amount, row.reward_adjustment_amount)
+    if abs(row.amount - desired) < 1e-6 and row.tx_type == "income":
+        return
+    item = _projection_row_to_tx_dict(row)
+    item["type"] = "income"
+    item["amount"] = desired
+    item.pop("currencyCode", None)
+    item.pop("nativeAmount", None)
+    if row.account_sync_id:
+        item.update(_currency_fields(db, user_id=target.user_id, ledger_id=row.ledger_id,
+                                     account_sync_id=row.account_sync_id, amount=desired))
+    item["updatedByUserId"] = target.user_id
+    _emit_change(db, ctx, user_id=target.user_id, ledger_id=row.ledger_id, sync_id=row.sync_id,
+                 action="upsert", payload=item)
+
+
 def _run_targets(db: Session, ctx: _Ctx) -> None:
     # 逐筆的來源先跑(會建立/刪除自己的 payout),再跑上限分配,最後整期。
-    order = {_SourceTarget: 0, _PerTxPeriodTarget: 1, _PeriodTarget: 2}
+    order = {_SourceTarget: 0, _PerTxPeriodTarget: 1, _PeriodTarget: 2, _ReassertTarget: 3}
     for target, mode in sorted(ctx.targets.items(), key=lambda kv: order[type(kv[0])]):
-        if isinstance(target, _SourceTarget):
+        if isinstance(target, _ReassertTarget):
+            _reassert_amount(db, ctx, target)
+        elif isinstance(target, _SourceTarget):
             _recompute_source(db, ctx, target, mode)
         elif isinstance(target, _PerTxPeriodTarget):
             _recompute_per_tx_period(db, ctx, target, mode)

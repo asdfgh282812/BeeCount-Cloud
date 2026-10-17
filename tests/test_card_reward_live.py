@@ -647,3 +647,50 @@ def test_read_apis_expose_live_reward_links():
                    params={"reward_source_tx_id": "s1"})
     assert r.status_code == 200, r.text
     assert [i["id"] for i in r.json()["items"]] == [per_tx_live.sync_id]
+
+
+def test_manual_adjustment_is_kept_as_extra_line_on_recompute():
+    """改回饋金額 = 留一條「手動調整」:金額 = 系統計算 + 調整,重算只動計算的部分。"""
+    client, TS = _make_client()
+    hdr_app, hdr_web = _seed(client, "lv20", "lv20@t.com")
+    rule_id = _monthly_rule(client, hdr_web, "lv20")
+    when = _this_month_noon(datetime.now(timezone.utc))
+    _spend(client, hdr_app, "lv20", "s1", 500.0, when, [rule_id])
+    reward = _live_txs(TS, rule_id)[0]
+    assert reward.amount == 50.0
+
+    def push_reward(**extra):
+        payload = {"syncId": reward.sync_id, "type": "income", "amount": extra.pop("amount"),
+                   "happenedAt": _iso(reward.happened_at.replace(tzinfo=timezone.utc)),
+                   "accountId": "acc-wallet"}
+        payload.update(extra)
+        _push(client, hdr_app, "lv20", "transaction", reward.sync_id, payload)
+
+    push_reward(amount=60.0, rewardAdjustment=10.0)  # 多拿 10
+    after = _live_txs(TS, rule_id)[0]
+    assert (after.amount, after.reward_adjustment_amount) == (60.0, 10.0)
+
+    _spend(client, hdr_app, "lv20", "s2", 500.0, when, [rule_id])  # 計算 50 → 100
+    assert _live_txs(TS, rule_id)[0].amount == 110.0
+
+    # 舊版用戶端只改了金額、沒帶調整:金額拉回「計算 + 調整」,調整保留。
+    push_reward(amount=999.0, note="改備註")
+    after = _live_txs(TS, rule_id)[0]
+    assert (after.amount, after.reward_adjustment_amount, after.note) == (110.0, 10.0, "改備註")
+
+    # 扣掉的調整;總額不會變負。
+    push_reward(amount=70.0, rewardAdjustment=-30.0)
+    assert _live_txs(TS, rule_id)[0].amount == 70.0
+    push_reward(amount=0.0, rewardAdjustment=-500.0)
+    assert _live_txs(TS, rule_id)[0].amount == 0.0
+
+    # Web 改金額:帶 reward_adjustment。
+    r = client.patch(f"/api/v1/write/ledgers/lv20/transactions/{reward.sync_id}", headers=hdr_web, json={
+        "base_change_id": _latest_change_id(client, hdr_web, "lv20"),
+        "amount": 105.0, "reward_adjustment": 5.0,
+    })
+    assert r.status_code == 200, r.text
+    after = _live_txs(TS, rule_id)[0]
+    assert (after.amount, after.reward_adjustment_amount) == (105.0, 5.0)
+    lst = client.get("/api/v1/read/ledgers/lv20/transactions", headers=hdr_web).json()
+    assert next(i for i in lst if i["id"] == reward.sync_id)["reward_adjustment"] == 5.0

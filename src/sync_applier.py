@@ -491,6 +491,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 推回來時不能把連結清掉)。
         ("rewardPayoutRuleId", "reward_payout_rule_sync_id"),
         ("rewardPayoutKey", "reward_payout_key"),
+        # 即時回饋交易的手動調整(2026-10-17):缺键保留(舊版 App 改備註不能把調整清掉)。
+        ("rewardAdjustment", "reward_adjustment_amount"),
         # 拆帳(§2.4):缺键保留既有 splits(跟 attachments 同一套惯例)——
         # payload 没带 "splits" key(旧客户端 / 只改其它字段的 push)时,merge
         # 从 existing.splits_json 补回旧列表;projection.upsert_tx 再据此整批

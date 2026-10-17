@@ -2409,6 +2409,8 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["rewardPayoutRuleId"] = row.reward_payout_rule_sync_id
     if row.reward_payout_key is not None:
         item["rewardPayoutKey"] = row.reward_payout_key
+    if row.reward_adjustment_amount is not None:
+        item["rewardAdjustment"] = row.reward_adjustment_amount
     # 延後入帳/對帳模式(§2.10 Phase 5,2026-08-09 改版):同理,fast path
     # 编辑一笔已標記延後入帳/已確認的交易的其它字段时(例如只改 reconciled_at
     # 却不带 deferred_posting_at,或反过来),不带上这两个会让另一个字段在

@@ -1165,6 +1165,12 @@ function CardRewardRuleFormDialog({
                 <SelectItem value="period_end">{t('cardRewards.settlementType.period_end')}</SelectItem>
               </SelectContent>
             </Select>
+            {/* 2026-10-17:「僅手動入帳」不會自動產生回饋交易,告訴使用者到哪裡記(同 App)。 */}
+            {settlementType === 'manual' ? (
+              <p className="pt-1 text-[11px] text-muted-foreground" data-testid="card-reward-manual-hint">
+                {t('cardRewards.settlementType.manualHint')}
+              </p>
+            ) : null}
             {needsSettlementDays ? (
               <div className="space-y-1 pt-1">
                 <Label>{t('cardRewards.field.settlementDays')}</Label>

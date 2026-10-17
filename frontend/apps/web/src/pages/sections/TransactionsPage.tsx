@@ -2417,6 +2417,10 @@ export function TransactionsPage() {
         // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):跟 debt_id 同款语意,
         // 只有 expense 有意义(回饋是消費行为),transfer/income 一律清空。
         reward_rule_ids: txForm.tx_type === 'expense' ? txForm.reward_rule_ids : [],
+        // 即時回饋交易(2026-10-17):差額送成手動調整,Cloud 重設金額 = 計算 + 調整。
+        ...(txForm.editingId && txForm.live_reward_base != null
+          ? { reward_adjustment: Math.round((Number(txForm.amount) - txForm.live_reward_base) * 100) / 100 }
+          : {}),
         // Phase 1.5(§2.12.2):建交易当下顺便设成週期性收支起点,只在新建
         // 时生效(server 也只认 create 路径的这个字段)。
         recurring: !txForm.editingId ? buildRecurringInlinePayload(txForm) : null,
@@ -2601,8 +2605,8 @@ export function TransactionsPage() {
       category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
       account_name: tx.account_name || '',
       original_account_name: tx.account_name || '',
-      // 即時回饋交易(2026-10-16):金額由回饋規則計算,表單唯讀。
-      amount_locked: isLiveCardReward(tx),
+      // 即時回饋交易:帶入 Cloud 計算值(金額 − 手動調整),改金額時差額存成手動調整。
+      live_reward_base: isLiveCardReward(tx) ? tx.amount - (tx.reward_adjustment ?? 0) : null,
       from_account_name: tx.from_account_name || '',
       to_account_name: tx.to_account_name || '',
       // 转帐「转入金额」(2026-09-18 使用者反馈:重开编辑表单会用当下市场

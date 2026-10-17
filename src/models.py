@@ -714,6 +714,10 @@ class ReadTxProjection(Base):
     # denormalized 副本(App 推回來的值不會拿來建立連結)。
     reward_payout_rule_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reward_payout_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 即時回饋交易的「手動調整」(2026-10-17,alembic 0077):使用者改過回饋金額時,
+    # 差額存在這裡(正 = 多拿、負 = 扣掉),交易金額 = 系統計算的回饋 + 調整。系統
+    # 重算只動計算的部分,調整一直保留——呈現上像拆帳多一條「手動調整」。
+    reward_adjustment_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 延後入帳(§2.10 MOZE_FEATURE_GAP_SD.md Phase 5,對帳模式的必要前置):
     # 有值 = 這筆交易處於「延後入帳」狀態,值是使用者填的實際入帳日;None =
     # 正常,沿用 happened_at。對帳/信用卡帳單彙總等需要「入帳日口徑」的地方

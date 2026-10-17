@@ -296,6 +296,8 @@ export type ReadTransaction = {
    *  `live:{起}~{迄}:{帳本}`,逐筆模式 = 來源消費 id。 */
   reward_payout_rule_id?: string | null
   reward_payout_key?: string | null
+  /** 即時回饋交易的手動調整(2026-10-17):amount = 系統計算 + 這個值。 */
+  reward_adjustment?: number | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -948,6 +950,8 @@ export type TxPayload = {
    * 名下的規則。undefined = 不改(update);[] = 清空;null 等同 []。
    */
   reward_rule_ids?: string[] | null
+  /** 即時回饋交易的手動調整(2026-10-17,只在更新時送):amount − 系統計算值。 */
+  reward_adjustment?: number | null
 }
 
 /** 拆帳(§2.4):挂在 `TxPayload.splits` 上的单个分类明细。 */
